@@ -668,9 +668,26 @@ describe("old free-ratio hint", () => {
     expect(screen.queryByTestId("low-water-hint")).toBeNull();
   });
 
-  it("says the data directory cap leaves the cache directory out", async () => {
+  it("explains the two directories, then the free-space floor, between the fields and the save button", async () => {
     localInstance();
     const disk = (await screen.findByText("磁盘与上传")).closest("section") as HTMLElement;
-    expect(within(disk).getByText("不含缓存目录：视频 / 音频缓存及其临时文件")).toBeTruthy();
+    const explainer = within(disk).getByTestId("disk-explainer");
+    expect(Array.from(explainer.querySelectorAll("p"), (line) => line.textContent)).toEqual([
+      "数据目录存放资料库、上传的原始文件、日志和处理中的临时文件等，「数据目录上限」只计算这部分；缓存目录存放从平台缓存的视频、音频及其临时文件，不计入数据目录上限，也不设总量上限。",
+      "最低剩余空间和最低剩余比例一起决定每块磁盘至少要留出的空闲：必须保留的空闲 = max(最低剩余空间，最低剩余比例 × 磁盘总容量)，即两者取较大值。比例为 0 时只看最低剩余空间，例如 1 TB 的磁盘，最低剩余空间 10 GB、比例 0.2 时需保留 200 GB，比例为 0 时需保留 10 GB。空闲低于这个值时不再开始新任务；数据目录和缓存目录在不同磁盘上时各自计算。",
+    ]);
+    // After every field, before the save button, which stays the block's last control.
+    const lastField = within(disk).getByLabelText("上传文件默认保留策略");
+    const save = within(disk).getByRole("button", { name: "保存" });
+    expect(lastField.compareDocumentPosition(explainer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(explainer.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("says the data directory cap leaves the cache directory out in that explanation, not under the field", async () => {
+    localInstance();
+    const disk = (await screen.findByText("磁盘与上传")).closest("section") as HTMLElement;
+    expect(within(disk).getByTestId("disk-explainer").textContent).toContain("缓存目录存放从平台缓存的视频、音频及其临时文件，不计入数据目录上限");
+    const field = within(disk).getByLabelText("数据目录上限（GB）").closest("div") as HTMLElement;
+    expect(field.querySelector("p")).toBeNull();
   });
 });

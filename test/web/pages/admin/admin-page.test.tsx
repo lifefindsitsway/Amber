@@ -135,6 +135,22 @@ describe("AdminPage", () => {
     expect(await screen.findByText(/已于 .* 重置全部凭据/)).toBeTruthy();
   });
 
+  it("explains the data directory and the free-space floor without the media cache, which a server has not", async () => {
+    mockApi({
+      "GET /api/auth/me": { body: ADMIN },
+      "GET /api/instance-settings": {
+        body: { concurrencyPipeline: 2, maxDataGB: 50, lowWaterFreeGB: 10, lowWaterFreeRatio: 0, uploadRetentionDefault: "keep", updatedAt: 0, envOverridden: [] },
+      },
+    });
+    admin("/admin/instance");
+    const explainer = await screen.findByTestId("disk-explainer");
+    expect(Array.from(explainer.querySelectorAll("p"), (line) => line.textContent)).toEqual([
+      "数据目录存放资料库、上传的原始文件、日志和处理中的临时文件等，「数据目录上限」计算的就是它的大小。",
+      "最低剩余空间和最低剩余比例一起决定每块磁盘至少要留出的空闲：必须保留的空闲 = max(最低剩余空间，最低剩余比例 × 磁盘总容量)，即两者取较大值。比例为 0 时只看最低剩余空间，例如 1 TB 的磁盘，最低剩余空间 10 GB、比例 0.2 时需保留 200 GB，比例为 0 时需保留 10 GB。空闲低于这个值时不再开始新任务。",
+    ]);
+    expect(explainer.textContent).not.toContain("缓存");
+  });
+
   it("shows storage per user by username", async () => {
     mockApi({
       "GET /api/auth/me": { body: ADMIN },

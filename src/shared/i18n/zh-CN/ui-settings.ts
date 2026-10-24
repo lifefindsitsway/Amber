@@ -327,9 +327,17 @@ export const settings = {
     concurrencyPipeline: "同时处理的任务数",
     concurrencyPipelineHint: "全实例所有任务共用（含缓存、翻译、重新总结等）；超出的排队，按提交顺序开始。模型请求的数量与下载 / 转码等本地处理由系统按模型服务的反馈和任务数自动安排。范围 1–{{max}}。",
     maxDataGB: "数据目录上限（GB）",
-    maxDataGBHint: "不含缓存目录：视频 / 音频缓存及其临时文件",
     lowWaterFreeGB: "最低剩余空间（GB）",
     lowWaterFreeRatio: "最低剩余比例（0–1）",
+    diskExplainer: {
+      directoriesLocal:
+        "数据目录存放资料库、上传的原始文件、日志和处理中的临时文件等，「数据目录上限」只计算这部分；缓存目录存放从平台缓存的视频、音频及其临时文件，不计入数据目录上限，也不设总量上限。",
+      directoriesServer: "数据目录存放资料库、上传的原始文件、日志和处理中的临时文件等，「数据目录上限」计算的就是它的大小。",
+      lowWater:
+        "最低剩余空间和最低剩余比例一起决定每块磁盘至少要留出的空闲：必须保留的空闲 = max(最低剩余空间，最低剩余比例 × 磁盘总容量)，即两者取较大值。比例为 0 时只看最低剩余空间，例如 1 TB 的磁盘，最低剩余空间 10 GB、比例 0.2 时需保留 200 GB，比例为 0 时需保留 10 GB。",
+      effectLocal: "空闲低于这个值时不再开始新任务；数据目录和缓存目录在不同磁盘上时各自计算。",
+      effectServer: "空闲低于这个值时不再开始新任务。",
+    },
     uploadRetentionDefault: "上传文件默认保留策略",
     retention: {
       keep: "保留原文件",

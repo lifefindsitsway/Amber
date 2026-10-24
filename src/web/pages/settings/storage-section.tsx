@@ -66,7 +66,7 @@ export function StorageSection() {
       ) : (
         <>
           <p className="mb-4 text-sm text-muted">{t("settings.storage.intro")}</p>
-          {version.isPending ? <Loading /> : <InstanceSettingsEditor lowWaterHint />}
+          {version.isPending ? <Loading /> : <InstanceSettingsEditor lowWaterHint localCache />}
         </>
       )}
       {desktop ? (
@@ -83,9 +83,11 @@ export function StorageSection() {
 
 /**
  * The instance parameters editor (admin only; others see why it is unavailable).
- * `lowWaterHint` offers to drop the old free-ratio default, where the media cache lives.
+ * `lowWaterHint` offers to drop the old free-ratio default, where the media cache lives;
+ * `localCache` explains the disk settings for an instance that also has a media cache
+ * directory, which server mode does not.
  */
-export function InstanceSettingsEditor({ lowWaterHint = false }: { lowWaterHint?: boolean } = {}) {
+export function InstanceSettingsEditor({ lowWaterHint = false, localCache = false }: { lowWaterHint?: boolean; localCache?: boolean } = {}) {
   const { t } = useTranslation();
   const instance = useInstanceSettings();
   return (
@@ -106,6 +108,7 @@ export function InstanceSettingsEditor({ lowWaterHint = false }: { lowWaterHint?
             fields={DISK_FIELDS}
             retention
             {...(lowWaterHint ? { notice: <LowWaterRatioHint settings={instance.data} /> } : {})}
+            footer={<DiskExplainer localCache={localCache} />}
           />
         </>
       )}
@@ -168,6 +171,8 @@ function InstanceBlock(props: {
   singleColumn?: boolean;
   /** Shown above the fields. */
   notice?: ReactNode;
+  /** Shown below the fields, above the save button. */
+  footer?: ReactNode;
 }) {
   const { settings } = props;
   const { t } = useTranslation();
@@ -201,9 +206,7 @@ function InstanceBlock(props: {
   const hint = (key: NumericField): string | undefined => {
     const range = isConcurrencyKey(key)
       ? t(`settings.storage.${key}Hint`, { max: CONCURRENCY_LIMITS[key] })
-      : key === "maxDataGB"
-        ? t("settings.storage.maxDataGBHint")
-        : undefined;
+      : undefined;
     if (!locked(key)) return range;
     return range === undefined ? t("settings.storage.fromEnv") : `${t("settings.storage.fromEnv")} · ${range}`;
   };
@@ -256,6 +259,7 @@ function InstanceBlock(props: {
             </Field>
           ) : null}
         </div>
+        {props.footer}
         <RequestError error={save.error} />
         <div className="flex justify-end">
           <Button type="submit" variant="primary" disabled={invalid || Object.keys(patch).length === 0 || save.isPending}>
@@ -264,6 +268,23 @@ function InstanceBlock(props: {
         </div>
       </form>
     </SettingsBlock>
+  );
+}
+
+/**
+ * Below the disk fields: what the data and cache directories hold (the data directory cap
+ * leaves the cache directory out), then how the two free-space settings combine into the floor
+ * each volume keeps. Only an instance with a media cache directory mentions it.
+ */
+function DiskExplainer({ localCache }: { localCache: boolean }) {
+  const { t } = useTranslation();
+  const directories = localCache ? t("settings.storage.diskExplainer.directoriesLocal") : t("settings.storage.diskExplainer.directoriesServer");
+  const effect = localCache ? t("settings.storage.diskExplainer.effectLocal") : t("settings.storage.diskExplainer.effectServer");
+  return (
+    <div className="mb-3 space-y-1 text-xs text-muted" data-testid="disk-explainer">
+      <p>{directories}</p>
+      <p>{`${t("settings.storage.diskExplainer.lowWater")}${effect}`}</p>
+    </div>
   );
 }
 
