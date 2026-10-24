@@ -133,9 +133,10 @@ export interface PlatformSourceAdapter {
   fetchCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformCollection>;
   /**
    * Downloads the best audio-only stream (yt-dlp `ba/b`) to `output.path`; normalizing it
-   * is `LocalMediaIngest.extractAudio`'s job. With `maxBytes`, a format whose
-   * announced size already exceeds it is not downloaded and a file that turns out larger
-   * is refused, both with `media_too_large`.
+   * is `LocalMediaIngest.extractAudio`'s job. `maxBytes` is the caller's budget (an audio
+   * cache's room on the data volume): a format whose announced size already exceeds it is
+   * not downloaded, a download whose bytes pass it is stopped, and a file that turns out
+   * larger is refused, all with `media_too_large`.
    */
   fetchAudio(
     ref: PlatformContentRef,
@@ -154,24 +155,27 @@ export interface PlatformSourceAdapter {
   /**
    * Client only (`cache_media`): what `fetchVideo` would download for
    * `maxHeight`, without downloading it. `hasVideo = false` when the selected format has no
-   * video stream (`vcodec` none or absent): the content is audio only and is cached as MP3.
-   * Otherwise `mimeType` is the container the merge will produce (`video/mp4` or
-   * `video/webm`), so the cache file's extension is known before the download starts.
+   * video stream (`vcodec` none or absent): the content is audio only. Otherwise
+   * `mimeType` is the container the merge is expected to produce (`video/mp4` or
+   * `video/webm`) and `height` / `width` the expected picture size: estimates only, since the
+   * cache file is named after the picture size and container ffprobe reads from the finished
+   * download.
    */
   inspectVideo?(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
     options: { maxHeight: number },
     signal: AbortSignal,
-  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number }>;
+  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }>;
   /**
    * Client only (`cache_media`): downloads the video, at most `maxHeight` pixels
    * high and merged into an MP4 or WebM container both WebView2 builds play, to
-   * `output.path`. The intermediate files go below `output.scratchDir`, a directory on
-   * the volume of `output.path` that the caller owns and removes, so the
-   * finished file is renamed into place without crossing volumes. When the selected
-   * format's `filesize ?? filesize_approx` already exceeds `maxBytes` nothing is downloaded
-   * and it fails with `media_too_large`.
+   * `output.path` inside the caller's scratch directory. The intermediate files go below
+   * `output.scratchDir`, a directory on the volume of `output.path` that the caller owns
+   * and removes, so the finished file is renamed into place without crossing volumes.
+   * `maxBytes` is the caller's budget on that volume: when the selected format's
+   * `filesize ?? filesize_approx` already exceeds it nothing is downloaded, and a download
+   * whose bytes pass it is stopped, both with `media_too_large`.
    */
   fetchVideo?(
     ref: PlatformContentRef,

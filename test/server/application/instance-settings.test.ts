@@ -1,4 +1,8 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { openDatabase } from "../../../src/server/adapters/sqlite/database.ts";
+import { latestSchemaVersion, MIGRATIONS } from "../../../src/server/adapters/sqlite/migrations.ts";
+import { SqliteRepository } from "../../../src/server/adapters/sqlite/repository.ts";
 import {
   defaultInstanceSettings,
   ensureInstanceSettings,
@@ -9,7 +13,7 @@ import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { CONCURRENCY_PIPELINE, CONCURRENCY_PIPELINE_MAX, MAX_DATA_GB } from "../../../src/shared/defaults.ts";
 import { instanceSettingsDtoSchema, instanceSettingsPatchSchema } from "../../../src/shared/dto/instance-settings.ts";
 import { BOB, createHarness, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
-import { countRows } from "../../tools/sqlite.ts";
+import { countRows, insertRow, tempDataDir } from "../../tools/sqlite.ts";
 
 const open: Harness[] = [];
 function harness(): Harness {
@@ -155,5 +159,32 @@ describe("instance settings", () => {
     h.settings.effective();
     h.db.prepare("UPDATE instance_settings SET cache_migration_json = ?").run(JSON.stringify({ id: "m", phase: "flying" }));
     expect(() => h.repository.withTransaction((scope) => scope.instanceSettings.get())).toThrow(/cache migration marker/);
+  });
+
+  it("keeps a low-water ratio saved by an earlier version through the upgrade, while a fresh instance starts at 0", () => {
+    const dir = tempDataDir();
+    const file = join(dir, "amber.db");
+    // The settings row as the version before the archive and cache-quality migrations left it.
+    const { db: previous } = openDatabase(file, { backupDir: join(dir, "backups"), migrations: MIGRATIONS.slice(0, 19) });
+    insertRow(previous, "instance_settings", {
+      id: 1, concurrency_pipeline: 2, max_data_gb: 30, low_water_free_gb: 10, low_water_free_ratio: 0.2,
+      upload_retention_default: "keep", updated_at: 1_790_000_000_000,
+    });
+    previous.close();
+
+    const { db, from, to } = openDatabase(file, { backupDir: join(dir, "backups") });
+    try {
+      expect({ from, to }).toEqual({ from: 19, to: latestSchemaVersion() });
+      const service = new InstanceSettingsService({ repository: new SqliteRepository(db), overrides: {} });
+      expect(service.effective().lowWaterFreeRatio).toBe(0.2);
+      expect(service.get(LOCAL).lowWaterFreeRatio).toBe(0.2);
+      expect(db.prepare("SELECT low_water_free_ratio AS ratio FROM instance_settings").get()).toEqual({ ratio: 0.2 });
+    } finally {
+      db.close();
+    }
+
+    const fresh = harness();
+    expect(fresh.settings.effective().lowWaterFreeRatio).toBe(0);
+    expect(fresh.db.prepare("SELECT low_water_free_ratio AS ratio FROM instance_settings").get()).toEqual({ ratio: 0 });
   });
 });

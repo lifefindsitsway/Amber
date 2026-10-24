@@ -1,4 +1,4 @@
-import type { ContentDetailDto, TranscriptRevisionDto } from "../../../src/shared/dto/content.ts";
+import type { ContentDetailDto, TranscriptRevisionListItemDto } from "../../../src/shared/dto/content.ts";
 import type { HighlightsDto } from "../../../src/shared/dto/highlight.ts";
 import type { TranscriptSegmentDto } from "../../../src/shared/dto/transcript.ts";
 import type { TranslationsDto } from "../../../src/shared/dto/translation.ts";
@@ -20,7 +20,8 @@ export function contentDetail(overrides: Partial<ContentDetailDto> = {}): Conten
   };
 }
 
-export function revision(id: string, overrides: Partial<TranscriptRevisionDto> = {}): TranscriptRevisionDto {
+/** A revision as the revision list returns it; the segment page's revision schema drops the list-only fields. */
+export function revision(id: string, overrides: Partial<TranscriptRevisionListItemDto> = {}): TranscriptRevisionListItemDto {
   return {
     id,
     contentId: "c1",
@@ -30,6 +31,10 @@ export function revision(id: string, overrides: Partial<TranscriptRevisionDto> =
     generation: {},
     segmentCount: 3,
     createdAt: 1,
+    archived: false,
+    deletable: false,
+    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+    descendantIds: [],
     ...overrides,
   };
 }

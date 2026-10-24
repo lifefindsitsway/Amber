@@ -4,7 +4,7 @@ import { EXPECTED_DEFAULTS } from "../fixtures/spec/defaults.ts";
 
 describe("src/shared/defaults.ts", () => {
   it("lists every named default once", () => {
-    expect(Object.keys(EXPECTED_DEFAULTS)).toHaveLength(152);
+    expect(Object.keys(EXPECTED_DEFAULTS)).toHaveLength(154);
   });
 
   it("exports exactly the named defaults", () => {

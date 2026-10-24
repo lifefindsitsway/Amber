@@ -25,7 +25,7 @@ import type { AsrUsage, TokenUsage } from "../domain/usage.ts";
 import type { IdempotencyRecord, InstanceSettings, NetworkAllowlistEntry, PendingFileDelete, Session, UserSettings } from "../domain/runtime-support.ts";
 import type { StageRun, Task, WorkUnit, WorkUnitResult } from "../domain/task.ts";
 import type { ModelRefSnapshot, PromptRef } from "../domain/model-ref.ts";
-import type { ReferenceText, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
+import type { ReferenceText, RevisionReference, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { ChatCompaction, ChatMessage, ChatThread } from "../domain/chat.ts";
 import type { User, UserCredential } from "../domain/user.ts";
 import type { SecretEnvelopeStore } from "./secret-store.ts";
@@ -273,7 +273,7 @@ export interface MediaAssetRepository {
   /** `available` `temporary` assets of the owner's `burn` Tasks, the burn products not yet saved out, oldest first. */
   listBurnOutputs(ownerUserId: string): MediaAsset[];
   insert(asset: MediaAsset): void;
-  /** Rewrites the mutable fields: storage location, size, duration, fingerprint, availability. */
+  /** Rewrites the mutable fields: storage location, MIME type, size, duration, quality and whether it was verified, fingerprint, availability. */
   update(ownerUserId: string, asset: MediaAsset): void;
   delete(ownerUserId: string, assetId: string): boolean;
 }
@@ -304,6 +304,31 @@ export interface TranscriptRepository {
    */
   putDraft(ownerUserId: string, draft: TranscriptDraft): void;
   deleteDraft(ownerUserId: string, contentId: string): boolean;
+  /**
+   * Removes one revision with its sentences, their lineage rows and its archive mark. The
+   * caller has checked that nothing references it any more and deletes children first; a
+   * remaining reference fails the statement.
+   */
+  deleteRevision(ownerUserId: string, revisionId: string): boolean;
+  /** The Content's archived revisions with the time each was archived. */
+  listArchived(ownerUserId: string, contentId: string): Array<{ revisionId: string; archivedAt: number }>;
+  /** Archives the revision at `archivedAt`, or restores it when `archivedAt` is undefined; idempotent either way. */
+  setArchived(ownerUserId: string, revisionId: string, archivedAt: number | undefined): void;
+}
+
+/**
+ * Reads the rows that point at a Content's transcript revisions, so a revision is deleted
+ * only when nothing would be left dangling.
+ */
+export interface RevisionReferenceRepository {
+  /**
+   * Every child revision, the draft, notes, highlights, chat messages and compactions,
+   * summaries, rollup partials, chapters, the owner's collection summaries and the owner's
+   * unfinished Tasks that reach a revision of the Content. An unfinished Task of the Content
+   * itself reaches all of its revisions, since its stages may read the primary as their base
+   * at run time. Rows that reach none of its revisions may or may not be included.
+   */
+  listReferences(ownerUserId: string, contentId: string): RevisionReference[];
 }
 
 export interface ImportBatchRepository {
@@ -375,6 +400,11 @@ export interface WorkUnitRepository {
 export interface IdempotencyRepository {
   get(ownerUserId: string, route: string, key: string): IdempotencyRecord | undefined;
   insert(record: IdempotencyRecord): void;
+  /**
+   * Drops the owner's records whose created resources or response name one of the revisions,
+   * so a replay of the key runs the request again instead of returning a deleted id.
+   */
+  deleteReferencingRevisions(ownerUserId: string, revisionIds: readonly string[]): number;
 }
 
 /** The single instance-level settings row; not owned by any user. */
@@ -760,6 +790,8 @@ export interface TranslationRepository {
    * that language, creating the artifact (with `artifactId`) on first use.
    */
   setCurrent(ownerUserId: string, contentId: string, targetLanguage: string, revisionId: string, artifactId: string): void;
+  /** Removes the language's TranslationArtifact; its revisions are not touched. */
+  deleteArtifact(ownerUserId: string, contentId: string, targetLanguage: string): boolean;
 }
 
 /** Position in the latest-first listing of note groups. */
@@ -821,6 +853,7 @@ export interface RepositoryScope {
   collections: CollectionRepository;
   mediaAssets: MediaAssetRepository;
   transcripts: TranscriptRepository;
+  revisionReferences: RevisionReferenceRepository;
   secretEnvelopes: SecretEnvelopeStore;
   importBatches: ImportBatchRepository;
   tasks: TaskRepository;

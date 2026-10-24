@@ -120,4 +120,33 @@ describe("SplitMediaFiles", () => {
     expect(existsSync(scratchRoot)).toBe(false);
     expect(await media.cache.list("media")).toEqual(["media/kept.mp4"]);
   });
+
+  it("never empties or removes a scratch directory holding a replacement record", async () => {
+    const { dataDir, media } = setup();
+    const scratchRoot = join(dataDir, "media", ".amber-tmp");
+    mkdirSync(join(scratchRoot, "01HELD"), { recursive: true });
+    writeFileSync(join(scratchRoot, "01HELD", "swap.json"), "{}");
+    writeFileSync(join(scratchRoot, "01HELD", "displaced"), "the only copy");
+    mkdirSync(join(scratchRoot, "01DEBRIS"));
+    expect(await media.cache.swapScratchIds()).toEqual(["01HELD"]);
+    expect(await codeOf(media.cache.openScratch("01HELD"))).toBe("conflict.cache_recovery_pending");
+    await media.cache.removeScratchDir("01HELD");
+    expect(await media.cache.removeScratch()).toBe(1);
+    expect(readdirSync(scratchRoot)).toEqual(["01HELD"]);
+    expect(readdirSync(join(scratchRoot, "01HELD")).sort()).toEqual(["displaced", "swap.json"]);
+    await media.cache.removeScratchDir("01HELD", { force: true });
+    expect(existsSync(scratchRoot)).toBe(false);
+  });
+
+  it("moves files in and out of the cache directory by renaming", async () => {
+    const { dataDir, media } = setup();
+    const scratch = await media.cache.openScratch("01MOVE");
+    writeFileSync(join(scratch.path, "download.mp4"), "new");
+    await media.cache.moveIn(join(scratch.path, "download.mp4"), "media/a [720P].mp4");
+    expect(await media.cache.stat("media/a [720P].mp4")).toEqual({ sizeBytes: 3 });
+    await media.cache.moveOut("media/a [720P].mp4", join(scratch.path, "displaced"));
+    expect(await media.cache.stat("media/a [720P].mp4")).toBeNull();
+    expect(readdirSync(join(dataDir, "media", ".amber-tmp", "01MOVE"))).toEqual(["displaced"]);
+    await scratch.close();
+  });
 });

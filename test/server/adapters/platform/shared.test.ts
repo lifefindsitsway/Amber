@@ -105,6 +105,8 @@ describe("videoFormat / parseFormatLine", () => {
     expect(parseFormatLine("amber-format 123456 720 mp4 avc1.64001F")).toEqual({ sizeBytes: 123456, height: 720, ext: "mp4", vcodec: "avc1.64001F" });
     expect(parseFormatLine("amber-format NA NA webm NA")).toEqual({ ext: "webm" });
     expect(parseFormatLine("amber-format 99 NA m4a none")).toEqual({ sizeBytes: 99, ext: "m4a", vcodec: "none" });
+    expect(parseFormatLine("amber-format 123456 714 mp4 avc1.64001F 1280")).toEqual({ sizeBytes: 123456, height: 714, ext: "mp4", vcodec: "avc1.64001F", width: 1280 });
+    expect(parseFormatLine("amber-format NA 714 mp4 avc1 NA")).toEqual({ height: 714, ext: "mp4", vcodec: "avc1" });
     expect(parseFormatLine("[info] something")).toBeUndefined();
   });
 });
@@ -154,7 +156,7 @@ describe("downloadVideo", () => {
 
     const [check, download] = runner.specs.map((spec) => spec.args.slice(spec.args.indexOf("--no-playlist")));
     const selection = ["--no-playlist", "--format", videoFormat(720), "--format-sort", "vcodec:h264,res,acodec:aac", "--merge-output-format", "mp4/webm"];
-    expect(check).toEqual([...selection, "--print", "amber-format %(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s", URL]);
+    expect(check).toEqual([...selection, "--print", "amber-format %(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s", URL]);
     const template = argAfter(download ?? [], "--output") as string;
     expect(download).toEqual([
       ...selection,
@@ -201,6 +203,37 @@ describe("downloadVideo", () => {
     expect(isAmberError(failure) && failure.appError.class).toBe("media_unsupported_type");
     expect(readdirSync(flvScratch)).toEqual([]);
   });
+
+  it("stops as soon as the bytes of both streams pass the caller's budget, leaving nothing behind", async () => {
+    const { ytDlp, dataDir } = scripted("amber-format NA 720 mp4");
+    const output = join(dataDir, "video.partial");
+    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 720, maxBytes: 130, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
+      (error: unknown) => error,
+    );
+    expect(isAmberError(failure) && failure.appError.class).toBe("media_too_large");
+    expect(existsSync(output)).toBe(false);
+  });
+
+  it("refuses a finished file larger than the budget even without progress", async () => {
+    const { ytDlp, dataDir } = scriptedYtDlpQuiet();
+    const output = join(dataDir, "video.partial");
+    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 720, maxBytes: 139, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
+      (error: unknown) => error,
+    );
+    expect(isAmberError(failure) && failure.appError.class).toBe("media_too_large");
+    expect(existsSync(output)).toBe(false);
+  });
+
+  /** A download whose progress carries no numbers. */
+  function scriptedYtDlpQuiet() {
+    return scriptedYtDlp((spec: ProcessSpec): ScriptedProcess => {
+      if (spec.args.includes("--print")) {
+        return { stdoutLines: ["amber-format NA 720 mp4"] };
+      }
+      writeFileSync((argAfter(spec.args, "--output") as string).replace("%(ext)s", "mp4"), Buffer.alloc(140));
+      return { stdoutLines: ["amber-progress NA NA NA"] };
+    });
+  }
 });
 
 describe("moveFile", () => {
@@ -318,9 +351,10 @@ describe("inspectVideo", () => {
     const args = runner.specs[0]?.args ?? [];
     expect(args.slice(args.indexOf("--no-playlist"))).toEqual([
       "--no-playlist", "--format", videoFormat(720), "--format-sort", "vcodec:h264,res,acodec:aac", "--merge-output-format", "mp4/webm",
-      "--print", "amber-format %(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s", URL,
+      "--print", "amber-format %(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s", URL,
     ]);
     expect(await inspect("amber-format NA 480 webm NA").result).toEqual({ hasVideo: true, mimeType: "video/webm", height: 480 });
+    expect(await inspect("amber-format NA 1920 mp4 avc1 1080").result).toEqual({ hasVideo: true, mimeType: "video/mp4", height: 1920, width: 1080 });
   });
 
   it("reports no video for a codec of none, or neither codec nor height", async () => {

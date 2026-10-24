@@ -1,4 +1,4 @@
-import { isAudioCache, isVideoCache, type MediaAsset } from "../../domain/media-asset.ts";
+import { isAudioCache, isVideoCache, verifiedCacheHeight, type MediaAsset } from "../../domain/media-asset.ts";
 import type { FileStore } from "../../ports/file-store.ts";
 import type { Repository, RepositoryScope } from "../../ports/repository.ts";
 
@@ -17,29 +17,46 @@ export function availableOriginal(scope: RepositoryScope, ownerUserId: string, c
     .at(-1);
 }
 
-/** The Content's latest available cache matching `accept`. */
-function latestCache(scope: RepositoryScope, ownerUserId: string, contentId: string, accept: (asset: MediaAsset) => boolean): MediaAsset | undefined {
+/** The Content's latest available audio cache. */
+function latestAudioCache(scope: RepositoryScope, ownerUserId: string, contentId: string): MediaAsset | undefined {
   return scope.mediaAssets
     .listByContent(ownerUserId, contentId)
-    .filter((asset) => accept(asset) && asset.availability === "available")
+    .filter((asset) => isAudioCache(asset) && asset.availability === "available")
     .at(-1);
 }
 
 /**
+ * The Content's available video caches, best first: the highest verified height first,
+ * caches of unknown or not yet verified quality last; among equal heights the newest first.
+ */
+export function videoCachesBestFirst(scope: RepositoryScope, ownerUserId: string, contentId: string): MediaAsset[] {
+  const rank = (asset: MediaAsset) => verifiedCacheHeight(asset) ?? -1;
+  return scope.mediaAssets
+    .listByContent(ownerUserId, contentId)
+    .filter((asset) => isVideoCache(asset) && asset.availability === "available")
+    .sort((a, b) => rank(b) - rank(a) || b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+/** The Content's best available video cache (see `videoCachesBestFirst`). */
+export function bestVideoCache(scope: RepositoryScope, ownerUserId: string, contentId: string): MediaAsset | undefined {
+  return videoCachesBestFirst(scope, ownerUserId, contentId)[0];
+}
+
+/**
  * A video to work on without going online (burn-in): the original file,
- * else the latest available video cache. An audio cache never qualifies.
+ * else the best available video cache. An audio cache never qualifies.
  */
 export function availableVideoSource(scope: RepositoryScope, ownerUserId: string, contentId: string): MediaAsset | undefined {
-  return availableOriginal(scope, ownerUserId, contentId) ?? latestCache(scope, ownerUserId, contentId, isVideoCache);
+  return availableOriginal(scope, ownerUserId, contentId) ?? bestVideoCache(scope, ownerUserId, contentId);
 }
 
 /**
  * What audio can be extracted from without going online: the original file,
- * else a cached platform video, else a cached MP3. Either cache type carries the audio;
- * the video is preferred because it is the fuller copy of the source.
+ * else the best cached platform video, else a cached MP3. Either cache type carries the
+ * audio; the video is preferred because it is the fuller copy of the source.
  */
 export function availableMediaSource(scope: RepositoryScope, ownerUserId: string, contentId: string): MediaAsset | undefined {
-  return availableVideoSource(scope, ownerUserId, contentId) ?? latestCache(scope, ownerUserId, contentId, isAudioCache);
+  return availableVideoSource(scope, ownerUserId, contentId) ?? latestAudioCache(scope, ownerUserId, contentId);
 }
 
 /** What `assetPath` needs from `MediaFiles`: the store of a kind, for its path only. */

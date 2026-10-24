@@ -72,6 +72,57 @@ export function PlaybackRateMenu(props: { rate: number; onRate: (rate: number) =
   );
 }
 
+/** One file the local player can switch to, as the quality menu names it. */
+export interface QualitySource {
+  assetId: string;
+  label: string;
+}
+
+/**
+ * The quality menu of the local player's control bar: the button names the file actually
+ * loaded, the popup lists every source in the given order with the loaded one marked, and
+ * picking another one asks the page to switch. Its popup renders inside `container`.
+ */
+export function QualityMenu(props: {
+  sources: readonly QualitySource[];
+  activeId: string | undefined;
+  onSelect: (assetId: string) => void;
+  container: HTMLElement | null;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const active = props.sources.find((source) => source.assetId === props.activeId);
+  return (
+    <DropdownMenu.Root {...rootProps(props)}>
+      <DropdownMenu.Trigger className={BAR_BUTTON_CLASS} aria-label={t("contentView.player.quality.title")} title={t("contentView.player.quality.title")} data-testid="player-quality">
+        {active?.label ?? t("contentView.player.quality.title")}
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal container={props.container ?? undefined}>
+        <DropdownMenu.Content side="top" align="center" sideOffset={6} className={PLAYER_MENU_CONTENT_CLASS} data-testid="player-quality-menu">
+          <DropdownMenu.RadioGroup
+            value={props.activeId ?? ""}
+            aria-label={t("contentView.player.quality.title")}
+            onValueChange={(value) => {
+              if (value !== props.activeId && props.sources.some((source) => source.assetId === value)) props.onSelect(value);
+            }}
+          >
+            {props.sources.map((source) => (
+              <DropdownMenu.RadioItem
+                key={source.assetId}
+                value={source.assetId}
+                className={`${PLAYER_MENU_ITEM_CLASS} justify-center`}
+                data-testid={`player-quality-item-${source.assetId}`}
+              >
+                {source.label}
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
 /**
  * One group of the settings menu; new options are added as further sections. Choosing
  * `keepOpenOn` leaves the menu open, for an option that reveals a follow-up section. A

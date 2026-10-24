@@ -13,9 +13,9 @@ import type { AtomicWriteSource, FileStore, StoredFile, WriteAtomicOptions } fro
 import type { Logger } from "../../../src/server/ports/logger.ts";
 import { CACHE_ROOT_MARKER, CACHE_ROOT_MARKER_MAGIC, CACHE_ROOTS_FILE, CACHE_SCRATCH_DIR, markerText } from "../../../src/shared/app-identity.ts";
 import { cacheFileNameOf } from "../../../src/shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_GB, FILE_GRANT_TTL_MS } from "../../../src/shared/defaults.ts";
+import { FILE_GRANT_TTL_MS } from "../../../src/shared/defaults.ts";
 import { cacheLocationDtoSchema } from "../../../src/shared/dto/local-media.ts";
-import type { FileGrant } from "../../../src/shared/dto/local-media.ts";
+import type { CacheHoldDto, FileGrant } from "../../../src/shared/dto/local-media.ts";
 import type { CacheDirReason } from "../../../src/shared/errors.ts";
 import { cacheDirErrors } from "../../../src/shared/i18n/zh-CN/errors.ts";
 import { BYTES_PER_GB } from "../../../src/shared/units.ts";
@@ -92,6 +92,20 @@ class LowDiskStore extends FlatCacheFileStore {
   }
 }
 
+/** A volume with a fixed free space and no ratio to speak of. */
+class FixedVolumeStore extends FlatCacheFileStore {
+  private readonly free: number;
+
+  constructor(dir: string, free: number) {
+    super(dir);
+    this.free = free;
+  }
+
+  override diskUsage(): ReturnType<FileStore["diskUsage"]> {
+    return Promise.resolve({ usedBytes: 0, freeBytes: this.free, totalBytes: 0 });
+  }
+}
+
 class FailingRemoveStore extends FlatCacheFileStore {
   private readonly failing: () => boolean;
 
@@ -126,7 +140,9 @@ interface Setup {
 
 let names = 0;
 
-function setup(options: { storeFactory?: (dir: string, options?: { createDir?: boolean }) => FileStore; isWindows?: boolean; registry?: Pick<CacheRootsRegistry, "add" | "remove"> } = {}): Setup {
+function setup(
+  options: { storeFactory?: (dir: string, options?: { createDir?: boolean }) => FileStore; isWindows?: boolean; registry?: Pick<CacheRootsRegistry, "add" | "remove">; holds?: () => CacheHoldDto[] } = {},
+): Setup {
   const s = createMediaStack();
   const key = randomBytes(32);
   const warnings: string[] = [];
@@ -153,6 +169,7 @@ function setup(options: { storeFactory?: (dir: string, options?: { createDir?: b
     newId: s.h.newId,
     ...(options.isWindows === undefined ? {} : { isWindows: options.isWindows }),
     ...(options.registry === undefined ? {} : { registry: options.registry }),
+    ...(options.holds === undefined ? {} : { holds: options.holds }),
   });
   created = service;
   open.push({ s, service });
@@ -225,11 +242,25 @@ describe("CacheRootService.status", () => {
       available: true,
       fileCount: 2,
       usedBytes: a.sizeBytes + 6,
-      maxBytes: CACHE_MEDIA_MAX_GB * BYTES_PER_GB,
+      freeBytes: expect.any(Number),
+      totalBytes: expect.any(Number),
+      holds: [],
     });
+    // The free space is the cache directory's volume, which the test machine decides.
+    expect(status.totalBytes).toBeGreaterThan(0);
+    expect(status.freeBytes).toBeLessThanOrEqual(status.totalBytes);
     expect(onDisk(t.defaultDir, a.storageRef)).toBe(true);
     expect(await codeOf(t.service.status(BOB))).toBe("forbidden");
     expect(await codeOf(t.service.change(BOB, { useDefault: true }))).toBe("forbidden");
+  });
+
+  it("lists the interrupted replacements waiting for the user, read anew on every status", async () => {
+    let holds: CacheHoldDto[] = [];
+    const t = setup({ holds: () => holds });
+    expect((await t.service.status(LOCAL)).holds).toEqual([]);
+    holds = [{ assetId: "01HOLD", contentId: "01CONTENT", title: "第一讲", fileName: "第一讲 720p.mp4", currentSizeBytes: 10, displacedSizeBytes: 20 }];
+    const status = await t.service.status(LOCAL);
+    expect(cacheLocationDtoSchema.parse(status).holds).toEqual(holds);
   });
 });
 
@@ -252,7 +283,16 @@ describe("CacheRootService.change", () => {
     await t.service.whenIdle();
 
     const status = await t.service.status(LOCAL);
-    expect(status).toEqual({ path: target, isDefault: false, available: true, fileCount: 2, usedBytes: first.sizeBytes + second.sizeBytes, maxBytes: CACHE_MEDIA_MAX_GB * BYTES_PER_GB });
+    expect(status).toEqual({
+      path: target,
+      isDefault: false,
+      available: true,
+      fileCount: 2,
+      usedBytes: first.sizeBytes + second.sizeBytes,
+      freeBytes: expect.any(Number),
+      totalBytes: expect.any(Number),
+      holds: [],
+    });
     expect(t.s.stores.cache.root()).toBe(target);
     expect(t.s.h.settings.effective().cacheRoot).toBe(target);
     expect(t.migration()).toBeUndefined();
@@ -563,7 +603,7 @@ describe("CacheRootService.change", () => {
     expect(canTake(t.s.h.gate.tryExclusive("cache_migration"))).toBe(true);
   });
 
-  it("refuses a target volume that would fall below the low-water mark, and a move back that would push the data directory over maxDataGB", async () => {
+  it("refuses a target volume that would fall below the low-water mark once the files have landed", async () => {
     const low = cacheDir();
     const t = setup({ storeFactory: (dir, options) => (dir === low ? new LowDiskStore(dir) : flat(dir, options)) });
     const content = createLocalContent(t.s.h);
@@ -574,32 +614,46 @@ describe("CacheRootService.change", () => {
     // Refused before ownership was taken.
     expect(markerOf(low)).toBeUndefined();
     expect(await t.registered()).toEqual([]);
-
-    const roomy = cacheDir();
-    await t.service.change(LOCAL, { path: roomy, grant: t.grant(roomy) });
-    await t.service.whenIdle();
-    // The data directory already holds the database, so one byte is over the limit.
-    t.s.h.settings.patch(LOCAL, { maxDataGB: 1 / BYTES_PER_GB });
-    expect(await codeOf(t.service.change(LOCAL, { useDefault: true }))).toBe("disk_low");
-    expect(await t.service.status(LOCAL)).toMatchObject({ isDefault: false, path: roomy });
     expect(canTake(t.s.h.gate.tryExclusive("cache_migration"))).toBe(true);
+
+
+    // Free space minus the bytes to move is what must stay above the mark, to the byte.
+    const tight = cacheDir();
+    const u = setup({ storeFactory: (dir, options) => (dir === tight ? new FixedVolumeStore(dir, BYTES_PER_GB) : flat(dir, options)) });
+    const file = await u.addCache(createLocalContent(u.s.h), "video");
+    u.s.h.settings.patch(LOCAL, { lowWaterFreeGB: (BYTES_PER_GB - file.sizeBytes + 1) / BYTES_PER_GB });
+    expect(await codeOf(u.service.change(LOCAL, { path: tight, grant: u.grant(tight) }))).toBe("disk_low");
+    u.s.h.settings.patch(LOCAL, { lowWaterFreeGB: (BYTES_PER_GB - file.sizeBytes) / BYTES_PER_GB });
+    await u.service.change(LOCAL, { path: tight, grant: u.grant(tight) });
+    await u.service.whenIdle();
+    expect(await u.service.status(LOCAL)).toMatchObject({ isDefault: false, path: tight, fileCount: 1 });
   });
 
-  it("checks maxDataGB against the whole data directory's usage, not only the cache files", async () => {
+  it("moves back to the default directory without checking maxDataGB, which never counts the cache directory", async () => {
     const roomy = cacheDir();
     const t = setup();
     const content = createLocalContent(t.s.h);
-    const cache = await t.addCache(content, "video");
+    await t.addCache(content, "video");
     await t.service.change(LOCAL, { path: roomy, grant: t.grant(roomy) });
     await t.service.whenIdle();
-    // Room for the cache files alone, but not next to the database the data directory holds.
-    expect((await t.s.files.diskUsage()).usedBytes).toBeGreaterThan(1024);
-    t.s.h.settings.patch(LOCAL, { maxDataGB: (cache.sizeBytes + 1024) / BYTES_PER_GB });
-    expect(await codeOf(t.service.change(LOCAL, { useDefault: true }))).toBe("disk_low");
-    t.s.h.settings.patch(LOCAL, { maxDataGB: 1 });
+    // The data directory already holds the database, so it is over this limit before the move.
+    t.s.h.settings.patch(LOCAL, { maxDataGB: 1 / BYTES_PER_GB });
     await t.service.change(LOCAL, { useDefault: true });
     await t.service.whenIdle();
     expect(await t.service.status(LOCAL)).toMatchObject({ isDefault: true, fileCount: 1 });
+    expect(canTake(t.s.h.gate.tryExclusive("cache_migration"))).toBe(true);
+  });
+
+  it("still refuses a move back when the default directory's volume would fall below the low-water mark", async () => {
+    const roomy = cacheDir();
+    let lowDir: string | undefined;
+    const t = setup({ storeFactory: (dir, options) => (dir === lowDir ? new LowDiskStore(dir) : flat(dir, options)) });
+    await t.addCache(createLocalContent(t.s.h), "video");
+    await t.service.change(LOCAL, { path: roomy, grant: t.grant(roomy) });
+    await t.service.whenIdle();
+    lowDir = t.defaultDir;
+    expect(await codeOf(t.service.change(LOCAL, { useDefault: true }))).toBe("disk_low");
+    expect(await t.service.status(LOCAL)).toMatchObject({ isDefault: false, path: roomy });
   });
 
   it("marks every cache evicted and switches without copying when the current directory is unplugged; the unplugged one stays registered", async () => {
@@ -611,7 +665,8 @@ describe("CacheRootService.change", () => {
     const cache = await t.addCache(content, "video");
     await new CacheRootsRegistry(join(t.s.h.dir, CACHE_ROOTS_FILE)).add(root);
     rmSync(root, { recursive: true, force: true });
-    expect(await t.service.status(LOCAL)).toMatchObject({ isDefault: false, available: false, fileCount: 1 });
+    // A directory that is not there has no volume to report.
+    expect(await t.service.status(LOCAL)).toMatchObject({ isDefault: false, available: false, fileCount: 1, freeBytes: 0, totalBytes: 0 });
 
     const next = cacheDir();
     const status = await t.service.change(LOCAL, { path: next, grant: t.grant(next) });
@@ -623,6 +678,25 @@ describe("CacheRootService.change", () => {
     expect(await t.registered()).toEqual([root, next]);
     expect(t.migration()).toBeUndefined();
     expect(canTake(t.s.h.gate.tryExclusive("cache_migration"))).toBe(true);
+  });
+
+  it("refuses to move while a replacement waits for the user or a replacement record is still in the current directory", async () => {
+    let holds: CacheHoldDto[] = [{ assetId: "01HOLD", fileName: "第一讲 [720P].mp4" }];
+    const t = setup({ holds: () => holds });
+    const target = cacheDir();
+    expect(await codeOf(t.service.change(LOCAL, { path: target, grant: t.grant(target) }))).toBe("conflict.cache_recovery_pending");
+    holds = [];
+    // A record the recovery has not settled yet counts as well.
+    const scratch = join(t.defaultDir, CACHE_SCRATCH_DIR, "01PENDINGSWAP");
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, "swap.json"), "{}");
+    expect(await codeOf(t.service.change(LOCAL, { path: target, grant: t.grant(target) }))).toBe("conflict.cache_recovery_pending");
+    expect(t.migration()).toBeUndefined();
+    expect(canTake(t.s.h.gate.tryExclusive("cache_migration"))).toBe(true);
+    rmSync(scratch, { recursive: true });
+    await t.service.change(LOCAL, { path: target, grant: t.grant(target) });
+    await t.service.whenIdle();
+    expect(t.s.stores.cache.root()).toBe(target);
   });
 
   it("treats a move to the current directory as a no-op and releases the lease", async () => {

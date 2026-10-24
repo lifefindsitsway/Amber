@@ -4,6 +4,7 @@ import { API_PAGE_SIZE_MAX } from "../../../shared/defaults.ts";
 import { chaptersDtoSchema } from "../../../shared/dto/chapter.ts";
 import { highlightsDtoSchema } from "../../../shared/dto/highlight.ts";
 import { contentDetailDtoSchema, transcriptRevisionListDtoSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
+import type { TranscriptKind } from "../../../shared/enums.ts";
 import { contentSummariesDtoSchema } from "../../../shared/dto/summary.ts";
 import { taskListDtoSchema } from "../../../shared/dto/task.ts";
 import type { TaskKind } from "../../../shared/enums.ts";
@@ -238,7 +239,7 @@ export function segmentAt(segments: readonly TranscriptSegmentDto[], ms: number 
 }
 
 /** Revisions a reader may pick for 原文细读: everything but translations. */
-export function readableRevisions(revisions: readonly TranscriptRevisionDto[]): TranscriptRevisionDto[] {
+export function readableRevisions<T extends TranscriptRevisionDto>(revisions: readonly T[]): T[] {
   return revisions.filter((revision) => revision.kind !== "translated");
 }
 
@@ -260,6 +261,79 @@ export function rootOf(revision: TranscriptRevisionDto, revisions: readonly Tran
  * several may coexist, such as an imported subtitle next to an ASR original, and then the
  * user picks one rather than the oldest being assumed.
  */
-export function rootsOf(revisions: readonly TranscriptRevisionDto[]): TranscriptRevisionDto[] {
+export function rootsOf<T extends TranscriptRevisionDto>(revisions: readonly T[]): T[] {
   return revisions.filter((revision) => revision.kind !== "translated" && revision.parentRevisionId === undefined);
+}
+
+/** What the version pickers need to know of a revision; list items also say whether it is archived. */
+export type PickableRevision = Pick<TranscriptRevisionDto, "id" | "kind" | "parentRevisionId" | "createdAt"> & { archived?: boolean };
+
+/**
+ * The manual revision a picker shows by default: the primary when it is manual, else the
+ * nearest manual ancestor of the primary, else none. Every other manual revision is an
+ * earlier edit and goes behind 「历史手动修订」.
+ */
+export function currentManualId(revisions: readonly PickableRevision[], primaryId: string | undefined): string | undefined {
+  const byId = new Map(revisions.map((revision) => [revision.id, revision]));
+  const seen = new Set<string>();
+  for (let cursor = primaryId === undefined ? undefined : byId.get(primaryId); cursor !== undefined && !seen.has(cursor.id); ) {
+    if (cursor.kind === "manual") return cursor.id;
+    seen.add(cursor.id);
+    cursor = cursor.parentRevisionId === undefined ? undefined : byId.get(cursor.parentRevisionId);
+  }
+  return undefined;
+}
+
+export interface RevisionGroups {
+  /** Non-archived manual revisions other than the current one. */
+  history: Set<string>;
+  archived: Set<string>;
+}
+
+export function revisionGroups(revisions: readonly PickableRevision[], primaryId: string | undefined): RevisionGroups {
+  const manual = currentManualId(revisions, primaryId);
+  const history = new Set<string>();
+  const archived = new Set<string>();
+  for (const revision of revisions) {
+    if (revision.archived === true) archived.add(revision.id);
+    else if (revision.kind === "manual" && revision.id !== manual) history.add(revision.id);
+  }
+  return { history, archived };
+}
+
+/**
+ * The revisions a version picker lists, in their given order: every non-archived revision
+ * that is not manual, plus the one current manual revision; earlier manual revisions only
+ * with `showHistory`, archived ones only with `showArchived`. Ids in `include` (the revision
+ * being shown, a deep link) are always listed so a picker never loses its own value.
+ */
+export function visibleRevisions<T extends PickableRevision>(
+  revisions: readonly T[],
+  primaryId: string | undefined,
+  options: { showHistory?: boolean; showArchived?: boolean; include?: ReadonlyArray<string | undefined> } = {},
+): T[] {
+  const groups = revisionGroups(revisions, primaryId);
+  const include = new Set(options.include ?? []);
+  return revisions.filter((revision) => {
+    if (include.has(revision.id)) return true;
+    if (groups.archived.has(revision.id)) return options.showArchived === true;
+    if (groups.history.has(revision.id)) return options.showHistory === true;
+    return true;
+  });
+}
+
+/** Kinds a person made or chose, which a fresh ASR run does not replace by itself. */
+const USER_CHOSEN_KINDS: ReadonlySet<TranscriptKind> = new Set(["imported", "manual", "corrected"]);
+
+/**
+ * The newest non-archived ASR original created after the primary, when the primary is an
+ * imported, manual or corrected revision: a re-transcription the user may want to switch to,
+ * since publishing it did not move the primary.
+ */
+export function newerAsrRevision<T extends PickableRevision>(revisions: readonly T[], primaryId: string | undefined): T | undefined {
+  const primary = revisions.find((revision) => revision.id === primaryId);
+  if (primary === undefined || !USER_CHOSEN_KINDS.has(primary.kind)) return undefined;
+  return revisions
+    .filter((revision) => revision.kind === "asr" && revision.parentRevisionId === undefined && revision.archived !== true && revision.createdAt > primary.createdAt)
+    .reduce<T | undefined>((best, revision) => (best === undefined || revision.createdAt > best.createdAt ? revision : best), undefined);
 }

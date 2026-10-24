@@ -1,9 +1,15 @@
 import { CACHE_DIR_NAME } from "../../shared/app-identity.ts";
-import type { MediaAsset } from "../domain/media-asset.ts";
+import { amberError } from "../domain/errors.ts";
+import { needsQualityProbe, type MediaAsset } from "../domain/media-asset.ts";
 import type { Task } from "../domain/task.ts";
 import type { FileStore } from "../ports/file-store.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { Repository } from "../ports/repository.ts";
+import type { SubtitleMuxer } from "../ports/subtitle-muxer.ts";
+import type { CacheHoldRegistry } from "./cache-holds.ts";
+import type { CachePathLocks } from "./cache-path-locks.ts";
+import { verifyCacheQualities } from "./cache-quality.ts";
+import { cacheRowsAt, describeHold, matchesIdentity, readSwapRecord, recoverSwap, type SwapRecoveryOutcome } from "./cache-swap.ts";
 import type { TaskEventBus } from "./events.ts";
 import type { CacheFileStore, MediaFiles } from "./media-files.ts";
 import { isTerminalProjection } from "./projection.ts";
@@ -29,6 +35,16 @@ export interface AssetJanitorOptions {
    * janitor's construction.
    */
   startedAt?: number;
+  /**
+   * Interrupted cache replacements the recovery could not settle, and the path locks it
+   * settles them under. Without them (server mode) there are no replacements to recover.
+   */
+  swaps?: { holds: CacheHoldRegistry; locks: CachePathLocks };
+  /**
+   * Reads the height of video caches an earlier build registered without looking at the
+   * file. Absent where there are no caches (server mode): nothing is probed.
+   */
+  muxer?: Pick<SubtitleMuxer, "inspect">;
 }
 
 /**
@@ -68,7 +84,12 @@ const VOLATILE_DIRS = ["tmp/cookies", "tmp/backup", "tmp/platform", "tmp/asr-tes
  * own: a file some `available` row points at stays, a file
  * whose rows are all `evicted` is Amber's own leftover and goes, and a file no row points
  * at is left alone and only counted (`cache_unknown_file`), since the user may have put or
- * renamed it there; Amber's own `.amber-tmp` goes with whatever is in it. An unmounted
+ * renamed it there; Amber's own `.amber-tmp` goes with whatever is in it, except the
+ * directories of interrupted replacements (`recoverSwaps`). A leftover goes only when it is
+ * still the file an evicted row describes (size and SHA-256 equal to its fingerprint; size
+ * alone for a row without fingerprint); a different file under the name is counted as
+ * unknown. Video caches whose height an earlier build never read are probed and their
+ * quality recorded as verified. An unmounted
  * custom cache directory is skipped, never treated as empty. Purged files still waiting in
  * the pending-file queue are the queue's: neither removed here nor counted.
  */
@@ -77,6 +98,10 @@ export class AssetJanitor {
   private queue: Promise<void> = Promise.resolve();
 
   private readonly startedAt: number;
+  /** Whether a recovery of interrupted replacements ran over a mounted cache directory. */
+  private swapsSettled = false;
+  /** The recovery running now, which every caller asking meanwhile waits for. */
+  private swapRun: Promise<Partial<Record<SwapRecoveryOutcome, number>>> | undefined;
 
   constructor(options: AssetJanitorOptions) {
     this.options = options;
@@ -101,6 +126,79 @@ export class AssetJanitor {
     } while (current !== this.queue);
   }
 
+  /**
+   * The first step at start-up, before the cache move recovery and every sweep: settles each
+   * interrupted cache replacement left in `.amber-tmp` (see `recoverSwap`), each under its
+   * target path's lock. What cannot be settled from the files, or what fails while being
+   * settled, is held for the user. A cache directory that is not mounted is left for
+   * `ensureSwapsRecovered`.
+   */
+  recoverSwaps(): Promise<Partial<Record<SwapRecoveryOutcome, number>>> {
+    this.swapRun ??= this.runSwapRecovery().finally(() => {
+      this.swapRun = undefined;
+    });
+    return this.swapRun;
+  }
+
+  /**
+   * Called before a cache Task is admitted: when the cache directory was not mounted at
+   * start-up and is now, its interrupted replacements are settled first, once, so no
+   * download publishes over a path whose earlier replacement nobody has looked at. A
+   * recovery that cannot run refuses the cache Task (`conflict.cache_recovery_pending`).
+   */
+  async ensureSwapsRecovered(): Promise<void> {
+    if (this.options.swaps === undefined || this.swapsSettled) {
+      return;
+    }
+    if (!(await this.options.media.cache.isAvailable())) {
+      // Nothing to look at; the caller refuses the Task as the directory is missing.
+      return;
+    }
+    try {
+      await this.recoverSwaps();
+    } catch (error) {
+      this.options.logger.error("cache_swap_recovery_failed", { error: (error as NodeJS.ErrnoException | undefined)?.code ?? String(error) });
+      throw amberError("conflict", "interrupted cache replacements could not be checked", { code: "conflict.cache_recovery_pending" });
+    }
+  }
+
+  private async runSwapRecovery(): Promise<Partial<Record<SwapRecoveryOutcome, number>>> {
+    const swaps = this.options.swaps;
+    const cache = this.options.media.cache;
+    const counts: Partial<Record<SwapRecoveryOutcome, number>> = {};
+    if (swaps === undefined) {
+      return counts;
+    }
+    if (!(await cache.isAvailable())) {
+      this.options.logger.info("cache_swap_recovery_skipped_cache_unavailable");
+      return counts;
+    }
+    const deps = { repository: this.options.repository, cache, locks: swaps.locks, holds: swaps.holds, logger: this.options.logger };
+    for (const id of await cache.swapScratchIds()) {
+      let outcome: SwapRecoveryOutcome;
+      try {
+        outcome = await recoverSwap(deps, id);
+      } catch (error) {
+        // `recoverSwap` holds what fails while it settles; this is a record that could not
+        // even be read. Held when it can be read now, so nothing publishes over its path.
+        this.options.logger.error("cache_swap_recovery_failed", { scratchId: id, error: (error as NodeJS.ErrnoException | undefined)?.code ?? String(error) });
+        const record = await readSwapRecord(cache.scratchPath(id)).catch(() => undefined);
+        if (record !== undefined && record !== "corrupt") {
+          swaps.holds.add(await describeHold(cache, id, record));
+          outcome = "held";
+        } else {
+          continue;
+        }
+      }
+      counts[outcome] = (counts[outcome] ?? 0) + 1;
+    }
+    this.swapsSettled = true;
+    if (Object.keys(counts).length > 0) {
+      this.options.logger.info("cache_swap_recovery_done", counts);
+    }
+    return counts;
+  }
+
   /** Start-up sweep; runs before the scheduler starts, so no Task is writing yet. */
   async sweep(): Promise<void> {
     const { media, repository } = this.options;
@@ -109,6 +207,7 @@ export class AssetJanitor {
     let cache: CacheSweep | undefined;
     if (await media.cache.isAvailable()) {
       cache = await this.sweepCache(media.cache, pending.cache);
+      await this.verifyQualities();
     } else {
       this.options.logger.info("asset_sweep_skipped_cache_unavailable");
     }
@@ -161,17 +260,40 @@ export class AssetJanitor {
     const scratch = await store.removeScratch();
     let leftovers = 0;
     let unknown = 0;
+    // Rows are looked up as Windows compares names: an available row under a differently
+    // cased spelling holds the same file.
+    const rowsAt = (ref: string) => repository.withTransaction((scope) => cacheRowsAt(scope, ref));
+    const allEvicted = (rows: readonly MediaAsset[]) => rows.length > 0 && rows.every((asset) => asset.availability === "evicted");
     for (const ref of await store.list(CACHE_DIR_NAME)) {
-      const rows = repository.withTransaction((scope) => scope.mediaAssets.listCachesByStorageRefUnscoped(ref));
+      if (this.options.swaps?.holds.isHeld(ref) === true) {
+        // An interrupted replacement waits for the user; its files are the user's to settle.
+        continue;
+      }
+      const rows = rowsAt(ref);
       if (rows.length === 0) {
         if (!pending.has(ref)) {
           unknown += 1;
         }
-      } else if (rows.every((asset) => asset.availability === "evicted")) {
+      } else if (allEvicted(rows)) {
         // A file still open elsewhere (a player, an ffmpeg run) waits for the next start.
         try {
-          await store.remove(ref);
-          leftovers += 1;
+          const removed = await this.withPathLock(ref, async () => {
+            // Read again under the lock: a recovery or a publish may have settled the path meanwhile.
+            const now = rowsAt(ref);
+            if (this.options.swaps?.holds.isHeld(ref) === true || !allEvicted(now)) {
+              return "kept" as const;
+            }
+            if (!(await this.isLeftover(store, ref, now))) {
+              return "unknown" as const;
+            }
+            await store.remove(ref);
+            return "removed" as const;
+          });
+          if (removed === "removed") {
+            leftovers += 1;
+          } else if (removed === "unknown") {
+            unknown += 1;
+          }
         } catch (error) {
           this.options.logger.warn("cache_leftover_remove_failed", { error: (error as NodeJS.ErrnoException | undefined)?.code ?? "error" });
         }
@@ -182,6 +304,51 @@ export class AssetJanitor {
       this.options.logger.info("cache_unknown_file", { count: unknown });
     }
     return { partials, scratch, leftovers, unknown };
+  }
+
+  private withPathLock<T>(ref: string, work: () => Promise<T>): Promise<T> {
+    const locks = this.options.swaps?.locks;
+    return locks === undefined ? work() : locks.withLock(ref, work);
+  }
+
+  /** Whether the file at `ref` is still one of these evicted rows' own file, not another that took the name. */
+  private async isLeftover(store: CacheFileStore, ref: string, rows: readonly MediaAsset[]): Promise<boolean> {
+    const stored = await store.stat(ref);
+    if (stored === null) {
+      return false;
+    }
+    for (const row of rows) {
+      if (row.sizeBytes !== stored.sizeBytes) {
+        continue;
+      }
+      if (row.fingerprint === undefined || row.fingerprint === "") {
+        return true;
+      }
+      if ((await matchesIdentity(store.pathOf(ref), { sizeBytes: stored.sizeBytes, digest: row.fingerprint })) === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Probes the video caches whose quality an earlier build recorded without reading the file. */
+  private async verifyQualities(): Promise<void> {
+    const muxer = this.options.muxer;
+    if (muxer === undefined) {
+      return;
+    }
+    const pending = this.options.repository
+      .withTransaction((scope) => scope.mediaAssets.listAvailableCachesUnscoped())
+      .filter((asset) => needsQualityProbe(asset));
+    if (pending.length === 0) {
+      return;
+    }
+    const verified = await verifyCacheQualities(
+      { repository: this.options.repository, cache: this.options.media.cache, muxer, logger: this.options.logger },
+      pending,
+      new AbortController().signal,
+    );
+    this.options.logger.info("cache_quality_verified", { count: verified });
   }
 
   private enqueue(work: () => Promise<void>): void {

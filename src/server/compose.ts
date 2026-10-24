@@ -49,6 +49,7 @@ import { TranslationService } from "./application/translations.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
+import { CacheHoldService } from "./application/cache-holds.ts";
 import { ClientMediaTaskService } from "./application/client-media-tasks.ts";
 import { CollectionService } from "./application/collections.ts";
 import { ContentService } from "./application/contents.ts";
@@ -79,7 +80,9 @@ import { TranscriptService } from "./application/transcripts.ts";
 import { TrashService } from "./application/trash.ts";
 import { UsageService } from "./application/usage.ts";
 import { AssetJanitor } from "./pipeline/asset-janitor.ts";
-import { CacheEvictor } from "./pipeline/cache-eviction.ts";
+import { CacheDownloadLedger } from "./pipeline/cache-download-ledger.ts";
+import { CacheHoldRegistry } from "./pipeline/cache-holds.ts";
+import { CachePathLocks } from "./pipeline/cache-path-locks.ts";
 import { CacheGate } from "./pipeline/cache-gate.ts";
 import { TaskEventBus } from "./pipeline/events.ts";
 import { SplitMediaFiles } from "./pipeline/media-files.ts";
@@ -182,7 +185,9 @@ export function defaultWebRoot(): string {
  */
 export async function compose(config: ComposeConfig): Promise<Composition> {
   const layout = ensureDataDir(config.dataDir);
-  const files = new LocalFileStore(layout.root);
+  // The cache directory in use is read on every measurement: it moves when the user changes
+  // the cache location, and only when it lies inside the data directory does excluding it matter.
+  const files: LocalFileStore = new LocalFileStore(layout.root, { usageExclude: (): string[] => [media.cache.directory()] });
   // The data store plus the video cache store, which the desktop user may move to another
   // volume; the asset kind decides which one a file lives in.
   const media = new SplitMediaFiles(files, (dir, options) => new FlatCacheFileStore(dir, options), join(layout.root, CACHE_DIR_NAME));
@@ -246,12 +251,30 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   // Late-bound like the scheduler: the cache root service and the trash are created further down.
   let cacheRoot: CacheRootService | undefined;
   let lateTrash: TrashService | undefined;
+  // The janitor, created last, settles interrupted cache replacements before cache Tasks are admitted.
+  let lateJanitor: AssetJanitor | undefined;
+  const recoverCacheSwaps = async (): Promise<void> => {
+    await lateJanitor?.ensureSwapsRecovered();
+  };
+  // Everything that replaces or removes a file at one cache path takes that path's lock;
+  // replacements interrupted by a crash wait in the hold registry for the user; downloads
+  // in flight reserve their disk space in the ledger.
+  const cachePaths = new CachePathLocks();
+  const cacheHoldRegistry = new CacheHoldRegistry();
+  const cacheLedger = new CacheDownloadLedger();
+  // A cache directory that cannot be read counts as sharing the data volume: the stricter budget.
+  const cacheSharesDataVolume = (): boolean => {
+    const data = statSync(layout.root, { throwIfNoEntry: false });
+    const cache = statSync(media.cache.directory(), { throwIfNoEntry: false });
+    return data === undefined || cache === undefined || data.dev === cache.dev;
+  };
   // Files of purged Contents and deleted users, removed after their deletion commits.
   const fileDeleter = new PendingFileDeleter({
     repository,
     media,
     dataDir: layout.root,
     gate,
+    locks: cachePaths,
     foreignCacheRoot: async (rootPath) => cacheRoot?.ownedStoreOver(rootPath),
     afterDrain: () => lateTrash?.refresh(),
     logger: lateLogger(() => appLogger?.child({ component: "pending_file_delete" })),
@@ -279,7 +302,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ...(grants === undefined ? {} : { grants }),
     ...(quota === undefined ? {} : { quota }),
   });
-  const mediaAssets = new MediaAssetService({ repository, media, gate, ...(grants === undefined ? {} : { grants }) });
+  const mediaAssets = new MediaAssetService({ repository, media, gate, locks: cachePaths, ...(grants === undefined ? {} : { grants }) });
   const ytDlp = new YtDlp({ runner, binDir: config.binDir, dataDir: config.dataDir, env: childProcessEnv(config.env) });
   // Server mode applies the outbound network policy to every hop: private and reserved
   // address ranges are refused unless an administrator allowlisted the exact origin, the
@@ -363,7 +386,12 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
           disk: files,
           cache: media.cache,
           cacheFileExists: (ref) => statSync(media.cache.pathOf(ref), { throwIfNoEntry: false }) !== undefined,
-          pendingCacheRefs: () => fileDeleter.pendingCacheRefs(),
+          sameVolume: cacheSharesDataVolume,
+          ledger: cacheLedger,
+          holds: cacheHoldRegistry,
+          recoverSwaps: recoverCacheSwaps,
+          platforms: platformAccess,
+          heavy,
           settings: instanceSettings,
           media,
           muxer,
@@ -379,6 +407,18 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const deleteContent = new DeleteContentService({ repository, gate, fileDeleter, chat });
   const trash = new TrashService({ repository, deleteContent, fileDeleter, chat, logger: lateLogger(() => appLogger?.child({ component: "trash" })) });
   lateTrash = trash;
+  // Local mode only: interrupted cache replacements waiting for the user.
+  const cacheHolds =
+    grants === undefined
+      ? undefined
+      : new CacheHoldService({
+          repository,
+          cache: media.cache,
+          holds: cacheHoldRegistry,
+          locks: cachePaths,
+          gate,
+          logger: lateLogger(() => appLogger?.child({ component: "cache_holds" })),
+        });
   // Local mode only: the video cache location and its move.
   cacheRoot =
     grants === undefined
@@ -392,6 +432,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
           dataDir: layout.root,
           storeFactory: (dir, options) => new FlatCacheFileStore(dir, options),
           fileDeleter,
+          ...(cacheHolds === undefined ? {} : { holds: () => cacheHolds.list() }),
           logger: lateLogger(() => appLogger?.child({ component: "cache_root" })),
         });
   const search = new SearchService({ repository });
@@ -508,6 +549,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ...(clientMedia === undefined ? {} : { clientMedia }),
     ...(relink === undefined ? {} : { relink }),
     ...(cacheRoot === undefined ? {} : { cacheRoot }),
+    ...(cacheHolds === undefined ? {} : { cacheHolds }),
     ...(quota === undefined ? {} : { storageQuota: quota }),
     ...(maintenance === undefined ? {} : { maintenance }),
     ...(backup === undefined ? {} : { backup }),
@@ -516,11 +558,9 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ...(config.mode === "local" ? { corsOrigin: TAURI_ORIGIN } : { webRoot: config.webRoot ?? defaultWebRoot() }),
   });
   appLogger = logger;
-  // Platform caches exist only on the desktop client; their total is kept within CACHE_MEDIA_MAX_GB.
-  const evictor =
-    config.mode === "local" ? new CacheEvictor({ repository, cache: media.cache, gate, bus, logger: logger.child({ component: "cache_evictor" }) }) : undefined;
+  // Platform caches and burned videos exist only on the desktop client.
   const clientExecutors =
-    evictor === undefined
+    config.mode !== "local"
       ? {}
       : {
           cache_media: new CacheMediaStageExecutor({
@@ -528,15 +568,13 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
             media,
             platforms: platformAccess,
             ingest,
+            muxer,
             settings: instanceSettings,
-            // A cache directory that cannot be read counts as sharing the data volume: the stricter budget.
-            sameVolume: () => {
-              const data = statSync(layout.root, { throwIfNoEntry: false });
-              const cache = statSync(media.cache.directory(), { throwIfNoEntry: false });
-              return data === undefined || cache === undefined || data.dev === cache.dev;
-            },
-            evict: (owner: string, keep: string) => evictor.evict(owner, keep),
-            pendingCacheRefs: () => fileDeleter.pendingCacheRefs(),
+            sameVolume: cacheSharesDataVolume,
+            ledger: cacheLedger,
+            locks: cachePaths,
+            holds: cacheHoldRegistry,
+            recoverSwaps: recoverCacheSwaps,
             logger: logger.child({ component: "cache_media" }),
           }),
           burn: new BurnStageExecutor({
@@ -583,9 +621,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     logger: logger.child({ component: "asset_janitor" }),
     keepTaskScratch: config.logLevel === "debug",
     pendingRefs: () => fileDeleter.currentPendingRefs(),
+    // Platform caches exist only on the desktop client.
+    ...(config.mode === "local" ? { swaps: { holds: cacheHoldRegistry, locks: cachePaths }, muxer } : {}),
   });
+  lateJanitor = janitor;
   janitor.start();
-  evictor?.start();
   let background: Promise<void> | undefined;
   let stopping = false;
 
@@ -597,7 +637,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ...(setupToken === undefined ? {} : { setupToken: { value: setupToken.value, ttlMinutes: SETUP_TOKEN_TTL_MIN } }),
     startBackground() {
       background = (async () => {
-        // An unfinished cache move is settled first, so the sweep sees a consistent pair of stores.
+        // Interrupted cache replacements come first: until they are settled, the files at
+        // their paths may be the only copies, which nothing after this may move or remove.
+        await janitor.recoverSwaps().catch((error: unknown) => startupLog("cache_swap_recovery_failed", { message: String(error) }));
+        if (stopping) return;
+        // An unfinished cache move is settled next, so the sweep sees a consistent pair of stores.
         await cacheRoot?.recover().catch((error: unknown) => startupLog("cache_root_recovery_failed", { message: String(error) }));
         if (stopping) return;
         // Expired trash goes before the file sweep; the worker removes their files first, so
@@ -606,7 +650,6 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         await fileDeleter.whenIdle();
         // The sweep finishes before the scheduler runs anything.
         await janitor.sweep().catch((error: unknown) => startupLog("asset_sweep_failed", { message: String(error) }));
-        await evictor?.sweep().catch((error: unknown) => startupLog("cache_eviction_failed", { message: String(error) }));
         try {
           backupExport?.sweepLeftovers();
         } catch (error) {

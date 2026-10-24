@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { StorageSection } from "../../../../src/web/pages/settings/storage-section.tsx";
 import { useContentDetail } from "../../../../src/web/pages/content/content-data.ts";
@@ -90,7 +90,9 @@ const DEFAULT_CACHE: CacheLocationDto = {
   available: true,
   fileCount: 3,
   usedBytes: 700 * BYTES_PER_MB,
-  maxBytes: 20 * BYTES_PER_GB,
+  freeBytes: 120 * BYTES_PER_GB,
+  totalBytes: 500 * BYTES_PER_GB,
+  holds: [],
 };
 const CUSTOM_CACHE: CacheLocationDto = { ...DEFAULT_CACHE, path: "D:\\Video\\media", isDefault: false };
 
@@ -223,7 +225,9 @@ describe("cache directory block", () => {
     desktopRoutes();
     renderApp(<StorageSection />, { mode: "local" });
     expect((await screen.findByTestId("cache-path")).textContent).toBe(DEFAULT_CACHE.path);
-    expect(screen.getByText("Amber 缓存：700.0 MB / 20.0 GB（3 个文件）")).toBeTruthy();
+    // Without the instance parameters the floor is left out rather than guessed.
+    expect(screen.getByTestId("cache-usage").textContent).toBe("Amber 缓存：已用 700.0 MB（3 个文件）· 所在磁盘剩余 120.0 GB");
+    expect(screen.getByText(/不设总量上限，也不会自动清理/u)).toBeTruthy();
     expect(screen.getByText(/「卸载并删除全部数据」时仍会一起删除/u)).toBeTruthy();
     const buttons = cacheButtons();
     expect(buttons.restore).toBeNull();
@@ -236,6 +240,8 @@ describe("cache directory block", () => {
     desktopRoutes({ ...CUSTOM_CACHE, available: false });
     renderApp(<StorageSection />, { mode: "local" });
     const warning = await screen.findByTestId("cache-unavailable");
+    // A directory that is not there has no volume to describe.
+    expect(screen.getByTestId("cache-usage").textContent).toBe("Amber 缓存：已用 700.0 MB（3 个文件）");
     expect(warning.textContent).toContain("缓存位置不可用");
     expect(warning.textContent).toContain("重新接入该磁盘");
     expect(warning.textContent).toContain("旧缓存会被放弃");
@@ -421,6 +427,88 @@ describe("cache directory block", () => {
   });
 });
 
+describe("cache volume and pending replacements", () => {
+  const SETTINGS = { concurrencyPipeline: 2, maxDataGB: 30, lowWaterFreeGB: 10, lowWaterFreeRatio: 0, uploadRetentionDefault: "keep", updatedAt: 0, envOverridden: [] as string[] };
+
+  it("names the free space below which caching stops: the absolute floor, or the volume ratio when larger", async () => {
+    desktopRoutes(DEFAULT_CACHE, { "GET /api/instance-settings": { body: SETTINGS } });
+    const first = renderApp(<StorageSection />, { mode: "local" });
+    await waitFor(() =>
+      expect(screen.getByTestId("cache-usage").textContent).toBe("Amber 缓存：已用 700.0 MB（3 个文件）· 所在磁盘剩余 120.0 GB；剩余低于 10.0 GB 时停止缓存，不自动清理"),
+    );
+    first.unmount();
+
+    // 5 % of a 500 GB volume is more than the 10 GB floor.
+    desktopRoutes(DEFAULT_CACHE, { "GET /api/instance-settings": { body: { ...SETTINGS, lowWaterFreeRatio: 0.05 } } });
+    renderApp(<StorageSection />, { mode: "local" });
+    await waitFor(() => expect(screen.getByTestId("cache-usage").textContent).toContain("剩余低于 25.0 GB 时停止缓存"));
+  });
+
+  it("lists pending replacements only when there are any, and settles one with either choice", async () => {
+    const holds = [
+      { assetId: "h1", contentId: "c1", title: "第一讲", fileName: "第一讲 720p.mp4", currentSizeBytes: 3 * BYTES_PER_MB, displacedSizeBytes: 2 * BYTES_PER_MB },
+      { assetId: "h2", fileName: "第二讲.m4a" },
+    ];
+    let pending = holds;
+    const { calls } = desktopRoutes(() => ({ ...DEFAULT_CACHE, holds: pending }), {
+      "POST /api/media/cache-location/holds/h1/keep": () => {
+        pending = pending.filter((hold) => hold.assetId !== "h1");
+        return { status: 204 };
+      },
+      "POST /api/media/cache-location/holds/h2/restore": () => {
+        pending = pending.filter((hold) => hold.assetId !== "h2");
+        return { status: 204 };
+      },
+    });
+    renderApp(<StorageSection />, { mode: "local" });
+    const list = await screen.findByTestId("cache-holds");
+    expect(within(list).getByText("待处理的替换")).toBeTruthy();
+    const [first, second] = within(list).getAllByTestId("cache-hold");
+    expect(first?.textContent).toContain("第一讲");
+    expect(first?.textContent).toContain("第一讲 720p.mp4");
+    expect(first?.textContent).toContain("当前文件 3.0 MB");
+    expect(first?.textContent).toContain("旧副本 2.0 MB");
+    // No title: the file name stands in; no file at the path is nothing to keep.
+    expect(second?.textContent).toContain("第二讲.m4a");
+    expect(second?.textContent).toContain("当前文件缺失");
+    expect(second?.textContent).toContain("旧副本 大小未知");
+    expect(screen.queryByTestId("cache-hold-keep-h2")).toBeNull();
+
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/api/media/cache-location").length;
+    const before = reads();
+    // Keeping deletes the displaced copy: it asks first, and cancelling sends nothing.
+    fireEvent.click(screen.getByTestId("cache-hold-keep-h1"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("旧副本将被删除");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+    fireEvent.click(screen.getByTestId("cache-hold-keep-h1"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(screen.queryByTestId("cache-hold-keep-h1")).toBeNull());
+    expect(reads()).toBeGreaterThan(before);
+    fireEvent.click(screen.getByTestId("cache-hold-restore-h2"));
+    await waitFor(() => expect(screen.queryByTestId("cache-holds")).toBeNull());
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual([
+      "/api/media/cache-location/holds/h1/keep",
+      "/api/media/cache-location/holds/h2/restore",
+    ]);
+  });
+
+  it("shows why a choice was refused and keeps the entry", async () => {
+    desktopRoutes({ ...DEFAULT_CACHE, holds: [{ assetId: "h1", fileName: "第一讲.mp4", currentSizeBytes: BYTES_PER_MB }] }, {
+      "POST /api/media/cache-location/holds/h1/restore": {
+        status: 409,
+        body: { error: { class: "conflict", code: "conflict.cache_file_foreign", retryDisposition: "never", userMessage: "旧副本已被改动" } },
+      },
+    });
+    renderApp(<StorageSection />, { mode: "local" });
+    fireEvent.click(await screen.findByTestId("cache-hold-restore-h1"));
+    expect((await within(screen.getByTestId("cache-holds")).findByRole("alert")).textContent).toContain("旧副本已被改动");
+    expect(screen.getByTestId("cache-hold-keep-h1")).toBeTruthy();
+  });
+});
+
 const INSTANCE = {
   concurrencyPipeline: 2,
   maxDataGB: 50,
@@ -532,5 +620,57 @@ describe("instance parameters", () => {
     await waitFor(() => expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ concurrencyPipeline: CONCURRENCY_PIPELINE_MAX }));
     await waitFor(() => expect((screen.getByLabelText("同时处理的任务数") as HTMLInputElement).value).toBe(String(CONCURRENCY_PIPELINE_MAX)));
     expect(save.disabled).toBe(true);
+  });
+});
+
+describe("old free-ratio hint", () => {
+  const HINT_KEY = "amber.settings.lowWaterRatioHint";
+  const LEGACY = { ...INSTANCE, lowWaterFreeGB: 10, lowWaterFreeRatio: 0.2 };
+
+  beforeEach(() => {
+    localStorage.removeItem(HINT_KEY);
+  });
+
+  it("offers to keep only the absolute floor and saves ratio 0 on request", async () => {
+    const { calls } = localInstance(LEGACY);
+    const hint = await screen.findByTestId("low-water-hint");
+    expect(hint.textContent).toContain("缓存已不设上限，建议把最低剩余比例改为 0，只保留 10 GB");
+    expect(screen.getByTestId("low-water-hint-apply").textContent).toBe("改为只保留 10 GB");
+    // Nothing is changed until asked.
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    fireEvent.click(screen.getByTestId("low-water-hint-apply"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ lowWaterFreeRatio: 0 }]));
+    await waitFor(() => expect(screen.queryByTestId("low-water-hint")).toBeNull());
+    expect((screen.getByLabelText("最低剩余比例（0–1）") as HTMLInputElement).value).toBe("0");
+  });
+
+  it("stays away once dismissed, in this browser", async () => {
+    const { calls } = localInstance(LEGACY);
+    fireEvent.click(await screen.findByTestId("low-water-hint-dismiss"));
+    expect(screen.queryByTestId("low-water-hint")).toBeNull();
+    expect(localStorage.getItem(HINT_KEY)).toBe("dismissed");
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    cleanup();
+
+    localInstance(LEGACY);
+    await screen.findByTestId("instance-concurrency");
+    expect(screen.queryByTestId("low-water-hint")).toBeNull();
+  });
+
+  it("is not shown for any other ratio, nor for a ratio fixed by the environment", async () => {
+    localInstance(INSTANCE);
+    await screen.findByTestId("instance-concurrency");
+    expect(screen.queryByTestId("low-water-hint")).toBeNull();
+    cleanup();
+
+    localInstance({ ...LEGACY, envOverridden: ["lowWaterFreeRatio"] });
+    await screen.findByTestId("instance-concurrency");
+    expect(screen.queryByTestId("low-water-hint")).toBeNull();
+  });
+
+  it("says the data directory cap leaves the cache directory out", async () => {
+    localInstance();
+    const disk = (await screen.findByText("磁盘与上传")).closest("section") as HTMLElement;
+    expect(within(disk).getByText("不含缓存目录：视频 / 音频缓存及其临时文件")).toBeTruthy();
   });
 });

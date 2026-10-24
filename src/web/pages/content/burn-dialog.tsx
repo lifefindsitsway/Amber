@@ -24,8 +24,9 @@ import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys } from "./content-data.ts";
+import { contentKeys, visibleRevisions } from "./content-data.ts";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
+import { cacheHeight, compareCacheQuality, qualityLabel } from "../../player/media-url.ts";
 import { revisionLabel } from "./labels.ts";
 import { TrackedTask } from "./tracked-task.tsx";
 
@@ -90,32 +91,57 @@ export interface BurnOutputChoice {
 
 /**
  * The `POST /burn` body for a choice. The dialog always sends the full output choice, so
- * every export it starts freezes its source video and style; translation
- * modes need a translation of the original.
+ * every export it starts freezes its source video and style; `sourceAssetId` names the
+ * source video the user picked. Translation modes need a translation of the original.
  */
-export function burnRequest(original: TranscriptRevisionDto, mode: BurnMode, translationId: string | undefined, output: BurnOutputChoice): BurnRequest | undefined {
+export function burnRequest(
+  original: TranscriptRevisionDto,
+  mode: BurnMode,
+  translationId: string | undefined,
+  output: BurnOutputChoice,
+  sourceAssetId?: string,
+): BurnRequest | undefined {
   const choice = {
     delivery: output.delivery,
     container: output.delivery === "hard" ? HARD_CONTAINER : output.container,
     style: output.style,
+    ...(sourceAssetId === undefined ? {} : { sourceAssetId }),
   };
   if (mode === "original") return { revisionId: original.id, mode, ...choice };
   return translationId === undefined ? undefined : { revisionId: original.id, translationRevisionId: translationId, mode, ...choice };
 }
 
+/** A video the export can be made from. */
+export interface BurnVideoSource {
+  asset: MediaAssetDto;
+  kind: "original" | "cache";
+}
+
 /**
- * The video the server will export over, by its own rule: the latest available
- * original file, else the latest available video cache. An audio cache has no picture.
+ * Every video an export can use: the latest available original file, then each available
+ * video cache, highest quality first (the newest first within one quality). An audio cache
+ * has no picture.
  */
-export function burnSourceVideo(media: readonly MediaAssetDto[]): { asset: MediaAssetDto; kind: "original" | "cache" } | undefined {
-  const latest = (accept: (item: MediaAssetDto) => boolean) =>
-    media
-      .filter((item) => item.availability === "available" && accept(item))
-      .reduce<MediaAssetDto | undefined>((best, item) => (best === undefined || item.createdAt >= best.createdAt ? item : best), undefined);
-  const original = latest((item) => ORIGINAL_MEDIA_KINDS.has(item.kind));
-  if (original !== undefined) return { asset: original, kind: "original" };
-  const cache = latest((item) => item.kind === "platform_cache" && item.mimeType.startsWith("video/"));
-  return cache === undefined ? undefined : { asset: cache, kind: "cache" };
+export function burnSourceVideos(media: readonly MediaAssetDto[]): BurnVideoSource[] {
+  const available = media.filter((item) => item.availability === "available");
+  const original = available
+    .filter((item) => ORIGINAL_MEDIA_KINDS.has(item.kind))
+    .reduce<MediaAssetDto | undefined>((best, item) => (best === undefined || item.createdAt >= best.createdAt ? item : best), undefined);
+  const caches = available.filter((item) => item.kind === "platform_cache" && item.mimeType.startsWith("video/")).sort(compareCacheQuality);
+  return [...(original === undefined ? [] : [{ asset: original, kind: "original" as const }]), ...caches.map((asset) => ({ asset, kind: "cache" as const }))];
+}
+
+/**
+ * The video the server exports over when none is named, by its own rule: the latest
+ * available original file, else the highest-quality video cache.
+ */
+export function burnSourceVideo(media: readonly MediaAssetDto[]): BurnVideoSource | undefined {
+  return burnSourceVideos(media)[0];
+}
+
+/** The export's starting source: the video cache the player shows, else the server's own pick. */
+export function defaultBurnSource(sources: readonly BurnVideoSource[], playingAssetId: string | undefined): BurnVideoSource | undefined {
+  return sources.find((source) => source.asset.id === playingAssetId) ?? sources[0];
 }
 
 /** Common video MIME types whose subtype does not read as a format name. */
@@ -151,7 +177,10 @@ export function unsupportedStreams(error: unknown): string[] | undefined {
   });
 }
 
-/** 「导出字幕视频」 dialog of the subtitles tab (desktop client). */
+/**
+ * 「导出字幕视频」 dialog of the subtitles tab (desktop client). `playingAssetId` is the video
+ * cache the local player shows, which the source video starts from.
+ */
 export function BurnDialog(props: {
   contentId: string;
   selected: TranscriptRevisionDto;
@@ -160,6 +189,7 @@ export function BurnDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onStarted: (taskId: string) => void;
+  playingAssetId?: string | undefined;
 }) {
   const { t, i18n } = useTranslation();
   const client = useApi();
@@ -170,7 +200,11 @@ export function BurnDialog(props: {
   // Read with a placeholder until the account is known; nothing is sent before then.
   const prefs = useSubtitlePrefs(userId ?? "", props.contentId);
   const defaults = burnDefaults(props.selected, props.revisions, props.primaryId, userId === undefined ? { version: 1, mode: "off" } : prefs.track);
-  const originals = props.revisions.filter((item) => item.kind !== "translated");
+  const originals = visibleRevisions(
+    props.revisions.filter((item) => item.kind !== "translated"),
+    props.primaryId,
+    { include: [defaults.originalId, burnSources(props.selected, props.revisions).original.id] },
+  );
   const [pickedOriginal, setPickedOriginal] = useState<string | undefined>(undefined);
   const original = originals.find((item) => item.id === (pickedOriginal ?? defaults.originalId)) ?? burnSources(props.selected, props.revisions).original;
   const translations = translationsOf(original, props.revisions);
@@ -184,9 +218,17 @@ export function BurnDialog(props: {
   )?.id;
   const [delivery, setDelivery] = useState<SubtitleDelivery>("hard");
   const [container, setContainer] = useState<SubtitleVideoContainer>("mkv");
-  const source = burnSourceVideo(page.content.media);
+  const sources = burnSourceVideos(page.content.media);
+  const [pickedSource, setPickedSource] = useState<string | undefined>(undefined);
+  const source = sources.find((item) => item.asset.id === pickedSource) ?? defaultBurnSource(sources, props.playingAssetId);
+  const sourceLabel = (item: BurnVideoSource): string => {
+    const values = { kind: t(`contentView.burn.sourceVideoKind.${item.kind}`), format: videoFormat(item.asset), size: formatBytes(item.asset.sizeBytes) };
+    return item.kind === "original"
+      ? t("contentView.burn.sourceVideoLabel", values)
+      : t("contentView.burn.sourceVideoCacheLabel", { ...values, quality: qualityLabel(cacheHeight(item.asset), t) });
+  };
   const style: SubtitleStyle = { appearance: prefs.appearance, placement: prefs.placement };
-  const body = userId === undefined ? undefined : burnRequest(original, mode, translationId, { delivery, container, style });
+  const body = userId === undefined ? undefined : burnRequest(original, mode, translationId, { delivery, container, style }, source?.asset.id);
   const start = useMutation({
     mutationFn: (request: BurnRequest) =>
       client.post(`/api/contents/${encodeURIComponent(props.contentId)}/burn`, taskAcceptedDtoSchema, { body: request, idempotent: true }),
@@ -265,13 +307,30 @@ export function BurnDialog(props: {
             </label>
           )}
         </fieldset>
-        <p className="text-xs text-muted" data-testid="burn-source-video">
-          {source === undefined
-            ? t("contentView.burn.noSourceVideo")
-            : t("contentView.burn.sourceVideo", {
-                label: t("contentView.burn.sourceVideoLabel", { kind: t(`contentView.burn.sourceVideoKind.${source.kind}`), format: videoFormat(source.asset) }),
-              })}
-        </p>
+        {source === undefined ? (
+          <p className="text-xs text-muted" data-testid="burn-source-video">
+            {t("contentView.burn.noSourceVideo")}
+          </p>
+        ) : (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted">{t("contentView.burn.sourceVideo")}</span>
+            <select
+              className="h-8 rounded border border-line bg-surface px-2"
+              value={source.asset.id}
+              onChange={(event) => {
+                setPickedSource(event.target.value);
+                start.reset();
+              }}
+              data-testid="burn-source"
+            >
+              {sources.map((item) => (
+                <option key={item.asset.id} value={item.asset.id}>
+                  {sourceLabel(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-xs text-muted">{t("contentView.burn.delivery")}</legend>
           {SUBTITLE_DELIVERIES.map((value) => (

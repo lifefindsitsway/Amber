@@ -59,7 +59,10 @@ export const mediaAssetDtoSchema = z.object({
   mimeType: z.string(),
   sizeBytes: z.number().int().nonnegative(),
   durationMs: z.number().int().nonnegative().exactOptional(),
+  /** Height of a video cache read from the finished file; `""` is an unknown quality. */
   quality: z.string().exactOptional(),
+  /** False for a cache row an earlier build registered whose `quality` has not been read from the file yet. */
+  qualityVerified: z.boolean().exactOptional(),
   availability: z.enum(["available", "missing", "evicted"]),
   retentionPolicy: z.enum(["never_delete", "keep", "discard_after_audio", "evictable", "ephemeral"]),
   createdAt: epochMsSchema,
@@ -90,9 +93,41 @@ export const transcriptRevisionDtoSchema = z.object({
 });
 export type TranscriptRevisionDto = z.infer<typeof transcriptRevisionDtoSchema>;
 
+/** Counts of what keeps a revision (and the revisions deleted with it) from being deleted. */
+export const revisionBlockersDtoSchema = z
+  .object({
+    children: z.number().int().nonnegative(),
+    draft: z.number().int().nonnegative(),
+    notes: z.number().int().nonnegative(),
+    highlights: z.number().int().nonnegative(),
+    chatMessages: z.number().int().nonnegative(),
+    artifacts: z.number().int().nonnegative(),
+    activeTasks: z.number().int().nonnegative(),
+  })
+  .strict();
+export type RevisionBlockersDto = z.infer<typeof revisionBlockersDtoSchema>;
+
+/**
+ * A revision as the revision list returns it. `blockers` and `deletable` describe deleting
+ * the revision alone; `descendantIds` are the revisions a delete with descendants would also
+ * remove (their own blockers are in their own list items).
+ */
+export const transcriptRevisionListItemDtoSchema = transcriptRevisionDtoSchema.extend({
+  archived: z.boolean(),
+  archivedAt: epochMsSchema.exactOptional(),
+  deletable: z.boolean(),
+  blockers: revisionBlockersDtoSchema,
+  descendantIds: z.array(idSchema),
+});
+export type TranscriptRevisionListItemDto = z.infer<typeof transcriptRevisionListItemDtoSchema>;
+
+/** `PUT /api/transcript/revisions/:rid/archived`. */
+export const revisionArchiveRequestSchema = z.object({ archived: z.boolean() }).strict();
+export type RevisionArchiveRequest = z.infer<typeof revisionArchiveRequestSchema>;
+
 export const transcriptRevisionListDtoSchema = z.object({
   primaryTranscriptRevisionId: idSchema.exactOptional(),
-  revisions: z.array(transcriptRevisionDtoSchema),
+  revisions: z.array(transcriptRevisionListItemDtoSchema),
 });
 export type TranscriptRevisionListDto = z.infer<typeof transcriptRevisionListDtoSchema>;
 

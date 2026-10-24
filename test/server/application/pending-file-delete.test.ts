@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -189,6 +190,38 @@ describe("PendingFileDeleter", () => {
     expect(r.rows()).toEqual([]);
     expect(readFileSync(join(r.dir, "media", "第一讲.mp4"), "utf8")).toBe("a newer, longer file");
     expect(r.warnings).toEqual(["pending_file_mismatch"]);
+  });
+
+  it("keeps a file of the recorded size whose digest differs, and removes the one whose digest matches", async () => {
+    const r = rig();
+    const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+    await writeCache(r, "media/a.mp4", "abc");
+    await writeCache(r, "media/b.mp4", "xyz");
+    r.register([
+      { store: "cache", storageRef: "media/a.mp4", expectedSizeBytes: 3, expectedDigest: sha("ABC") },
+      { store: "cache", storageRef: "media/b.mp4", expectedSizeBytes: 3, expectedDigest: sha("xyz") },
+    ]);
+    expect(r.db.prepare("SELECT expected_digest AS digest FROM pending_file_delete ORDER BY storage_ref").all()).toEqual([{ digest: sha("ABC") }, { digest: sha("xyz") }]);
+    await drain(r);
+    expect(r.rows()).toEqual([]);
+    expect(readFileSync(join(r.dir, "media", "a.mp4"), "utf8")).toBe("abc");
+    expect(existsSync(join(r.dir, "media", "b.mp4"))).toBe(false);
+    expect(r.warnings).toEqual(["pending_file_mismatch"]);
+  });
+
+  it("drops the row without touching the file while an available row holds the path", async () => {
+    const r = rig();
+    await writeCache(r, "media/held.mp4", "abc");
+    insertRow(r.db, "user", { id: "u", role: "user", status: "active", created_at: 1 });
+    insertRow(r.db, "content", { id: "c", user_id: "u", source_kind: "local", processing_status: "succeeded", created_at: 1, updated_at: 1 });
+    insertRow(r.db, "media_asset", {
+      id: "m", user_id: "u", content_id: "c", kind: "platform_cache", storage_ref: "media/held.mp4", mime_type: "video/mp4",
+      size_bytes: 3, availability: "available", retention_policy: "evictable", created_at: 1,
+    });
+    r.register([{ store: "cache", storageRef: "media/held.mp4", expectedSizeBytes: 3 }]);
+    await drain(r);
+    expect(r.rows()).toEqual([]);
+    expect(existsSync(join(r.dir, "media", "held.mp4"))).toBe(true);
   });
 
   it("retries a failed removal after 1, 2, then 4 minutes, and then removes it", async () => {

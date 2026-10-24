@@ -13,6 +13,10 @@ import { ContentService } from "../../../../src/server/application/contents.ts";
 import { LocalImportService } from "../../../../src/server/application/local-import.ts";
 import { MediaAssetService } from "../../../../src/server/application/media-assets.ts";
 import { CacheRootService } from "../../../../src/server/application/cache-root.ts";
+import { CacheHoldService } from "../../../../src/server/application/cache-holds.ts";
+import { CacheHoldRegistry } from "../../../../src/server/pipeline/cache-holds.ts";
+import { CachePathLocks } from "../../../../src/server/pipeline/cache-path-locks.ts";
+import { writeSwapRecord } from "../../../../src/server/pipeline/cache-swap.ts";
 import { RelinkService } from "../../../../src/server/application/relink.ts";
 import { SplitMediaFiles } from "../../../../src/server/pipeline/media-files.ts";
 import { cacheLocationDtoSchema } from "../../../../src/shared/dto/local-media.ts";
@@ -38,6 +42,7 @@ const ingest = {
 /** Only request validation of cache-media and burn is exercised here; their service must never be reached. */
 const unreachableClientMedia = {
   cacheMedia: async () => Promise.reject(new Error("cache-media service reached")),
+  inspectCacheMedia: async () => Promise.reject(new Error("cache-media inspect service reached")),
   burn: async () => Promise.reject(new Error("burn service reached")),
 } as unknown as ClientMediaTaskService;
 
@@ -48,6 +53,8 @@ interface Stack {
   grants: HmacFileGrantVerifier;
   userDir: string;
   grant(path: string, purpose: FileGrant["purpose"]): FileGrant;
+  holds: CacheHoldRegistry;
+  stores: SplitMediaFiles;
   /** The app per mode; like `compose`, only local mode gives the ContentService a path resolver. */
   app(mode: "local" | "server"): Promise<BuiltApp>;
 }
@@ -71,8 +78,13 @@ function stack(): Stack {
   const userDir = join(h.dir, "user files");
   mkdirSync(userDir);
   const repository = h.repository;
+  const holds = new CacheHoldRegistry();
+  const locks = new CachePathLocks();
+  const cacheHolds = new CacheHoldService({ repository, cache: stores.cache, holds, locks, gate: h.gate });
   return {
     h,
+    holds,
+    stores,
     files,
     key,
     grants,
@@ -111,8 +123,10 @@ function stack(): Stack {
           grants,
           dataDir: h.dir,
           storeFactory: (dir, options) => new FlatCacheFileStore(dir, options),
+          holds: () => cacheHolds.list(),
           logger: silentLogger,
         }),
+        cacheHolds,
         version: "0.0.0-test",
         log: false,
       });
@@ -309,6 +323,8 @@ describe("POST /api/contents/:id/cache-media and /burn [client] request validati
       { revisionId: "r", mode: "translation" },
       { revisionId: "r", mode: "original", outputPath: "/tmp/out.mp4" },
       { mode: "original" },
+      // A source pick belongs to the styled export; the legacy burn-in chooses its own source.
+      { revisionId: "r", mode: "original", sourceAssetId: "a" },
     ]) {
       const response = await app.inject({ method: "POST", url: `/api/contents/${contentId}/burn`, headers: auth, payload });
       expect(response.statusCode, JSON.stringify(payload)).toBe(400);
@@ -338,6 +354,44 @@ describe("GET / PUT /api/media/cache-location [client]", () => {
   });
 });
 
+describe("interrupted cache replacements [client]", () => {
+  it("lists a hold with the cache location and settles it by keeping the current file", async () => {
+    const s = stack();
+    const { app } = await s.app("local");
+    const dir = s.stores.cache.scratchPath("01HELDASSET");
+    mkdirSync(dir, { recursive: true });
+    const record = { v: 1 as const, targetRef: "media/课 [720P].mp4", newAssetId: "01HELDASSET", newSizeBytes: 3, newDigest: sha256(Buffer.from("new")) };
+    await writeSwapRecord(dir, record);
+    writeFileSync(join(s.stores.cache.directory(), "课 [720P].mp4"), "a stranger");
+    s.holds.add({ scratchId: "01HELDASSET", record, currentSizeBytes: "a stranger".length });
+
+    const status = await app.inject({ method: "GET", url: "/api/media/cache-location", headers: auth });
+    expect(cacheLocationDtoSchema.parse(status.json()).holds).toEqual([{ assetId: "01HELDASSET", fileName: "课 [720P].mp4", currentSizeBytes: 10 }]);
+    const unknown = await app.inject({ method: "POST", url: "/api/media/cache-location/holds/01NOPE/restore", headers: auth });
+    expect(unknown.statusCode).toBe(404);
+    // Nothing displaced to restore.
+    const restore = await app.inject({ method: "POST", url: "/api/media/cache-location/holds/01HELDASSET/restore", headers: auth });
+    expect(restore.statusCode).toBe(409);
+    expect(restore.json().error.code).toBe("conflict.cache_file_foreign");
+    const keep = await app.inject({ method: "POST", url: "/api/media/cache-location/holds/01HELDASSET/keep", headers: auth });
+    expect(keep.statusCode).toBe(204);
+    expect(s.holds.list()).toEqual([]);
+    expect(cacheLocationDtoSchema.parse((await app.inject({ method: "GET", url: "/api/media/cache-location", headers: auth })).json()).holds).toEqual([]);
+  });
+});
+
+describe("POST /api/contents/:id/cache-media/inspect [client]", () => {
+  it("validates the body before the service is reached", async () => {
+    const s = stack();
+    const { app } = await s.app("local");
+    const contentId = createLocalContent(s.h);
+    const refused = await app.inject({ method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, headers: auth, payload: { type: "audio", quality: 720 } });
+    expect(refused.statusCode).toBe(400);
+    const unknownField = await app.inject({ method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, headers: auth, payload: { overwriteAssetId: "x" } });
+    expect(unknownField.statusCode).toBe(400);
+  });
+});
+
 describe("client-only routes in server mode", () => {
   it("does not register the eight client media routes or import-browser", async () => {
     const s = stack();
@@ -351,6 +405,9 @@ describe("client-only routes in server mode", () => {
       { method: "POST", url: `/api/media/${s.h.newId()}/save-grant` },
       { method: "GET", url: "/api/media/cache-location" },
       { method: "PUT", url: "/api/media/cache-location", payload: { useDefault: true } },
+      { method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, payload: {} },
+      { method: "POST", url: `/api/media/cache-location/holds/${s.h.newId()}/keep` },
+      { method: "POST", url: `/api/media/cache-location/holds/${s.h.newId()}/restore` },
       { method: "POST", url: "/api/platform-accounts/youtube/import-browser", payload: {} },
     ] as const;
     for (const request of requests) {

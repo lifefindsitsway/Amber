@@ -68,6 +68,15 @@ export function transcriptAliasTable(revisionId: string, segments: readonly Tran
 const CANONICAL = /\[\[seg:([^\]\s]+)\]\]/g;
 
 /**
+ * The segment ids named by the canonical `[[seg:<segmentId>]]` markers of a stored body, in
+ * order of appearance with repeats. Only whole markers count: an id that merely occurs in
+ * the text, or inside an `[[unresolved:…]]` marker, is not a reference.
+ */
+export function markedSegmentIds(body: string): string[] {
+  return [...body.matchAll(CANONICAL)].map((match) => match[1] as string);
+}
+
+/**
  * A collection's table: the canonical markers of the members' summaries, in
  * member order and first appearance, are renumbered `s1..sN` across lectures; a sentence
  * cited twice keeps one alias. Returns each body rewritten with aliases. A marker whose

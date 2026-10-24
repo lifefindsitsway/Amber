@@ -1,9 +1,10 @@
-import { mkdir, readdir, rm, rmdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { CACHE_SCRATCH_DIR } from "../../shared/app-identity.ts";
 import type { MediaAssetKind } from "../../shared/enums.ts";
 import { amberError } from "../domain/errors.ts";
 import type { AtomicWriteSource, FileStore, StoredFile, WriteAtomicOptions } from "../ports/file-store.ts";
+import { SWAP_RECORD_FILE, syncDirectory } from "./cache-swap.ts";
 
 /**
  * The two stores media may live in: the data directory (`assets/…`) for every
@@ -163,20 +164,29 @@ export class CacheFileStore implements FileStore {
     return this.store.diskUsage();
   }
 
-  /**
-   * `<cache dir>/.amber-tmp/<id>/`, empty, for the intermediate files of one download that
-   * must land on the cache directory's volume. A custom directory that is not
-   * mounted refuses with `conflict.cache_unavailable`, as a write would.
-   */
-  async openScratch(id: string): Promise<CacheScratch> {
+  /** `<cache dir>/.amber-tmp/<id>`, whether it exists or not. */
+  scratchPath(id: string): string {
     if (!SCRATCH_ID.test(id)) {
       throw new TypeError("invalid scratch id");
     }
+    return join(this.directory(), CACHE_SCRATCH_DIR, id);
+  }
+
+  /**
+   * `<cache dir>/.amber-tmp/<id>/`, empty, for the intermediate files of one download that
+   * must land on the cache directory's volume. A custom directory that is not
+   * mounted refuses with `conflict.cache_unavailable`, as a write would. A directory holding
+   * the record of an interrupted replacement is never emptied:
+   * `conflict.cache_recovery_pending`.
+   */
+  async openScratch(id: string): Promise<CacheScratch> {
+    const path = this.scratchPath(id);
     if (this.customRoot !== undefined && !(await this.isAvailable())) {
       cacheUnavailable();
     }
-    const parent = join(this.directory(), CACHE_SCRATCH_DIR);
-    const path = join(parent, id);
+    if (await hasSwapRecord(path)) {
+      throw amberError("conflict", "an interrupted replacement waits in this scratch directory", { code: "conflict.cache_recovery_pending" });
+    }
     await rm(path, { recursive: true, force: true, maxRetries: SCRATCH_RM_RETRIES });
     for (let attempt = 1; ; attempt += 1) {
       try {
@@ -189,40 +199,115 @@ export class CacheFileStore implements FileStore {
         }
       }
     }
-    return {
-      path,
-      close: async () => {
-        await rm(path, { recursive: true, force: true, maxRetries: SCRATCH_RM_RETRIES });
-        try {
-          await rmdir(parent);
-        } catch (error) {
-          // Still in use by another download, or already gone.
-          if (errorCode(error) !== "ENOTEMPTY" && errorCode(error) !== "EEXIST" && errorCode(error) !== "ENOENT") {
-            throw error;
-          }
-        }
-      },
-    };
+    return { path, close: () => this.removeScratchDir(id) };
   }
 
   /**
-   * Start-up: removes `.amber-tmp` with whatever an interrupted download left in it and
-   * returns how many entries it held. Callers check `isAvailable()` first.
+   * Removes `.amber-tmp/<id>` and then `.amber-tmp` once no other download uses it. A
+   * directory holding a replacement record stays unless `force` is set: the record and the
+   * files beside it are what a recovery decides from.
+   */
+  async removeScratchDir(id: string, options: { force?: boolean } = {}): Promise<void> {
+    const path = this.scratchPath(id);
+    if (options.force !== true && (await hasSwapRecord(path))) {
+      return;
+    }
+    await rm(path, { recursive: true, force: true, maxRetries: SCRATCH_RM_RETRIES });
+    try {
+      await rmdir(dirname(path));
+    } catch (error) {
+      // Still in use by another download, or already gone.
+      if (errorCode(error) !== "ENOTEMPTY" && errorCode(error) !== "EEXIST" && errorCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  /** Ids of the scratch directories that hold a replacement record. */
+  async swapScratchIds(): Promise<string[]> {
+    const ids: string[] = [];
+    for (const name of await scratchEntries(this.directory())) {
+      if (SCRATCH_ID.test(name) && (await hasSwapRecord(join(this.directory(), CACHE_SCRATCH_DIR, name)))) {
+        ids.push(name);
+      }
+    }
+    return ids.sort();
+  }
+
+  /** Renames the file at `from` (on the cache volume) to `ref` and makes the rename durable. */
+  async moveIn(from: string, ref: string): Promise<void> {
+    if (this.customRoot !== undefined && !(await this.isAvailable())) {
+      cacheUnavailable();
+    }
+    await rename(from, this.pathOf(ref));
+    await syncDirectory(this.directory());
+  }
+
+  /** Renames the file at `ref` to `to` (on the cache volume) and makes both directories durable. */
+  async moveOut(ref: string, to: string): Promise<void> {
+    if (this.customRoot !== undefined && !(await this.isAvailable())) {
+      cacheUnavailable();
+    }
+    await rename(this.pathOf(ref), to);
+    await syncDirectory(dirname(to));
+    await syncDirectory(this.directory());
+  }
+
+  /**
+   * Start-up: removes from `.amber-tmp` whatever interrupted downloads left behind and
+   * returns how many entries went, `.amber-tmp` itself once empty. A directory holding a
+   * replacement record is never removed here: it is the start-up recovery's, and a hold
+   * keeps it for the user. Callers check `isAvailable()` first.
    */
   async removeScratch(): Promise<number> {
-    const parent = join(this.directory(), CACHE_SCRATCH_DIR);
-    let entries: string[];
-    try {
-      entries = await readdir(parent);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") {
-        return 0;
-      }
+    return removeScratchEntries(this.directory());
+  }
+}
+
+async function hasSwapRecord(dir: string): Promise<boolean> {
+  try {
+    return (await stat(join(dir, SWAP_RECORD_FILE))).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function scratchEntries(cacheDir: string): Promise<string[]> {
+  try {
+    return await readdir(join(cacheDir, CACHE_SCRATCH_DIR));
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+/**
+ * Removes the entries of `<cacheDir>/.amber-tmp` except directories holding a replacement
+ * record, then `.amber-tmp` itself when nothing is left; returns how many entries went.
+ * Shared by the start-up sweep and the clean-up of a cache directory moved away from.
+ */
+export async function removeScratchEntries(cacheDir: string): Promise<number> {
+  const parent = join(cacheDir, CACHE_SCRATCH_DIR);
+  let removed = 0;
+  for (const name of await scratchEntries(cacheDir)) {
+    const path = join(parent, name);
+    if (await hasSwapRecord(path)) {
+      continue;
+    }
+    // `rm` removes a symbolic link itself, never what it points to.
+    await rm(path, { recursive: true, force: true, maxRetries: SCRATCH_RM_RETRIES });
+    removed += 1;
+  }
+  try {
+    await rmdir(parent);
+  } catch (error) {
+    if (errorCode(error) !== "ENOTEMPTY" && errorCode(error) !== "EEXIST" && errorCode(error) !== "ENOENT") {
       throw error;
     }
-    await rm(parent, { recursive: true, force: true, maxRetries: SCRATCH_RM_RETRIES });
-    return entries.length;
   }
+  return removed;
 }
 
 /** The composition's `MediaFiles`: the data store plus the cache store over `defaultCacheDir` until moved. */

@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { mediaAssetDtoSchema } from "../../../shared/dto/content.ts";
 import { cacheLocationDtoSchema, cacheLocationPutSchema, relinkRequestSchema, saveGrantDtoSchema } from "../../../shared/dto/local-media.ts";
-import { burnOutputListDtoSchema, burnRequestSchema, cacheMediaRequestSchema } from "../../../shared/dto/media.ts";
+import { burnOutputListDtoSchema, burnRequestSchema, cacheMediaInspectDtoSchema, cacheMediaInspectRequestSchema, cacheMediaRequestSchema } from "../../../shared/dto/media.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
+import type { CacheHoldService } from "../../application/cache-holds.ts";
 import type { CacheRootService } from "../../application/cache-root.ts";
 import type { ClientMediaTaskService } from "../../application/client-media-tasks.ts";
 import type { MediaAssetService } from "../../application/media-assets.ts";
@@ -22,8 +23,15 @@ const assetParamsSchema = z.object({ assetId: z.string().min(1).max(64) });
  */
 export function registerClientMediaRoutes(
   app: FastifyInstance,
-  deps: { clientMedia: ClientMediaTaskService; media: MediaAssetService; relink: RelinkService; cacheRoot?: CacheRootService },
+  deps: { clientMedia: ClientMediaTaskService; media: MediaAssetService; relink: RelinkService; cacheRoot?: CacheRootService; cacheHolds?: CacheHoldService },
 ): void {
+  // Synchronous: the format check runs while the dialog waits; a closed dialog stops it.
+  app.post("/api/contents/:id/cache-media/inspect", async (request, reply) => {
+    const { id } = parseInput(contentParamsSchema, request.params, "params");
+    const body = parseInput(cacheMediaInspectRequestSchema, request.body ?? {}, "body");
+    return sendValidated(reply, 200, cacheMediaInspectDtoSchema, await deps.clientMedia.inspectCacheMedia(principalOf(request), id, body, requestSignal(reply)));
+  });
+
   app.post("/api/contents/:id/cache-media", async (request, reply) => {
     const { id } = parseInput(contentParamsSchema, request.params, "params");
     const body = parseInput(cacheMediaRequestSchema, request.body ?? {}, "body");
@@ -66,4 +74,16 @@ export function registerClientMediaRoutes(
     const body = parseInput(cacheLocationPutSchema, request.body, "body");
     return sendValidated(reply, 202, cacheLocationDtoSchema, await cacheRoot.change(principalOf(request), body));
   });
+
+  const cacheHolds = deps.cacheHolds;
+  if (cacheHolds === undefined) {
+    return;
+  }
+  for (const action of ["keep", "restore"] as const) {
+    app.post(`/api/media/cache-location/holds/:assetId/${action}`, async (request, reply) => {
+      const { assetId } = parseInput(assetParamsSchema, request.params, "params");
+      await cacheHolds.settle(principalOf(request), assetId, action);
+      return reply.code(204).send();
+    });
+  }
 }

@@ -1,5 +1,6 @@
 import type { TokenUsageFeature } from "../../shared/enums.ts";
 import type { Content } from "../domain/content.ts";
+import { amberError } from "../domain/errors.ts";
 import type { LlmCallAttribution, LlmCompletion, LlmRequest } from "../domain/llm.ts";
 import type { AsrModelRef, ModelRef, ModelRefSnapshot } from "../domain/model-ref.ts";
 import type { EffectiveCapability } from "../domain/provider-profile.ts";
@@ -230,4 +231,17 @@ export function stageUnitFailure(settled: readonly PromiseSettledResult<unknown>
     reasons.find((reason) => !(reason instanceof StageDeferred)) ??
     reasons[0]
   );
+}
+
+/**
+ * For a stage's publishing transaction: the transcript revision the stage was built from
+ * must still be there. The user may delete it, or a manual commit may fold it away, while
+ * the stage waits on the model; publishing anyway would store rows pointing at a revision
+ * that no longer exists, so the stage fails instead and nothing is published.
+ */
+export function assertBaseRevisionExists(scope: RepositoryScope, ownerUserId: string, contentId: string, revisionId: string): void {
+  const revision = scope.transcripts.getRevision(ownerUserId, revisionId);
+  if (revision === undefined || revision.contentId !== contentId) {
+    throw amberError("not_found", "base transcript revision not found");
+  }
 }

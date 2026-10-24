@@ -21,6 +21,7 @@ import { importedSubtitleWarnings } from "../domain/subtitle-verdict.ts";
 import type { TranscriptRevision } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { ContentCursor, Repository, RepositoryScope } from "../ports/repository.ts";
+import { revisionListItems } from "./revision-references.ts";
 
 export interface ContentServiceOptions {
   repository: Repository;
@@ -119,6 +120,7 @@ export function mediaAssetDto(asset: MediaAsset, localPaths?: LocalPathResolver)
     sizeBytes: asset.sizeBytes,
     ...(asset.durationMs === undefined ? {} : { durationMs: asset.durationMs }),
     ...(asset.quality === undefined ? {} : { quality: asset.quality }),
+    ...(asset.kind === "platform_cache" ? { qualityVerified: asset.qualityVerified === true } : {}),
     availability: asset.availability,
     retentionPolicy: asset.retentionPolicy,
     createdAt: asset.createdAt,
@@ -278,7 +280,7 @@ export class ContentService {
       }
       return {
         ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
-        revisions: scope.transcripts.listRevisions(owner, contentId).map(transcriptRevisionDto),
+        revisions: revisionListItems(scope, owner, content),
       };
     });
   }
@@ -296,6 +298,10 @@ export class ContentService {
       }
       if (revision.kind === "translated") {
         throw amberError("invalid_request", "a translation cannot be the primary transcript", { params: { detail: "revisionId" } });
+      }
+      // An archived revision is out of every picker; it has to be restored before it can be current.
+      if (scope.transcripts.listArchived(owner, contentId).some((entry) => entry.revisionId === revisionId)) {
+        throw amberError("invalid_request", "an archived revision cannot be the primary transcript", { params: { detail: "revisionId" } });
       }
       scope.contents.setPrimaryTranscript(owner, contentId, revisionId, this.now());
       scope.search.syncContent(owner, contentId);

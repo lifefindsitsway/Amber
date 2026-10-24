@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  markedSegmentIds,
   AliasTable,
   applyRepair,
   checkCitations,
@@ -143,5 +144,12 @@ describe("aliases with one bracket missing", () => {
     const untouched = `[s1] 是正文，[[seg:${seg(1)}]] 与 [[unresolved:s1]] 不变`;
     expect(checkCitations(untouched, table).total).toBe(0);
     expect(finalizeCitations(untouched, table)).toEqual({ body: untouched, citations: [] });
+  });
+});
+
+describe("markedSegmentIds", () => {
+  it("takes ids from whole canonical markers only", () => {
+    expect(markedSegmentIds("a [[seg:01A]] b [[seg:01B]] [[seg:01A]]")).toEqual(["01A", "01B", "01A"]);
+    expect(markedSegmentIds("01A seg:01A [[unresolved:seg:01C]] [[seg:01D]")).toEqual([]);
   });
 });

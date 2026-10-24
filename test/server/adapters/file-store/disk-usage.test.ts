@@ -20,4 +20,24 @@ describe("dataDirDiskUsage", () => {
     expect(usage.freeBytes).toBeGreaterThan(0);
     expect(usage.freeBytes).toBeLessThanOrEqual(usage.totalBytes);
   });
+
+  it("leaves excluded subtrees out, reading a moving exclusion on every measurement", async () => {
+    const root = tempDataDir("amber-disk-");
+    mkdirSync(join(root, "media", ".amber-tmp", "x"), { recursive: true });
+    mkdirSync(join(root, "assets"), { recursive: true });
+    writeFileSync(join(root, "assets", "kept.bin"), Buffer.alloc(100));
+    writeFileSync(join(root, "media", "cached.mp4"), Buffer.alloc(5000));
+    writeFileSync(join(root, "media", ".amber-tmp", "x", "part.mp4.partial"), Buffer.alloc(700));
+
+    expect((await dataDirDiskUsage(root, { exclude: [join(root, "media")] }).diskUsage()).usedBytes).toBe(100);
+    // A path that is not normalised still names the same directory.
+    expect((await dataDirDiskUsage(root, { exclude: [join(root, "assets", "..", "media")] }).diskUsage()).usedBytes).toBe(100);
+
+    let excluded = [join(root, "media")];
+    const usage = dataDirDiskUsage(root, { exclude: () => excluded });
+    expect((await usage.diskUsage()).usedBytes).toBe(100);
+    // The cache moved to another volume: what stays under the data directory counts again.
+    excluded = [join(tempDataDir("amber-disk-elsewhere-"), "media")];
+    expect((await usage.diskUsage()).usedBytes).toBe(5800);
+  });
 });

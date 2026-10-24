@@ -11,11 +11,9 @@ import {
   markerText,
 } from "../../shared/app-identity.ts";
 import { isCacheRef } from "../../shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_GB } from "../../shared/defaults.ts";
-import type { CacheLocationDto, CacheLocationPut, CacheMigrationDto } from "../../shared/dto/local-media.ts";
+import type { CacheHoldDto, CacheLocationDto, CacheLocationPut, CacheMigrationDto } from "../../shared/dto/local-media.ts";
 import type { AppError, CacheDirReason } from "../../shared/errors.ts";
 import { cacheDirErrors } from "../../shared/i18n/zh-CN/errors.ts";
-import { BYTES_PER_GB } from "../../shared/units.ts";
 import { AmberError, amberError, appError } from "../domain/errors.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { CacheMigrationMarker, InstanceSettings } from "../domain/runtime-support.ts";
@@ -25,8 +23,9 @@ import type { FileStore } from "../ports/file-store.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { Repository } from "../ports/repository.ts";
 import type { CacheGate, Release } from "../pipeline/cache-gate.ts";
+import { cacheVolumeLow } from "../pipeline/disk-watermark.ts";
 import { gateConflict } from "../pipeline/gate-conflict.ts";
-import type { FileStoreFactory, MediaFiles } from "../pipeline/media-files.ts";
+import { removeScratchEntries, type FileStoreFactory, type MediaFiles } from "../pipeline/media-files.ts";
 import { toAppError } from "../pipeline/retry.ts";
 import { requireAdmin } from "./admin.ts";
 import { CacheRootsRegistry } from "./cache-roots-registry.ts";
@@ -51,6 +50,8 @@ export interface CacheRootServiceOptions {
   newId?: () => string;
   /** Path rules differ per platform; defaults to the running one. */
   isWindows?: boolean;
+  /** Interrupted cache replacements waiting for the user, listed with the status; none when absent. */
+  holds?: () => CacheHoldDto[];
 }
 
 interface MigrationProgress {
@@ -96,11 +97,12 @@ function errorCode(error: unknown): string {
 }
 
 /**
- * Removes Amber's download scratch `<dir>/.amber-tmp` with everything in it. `fs.rm` checks
- * entries with `lstat`, so a link inside is removed itself and never followed.
+ * Removes Amber's download scratch `<dir>/.amber-tmp` with everything in it, except a
+ * directory holding the record of an interrupted replacement, which waits for the user.
+ * `fs.rm` checks entries with `lstat`, so a link inside is removed itself and never followed.
  */
 async function removeScratch(dir: string): Promise<void> {
-  await rm(join(dir, CACHE_SCRATCH_DIR), { recursive: true, force: true });
+  await removeScratchEntries(dir);
 }
 
 /** Reads `source` chunk by chunk and stops as soon as `signal` aborts, so a cancelled copy does not drain a multi-gigabyte file first. */
@@ -269,13 +271,17 @@ export class CacheRootService {
     const available = await cache.isAvailable();
     const caches = this.availableCaches();
     const migration = this.migrationDto(settings);
+    // A directory that is not there has no volume to report; the page shows the location as unavailable instead.
+    const volume = available ? await cache.diskUsage().catch(() => undefined) : undefined;
     return {
       path: cache.directory(),
       isDefault: settings.cacheRoot === undefined,
       available,
       fileCount: caches.length,
       usedBytes: caches.reduce((sum, asset) => sum + asset.sizeBytes, 0),
-      maxBytes: CACHE_MEDIA_MAX_GB * BYTES_PER_GB,
+      freeBytes: volume?.freeBytes ?? 0,
+      totalBytes: volume?.totalBytes ?? 0,
+      holds: this.options.holds?.() ?? [],
       ...(migration === undefined ? {} : { migration }),
     };
   }
@@ -313,6 +319,20 @@ export class CacheRootService {
     }
   }
 
+  /**
+   * An interrupted cache replacement keeps its files in the current directory's scratch
+   * area, which a move neither copies nor would find again: while one waits for the user,
+   * or a record of one is still on disk (its recovery has not run yet), the location stays
+   * (`conflict.cache_recovery_pending`).
+   */
+  private async refuseWhileSwapsPending(): Promise<void> {
+    const { cache } = this.options.media;
+    const held = (this.options.holds?.() ?? []).length > 0;
+    if (held || ((await cache.isAvailable()) && (await cache.swapScratchIds()).length > 0)) {
+      throw amberError("conflict", "an interrupted cache replacement waits to be settled", { code: "conflict.cache_recovery_pending" });
+    }
+  }
+
   /** A `cleanup_pending` marker left by an earlier attempt is retried before a new move; it must be gone for the move to start. */
   private async finishPendingCleanup(): Promise<void> {
     const marker = this.options.settings.effective().cacheMigration;
@@ -334,6 +354,7 @@ export class CacheRootService {
       release();
       return;
     }
+    await this.refuseWhileSwapsPending();
     if (this.isInside(target, current) || this.isInside(current, target)) {
       throw invalidCacheDir("overlaps_current", "the new cache directory must not be inside the current one or contain it");
     }
@@ -365,7 +386,7 @@ export class CacheRootService {
 
     const files = await this.reconcile(media.cache);
     const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
-    await this.requireRoom(target, targetIsDefault, totalBytes, roots);
+    await this.requireRoom(target, totalBytes, roots);
     if (nextRoot !== undefined) {
       await this.claim(nextRoot);
     }
@@ -519,20 +540,13 @@ export class CacheRootService {
   }
 
   /**
-   * The target volume must stay above the low-water mark once the copy has landed; a move
-   * back to the default directory inside the data directory must also fit the data
-   * directory's usage under `maxDataGB`.
+   * The target volume must stay above the low-water mark once the copy has landed. Only free
+   * space counts, even for a move back to the default directory inside the data directory:
+   * the cache directory never counts against `maxDataGB`.
    */
-  private async requireRoom(target: string, targetIsDefault: boolean, totalBytes: number, roots: Roots): Promise<void> {
-    const limits = this.options.settings.effective();
+  private async requireRoom(target: string, totalBytes: number, roots: Roots): Promise<void> {
     const volume = await this.storeOver(target, roots).diskUsage();
-    const freeAfter = volume.freeBytes - totalBytes;
-    let low = freeAfter < limits.lowWaterFreeGB * BYTES_PER_GB || (volume.totalBytes > 0 && freeAfter / volume.totalBytes < limits.lowWaterFreeRatio);
-    if (!low && targetIsDefault) {
-      const data = await this.options.media.data.diskUsage();
-      low = data.usedBytes + totalBytes > limits.maxDataGB * BYTES_PER_GB;
-    }
-    if (low) {
+    if (cacheVolumeLow({ ...volume, freeBytes: volume.freeBytes - totalBytes }, this.options.settings.effective())) {
       throw new AmberError(appError("disk_low"), "the target volume would fall below the low-water mark");
     }
   }

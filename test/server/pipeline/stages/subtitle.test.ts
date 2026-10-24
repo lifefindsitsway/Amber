@@ -261,6 +261,23 @@ describe("the platform working copy", () => {
     expect(platformOf(overManual)).toBeDefined();
   });
 
+  it("reuses an identical platform revision the user archived without making it primary", async () => {
+    const h = harness();
+    const id = bvid(5);
+    scriptVideo(h, id, VERDICT_DURATION_MS, evenCues(120, VERDICT_DURATION_MS));
+    const contentId = platformContent(h, id, VERDICT_DURATION_MS);
+    await runSubtitle(h, contentId);
+    const platform = contentOf(h, contentId)?.primaryTranscriptRevisionId as string;
+    // The user moved on to an ASR transcript and archived the platform copy.
+    const asr = givePrimary(h, contentId, "asr");
+    h.repository.withTransaction((scope) => scope.transcripts.setArchived(LOCAL.userId, platform, 5));
+
+    await runSubtitle(h, contentId);
+    expect(revisionsOf(h, contentId).filter((revision) => revision.kind === "platform").map((revision) => revision.id)).toEqual([platform]);
+    expect(contentOf(h, contentId)?.primaryTranscriptRevisionId).toBe(asr);
+    expect(h.repository.withTransaction((scope) => scope.transcripts.listArchived(LOCAL.userId, contentId))).toEqual([{ revisionId: platform, archivedAt: 5 }]);
+  });
+
   it("stores a suspicious subtitle without making it primary", async () => {
     const h = harness();
     scriptVideo(h, bvid(5), VERDICT_DURATION_MS, VERDICT_FIXTURES.suspicious.cues);

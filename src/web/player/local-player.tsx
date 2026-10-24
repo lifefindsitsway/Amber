@@ -4,11 +4,12 @@ import { useTranslation } from "react-i18next";
 import { PLAYER_CONTROLS_IDLE_MS, PLAYER_SKIP_SECONDS, PLAYER_VOLUME_STEP } from "../../shared/defaults.ts";
 import { BASIS_POINTS } from "../../shared/subtitle-style.ts";
 import { formatDuration } from "../format.ts";
+import { useAutoDismiss } from "../use-auto-dismiss.ts";
 import { hasCommandModifier } from "../shortcut-registry.tsx";
 import { CAPABILITIES } from "./capabilities.ts";
 import { ClockInput } from "./clock-input.tsx";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
-import { PlaybackRateMenu, PlayerSettingsMenu } from "./player-menus.tsx";
+import { PlaybackRateMenu, PlayerSettingsMenu, QualityMenu, type QualitySource } from "./player-menus.tsx";
 import { usePlayerController, usePlayerTime } from "./player-controller.tsx";
 import { usePlayerSettings } from "./player-settings.ts";
 import { SeekBar, type ChapterEntry } from "./seek-bar.tsx";
@@ -19,6 +20,23 @@ import { useVolumeSetting, VolumeControl } from "./volume-control.tsx";
 
 /** Space between the subtitle editor panel and the picture's edge or the control bar. */
 const PANEL_GAP_PX = 8;
+
+/**
+ * The playback state carried from one source file to the next. `toId` is the source whose
+ * new element restores it; `fromId` is where a failed switch goes back to, and `fallback`
+ * marks that return trip, which never bounces again.
+ */
+interface SourceSwap {
+  fromId: string | undefined;
+  toId: string;
+  timeMs: number;
+  wasPlaying: boolean;
+  fallback: boolean;
+}
+
+function snapshotOf(element: HTMLVideoElement | null): { timeMs: number; wasPlaying: boolean } {
+  return element === null ? { timeMs: 0, wasPlaying: false } : { timeMs: element.currentTime * 1000, wasPlaying: !element.paused };
+}
 
 /** Whether keyboard focus (not a mouse click) is on the element; focus-visible is the browser's call. */
 function focusVisible(element: Element): boolean {
@@ -48,6 +66,13 @@ function focusVisible(element: Element): boolean {
  * `subtitles` adds the 「字幕」 menu and the subtitle overlay with its editor:
  * the player times and draws what the page assembled. While a subtitle is dragged or the
  * final look is previewed, the controls step aside.
+ *
+ * `sources` (the cached qualities of one video) adds the quality menu; `activeSourceId` is
+ * the file `src` plays and `onSelectSource` asks the page for another. Each source gets a
+ * fresh `<video>` element, so even a new file at the same path is loaded anew. Switching keeps
+ * the position (clamped to the new length) and whether it was playing; meanwhile nothing
+ * autoplays and an end does not step the list loop; a file that fails to load goes back to
+ * the previous one with a notice. Speed, volume, subtitles and fullscreen carry over.
  */
 export function LocalPlayer(props: {
   src: string;
@@ -57,6 +82,9 @@ export function LocalPlayer(props: {
   onEndedAdvance?: () => Promise<AdvanceResult>;
   loopCollection?: LoopCollectionChoice | undefined;
   subtitles?: SubtitleTrackModel | undefined;
+  sources?: readonly QualitySource[] | undefined;
+  activeSourceId?: string | undefined;
+  onSelectSource?: ((assetId: string) => void) | undefined;
 }) {
   const { t } = useTranslation();
   const controller = usePlayerController();
@@ -77,6 +105,27 @@ export function LocalPlayer(props: {
   const [pointerActive, setPointerActive] = useState(false);
   const [rateMenuOpen, setRateMenuOpen] = useState(false);
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
+  const [swap, setSwap] = useState<SourceSwap | undefined>(undefined);
+  // A source the player switched to never autoplays, not even once its data arrives after the restore.
+  const [switchedTo, setSwitchedTo] = useState<string | undefined>(undefined);
+  const [notice, setNotice] = useState<string | undefined>(undefined);
+  useAutoDismiss(notice, () => setNotice(undefined));
+  // The page may switch the file by itself (a replaced cache); the position carries over then too.
+  const [shownSourceId, setShownSourceId] = useState(props.activeSourceId);
+  if (props.activeSourceId !== shownSourceId) {
+    setShownSourceId(props.activeSourceId);
+    if (props.activeSourceId === undefined) {
+      setSwap(undefined);
+    } else if (swap === undefined && shownSourceId !== undefined) {
+      // Read while the old element is still mounted: this render has not been committed yet.
+      setSwap({ fromId: shownSourceId, toId: props.activeSourceId, ...snapshotOf(video.current), fallback: false });
+      setSwitchedTo(props.activeSourceId);
+    } else if (swap !== undefined && swap.toId !== props.activeSourceId) {
+      setSwap({ ...swap, toId: props.activeSourceId });
+      setSwitchedTo(props.activeSourceId);
+    }
+  }
   const [controlsFocused, setControlsFocused] = useState(false);
   const subtitles = props.subtitles;
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
@@ -94,9 +143,12 @@ export function LocalPlayer(props: {
   const audioOnly = props.audioOnly === true;
   const picture = usePictureRect(subtitles === undefined ? null : videoElement, audioOnly);
   const onDuration = (seconds: number): void => setDurationMs(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : undefined);
+  // A seek while a quality switch is under way is where the user wants the new file to be,
+  // so it replaces the position taken at the switch instead of being overwritten by it.
   const seekTo = (ms: number): void => {
     const element = video.current;
     if (element !== null) element.currentTime = ms / 1000;
+    setSwap((current) => (current === undefined ? current : { ...current, timeMs: ms }));
   };
   const scrubTo = (ms: number): void => {
     setScrubMs(ms);
@@ -111,25 +163,25 @@ export function LocalPlayer(props: {
         seek: (ms) => {
           const element = video.current;
           if (element !== null) element.currentTime = ms / 1000;
+          setSwap((current) => (current === undefined ? current : { ...current, timeMs: ms }));
         },
       }),
     [controller],
   );
 
+  // Both follow the element too: switching quality mounts a new one.
   useEffect(() => {
-    const element = video.current;
-    if (element === null) return;
-    element.volume = volume.volume;
-    element.muted = volume.muted;
-  }, [volume.volume, volume.muted]);
+    if (videoElement === null) return;
+    videoElement.volume = volume.volume;
+    videoElement.muted = volume.muted;
+  }, [volume.volume, volume.muted, videoElement]);
 
   useEffect(() => {
-    const element = video.current;
-    if (element === null) return;
+    if (videoElement === null) return;
     // A new source resets playbackRate to defaultPlaybackRate, so set both.
-    element.defaultPlaybackRate = rate;
-    element.playbackRate = rate;
-  }, [rate]);
+    videoElement.defaultPlaybackRate = rate;
+    videoElement.playbackRate = rate;
+  }, [rate, videoElement]);
 
   useEffect(() => {
     if (root === null) return undefined;
@@ -163,13 +215,25 @@ export function LocalPlayer(props: {
   const toggle = (): void => {
     const element = video.current;
     if (element === null) return;
+    if (swap !== undefined) {
+      // During a quality switch the element may be the old file or a new one still loading;
+      // the press decides whether the new file plays once it is ready.
+      const wasPlaying = !swap.wasPlaying;
+      setSwap({ ...swap, wasPlaying });
+      setPlaying(wasPlaying);
+      if (!wasPlaying) element.pause();
+      return;
+    }
     // A source that cannot play rejects play(); the player simply stays paused.
     if (element.paused) element.play().catch(() => undefined);
     else element.pause();
   };
   const skip = (seconds: number): void => {
     const element = video.current;
-    if (element !== null) element.currentTime = Math.max(0, element.currentTime + seconds);
+    if (element === null) return;
+    // A file still loading reads 0; while switching, the step starts from the carried position.
+    const fromMs = swap === undefined ? element.currentTime * 1000 : swap.timeMs;
+    seekTo(Math.max(0, fromMs + seconds * 1000));
   };
   const toggleFullscreen = (): void => {
     if (audioOnly || root === null) return;
@@ -179,7 +243,59 @@ export function LocalPlayer(props: {
       root.requestFullscreen().catch(() => undefined);
     }
   };
+  const selectSource = (assetId: string): void => {
+    if (assetId === props.activeSourceId || props.onSelectSource === undefined) return;
+    if (swap === undefined) {
+      // Taken at the click: the old file may play on until the new one is ready.
+      setSwap({ fromId: props.activeSourceId, toId: assetId, ...snapshotOf(video.current), fallback: false });
+    } else {
+      // Another pick before the last one loaded: the element now may be a file still loading
+      // (time 0, paused), so the position and play state of the first click stay. A failure
+      // goes back to the last file that did play: the origin, or the target of a fallback.
+      const lastGood = swap.fallback ? swap.toId : swap.fromId;
+      setSwap({ ...swap, fromId: lastGood === assetId ? undefined : lastGood, toId: assetId, fallback: false });
+    }
+    setSwitchedTo(assetId);
+    setNotice(undefined);
+    props.onSelectSource(assetId);
+  };
+  const restoreSwap = (element: HTMLVideoElement): void => {
+    if (swap === undefined || swap.toId !== props.activeSourceId) return;
+    setSwap(undefined);
+    const duration = element.duration;
+    const atEnd = Number.isFinite(duration) && swap.timeMs / 1000 >= duration;
+    element.currentTime = atEnd ? duration : swap.timeMs / 1000;
+    if (swap.wasPlaying && !atEnd) {
+      element.play().catch(() => setPlaying(false));
+    } else {
+      // A play pressed and then undone during the switch may have started this element.
+      if (!element.paused) element.pause();
+      setPlaying(false);
+    }
+  };
+  const failSwap = (): void => {
+    if (swap === undefined || swap.toId !== props.activeSourceId) return;
+    if (swap.fallback || swap.fromId === undefined || props.onSelectSource === undefined) {
+      setSwap(undefined);
+      setNotice(t("contentView.player.quality.loadFailed"));
+      return;
+    }
+    const back = props.sources?.find((source) => source.assetId === swap.fromId);
+    if (back === undefined) {
+      // The previous file is gone too (deleted or replaced meanwhile): there is nothing to go
+      // back to. A swap left waiting for it would hold off the end of the video and autoplay.
+      setSwap(undefined);
+      setNotice(t("contentView.player.quality.loadFailed"));
+      return;
+    }
+    setSwap({ ...swap, fromId: swap.toId, toId: swap.fromId, fallback: true });
+    setSwitchedTo(swap.fromId);
+    setNotice(t("contentView.player.quality.fellBack", { label: back.label }));
+    props.onSelectSource(swap.fromId);
+  };
   const onEnded = (): void => {
+    // The old file ending while the new one loads is not the end of the video.
+    if (swap !== undefined) return;
     if (settings.endBehavior !== "loop_list" || props.onEndedAdvance === undefined) return;
     void props
       .onEndedAdvance()
@@ -243,7 +359,9 @@ export function LocalPlayer(props: {
 
   // Dragging a subtitle or previewing its final look shows the picture without the controls.
   const subtitleOnly = subtitleDragging || subtitlePreview;
-  const shown = !subtitleOnly && (audioOnly || !playing || pointerActive || rateMenuOpen || settingsMenuOpen || subtitleMenuOpen || controlsFocused);
+  const shown = !subtitleOnly && (audioOnly || !playing || pointerActive || rateMenuOpen || settingsMenuOpen || qualityMenuOpen || subtitleMenuOpen || controlsFocused);
+  const sources = audioOnly || props.sources === undefined || props.sources.length === 0 ? undefined : props.sources;
+  const autoplay = (settings.autoplay || props.autoplay === true) && swap === undefined && (switchedTo === undefined || switchedTo !== props.activeSourceId);
   const progress = durationMs === undefined ? 0 : Math.min(100, Math.max(0, (position / durationMs) * 100));
 
   return (
@@ -259,9 +377,10 @@ export function LocalPlayer(props: {
       data-controls={shown ? "shown" : "hidden"}
     >
       <video
+        key={props.activeSourceId ?? "single"}
         ref={videoRef}
         src={props.src}
-        autoPlay={settings.autoplay || props.autoplay === true}
+        autoPlay={autoplay}
         loop={settings.endBehavior === "loop_one"}
         className={`absolute inset-0 h-full w-full object-contain ${!shown && fullscreen ? "cursor-none" : "cursor-pointer"}`}
         onClick={toggle}
@@ -271,9 +390,20 @@ export function LocalPlayer(props: {
         onEnded={onEnded}
         onTimeUpdate={(event) => controller.reportTime(Math.round(event.currentTarget.currentTime * 1000))}
         onSeeked={(event) => controller.reportTime(Math.round(event.currentTarget.currentTime * 1000))}
-        onLoadedMetadata={(event) => onDuration(event.currentTarget.duration)}
+        onLoadedMetadata={(event) => {
+          onDuration(event.currentTarget.duration);
+          restoreSwap(event.currentTarget);
+        }}
+        onError={failSwap}
         onDurationChange={(event) => onDuration(event.currentTarget.duration)}
       />
+      {notice === undefined ? null : (
+        <div className="pointer-events-none absolute inset-x-0 top-2 z-[2] flex justify-center px-2">
+          <p className="rounded bg-black/75 px-3 py-1.5 text-xs text-white" role="status" data-testid="player-notice">
+            {notice}
+          </p>
+        </div>
+      )}
       {audioOnly ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-white/80" data-testid="player-audio-only">
           {t("contentView.player.audioOnly")}
@@ -329,6 +459,11 @@ export function LocalPlayer(props: {
               <PlaybackRateMenu rate={rate} onRate={setRate} container={root} onOpenChange={setRateMenuOpen} />
             </span>
             <span className="ml-auto flex shrink-0 items-center gap-0.5 @sm:gap-1">
+              {sources === undefined ? null : (
+                <span className="flex" data-control="quality">
+                  <QualityMenu sources={sources} activeId={props.activeSourceId} onSelect={selectSource} container={root} onOpenChange={setQualityMenuOpen} />
+                </span>
+              )}
               <span className="flex" data-control="volume">
                 <VolumeControl setting={volume} />
               </span>

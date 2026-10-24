@@ -6,9 +6,12 @@ import { ApiClient } from "../../../../src/web/api/client.ts";
 import { ApiProvider, createQueryClient } from "../../../../src/web/api/context.tsx";
 import {
   contentKeys,
+  currentManualId,
+  newerAsrRevision,
   paragraphsOf,
   readableRevisions,
   readerRows,
+  revisionGroups,
   rootOf,
   rootsOf,
   segmentAt,
@@ -16,6 +19,7 @@ import {
   useLatestRedos,
   useSegments,
   useUnfinishedCacheTask,
+  visibleRevisions,
 } from "../../../../src/web/pages/content/content-data.ts";
 import { revision, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi } from "../../../fixtures/web/render.tsx";
@@ -194,5 +198,69 @@ describe("useSegments", () => {
     await waitFor(() => expect(signals).toHaveLength(3));
     rerender({ id: "r3" });
     await waitFor(() => expect(signals[2]?.signal?.aborted).toBe(true));
+  });
+});
+
+describe("version picker rules", () => {
+  // asr ← corrected ← m1 ← m2 ; asr ← m0 ; corrected ← en
+  const asr = revision("asr", { kind: "asr", createdAt: 1 });
+  const corrected = revision("corrected", { kind: "corrected", parentRevisionId: "asr", createdAt: 2 });
+  const m0 = revision("m0", { kind: "manual", parentRevisionId: "asr", createdAt: 3 });
+  const m1 = revision("m1", { kind: "manual", parentRevisionId: "corrected", createdAt: 4 });
+  const m2 = revision("m2", { kind: "manual", parentRevisionId: "m1", createdAt: 5 });
+  const en = revision("en", { kind: "translated", parentRevisionId: "corrected", createdAt: 6 });
+  const all = [asr, corrected, m0, m1, m2, en];
+  const ids = (items: ReadonlyArray<{ id: string }>) => items.map((item) => item.id);
+
+  it("shows one manual revision: the primary when manual, else its nearest manual ancestor", () => {
+    expect(currentManualId(all, "m2")).toBe("m2");
+    expect(currentManualId(all, "m1")).toBe("m1");
+    expect(currentManualId([...all, revision("c2", { kind: "corrected", parentRevisionId: "m2" })], "c2")).toBe("m2");
+    expect(currentManualId(all, "corrected")).toBeUndefined();
+    expect(ids(visibleRevisions(all, "m2"))).toEqual(["asr", "corrected", "m2", "en"]);
+    expect(ids(visibleRevisions(all, "corrected"))).toEqual(["asr", "corrected", "en"]);
+  });
+
+  it("puts the other manual revisions behind the history toggle and archived ones behind theirs", () => {
+    const archived = all.map((item) => (item.id === "asr" ? { ...item, archived: true } : item));
+    expect(revisionGroups(archived, "m2")).toEqual({ history: new Set(["m0", "m1"]), archived: new Set(["asr"]) });
+    expect(ids(visibleRevisions(archived, "m2"))).toEqual(["corrected", "m2", "en"]);
+    expect(ids(visibleRevisions(archived, "m2", { showHistory: true }))).toEqual(["corrected", "m0", "m1", "m2", "en"]);
+    expect(ids(visibleRevisions(archived, "m2", { showArchived: true }))).toEqual(["asr", "corrected", "m2", "en"]);
+    expect(ids(visibleRevisions(archived, "m2", { include: ["m0", undefined] }))).toEqual(["corrected", "m0", "m2", "en"]);
+  });
+
+  it("finds an ASR original newer than a primary the user chose", () => {
+    const later = revision("asr2", { kind: "asr", createdAt: 10 });
+    expect(newerAsrRevision([...all, later], "m2")?.id).toBe("asr2");
+    expect(newerAsrRevision([...all, later], "corrected")?.id).toBe("asr2");
+    expect(newerAsrRevision([...all, revision("imp", { kind: "imported", createdAt: 11 }), later], "imp")).toBeUndefined();
+    expect(newerAsrRevision([...all, { ...later, archived: true }], "m2")).toBeUndefined();
+    // A root working copy as primary is replaced by the pipeline itself; nothing to suggest.
+    expect(newerAsrRevision([...all, later], "asr")).toBeUndefined();
+    expect(newerAsrRevision(all, "m2")).toBeUndefined();
+  });
+
+  it("finds an ASR original newer than an imported primary, but not a newer ASR working copy", () => {
+    const imported = revision("imp", { kind: "imported", createdAt: 7 });
+    const later = revision("asr2", { kind: "asr", createdAt: 10 });
+    expect(newerAsrRevision([...all, imported, later], "imp")?.id).toBe("asr2");
+    // Only a root counts: an ASR revision derived from another one is not a fresh original.
+    expect(newerAsrRevision([...all, imported, revision("asr3", { kind: "asr", parentRevisionId: "asr", createdAt: 10 })], "imp")).toBeUndefined();
+    expect(newerAsrRevision([...all, imported, { ...later, archived: true }], "imp")).toBeUndefined();
+  });
+
+  it("lists no manual revision and nothing behind the history toggle when the Content has none", () => {
+    // platform ← corrected (primary) ; imported ; corrected ← en
+    const platform = revision("p0", { kind: "platform", createdAt: 1 });
+    const fixed = revision("c1", { kind: "corrected", parentRevisionId: "p0", createdAt: 2 });
+    const imported = revision("imp", { kind: "imported", createdAt: 3 });
+    const english = revision("en", { kind: "translated", parentRevisionId: "c1", createdAt: 4 });
+    const none = [platform, fixed, imported, english];
+    expect(currentManualId(none, "c1")).toBeUndefined();
+    expect(revisionGroups(none, "c1")).toEqual({ history: new Set(), archived: new Set() });
+    expect(ids(visibleRevisions(none, "c1"))).toEqual(["p0", "c1", "imp", "en"]);
+    expect(ids(visibleRevisions(none, "c1", { showHistory: true }))).toEqual(["p0", "c1", "imp", "en"]);
+    expect(ids(visibleRevisions(none, "imp"))).toEqual(["p0", "c1", "imp", "en"]);
   });
 });

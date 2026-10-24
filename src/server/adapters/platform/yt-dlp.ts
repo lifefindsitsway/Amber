@@ -89,6 +89,8 @@ export function baseArgs(options: Pick<YtDlpOptions, "binDir" | "dataDir">, extr
  * `source_unreachable` when it looks like transport trouble and `unknown` otherwise.
  */
 export const YTDLP_ERROR_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: ErrorClass }> = [
+  // The disk filled up under yt-dlp or the ffmpeg it merges with (`[Errno 28]` / `ENOSPC`).
+  { pattern: /No space left on device|ENOSPC|Errno 28/i, errorClass: "disk_low" },
   { pattern: /supporter-only|premium members|members[- ]only|join this channel|become a premium member/i, errorClass: "paid_content" },
   {
     pattern: /only available for registered users|only available when logged in|sign in to confirm|use --cookies|account cookies are no longer valid|login required|requires authentication/i,

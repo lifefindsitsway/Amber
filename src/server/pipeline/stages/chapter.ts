@@ -14,7 +14,7 @@ import { processContentRequestSchema, regenerateChaptersRequestSchema } from "..
 import { estimateTokens } from "../../domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
-import { stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
+import { assertBaseRevisionExists, stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
 import { planSentenceWindows, type SentenceWindow } from "./windows.ts";
 
@@ -120,6 +120,7 @@ export class ChapterStageExecutor implements StageExecutor {
     return {
       resultJson: { revisionId, windows: windows.length, reasons: [] },
       publish: (scope) => {
+        assertBaseRevisionExists(scope, owner, content.id, revision.id);
         scope.chapters.insertAiRevision(owner, content.id, {
           id: revisionId,
           artifactId,

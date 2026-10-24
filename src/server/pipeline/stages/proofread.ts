@@ -25,6 +25,7 @@ import type { FileStore } from "../../ports/file-store.ts";
 import type { LocalMediaIngest } from "../../ports/local-media-ingest.ts";
 import type { Repository } from "../../ports/repository.ts";
 import {
+  assertBaseRevisionExists,
   StageDeferred,
   StageParked,
   stageUnitFailure,
@@ -274,6 +275,7 @@ export class ProofreadStageExecutor implements StageExecutor {
         reasons,
       },
       publish: (scope) => {
+        assertBaseRevisionExists(scope, owner, content.id, base.id);
         scope.transcripts.insertRevision(owner, revision, corrected);
         const current = scope.contents.getIncludingTrashed(owner, content.id);
         const primary =

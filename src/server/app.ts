@@ -7,6 +7,7 @@ import { createLogger, httpLoggerOptions } from "./adapters/logger/index.ts";
 import type { AdminService } from "./application/admin.ts";
 import type { AsrProfileService } from "./application/asr-profile.ts";
 import type { AuthService } from "./application/auth.ts";
+import type { CacheHoldService } from "./application/cache-holds.ts";
 import type { CacheRootService } from "./application/cache-root.ts";
 import type { ChapterService } from "./application/chapters.ts";
 import type { ExportService } from "./application/export.ts";
@@ -160,6 +161,8 @@ export interface AppDeps {
   relink?: RelinkService;
   /** Local mode: the video cache location and its move. */
   cacheRoot?: CacheRootService;
+  /** Local mode: interrupted cache replacements waiting for the user. */
+  cacheHolds?: CacheHoldService;
   /** Local mode: the maintenance state before an update install and the activity summary. */
   maintenance?: Maintenance;
   /** Local mode: backup export and restore readiness. */
@@ -364,6 +367,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
         media: deps.media,
         relink: deps.relink,
         ...(deps.cacheRoot === undefined ? {} : { cacheRoot: deps.cacheRoot }),
+        ...(deps.cacheHolds === undefined ? {} : { cacheHolds: deps.cacheHolds }),
       });
     }
   }

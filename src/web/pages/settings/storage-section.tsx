@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router";
+import { z } from "zod";
 import {
   CONCURRENCY_LIMITS,
   instanceSettingsDtoSchema,
@@ -13,7 +14,7 @@ import {
   type InstanceSettingsPatch,
 } from "../../../shared/dto/instance-settings.ts";
 import { CACHE_MIGRATION_REFRESH_MS } from "../../../shared/defaults.ts";
-import { cacheLocationDtoSchema, type CacheLocationDto, type CacheLocationPut } from "../../../shared/dto/local-media.ts";
+import { cacheLocationDtoSchema, type CacheHoldDto, type CacheLocationDto, type CacheLocationPut } from "../../../shared/dto/local-media.ts";
 import { isCacheDirReason, type AppError } from "../../../shared/errors.ts";
 import { storageDtoSchema } from "../../../shared/dto/storage.ts";
 import { usageDtoSchema } from "../../../shared/dto/usage.ts";
@@ -65,7 +66,7 @@ export function StorageSection() {
       ) : (
         <>
           <p className="mb-4 text-sm text-muted">{t("settings.storage.intro")}</p>
-          {version.isPending ? <Loading /> : <InstanceSettingsEditor />}
+          {version.isPending ? <Loading /> : <InstanceSettingsEditor lowWaterHint />}
         </>
       )}
       {desktop ? (
@@ -80,8 +81,11 @@ export function StorageSection() {
   );
 }
 
-/** The instance parameters editor (admin only; others see why it is unavailable). */
-export function InstanceSettingsEditor() {
+/**
+ * The instance parameters editor (admin only; others see why it is unavailable).
+ * `lowWaterHint` offers to drop the old free-ratio default, where the media cache lives.
+ */
+export function InstanceSettingsEditor({ lowWaterHint = false }: { lowWaterHint?: boolean } = {}) {
   const { t } = useTranslation();
   const instance = useInstanceSettings();
   return (
@@ -96,7 +100,13 @@ export function InstanceSettingsEditor() {
       ) : (
         <>
           <ConcurrencyBlock settings={instance.data} />
-          <InstanceBlock settings={instance.data} title={t("settings.storage.diskTitle")} fields={DISK_FIELDS} retention />
+          <InstanceBlock
+            settings={instance.data}
+            title={t("settings.storage.diskTitle")}
+            fields={DISK_FIELDS}
+            retention
+            {...(lowWaterHint ? { notice: <LowWaterRatioHint settings={instance.data} /> } : {})}
+          />
         </>
       )}
     </>
@@ -156,6 +166,8 @@ function InstanceBlock(props: {
   retention?: boolean;
   /** One field per row, for fields whose hints are too long to pair. */
   singleColumn?: boolean;
+  /** Shown above the fields. */
+  notice?: ReactNode;
 }) {
   const { settings } = props;
   const { t } = useTranslation();
@@ -187,12 +199,17 @@ function InstanceBlock(props: {
     },
   });
   const hint = (key: NumericField): string | undefined => {
-    const range = isConcurrencyKey(key) ? t(`settings.storage.${key}Hint`, { max: CONCURRENCY_LIMITS[key] }) : undefined;
+    const range = isConcurrencyKey(key)
+      ? t(`settings.storage.${key}Hint`, { max: CONCURRENCY_LIMITS[key] })
+      : key === "maxDataGB"
+        ? t("settings.storage.maxDataGBHint")
+        : undefined;
     if (!locked(key)) return range;
     return range === undefined ? t("settings.storage.fromEnv") : `${t("settings.storage.fromEnv")} · ${range}`;
   };
   return (
     <SettingsBlock title={props.title} {...(props.intro === undefined ? {} : { intro: props.intro })}>
+      {props.notice}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -247,6 +264,67 @@ function InstanceBlock(props: {
         </div>
       </form>
     </SettingsBlock>
+  );
+}
+
+/**
+ * The free-ratio default of earlier versions, when the media cache still had a size cap of its
+ * own. Installations keep the value they saved, so the hint below offers to drop it; this is
+ * a historical value to recognise, not a default.
+ */
+const LEGACY_LOW_WATER_FREE_RATIO = 0.2;
+const LOW_WATER_HINT_KEY = "amber.settings.lowWaterRatioHint";
+
+function lowWaterHintDismissed(): boolean {
+  try {
+    return localStorage.getItem(LOW_WATER_HINT_KEY) === "dismissed";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Offers to drop the old free-ratio default: with an uncapped cache, a fifth of a large disk
+ * kept free would stop caching long before the disk is anywhere near full. The saved value is
+ * never changed without the click; "do not show again" is remembered by this browser.
+ */
+function LowWaterRatioHint({ settings }: { settings: InstanceSettingsDto }) {
+  const { t } = useTranslation();
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const [dismissed, setDismissed] = useState(lowWaterHintDismissed);
+  const apply = useMutation({
+    mutationFn: () => client.patch("/api/instance-settings", instanceSettingsDtoSchema, { body: { lowWaterFreeRatio: 0 } }),
+    onSuccess: (next) => queryClient.setQueryData(queryKeys.instanceSettings, next),
+  });
+  if (dismissed || settings.lowWaterFreeRatio !== LEGACY_LOW_WATER_FREE_RATIO || settings.envOverridden.includes("lowWaterFreeRatio")) {
+    return null;
+  }
+  const gb = settings.lowWaterFreeGB;
+  return (
+    <div className="mb-3 rounded-md border border-accent/40 bg-accent/5 p-3 text-sm" role="status" data-testid="low-water-hint">
+      <p>{t("settings.storage.lowWaterHint.text", { gb })}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button size="sm" variant="primary" disabled={apply.isPending} data-testid="low-water-hint-apply" onClick={() => apply.mutate()}>
+          {t("settings.storage.lowWaterHint.apply", { gb })}
+        </Button>
+        <Button
+          size="sm"
+          data-testid="low-water-hint-dismiss"
+          onClick={() => {
+            setDismissed(true);
+            try {
+              localStorage.setItem(LOW_WATER_HINT_KEY, "dismissed");
+            } catch {
+              // Private mode without storage: the hint stays away for this visit only.
+            }
+          }}
+        >
+          {t("settings.storage.lowWaterHint.dismiss")}
+        </Button>
+      </div>
+      <RequestError error={apply.error} />
+    </div>
   );
 }
 
@@ -316,6 +394,79 @@ export function cacheDirFailure(error: unknown, t: TFunction): AppError {
   };
 }
 
+/**
+ * The cache line: what Amber cached, the free space left on its volume, and the free space
+ * below which new caches stop, the larger of the absolute floor and the volume ratio. A
+ * directory that is not there has no volume to describe.
+ */
+function cacheUsageText(data: CacheLocationDto, settings: InstanceSettingsDto | undefined, t: TFunction): string {
+  const used = { used: formatBytes(data.usedBytes), count: data.fileCount };
+  if (!data.available) return t("settings.storage.cache.usage", used);
+  const free = formatBytes(data.freeBytes);
+  if (settings === undefined) return t("settings.storage.cache.usageWithFree", { ...used, free });
+  const floor = Math.max(settings.lowWaterFreeGB * BYTES_PER_GB, data.totalBytes * settings.lowWaterFreeRatio);
+  return t("settings.storage.cache.usageWithFloor", { ...used, free, floor: formatBytes(floor) });
+}
+
+/**
+ * Interrupted cache replacements the start-up recovery could not settle: the user keeps the
+ * file now at the path or restores the displaced copy, after which the entry disappears.
+ * Keeping deletes the displaced copy, so it asks first; with no file at the path there is
+ * nothing to keep and only restoring is offered.
+ */
+function CacheHolds({ holds }: { holds: readonly CacheHoldDto[] }) {
+  const { t } = useTranslation();
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const settle = useMutation({
+    mutationFn: ({ assetId, action }: { assetId: string; action: "keep" | "restore" }) =>
+      client.post(`/api/media/cache-location/holds/${encodeURIComponent(assetId)}/${action}`, z.undefined()),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: cacheLocationKey }),
+  });
+  const size = (bytes: number | undefined) => (bytes === undefined ? t("settings.storage.cache.holds.unknownSize") : formatBytes(bytes));
+  return (
+    <div className="mt-3 rounded-md border border-line p-3" data-testid="cache-holds">
+      <p className="text-sm font-medium">{t("settings.storage.cache.holds.title")}</p>
+      <p className="mt-1 text-xs text-muted">{t("settings.storage.cache.holds.intro")}</p>
+      <ul className="mt-2 flex flex-col divide-y divide-line">
+        {holds.map((hold) => (
+          <li key={hold.assetId} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="cache-hold">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{hold.title ?? hold.fileName}</span>
+              <span className="block truncate font-mono text-xs text-muted">{hold.fileName}</span>
+            </span>
+            <span className="text-xs text-muted">
+              {hold.currentSizeBytes === undefined
+                ? t("settings.storage.cache.holds.currentMissing")
+                : t("settings.storage.cache.holds.current", { size: formatBytes(hold.currentSizeBytes) })}
+            </span>
+            <span className="text-xs text-muted">{t("settings.storage.cache.holds.displaced", { size: size(hold.displacedSizeBytes) })}</span>
+            {hold.currentSizeBytes === undefined ? null : (
+              <ConfirmButton
+                label={t("settings.storage.cache.holds.keep")}
+                message={t("settings.storage.cache.holds.keepConfirm", { fileName: hold.fileName })}
+                variant="danger"
+                disabled={settle.isPending}
+                testId={`cache-hold-keep-${hold.assetId}`}
+                onConfirm={() => settle.mutate({ assetId: hold.assetId, action: "keep" })}
+              />
+            )}
+            <Button
+              size="sm"
+              disabled={settle.isPending}
+              data-testid={`cache-hold-restore-${hold.assetId}`}
+              onClick={() => settle.mutate({ assetId: hold.assetId, action: "restore" })}
+            >
+              {t("settings.storage.cache.holds.restore")}
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <RequestError error={settle.error} />
+    </div>
+  );
+}
+
 /** Where the user moves the cache to: a picked folder or back to the data directory. */
 type CacheTarget = { kind: "move"; picked: PickedFile } | { kind: "default" };
 
@@ -335,6 +486,8 @@ function CacheLocationBlock() {
     refetchInterval: (query) => (cacheMigrating(query.state.data) ? CACHE_MIGRATION_REFRESH_MS : false),
   });
   const data = location.data;
+  // Only for the free-space floor in the usage line; without it the line just leaves the floor out.
+  const instance = useInstanceSettings();
   const busy = cacheMigrating(data);
   const wasBusy = useRef(false);
   useEffect(() => {
@@ -375,13 +528,16 @@ function CacheLocationBlock() {
           <p className="mb-2 font-mono text-sm break-all" data-testid="cache-path">
             {data.path}
           </p>
-          <p className="text-sm">{t("settings.storage.cache.usage", { used: formatBytes(data.usedBytes), max: formatBytes(data.maxBytes), count: data.fileCount })}</p>
+          <p className="text-sm" data-testid="cache-usage">
+            {cacheUsageText(data, instance.data, t)}
+          </p>
           {data.available ? null : (
             <div className="mt-2 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert" data-testid="cache-unavailable">
               <p className="font-medium text-danger">{t("settings.storage.cache.unavailable")}</p>
               <p className="mt-1">{t("settings.storage.cache.unavailableHint")}</p>
             </div>
           )}
+          {data.holds.length === 0 ? null : <CacheHolds holds={data.holds} />}
           {data.migration?.phase === "copying" ? (
             <p className="mt-2 text-sm" role="status" data-testid="cache-progress">
               {t("settings.storage.cache.copying", {

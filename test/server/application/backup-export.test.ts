@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { TarBackupArchiveWriter } from "../../../src/server/adapters/backup/archive-writer.ts";
+import { StagedDatabase } from "../../../src/server/adapters/sqlite/restore-store.ts";
 import { MediaAssetService } from "../../../src/server/application/media-assets.ts";
 import { NoteService } from "../../../src/server/application/notes.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
@@ -348,6 +349,41 @@ describe("BackupExportService", () => {
       expect(availability(library.cache.assetId)).toBe(includeCache ? "available" : "evicted");
     } finally {
       snapshot.close();
+    }
+  });
+
+  it("exports a library whose revisions were folded and deleted, and the snapshot passes the restore checks", async () => {
+    const { h, library, stack, target, request } = await setup();
+    const { contentId, fixture } = library;
+    h.contents.setPrimary(LOCAL, contentId, fixture.corrected.revision.id);
+    const edit = (baseRevisionId: string) => {
+      const base = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, baseRevisionId));
+      h.transcripts.putDraft(LOCAL, contentId, {
+        baseRevisionId,
+        segments: base.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: `${segment.text}!`, sourceSegmentIds: [segment.id] })),
+      });
+      const primary = h.repository.withTransaction((scope) => scope.contents.get(LOCAL.userId, contentId)?.primaryTranscriptRevisionId) as string;
+      return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primary });
+    };
+    const first = edit(fixture.corrected.revision.id);
+    const second = edit(first.id);
+    expect(second.parentRevisionId).toBe(fixture.corrected.revision.id);
+    const third = edit(second.id);
+    h.contents.setPrimary(LOCAL, contentId, fixture.corrected.revision.id);
+    h.transcripts.deleteRevision(LOCAL, third.id, { withDescendants: false });
+    expect(countRows(h.db, "transcript_revision", "content_id = ?", contentId)).toBe(3);
+
+    const { jobId } = stack.service.start(request({ includeOriginals: false, includeCache: false }));
+    expect((await settled(stack, jobId)).status).toBe("succeeded");
+    const entries = await readArchive(target);
+    const snapshotFile = join(stack.destinationDir, "check.sqlite");
+    writeFileSync(snapshotFile, entries.find((entry) => entry.path === "database.sqlite")?.bytes ?? Buffer.alloc(0));
+    const staged = StagedDatabase.open(snapshotFile);
+    try {
+      expect(() => staged.verify()).not.toThrow();
+      expect(staged.unresolvedMarkers()).toBe(0);
+    } finally {
+      staged.close();
     }
   });
 

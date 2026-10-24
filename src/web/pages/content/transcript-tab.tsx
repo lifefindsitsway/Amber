@@ -3,7 +3,7 @@ import { CheckCircle2, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Spar
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
-import { contentDtoSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
+import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { isMarked, isOnlyPunctuationChange, joinReading, readingSeparator } from "../../../shared/reading.ts";
@@ -22,11 +22,25 @@ import { notesBySegment, type SentenceNote } from "../../notes/note-anchor.ts";
 import { useOptionalNotesUi } from "../../notes/note-ui-context.tsx";
 import { useContentNotes } from "../../notes/queries.ts";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { AsrBanner } from "./asr-banner.tsx";
 import { ChapterOutline } from "./chapter-outline.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, readableRevisions, readerRows, segmentAt, useChapters, useRevisions, useSegments, type Paragraph, type ReaderRow } from "./content-data.ts";
+import {
+  contentKeys,
+  readableRevisions,
+  readerRows,
+  revisionGroups,
+  segmentAt,
+  useChapters,
+  useRevisions,
+  useSegments,
+  visibleRevisions,
+  type Paragraph,
+  type ReaderRow,
+} from "./content-data.ts";
 import { DraftEditor } from "./draft-editor.tsx";
 import { revisionBasis, revisionLabel } from "./labels.ts";
+import { RevisionActions } from "./revision-actions-dialog.tsx";
 import { useLocatedSegment } from "./same-sentence.ts";
 import { useSentenceMenu } from "./sentence-menu.tsx";
 import { VirtualRows, type VirtualRowsHandle } from "./virtual-rows.tsx";
@@ -64,15 +78,25 @@ export function TranscriptTab() {
   const [params, setParams] = useSearchParams();
   const revisions = useRevisions(page.content.id);
   const [editing, setEditing] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   if (revisions.isPending) return <Loading />;
   if (revisions.isError) {
     return revisions.error instanceof ApiError ? <ErrorView error={revisions.error.error} /> : <EmptyState title={t("common.state.loadFailed")} />;
   }
-  const readable = readableRevisions(revisions.data.revisions);
+  const all = revisions.data.revisions;
+  const readable = readableRevisions(all);
   const primaryId = revisions.data.primaryTranscriptRevisionId;
   const requested = params.get("revision");
-  const revision = readable.find((item) => item.id === requested) ?? readable.find((item) => item.id === primaryId) ?? readable.at(-1);
+  // A link to a revision that no longer exists says so instead of silently showing another one.
+  const missing = requested !== null && !all.some((item) => item.id === requested);
+  const groups = revisionGroups(readable, primaryId);
+  const revision =
+    readable.find((item) => item.id === requested) ??
+    readable.find((item) => item.id === primaryId) ??
+    visibleRevisions(readable, primaryId).at(-1) ??
+    readable.at(-1);
   if (revision === undefined) {
     return <EmptyState title={t("contentView.transcript.empty")} hint={t("contentView.transcript.emptyHint")} />;
   }
@@ -81,25 +105,99 @@ export function TranscriptTab() {
     next.set("revision", id);
     setParams(next, { replace: true });
   };
+  const unpick = (): void => {
+    const next = new URLSearchParams(params);
+    next.delete("revision");
+    setParams(next, { replace: true });
+  };
   if (editing) {
     return <DraftEditor base={revision} primaryRevisionId={primaryId} onClose={() => setEditing(false)} />;
   }
+  // A shown revision that sits behind a toggle (a deep link, say) opens that toggle.
+  const historyOpen = showHistory || groups.history.has(revision.id);
+  const archivedOpen = showArchived || groups.archived.has(revision.id);
+  const toggles: RevisionToggles = {
+    historyCount: groups.history.size,
+    historyOpen,
+    setHistoryOpen: (open) => {
+      setShowHistory(open);
+      if (!open && groups.history.has(revision.id)) unpick();
+    },
+    archivedCount: groups.archived.size,
+    archivedOpen,
+    setArchivedOpen: (open) => {
+      setShowArchived(open);
+      if (!open && groups.archived.has(revision.id)) unpick();
+    },
+  };
   return (
     <TranscriptReader
       revision={revision}
-      revisions={readable}
+      revisions={visibleRevisions(readable, primaryId, { showHistory: historyOpen, showArchived: archivedOpen, include: [revision.id] })}
+      readable={readable}
       primaryId={primaryId}
       search={params.get("search") ?? ""}
+      missing={missing}
+      toggles={toggles}
       onPick={pick}
+      onDeleted={unpick}
       onEdit={() => setEditing(true)}
     />
   );
 }
 
+/** The state of the 「历史手动修订」 and 「显示已归档」 toggles beside a version picker. */
+export interface RevisionToggles {
+  historyCount: number;
+  historyOpen: boolean;
+  setHistoryOpen: (open: boolean) => void;
+  archivedCount: number;
+  archivedOpen: boolean;
+  setArchivedOpen: (open: boolean) => void;
+}
+
+/** The two toggles; each appears only when it has something to reveal. */
+export function RevisionToggleBar(props: { toggles: RevisionToggles }) {
+  const { t } = useTranslation();
+  const { toggles } = props;
+  return (
+    <>
+      {toggles.historyCount > 0 ? (
+        <label className="flex items-center gap-1 text-xs">
+          <input
+            type="checkbox"
+            checked={toggles.historyOpen}
+            onChange={(event) => toggles.setHistoryOpen(event.target.checked)}
+            data-testid="revision-history-toggle"
+          />
+          {t("contentView.revisions.historyToggle", { count: toggles.historyCount })}
+        </label>
+      ) : null}
+      {toggles.archivedCount > 0 ? (
+        <label className="flex items-center gap-1 text-xs">
+          <input
+            type="checkbox"
+            checked={toggles.archivedOpen}
+            onChange={(event) => toggles.setArchivedOpen(event.target.checked)}
+            data-testid="revision-archived-toggle"
+          />
+          {t("contentView.revisions.archivedToggle", { count: toggles.archivedCount })}
+        </label>
+      ) : null}
+    </>
+  );
+}
+
 function TranscriptReader(props: {
-  revision: TranscriptRevisionDto;
-  revisions: TranscriptRevisionDto[];
+  revision: TranscriptRevisionListItemDto;
+  /** The revisions the picker lists. */
+  revisions: TranscriptRevisionListItemDto[];
+  /** Every revision a reader may open, listed or not: labels and 「基于」 resolve against these. */
+  readable: TranscriptRevisionListItemDto[];
   primaryId: string | undefined;
+  missing: boolean;
+  toggles: RevisionToggles;
+  onDeleted: () => void;
   /** The query a search hit opened the page with; its terms are marked in the text. */
   search: string;
   onPick: (id: string) => void;
@@ -165,7 +263,8 @@ function TranscriptReader(props: {
       await queryClient.invalidateQueries({ queryKey: searchKeys.all });
     },
   });
-  const canSetPrimary = revision.id !== props.primaryId && revision.kind !== "translated";
+  // An archived revision has to be restored before it can be current.
+  const canSetPrimary = revision.id !== props.primaryId && revision.kind !== "translated" && !revision.archived;
 
   // 定位原文 from a detached note popover: scroll this reader to the sentence when it shows that revision.
   useEffect(
@@ -195,21 +294,24 @@ function TranscriptReader(props: {
 
   return (
     <div ref={menuTarget} className="flex h-full min-h-0 flex-col" data-revision-id={revision.id} data-explainable data-notes>
+      <AsrBanner contentId={page.content.id} revisions={props.readable} primaryId={props.primaryId} />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
         <select
           aria-label={t("contentView.transcript.version")}
           className="h-7 max-w-80 rounded border border-line bg-surface px-1 text-xs"
           value={revision.id}
           onChange={(event) => props.onPick(event.target.value)}
-          title={revisionBasis(revision, props.revisions, t)}
+          title={revisionBasis(revision, props.readable, t)}
           data-testid="transcript-version"
         >
           {props.revisions.map((item) => (
-            <option key={item.id} value={item.id} title={revisionBasis(item, props.revisions, t)}>
-              {revisionLabel(item, props.primaryId, t, undefined, props.revisions)}
+            <option key={item.id} value={item.id} title={revisionBasis(item, props.readable, t)}>
+              {revisionLabel(item, props.primaryId, t, undefined, props.readable)}
             </option>
           ))}
         </select>
+        <RevisionActions contentId={page.content.id} revision={revision} revisions={props.readable} primaryId={props.primaryId} onDeleted={props.onDeleted} />
+        <RevisionToggleBar toggles={props.toggles} />
         <label className="flex items-center gap-1 text-xs">
           <input type="checkbox" checked={showChanges} disabled={revision.parentRevisionId === undefined} onChange={(event) => setShowChanges(event.target.checked)} />
           {t("contentView.transcript.showChanges")}
@@ -231,7 +333,7 @@ function TranscriptReader(props: {
           </Button>
         )}
         <ChapterOutline entries={outline} onPick={(index) => reader.current?.scrollToIndex(index, "start")} />
-        <Button size="sm" variant="ghost" onClick={props.onEdit} disabled={segments.data === undefined}>
+        <Button size="sm" variant="ghost" onClick={props.onEdit} disabled={segments.data === undefined || revision.archived}>
           <Pencil size={14} />
           {t("common.action.edit")}
         </Button>
@@ -272,6 +374,7 @@ function TranscriptReader(props: {
           <span className="rounded bg-emerald-500/15 px-1">{t("contentView.transcript.changeUser")}</span>
         </div>
       ) : null}
+      {props.missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
       {currentChapters?.stale === true ? (
         <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-chapters-stale">

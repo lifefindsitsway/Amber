@@ -145,7 +145,7 @@ describe("exporting a subtitled video in the desktop client", () => {
     await exportBilingual();
     expect((await screen.findByTestId("burn-save-state")).textContent).toContain("已保存到 D:\\视频\\第一讲.mp4");
     const post = calls.find((call) => call.path === "/api/contents/c1/burn");
-    expect(post?.body).toEqual({ revisionId: "r1", translationRevisionId: "t1", mode: "bilingual", delivery: "hard", container: "mp4", style: STYLE });
+    expect(post?.body).toEqual({ revisionId: "r1", sourceAssetId: "a1", translationRevisionId: "t1", mode: "bilingual", delivery: "hard", container: "mp4", style: STYLE });
     expect(post?.headers["idempotency-key"]).toBeTruthy();
     expect(fakeShell.saveBurnOutput).toHaveBeenCalledWith(GRANT, "第一讲.mp4");
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/media/m1"]);
@@ -392,5 +392,38 @@ describe("re-transcribing", () => {
     await waitFor(() => expect(button.disabled).toBe(true));
     fireEvent.change(select, { target: { value: key("a1", "fun-asr") } });
     expect(button.disabled).toBe(false);
+  });
+});
+
+describe("SubtitlesTab version list", () => {
+  const asr = revision("r1", { kind: "asr", createdAt: 1 });
+  const m0 = revision("m0", { kind: "manual", parentRevisionId: "r1", createdAt: 2 });
+  const m1 = revision("m1", { kind: "manual", parentRevisionId: "r1", createdAt: 3 });
+  const later = revision("r2", { kind: "asr", createdAt: 9 });
+
+  function routes(list: ReturnType<typeof revision>[]) {
+    return {
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "m1", revisions: list } },
+      ...Object.fromEntries(list.map((item) => [`GET /api/transcript/revisions/${item.id}/segments`, { body: { revision: item, items: [] } }])),
+    };
+  }
+
+  it("lists one manual revision, reveals history on demand, and shows the ASR banner", async () => {
+    mockApi(routes([asr, m0, m1, later]));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const version = (await screen.findByTestId("subtitles-version")) as HTMLSelectElement;
+    expect([...version.options].map((option) => option.value)).toEqual(["r1", "m1", "r2"]);
+    fireEvent.click(screen.getByTestId("revision-history-toggle"));
+    await waitFor(() => expect([...version.options].map((option) => option.value)).toEqual(["r1", "m0", "m1", "r2"]));
+    expect(await screen.findByTestId("asr-banner")).toBeTruthy();
+    expect(screen.getByTestId("revision-actions")).toBeTruthy();
+  });
+
+  it("says a linked revision no longer exists", async () => {
+    mockApi(routes([asr, m1]));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles&revision=gone", path: "/contents/:id" });
+    expect((await screen.findByTestId("revision-missing")).textContent).toBe("版本不存在或已删除");
+    expect(((await screen.findByTestId("subtitles-version")) as HTMLSelectElement).value).toBe("m1");
   });
 });

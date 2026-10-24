@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MediaAsset } from "../../../../src/server/domain/media-asset.ts";
 import { BOB_TOKEN, createLocalContent, createTaskOfKind, LOCAL, LOCAL_TOKEN } from "../../../fixtures/pipeline/harness.ts";
@@ -11,6 +12,7 @@ afterEach(async () => {
 });
 
 const BODY = Buffer.from(Array.from({ length: 1000 }, (_, index) => index % 251));
+const BODY_DIGEST = `sha256:${createHash("sha256").update(BODY).digest("hex")}`;
 
 async function withAsset(kind: MediaAsset["kind"], extra: Partial<MediaAsset> = {}) {
   const s = createMediaStack();
@@ -92,12 +94,43 @@ describe("GET / HEAD /api/media/:assetId [server]", () => {
 });
 
 describe("DELETE /api/media/:assetId", () => {
-  it("evicts a platform cache, keeping its row as evicted", async () => {
-    const { s, asset } = await withAsset("platform_cache");
+  it("evicts a platform cache, keeping its row as evicted, once its file proves to be the registered one", async () => {
+    const { s, asset } = await withAsset("platform_cache", { fingerprint: BODY_DIGEST });
     const { app } = await s.app("local");
     expect((await app.inject({ method: "DELETE", url: `/api/media/${asset.id}`, headers: auth })).statusCode).toBe(204);
     expect(s.h.repository.withTransaction((scope) => scope.mediaAssets.get(LOCAL.userId, asset.id))?.availability).toBe("evicted");
     expect(await s.stores.cache.stat(asset.storageRef)).toBeNull();
+    // Deleting it again touches nothing, not even a newer file under the name.
+    await s.stores.cache.writeAtomic(asset.storageRef, Buffer.from("a newer cache"));
+    expect((await app.inject({ method: "DELETE", url: `/api/media/${asset.id}`, headers: auth })).statusCode).toBe(204);
+    expect(await s.stores.cache.stat(asset.storageRef)).not.toBeNull();
+  });
+
+  it("keeps a cache whose file differs from its fingerprint, or that has none, with cache_file_foreign", async () => {
+    for (const fingerprint of [undefined, "sha256:0000"]) {
+      const { s, asset } = await withAsset("platform_cache", fingerprint === undefined ? {} : { fingerprint });
+      const { app } = await s.app("local");
+      const refused = await app.inject({ method: "DELETE", url: `/api/media/${asset.id}`, headers: auth });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error.code).toBe("conflict.cache_file_foreign");
+      expect(s.h.repository.withTransaction((scope) => scope.mediaAssets.get(LOCAL.userId, asset.id))?.availability).toBe("available");
+      expect(await s.stores.cache.stat(asset.storageRef)).not.toBeNull();
+    }
+  });
+
+  it("evicts a cache whose file is already gone, and never removes a file another available row holds", async () => {
+    const gone = await withAsset("platform_cache", { fingerprint: BODY_DIGEST });
+    await gone.s.stores.cache.remove(gone.asset.storageRef);
+    const goneApp = (await gone.s.app("local")).app;
+    expect((await goneApp.inject({ method: "DELETE", url: `/api/media/${gone.asset.id}`, headers: auth })).statusCode).toBe(204);
+
+    const { s, asset, contentId } = await withAsset("platform_cache", { fingerprint: BODY_DIGEST });
+    const sharer: MediaAsset = { ...asset, id: s.h.newId(), contentId };
+    // Two rows at one path cannot happen through Amber; if it ever does, the file stays.
+    s.h.repository.withTransaction((scope) => scope.mediaAssets.insert(sharer));
+    const { app } = await s.app("local");
+    expect((await app.inject({ method: "DELETE", url: `/api/media/${asset.id}`, headers: auth })).statusCode).toBe(204);
+    expect(await s.stores.cache.stat(asset.storageRef)).not.toBeNull();
   });
 
   it("removes a managed upload with its row", async () => {

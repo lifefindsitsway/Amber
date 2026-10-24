@@ -159,6 +159,8 @@ describe("YtDlp.run", () => {
 describe("classifyYtDlpFailure", () => {
   // One stderr line per pattern, in the table's order, taken from the pinned release's messages.
   const SAMPLES: Array<[string, string]> = [
+    ["disk_low", "ERROR: unable to write data: [Errno 28] No space left on device"],
+    ["disk_low", "ERROR: Postprocessing: Conversion failed! ENOSPC"],
     ["paid_content", "ERROR: [youtube] abc: This video is only available to Music Premium members"],
     ["paid_content", "ERROR: [BiliBili] BV1: This video is for premium members only"],
     ["auth_required", "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."],

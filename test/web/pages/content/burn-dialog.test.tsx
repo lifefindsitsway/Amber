@@ -9,6 +9,8 @@ import {
   burnRequest,
   burnSources,
   burnSourceVideo,
+  burnSourceVideos,
+  defaultBurnSource,
   unsupportedStreams,
   videoFormat,
 } from "../../../../src/web/pages/content/burn-dialog.tsx";
@@ -82,6 +84,15 @@ describe("burn sources", () => {
     expect(burnSourceVideo([cacheOld, cacheNew, audio])).toEqual({ asset: cacheNew, kind: "cache" });
     expect(burnSourceVideo([{ ...upload, availability: "missing" }, cacheOld])).toEqual({ asset: cacheOld, kind: "cache" });
     expect(burnSourceVideo([audio])).toBeUndefined();
+    // Caches go by quality first, unknown last, and by age within one quality.
+    const hd = asset("hd", { quality: "1080", createdAt: 1 });
+    const hdNew = asset("hd-new", { quality: "1080", createdAt: 4 });
+    const unknown = asset("unk", { quality: "", createdAt: 8 });
+    expect(burnSourceVideos([unknown, cacheOld, hd, hdNew]).map((source) => source.asset.id)).toEqual(["hd-new", "hd", "unk", "c-old"]);
+    expect(burnSourceVideo([unknown, hd])?.asset.id).toBe("hd");
+    const sources = burnSourceVideos([upload, hd, unknown]);
+    expect(defaultBurnSource(sources, "unk")?.asset.id).toBe("unk");
+    expect(defaultBurnSource(sources, undefined)?.asset.id).toBe("up");
     expect(videoFormat(upload)).toBe("MKV");
     expect(videoFormat(cacheNew)).toBe("WEBM");
     expect(videoFormat({ mimeType: "video/x-matroska" })).toBe("MKV");
@@ -106,7 +117,9 @@ describe("BurnDialog", () => {
   const ME = { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } };
   const SOURCE = asset("a1", { kind: "external_local", localPath: "D:\\Videos\\第一讲.mp4", sizeBytes: 3 * 1024 * 1024 });
 
-  function renderDialog(options: { media?: MediaAssetDto[]; revisions?: TranscriptRevisionDto[]; burn?: Parameters<typeof mockApi>[0][string] } = {}) {
+  function renderDialog(
+    options: { media?: MediaAssetDto[]; revisions?: TranscriptRevisionDto[]; burn?: Parameters<typeof mockApi>[0][string]; playingAssetId?: string } = {},
+  ) {
     const api = mockApi({ "GET /api/auth/me": ME, "POST /api/contents/c1/burn": options.burn ?? { status: 202, body: { taskId: "t7" } } });
     const page: ContentPageState = {
       content: contentDetail({ media: options.media ?? [SOURCE] }) as ContentDetailDto,
@@ -130,6 +143,7 @@ describe("BurnDialog", () => {
           open
           onOpenChange={onOpenChange}
           onStarted={onStarted}
+          playingAssetId={options.playingAssetId}
         />
       </ContentPageProvider>,
     );
@@ -152,7 +166,9 @@ describe("BurnDialog", () => {
     await waitFor(() => expect((within(dialog).getByLabelText("仅译文") as HTMLInputElement).checked).toBe(true));
     expect((within(dialog).getByTestId("burn-translation") as HTMLSelectElement).value).toBe("t2");
     expect((within(dialog).getByTestId("burn-original") as HTMLSelectElement).value).toBe("r1");
-    expect(within(dialog).getByTestId("burn-source-video").textContent).toBe("源视频：原文件 · MP4");
+    const source = within(dialog).getByTestId("burn-source") as HTMLSelectElement;
+    expect(source.value).toBe("a1");
+    expect([...source.options].map((option) => option.textContent)).toEqual(["原文件 · MP4 · 3.0 MB"]);
     expect(within(dialog).getByTestId("burn-style-summary").textContent).toContain("译文 40 号");
     fireEvent.click(await startEnabled(dialog));
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t7"));
@@ -163,6 +179,7 @@ describe("BurnDialog", () => {
       delivery: "hard",
       container: "mp4",
       style: { appearance, placement },
+      sourceAssetId: "a1",
     });
   });
 
@@ -220,13 +237,53 @@ describe("BurnDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("names a cache source and cannot start without a video", async () => {
-    const first = renderDialog({ media: [asset("c1", { displayName: "第一讲.webm", mimeType: "video/webm" })] });
-    expect(within(first.dialog).getByTestId("burn-source-video").textContent).toBe("源视频：本地缓存 · WEBM");
-    await startEnabled(first.dialog);
-    first.unmount();
-    const second = renderDialog({ media: [asset("aud", { mimeType: "audio/mpeg" })] });
-    expect(within(second.dialog).getByTestId("burn-source-video").textContent).toBe("没有可用的视频：请先缓存视频，或重新关联原文件。");
-    expect((within(second.dialog).getByTestId("burn-start") as HTMLButtonElement).disabled).toBe(true);
+  it("offers the original and every cached quality, starting from the one the player shows", async () => {
+    const hd = asset("v1080", { displayName: "第一讲 [1080P].mp4", quality: "1080", sizeBytes: 1.2 * 1024 ** 3 });
+    const sd = asset("v720", { displayName: "第一讲 [720P].webm", mimeType: "video/webm", quality: "720", sizeBytes: 300 * 1024 ** 2 });
+    const audio = asset("aud", { mimeType: "audio/mpeg" });
+    const playing = renderDialog({ media: [sd, SOURCE, audio, hd], playingAssetId: "v720" });
+    const select = within(playing.dialog).getByTestId("burn-source") as HTMLSelectElement;
+    expect([...select.options].map((option) => [option.value, option.textContent])).toEqual([
+      ["a1", "原文件 · MP4 · 3.0 MB"],
+      ["v1080", "本地缓存 · 1080P · MP4 · 1.2 GB"],
+      ["v720", "本地缓存 · 720P · WEBM · 300.0 MB"],
+    ]);
+    expect(select.value).toBe("v720");
+    fireEvent.click(within(playing.dialog).getByLabelText("软字幕轨", { exact: false }));
+    expect(within(playing.dialog).getByTestId("burn-estimated-size").textContent).toBe("预计大小：约 300.0 MB");
+    // The size estimate and the request follow the choice.
+    fireEvent.change(select, { target: { value: "v1080" } });
+    expect(within(playing.dialog).getByTestId("burn-estimated-size").textContent).toBe("预计大小：约 1.2 GB");
+    fireEvent.click(await startEnabled(playing.dialog));
+    await waitFor(() => expect(playing.calls.find((call) => call.method === "POST")?.body).toMatchObject({ delivery: "soft", sourceAssetId: "v1080" }));
+    playing.unmount();
+
+    // Nothing playing: the original first, else the highest quality.
+    const idle = renderDialog({ media: [sd, SOURCE, hd], playingAssetId: "gone" });
+    expect((within(idle.dialog).getByTestId("burn-source") as HTMLSelectElement).value).toBe("a1");
+    idle.unmount();
+    const cachesOnly = renderDialog({ media: [sd, hd] });
+    expect((within(cachesOnly.dialog).getByTestId("burn-source") as HTMLSelectElement).value).toBe("v1080");
+    await startEnabled(cachesOnly.dialog);
+    cachesOnly.unmount();
+
+    const none = renderDialog({ media: [audio] });
+    expect(within(none.dialog).queryByTestId("burn-source")).toBeNull();
+    expect(within(none.dialog).getByTestId("burn-source-video").textContent).toBe("没有可用的视频：请先缓存视频，或重新关联原文件。");
+    expect((within(none.dialog).getByTestId("burn-start") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers one manual original: the one the corrected primary descends from", async () => {
+    // r0 (asr) ← m1 ← r1 (corrected, primary) ; r0 ← m0, an earlier edit off the primary's line
+    const revisions = [
+      revision("r0", { kind: "asr", createdAt: 1 }),
+      revision("m0", { kind: "manual", parentRevisionId: "r0", createdAt: 2 }),
+      revision("m1", { kind: "manual", parentRevisionId: "r0", createdAt: 3 }),
+      revision("r1", { kind: "corrected", parentRevisionId: "m1", createdAt: 4 }),
+    ];
+    const { dialog } = renderDialog({ revisions });
+    const select = within(dialog).getByTestId("burn-original") as HTMLSelectElement;
+    await waitFor(() => expect([...select.options].map((option) => option.value)).toEqual(["r0", "m1", "r1"]));
+    expect(select.value).toBe("r1");
   });
 });

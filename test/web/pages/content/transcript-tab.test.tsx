@@ -6,7 +6,7 @@ import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { changedSegments } from "../../../../src/web/pages/content/transcript-tab.tsx";
-import { CITED_SEGMENT_ID, contentRoutes, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
+import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
@@ -592,5 +592,152 @@ describe("TranscriptTab 设为当前", () => {
     fireEvent.click(await screen.findByTestId("transcript-set-primary"));
     await waitFor(() => expect(screen.getAllByText(/找不到/).length).toBeGreaterThan(0));
     expect(screen.getByTestId("transcript-set-primary")).toBeTruthy();
+  });
+});
+
+describe("TranscriptTab version list: history, archive, delete, missing links and the ASR banner", () => {
+  // r1 (asr) ← m1 ← m2 (primary); r1 ← m0 ; archived platform p1
+  const asr = revision("r1", { kind: "asr", createdAt: 1 });
+  const m0 = revision("m0", { kind: "manual", parentRevisionId: "r1", createdAt: 2, deletable: true });
+  const m1 = revision("m1", { kind: "manual", parentRevisionId: "r1", createdAt: 3, descendantIds: ["m2"], blockers: { children: 1, draft: 0, notes: 2, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 } });
+  const m2 = revision("m2", { kind: "manual", parentRevisionId: "m1", createdAt: 4 });
+  const p1 = revision("p1", { kind: "platform", createdAt: 5, archived: true, archivedAt: 6 });
+
+  function routes(list: ReturnType<typeof revision>[], primary: string, extra: Parameters<typeof mockApi>[0] = {}) {
+    const segments = Object.fromEntries(list.map((item) => [`GET /api/transcript/revisions/${item.id}/segments`, { body: { revision: item, items: SEGMENTS } }]));
+    return {
+      ...contentRoutes(),
+      ...segments,
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: primary, revisions: list } },
+      ...extra,
+    };
+  }
+
+  async function open(route: string, table: Parameters<typeof mockApi>[0]) {
+    const api = mockApi(table);
+    renderApp(<ContentPage />, { route, path: "/contents/:id" });
+    await screen.findByTestId("transcript-reader");
+    return api;
+  }
+  const options = () => [...(screen.getByTestId("transcript-version") as HTMLSelectElement).options].map((option) => option.value);
+
+  it("lists one manual revision and reveals the rest behind the toggles", async () => {
+    await open("/contents/c1?tab=transcript", routes([asr, m0, m1, m2, p1], "m2"));
+    await waitFor(() => expect(options()).toEqual(["r1", "m2"]));
+    const history = screen.getByTestId("revision-history-toggle") as HTMLInputElement;
+    expect(history.closest("label")?.textContent).toBe("历史手动修订（2）");
+    expect(screen.getByTestId("revision-archived-toggle").closest("label")?.textContent).toBe("显示已归档（1）");
+    fireEvent.click(history);
+    await waitFor(() => expect(options()).toEqual(["r1", "m0", "m1", "m2"]));
+    fireEvent.click(screen.getByTestId("revision-archived-toggle"));
+    await waitFor(() => expect(options()).toEqual(["r1", "m0", "m1", "m2", "p1"]));
+    expect([...(screen.getByTestId("transcript-version") as HTMLSelectElement).options].at(-1)?.textContent).toContain("已归档");
+  });
+
+  it("opens the toggle a deep link needs and says so when the linked revision no longer exists", async () => {
+    await open("/contents/c1?tab=transcript&revision=m0", routes([asr, m0, m1, m2, p1], "m2"));
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("m0"));
+    expect((screen.getByTestId("revision-history-toggle") as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId("revision-missing")).toBeNull();
+    expect(screen.queryByTestId("transcript-set-primary")).not.toBeNull();
+  });
+
+  it("falls back to the current version with a notice for a deleted revision", async () => {
+    await open("/contents/c1?tab=transcript&revision=gone", routes([asr, m2], "m2"));
+    expect((await screen.findByTestId("revision-missing")).textContent).toBe("版本不存在或已删除");
+    expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("m2");
+  });
+
+  it("does not offer 设为当前 on an archived revision", async () => {
+    await open("/contents/c1?tab=transcript&revision=p1", routes([asr, m2, p1], "m2"));
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("p1"));
+    expect((screen.getByTestId("revision-archived-toggle") as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByTestId("transcript-set-primary")).toBeNull();
+  });
+
+  it("archives the picked revision from its menu, and the current one offers neither action", async () => {
+    const api = await open(
+      "/contents/c1?tab=transcript&revision=m0",
+      routes([asr, m0, m2], "m2", { "PUT /api/transcript/revisions/m0/archived": { body: { ...m0, archived: true, archivedAt: 9 } } }),
+    );
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("m0"));
+    fireEvent.keyDown(screen.getByTestId("revision-actions"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("revision-archive"));
+    await waitFor(() => expect(api.calls.some((call) => call.method === "PUT" && call.path === "/api/transcript/revisions/m0/archived")).toBe(true));
+    expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ archived: true });
+
+    fireEvent.change(screen.getByTestId("transcript-version"), { target: { value: "m2" } });
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("m2"));
+    fireEvent.keyDown(screen.getByTestId("revision-actions"), { key: "Enter" });
+    expect((await screen.findByTestId("revision-archive")).getAttribute("data-disabled")).not.toBeNull();
+    expect(screen.getByTestId("revision-delete").getAttribute("data-disabled")).not.toBeNull();
+    expect(screen.getByTestId("revision-actions-hint").textContent).toContain("当前稿");
+  });
+
+  it("offers only archiving for an ASR original", async () => {
+    await open("/contents/c1?tab=transcript&revision=r1", routes([asr, m2], "m2"));
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("r1"));
+    fireEvent.keyDown(screen.getByTestId("revision-actions"), { key: "Enter" });
+    await screen.findByTestId("revision-archive");
+    expect(screen.queryByTestId("revision-delete")).toBeNull();
+  });
+
+  it("deletes a revision with its descendants after listing them and its blockers", async () => {
+    const api = await open(
+      "/contents/c1?tab=transcript&revision=m1",
+      routes([asr, m1, m2, revision("r9", { kind: "corrected", parentRevisionId: "r1", createdAt: 7 })], "r9", { "DELETE /api/transcript/revisions/m1": { status: 204 } }),
+    );
+    await waitFor(() => expect((screen.getByTestId("transcript-version") as HTMLSelectElement).value).toBe("m1"));
+    fireEvent.keyDown(screen.getByTestId("revision-actions"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("revision-delete"));
+    const dialog = await screen.findByTestId("revision-delete-dialog");
+    expect(within(dialog).getByTestId("revision-blocker-children").textContent).toBe("基于它的版本 1 个");
+    expect(within(dialog).getByTestId("revision-blocker-notes").textContent).toBe("笔记 2 条");
+    expect((within(dialog).getByTestId("revision-delete-confirm") as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByTestId("revision-archive-instead")).toBeTruthy();
+    fireEvent.click(within(dialog).getByTestId("revision-delete-descendants"));
+    expect(within(dialog).getByTestId("revision-delete-set").querySelectorAll("li")).toHaveLength(2);
+    expect(within(dialog).queryByTestId("revision-blocker-children")).toBeNull();
+    // Notes on m1 still block.
+    expect((within(dialog).getByTestId("revision-delete-confirm") as HTMLButtonElement).disabled).toBe(true);
+    expect(api.calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("shows the ASR banner while the user's own transcript is current, switches to it or remembers the dismissal", async () => {
+    const later = revision("r5", { kind: "asr", createdAt: new Date(2026, 9, 20, 9, 5).getTime() });
+    const api = await open("/contents/c1?tab=transcript", routes([asr, m2, later], "m2", { "PUT /api/contents/c1/primary-transcript": { body: contentDetail() } }));
+    const banner = await screen.findByTestId("asr-banner");
+    expect(banner.textContent).toContain("已生成新的转录稿（10-20 09:05），当前稿仍是「手动修订");
+    fireEvent.click(screen.getByTestId("asr-banner-set-primary"));
+    await waitFor(() => expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ revisionId: "r5" }));
+    fireEvent.click(screen.getByTestId("asr-banner-dismiss"));
+    await waitFor(() => expect(screen.queryByTestId("asr-banner")).toBeNull());
+    expect(localStorage.getItem("amber.transcript.asrBanner.c1")).toBe("r5");
+  });
+
+  it("shows the ASR banner over an imported primary when a newer ASR original exists", async () => {
+    const imported = revision("i1", { kind: "imported", createdAt: 2 });
+    const later = revision("r5", { kind: "asr", createdAt: new Date(2026, 9, 20, 9, 5).getTime() });
+    const api = await open("/contents/c1?tab=transcript", routes([asr, imported, later], "i1", { "PUT /api/contents/c1/primary-transcript": { body: contentDetail() } }));
+    const banner = await screen.findByTestId("asr-banner");
+    expect(banner.textContent).toContain("已生成新的转录稿（10-20 09:05），当前稿仍是「导入字幕");
+    fireEvent.click(screen.getByTestId("asr-banner-set-primary"));
+    await waitFor(() => expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ revisionId: "r5" }));
+  });
+
+  it("lists no manual revision and no history toggle when the Content has none", async () => {
+    const fixed = revision("c1", { kind: "corrected", parentRevisionId: "r1", createdAt: 2 });
+    const imported = revision("i1", { kind: "imported", createdAt: 3 });
+    await open("/contents/c1?tab=transcript", routes([asr, fixed, imported], "c1"));
+    await waitFor(() => expect(options()).toEqual(["r1", "c1", "i1"]));
+    expect(screen.queryByTestId("revision-history-toggle")).toBeNull();
+    expect(screen.queryByText(/历史手动修订/)).toBeNull();
+  });
+
+  it("keeps a dismissed banner closed for that revision only", async () => {
+    localStorage.setItem("amber.transcript.asrBanner.c1", "r5");
+    const later = revision("r5", { kind: "asr", createdAt: 10 });
+    await open("/contents/c1?tab=transcript", routes([asr, m2, later], "m2"));
+    expect(screen.queryByTestId("asr-banner")).toBeNull();
   });
 });

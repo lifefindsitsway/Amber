@@ -20,7 +20,7 @@ import { processContentRequestSchema, regenerateSummaryRequestSchema } from "../
 import { termsSection } from "../../domain/terminology.ts";
 import type { TranscriptRevision } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
-import type { StageExecutionContext, StageExecutor, StageOutcome } from "../executor.ts";
+import { assertBaseRevisionExists, type StageExecutionContext, type StageExecutor, type StageOutcome } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
 import { digestOf, generateWithRepair, runRollup, storedDataError, type RollupGroup } from "./rollup-runner.ts";
 
@@ -111,6 +111,7 @@ export class SummaryStageExecutor implements StageExecutor {
       return {
         resultJson: { revisionId, mode: "single", reasons: generated.degraded ? ["citation_degraded"] : [] },
         publish: (scope) => {
+          assertBaseRevisionExists(scope, owner, content.id, revision.id);
           const stored = scope.summaries.insertRevision(owner, {
             contentId: content.id,
             templateId: templateRef.id,
@@ -175,6 +176,7 @@ export class SummaryStageExecutor implements StageExecutor {
     return {
       resultJson: { revisionId, mode: "rolling", groups: groups.length, reasons: outcome.degraded ? ["citation_degraded"] : [] },
       publish: (scope) => {
+        assertBaseRevisionExists(scope, owner, content.id, revision.id);
         const stored = scope.summaries.insertRevision(owner, {
           contentId: content.id,
           templateId: templateRef.id,

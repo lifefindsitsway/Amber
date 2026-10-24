@@ -315,7 +315,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
     auth: PlatformCredential | undefined,
     options: { maxHeight: number },
     signal: AbortSignal,
-  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number }> {
+  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
     const { value } = await this.guestFirst(auth, (cookies) =>
       inspectVideo(this.options.ytDlp, {
         url: watchUrl(ref.platformContentId),

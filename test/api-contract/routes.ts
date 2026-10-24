@@ -48,7 +48,10 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "PUT", path: "/contents/:id/primary-transcript", modes: BOTH },
   { method: "GET", path: "/contents/:id/transcript/draft", modes: BOTH },
   { method: "PUT", path: "/contents/:id/transcript/draft", modes: BOTH },
+  { method: "DELETE", path: "/contents/:id/transcript/draft", modes: BOTH },
   { method: "POST", path: "/contents/:id/transcript/draft/commit", modes: BOTH },
+  { method: "PUT", path: "/transcript/revisions/:rid/archived", modes: BOTH },
+  { method: "DELETE", path: "/transcript/revisions/:rid", modes: BOTH },
   { method: "POST", path: "/contents/:id/transcript/proofread", modes: BOTH },
   { method: "POST", path: "/contents/:id/transcript/retranscribe", modes: BOTH },
   { method: "GET", path: "/transcript/segments/:sid/map", modes: BOTH },
@@ -102,6 +105,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   // media
   { method: "GET", path: "/media/:assetId", modes: ["server"] },
   { method: "HEAD", path: "/media/:assetId", modes: ["server"] },
+  { method: "POST", path: "/contents/:id/cache-media/inspect", modes: ["local"] },
   { method: "POST", path: "/contents/:id/cache-media", modes: ["local"] },
   { method: "DELETE", path: "/media/:assetId", modes: BOTH },
   { method: "PUT", path: "/media/:assetId/relink", modes: ["local"] },
@@ -109,6 +113,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/media/:assetId/save-grant", modes: ["local"] },
   { method: "GET", path: "/media/cache-location", modes: ["local"] },
   { method: "PUT", path: "/media/cache-location", modes: ["local"] },
+  { method: "POST", path: "/media/cache-location/holds/:assetId/keep", modes: ["local"] },
+  { method: "POST", path: "/media/cache-location/holds/:assetId/restore", modes: ["local"] },
   // summary templates
   { method: "GET", path: "/summary-templates", modes: BOTH },
   { method: "POST", path: "/summary-templates", modes: BOTH },

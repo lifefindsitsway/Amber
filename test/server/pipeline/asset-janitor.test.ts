@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import type { Task } from "../../../src/server/domain/task.ts";
 import { AssetJanitor } from "../../../src/server/pipeline/asset-janitor.ts";
+import { CacheHoldRegistry } from "../../../src/server/pipeline/cache-holds.ts";
+import { CachePathLocks } from "../../../src/server/pipeline/cache-path-locks.ts";
+import { SWAP_RECORD_FILE, writeSwapRecord } from "../../../src/server/pipeline/cache-swap.ts";
 import type { Logger } from "../../../src/server/ports/logger.ts";
 import type { ProcessingStatus, TaskKind } from "../../../src/shared/enums.ts";
 import { createLocalContent, createTaskOfKind, LOCAL, silentLogger, stageRunsOf, taskOf } from "../../fixtures/pipeline/harness.ts";
@@ -24,6 +28,8 @@ function stack(): MediaStack {
 async function put(s: MediaStack, ref: string, text = ref): Promise<void> {
   await s.files.writeAtomic(ref, Buffer.from(text));
 }
+
+const digestOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 function registerAsset(s: MediaStack, asset: Partial<MediaAsset> & Pick<MediaAsset, "id" | "contentId" | "kind">): MediaAsset {
   const full: MediaAsset = {
@@ -184,9 +190,15 @@ describe("asset janitor", () => {
     const janitor = new AssetJanitor({ repository: s.h.repository, media: s.stores, bus: s.h.bus, logger });
     const contentId = createLocalContent(s.h);
     const cache = (id: string, storageRef: string, availability: MediaAsset["availability"]) =>
-      registerAsset(s, { id, contentId, kind: "platform_cache", storageRef, mimeType: "video/mp4", retentionPolicy: "evictable", availability });
+      registerAsset(s, {
+        id, contentId, kind: "platform_cache", storageRef, mimeType: "video/mp4", retentionPolicy: "evictable", availability,
+        sizeBytes: Buffer.byteLength(id), fingerprint: digestOf(Buffer.from(id)),
+      });
     const live = cache("live", "media/第一讲.mp4", "available");
     const leftover = cache("leftover", "media/第一讲 (2).mp4", "evicted");
+    // An evicted row's name, now holding another file of the same size: not Amber's to remove.
+    const replaced = cache("replaced", "media/第三讲.mp4", "evicted");
+    await s.stores.cache.writeAtomic(replaced.storageRef, Buffer.from("REPLACED"));
     // Re-cached under a name an evicted row once had: the available row wins.
     cache("old-name", "media/Lecture.mp3", "evicted");
     const reused = cache("reused", "media/Lecture.mp3", "available");
@@ -201,14 +213,14 @@ describe("asset janitor", () => {
 
     await janitor.sweep();
     expect(existsSync(join(s.stores.cache.directory(), ".amber-tmp"))).toBe(false);
-    expect(await s.stores.cache.list("media")).toEqual(["media/Lecture.mp3", "media/我的笔记.mp4", "media/第一讲.mp4"].sort());
+    expect(await s.stores.cache.list("media")).toEqual(["media/Lecture.mp3", "media/我的笔记.mp4", "media/第一讲.mp4", "media/第三讲.mp4"].sort());
     expect(existsSync(join(s.stores.cache.directory(), "notes.txt"))).toBe(true);
     expect(existsSync(join(s.stores.cache.directory(), "第二讲.mp4.partial"))).toBe(false);
     // Rows are never touched by the sweep of the cache directory.
-    expect(assetsOf(s, contentId)).toEqual(["leftover", "live", "old-name", "reused"]);
-    expect(infos.find((entry) => entry.message === "cache_unknown_file")?.fields).toEqual({ count: 1 });
+    expect(assetsOf(s, contentId)).toEqual(["leftover", "live", "old-name", "replaced", "reused"]);
+    expect(infos.find((entry) => entry.message === "cache_unknown_file")?.fields).toEqual({ count: 2 });
     expect(JSON.stringify(infos)).not.toContain("我的笔记");
-    expect(infos.find((entry) => entry.message === "asset_sweep_done")?.fields).toMatchObject({ cache: { partials: 1, scratch: 1, leftovers: 1, unknown: 1 } });
+    expect(infos.find((entry) => entry.message === "asset_sweep_done")?.fields).toMatchObject({ cache: { partials: 1, scratch: 1, leftovers: 1, unknown: 2 } });
   });
 
   it("leaves files waiting in the pending-file queue to it: no orphan removal, no unknown count", async () => {
@@ -237,7 +249,8 @@ describe("asset janitor", () => {
   it("sweeps a custom cache directory instead of the default one once the cache has moved", async () => {
     const s = stack();
     const contentId = createLocalContent(s.h);
-    const leftover = registerAsset(s, { id: "gone", contentId, kind: "platform_cache", storageRef: "media/Gone.mp4", mimeType: "video/mp4", retentionPolicy: "evictable", availability: "evicted" });
+    // A row without fingerprint, as earlier builds may have left: its size alone identifies the file.
+    const leftover = registerAsset(s, { id: "gone", contentId, kind: "platform_cache", storageRef: "media/Gone.mp4", mimeType: "video/mp4", retentionPolicy: "evictable", availability: "evicted", sizeBytes: 3 });
     const root = join(tempDataDir("amber-janitor-cache-"), "media");
     mkdirSync(root);
     s.stores.cache.setRoot(root);
@@ -275,5 +288,111 @@ describe("asset janitor", () => {
     await s.janitor.sweep();
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+
+  it("recovers interrupted replacements first, holds what it cannot settle, and the sweep never removes a held directory", async () => {
+    const s = createMediaStack();
+    open.push(s);
+    const holds = new CacheHoldRegistry();
+    const muxer = { inspect: async () => ({ container: "mp4", streams: [] }) };
+    const janitor = new AssetJanitor({ repository: s.h.repository, media: s.stores, bus: s.h.bus, logger: silentLogger, swaps: { holds, locks: new CachePathLocks() }, muxer });
+    const scratch = (id: string) => join(s.stores.cache.directory(), ".amber-tmp", id);
+    // Nothing moved yet: discarded. The target is a stranger: held.
+    for (const [id, target] of [["01DISCARD", undefined], ["01HOLD", "a stranger"]] as const) {
+      mkdirSync(scratch(id), { recursive: true });
+      writeFileSync(join(scratch(id), "download.mp4"), "new");
+      await writeSwapRecord(scratch(id), { v: 1, targetRef: `media/${id}.mp4`, newAssetId: id, newSizeBytes: 3, newDigest: digestOf(Buffer.from("new")) });
+      if (target !== undefined) {
+        writeFileSync(join(s.stores.cache.directory(), `${id}.mp4`), target);
+      }
+    }
+    expect(await janitor.recoverSwaps()).toEqual({ discarded: 1, held: 1 });
+    expect(existsSync(scratch("01DISCARD"))).toBe(false);
+    expect(holds.isHeld("media/01HOLD.mp4")).toBe(true);
+    await janitor.sweep();
+    expect(existsSync(join(scratch("01HOLD"), SWAP_RECORD_FILE))).toBe(true);
+    expect(existsSync(join(scratch("01HOLD"), "download.mp4"))).toBe(true);
+  });
+
+  it("recovers the replacements of a cache directory unmounted at start-up once it is mounted, before admitting cache Tasks, once", async () => {
+    const s = createMediaStack();
+    open.push(s);
+    const holds = new CacheHoldRegistry();
+    const janitor = new AssetJanitor({ repository: s.h.repository, media: s.stores, bus: s.h.bus, logger: silentLogger, swaps: { holds, locks: new CachePathLocks() } });
+    const root = join(tempDataDir("amber-janitor-late-"), "media");
+    s.stores.cache.setRoot(root);
+    expect(await janitor.recoverSwaps()).toEqual({});
+    // Nothing to look at yet: no recovery, nothing refused.
+    await janitor.ensureSwapsRecovered();
+    const plant = async (id: string) => {
+      const dir = join(root, ".amber-tmp", id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "download.mp4"), "new");
+      await writeSwapRecord(dir, { v: 1, targetRef: `media/${id}.mp4`, newAssetId: id, newSizeBytes: 3, newDigest: digestOf(Buffer.from("new")) });
+      writeFileSync(join(root, `${id}.mp4`), "a stranger");
+    };
+    await plant("01LATEHOLD");
+    await janitor.ensureSwapsRecovered();
+    expect(holds.isHeld("media/01LATEHOLD.mp4")).toBe(true);
+    // Once settled, later admissions do not walk the scratch area again.
+    await plant("01AFTERWARDS");
+    await janitor.ensureSwapsRecovered();
+    expect(holds.isHeld("media/01AFTERWARDS.mp4")).toBe(false);
+  });
+
+  it("never sweeps a held path, and compares leftover names as Windows does", async () => {
+    const s = createMediaStack();
+    open.push(s);
+    const holds = new CacheHoldRegistry();
+    const janitor = new AssetJanitor({ repository: s.h.repository, media: s.stores, bus: s.h.bus, logger: silentLogger, swaps: { holds, locks: new CachePathLocks() } });
+    const contentId = createLocalContent(s.h);
+    const evictedAt = (id: string, ref: string, bytes: Buffer) =>
+      registerAsset(s, { id, contentId, kind: "platform_cache", storageRef: ref, mimeType: "video/mp4", retentionPolicy: "evictable", availability: "evicted", sizeBytes: bytes.length, fingerprint: digestOf(bytes) });
+    const bytes = Buffer.from("old bytes");
+    evictedAt("held", "media/Held.mp4", bytes);
+    await s.stores.cache.writeAtomic("media/Held.mp4", bytes);
+    holds.add({ scratchId: "01HELD", record: { v: 1, targetRef: "media/held.MP4", newAssetId: "01HELD", newSizeBytes: 1, newDigest: "sha256:00" } });
+    // Evicted under this spelling, available under another: the same file on Windows.
+    evictedAt("cased", "media/Cased.mp4", bytes);
+    registerAsset(s, { id: "cased-live", contentId, kind: "platform_cache", storageRef: "media/cased.mp4", mimeType: "video/mp4", retentionPolicy: "evictable", sizeBytes: bytes.length, fingerprint: digestOf(bytes) });
+    await s.stores.cache.writeAtomic("media/Cased.mp4", bytes);
+    await janitor.sweep();
+    expect(existsSync(s.stores.cache.pathOf("media/Held.mp4"))).toBe(true);
+    expect(existsSync(s.stores.cache.pathOf("media/Cased.mp4"))).toBe(true);
+  });
+
+  it("reads the quality tier of video caches an earlier build never verified or recorded as an encoded height; an unreadable one becomes an unknown quality", async () => {
+    const s = createMediaStack();
+    open.push(s);
+    const contentId = createLocalContent(s.h);
+    const probed: string[] = [];
+    const muxer = {
+      inspect: async (path: string) => {
+        probed.push(path);
+        if (path.endsWith("broken.mp4")) {
+          throw new Error("ffprobe failed");
+        }
+        if (path.endsWith("encoded.mp4")) {
+          return { container: "mov,mp4", streams: [{ index: 0, type: "video" as const, codec: "h264", width: 1920, height: 1072 }] };
+        }
+        return { container: "mov,mp4", streams: [{ index: 0, type: "video" as const, codec: "h264", width: 1280, height: 714 }] };
+      },
+    };
+    const janitor = new AssetJanitor({ repository: s.h.repository, media: s.stores, bus: s.h.bus, logger: silentLogger, muxer });
+    const cache = (id: string, fields: Partial<MediaAsset>) =>
+      registerAsset(s, { id, contentId, kind: "platform_cache", storageRef: `media/${id}.mp4`, mimeType: "video/mp4", retentionPolicy: "evictable", ...fields });
+    cache("legacy", { quality: "1080" });
+    cache("broken", { quality: "480" });
+    cache("verified", { quality: "1080", qualityVerified: true });
+    // An earlier candidate build recorded the encoded height rather than the tier.
+    cache("encoded", { quality: "1072", qualityVerified: true });
+    cache("audio", { mimeType: "audio/mpeg", storageRef: "media/audio.mp3" });
+    for (const id of ["legacy", "broken", "verified", "encoded"]) await s.stores.cache.writeAtomic(`media/${id}.mp4`, Buffer.from(id));
+    await janitor.sweep();
+    const rows = Object.fromEntries(
+      s.h.repository.withTransaction((scope) => scope.mediaAssets.listByContent(LOCAL.userId, contentId)).map((asset) => [asset.id, [asset.quality, asset.qualityVerified]]),
+    );
+    expect(rows).toEqual({ legacy: ["720", true], broken: ["", true], verified: ["1080", true], encoded: ["1080", true], audio: [undefined, undefined] });
+    expect(probed.map((path) => path.split(/[\\/]/u).at(-1)).sort()).toEqual(["broken.mp4", "encoded.mp4", "legacy.mp4"]);
   });
 });

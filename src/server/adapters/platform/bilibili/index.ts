@@ -296,7 +296,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     auth: PlatformCredential | undefined,
     options: { maxHeight: number },
     signal: AbortSignal,
-  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number }> {
+  ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
     const part = await this.part(ref, auth, signal);
     const cookies = await auth?.cookies();
     return inspectVideo(this.options.ytDlp, {

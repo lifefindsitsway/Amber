@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { CACHE_DIR_NAME } from "../../../shared/app-identity.ts";
 import type { AtomicWriteSource, FileStore, StoredFile, WriteAtomicOptions } from "../../ports/file-store.ts";
 import { hashFile, isNotFound, PARTIAL_SUFFIX, writeAtomically } from "./atomic-write.ts";
-import { dataDirDiskUsage } from "./disk-usage.ts";
+import { dataDirDiskUsage, type DataDirDiskUsageOptions } from "./disk-usage.ts";
 
 /** Ref segments are ids and fixed names; anything else (separators, `..`, drive letters) is rejected. */
 const REF_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
@@ -14,9 +14,14 @@ export class LocalFileStore implements FileStore {
   private readonly root: string;
   private readonly usage: Pick<FileStore, "diskUsage">;
 
-  constructor(root: string) {
+  /**
+   * `usageExclude` lists the subtrees `diskUsage()` leaves out of the data directory's total:
+   * the media cache directory, which has no size cap of its own and must not count against
+   * the data directory's.
+   */
+  constructor(root: string, options: { usageExclude?: DataDirDiskUsageOptions["exclude"] } = {}) {
     this.root = root;
-    this.usage = dataDirDiskUsage(root);
+    this.usage = dataDirDiskUsage(root, options.usageExclude === undefined ? {} : { exclude: options.usageExclude });
   }
 
   pathOf(ref: string): string {

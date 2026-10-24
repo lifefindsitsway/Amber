@@ -16,7 +16,7 @@ vi.mock("../../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
 }));
 
 // The page state as handed to its provider, so a test can call what other parts of the page call.
-const pageState = vi.hoisted(() => ({ current: undefined as { openSubtitleEditor(): void } | undefined }));
+const pageState = vi.hoisted(() => ({ current: undefined as { openSubtitleEditor(): void; playingAssetId?: string | undefined } | undefined }));
 vi.mock("../../../../src/web/pages/content/content-context.tsx", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../../src/web/pages/content/content-context.tsx")>();
   return {
@@ -44,20 +44,43 @@ function media(id: string, overrides: Partial<MediaAssetDto>): MediaAssetDto {
 }
 
 const CACHE_DIR = "C:\\Users\\me\\AppData\\Roaming\\Amber\\media";
-const CACHE_LOCATION = { path: CACHE_DIR, isDefault: true, available: true, fileCount: 0, usedBytes: 0, maxBytes: 1 };
 const VIDEO_CACHE = media("v1", {
   kind: "platform_cache",
   retentionPolicy: "evictable",
-  displayName: "第一讲.mp4",
-  localPath: `${CACHE_DIR}\\第一讲.mp4`,
+  displayName: "第一讲 [1080P].mp4",
+  localPath: `${CACHE_DIR}\\第一讲 [1080P].mp4`,
+  quality: "1080",
 });
 const AUDIO_CACHE = media("m1", {
   kind: "platform_cache",
   mimeType: "audio/mpeg",
   retentionPolicy: "evictable",
-  displayName: "第一讲 (2).mp3",
-  localPath: `${CACHE_DIR}\\第一讲 (2).mp3`,
+  displayName: "第一讲.mp3",
+  localPath: `${CACHE_DIR}\\第一讲.mp3`,
 });
+const DISK = { cache: { freeBytes: 100 * 1024 ** 3, lowWaterBytes: 10 * 1024 ** 3 }, ok: true };
+/** An inspection answer: nothing replaced, overwritten or blocking. */
+function inspection(overrides: Record<string, unknown> = {}) {
+  return {
+    expected: { type: "video", height: 720, ext: "mp4" },
+    expectedFileName: "第一讲 [720P].mp4",
+    replaces: [],
+    foreignFile: false,
+    pendingName: false,
+    recoveryHold: false,
+    disk: DISK,
+    caches: [],
+    ...overrides,
+  };
+}
+const INSPECT = { "POST /api/contents/c1/cache-media/inspect": { body: inspection() } };
+
+/** Inspects, then confirms, the cache request the dialog holds. */
+async function startCache(): Promise<void> {
+  const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
+  fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+  fireEvent.click(await within(dialog).findByTestId("cache-confirm"));
+}
 const EXPIRES_AT = Date.now() + 60_000;
 const SAVE_GRANT = (path: string) => ({ grant: { path, purpose: "cache_save", expiresAt: EXPIRES_AT, sig: "test-signature" } });
 
@@ -385,7 +408,7 @@ describe("ContentPage in the desktop client", () => {
   it("caches a platform video at the chosen height and follows the task", async () => {
     const { calls } = mockApi({
       ...contentRoutes(),
-      "GET /api/media/cache-location": { body: CACHE_LOCATION },
+      ...INSPECT,
       "POST /api/contents/c1/cache-media": { status: 202, body: { taskId: "t5" } },
       "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "cache_media", "running", { progress: 0.5 })], { kind: "cache_media", contentId: "c1" }) },
     });
@@ -398,9 +421,13 @@ describe("ContentPage in the desktop client", () => {
     const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
     const quality = within(dialog).getByTestId("cache-quality") as HTMLSelectElement;
     expect(quality.value).toBe("1080");
-    expect([...quality.options].map((option) => option.textContent)).toEqual(["360p", "480p", "720p", "1080p"]);
+    expect([...quality.options].map((option) => option.textContent)).toEqual(["360P", "480P", "720P", "1080P"]);
     fireEvent.change(quality, { target: { value: "720" } });
-    fireEvent.click(within(dialog).getByTestId("cache-start"));
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    expect((await within(dialog).findByTestId("cache-expected-name")).textContent).toBe("将保存为 第一讲 [720P].mp4（预估，以下载后的实际画质为准）");
+    expect(calls.find((call) => call.path === "/api/contents/c1/cache-media/inspect")?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
+    expect(calls.some((call) => call.path === "/api/contents/c1/cache-media")).toBe(false);
+    fireEvent.click(within(dialog).getByTestId("cache-confirm"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
     expect(await screen.findByTestId("stage-cache_media")).toBeTruthy();
     const post = calls.find((call) => call.path === "/api/contents/c1/cache-media");
@@ -408,10 +435,10 @@ describe("ContentPage in the desktop client", () => {
     expect(post?.headers["idempotency-key"]).toBeTruthy();
   });
 
-  it("caches audio only under a name the user typed, previewing where the file will land", async () => {
+  it("caches audio only under a name the user typed, showing the name the server expects", async () => {
     const { calls } = mockApi({
       ...contentRoutes(),
-      "GET /api/media/cache-location": { body: CACHE_LOCATION },
+      "POST /api/contents/c1/cache-media/inspect": { body: inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "课程第 1 讲.mp3" }) },
       "POST /api/contents/c1/cache-media": { status: 202, body: { taskId: "t5" } },
       "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "cache_media", "running")], { kind: "cache_media", contentId: "c1" }) },
     });
@@ -423,43 +450,28 @@ describe("ContentPage in the desktop client", () => {
     const name = within(dialog).getByTestId("cache-file-name") as HTMLInputElement;
     expect(name.value).toBe("第一讲");
     expect(name.maxLength).toBe(255);
-    const preview = within(dialog).getByTestId("cache-preview");
-    await waitFor(() => expect(preview.textContent).toBe(`将保存为：${CACHE_DIR}\\第一讲.mp4`));
-    expect(within(dialog).getByText(/超过 20 GB 时会先清理最早的缓存/u)).toBeTruthy();
-    expect(within(dialog).getByText(/「 \(2\)」/u)).toBeTruthy();
+    // No size cap on caches any more, and never a numbered name.
+    expect(within(dialog).queryByText(/GB 时会先清理/u)).toBeNull();
+    expect(within(dialog).queryByText(/「 \(2\)」/u)).toBeNull();
 
     fireEvent.click(within(dialog).getByTestId("cache-type-audio"));
     expect(within(dialog).queryByTestId("cache-quality")).toBeNull();
-    expect(preview.textContent).toBe(`将保存为：${CACHE_DIR}\\第一讲.mp3`);
-    // The preview cleans the name as the server will; a name with nothing left falls back.
     fireEvent.change(name, { target: { value: "课程:第 1 讲?.mp3" } });
-    expect(preview.textContent).toBe(`将保存为：${CACHE_DIR}\\课程第 1 讲.mp3`);
-    fireEvent.change(name, { target: { value: " ?? " } });
-    expect(preview.textContent).toBe(`将保存为：${CACHE_DIR}\\未命名内容.mp3`);
-    fireEvent.change(name, { target: { value: "课程:第 1 讲?.mp3" } });
-    // Back to video brings the height tier back.
+    // Back to video brings the height cap back.
     fireEvent.click(within(dialog).getByTestId("cache-type-video"));
     expect(within(dialog).getByTestId("cache-quality")).toBeTruthy();
     fireEvent.click(within(dialog).getByTestId("cache-type-audio"));
-    fireEvent.click(within(dialog).getByTestId("cache-start"));
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    expect((await within(dialog).findByTestId("cache-expected-name")).textContent).toBe("将保存为 课程第 1 讲.mp3");
+    fireEvent.click(within(dialog).getByTestId("cache-confirm"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
     expect(calls.find((call) => call.path === "/api/contents/c1/cache-media")?.body).toEqual({ type: "audio", fileName: "课程:第 1 讲?.mp3" });
-  });
-
-  it("previews just the file name when the cache directory is unknown", async () => {
-    mockApi({ ...contentRoutes(contentDetail({ title: "CON" })) });
-    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
-    const cache = (await screen.findByTestId("cache-media")) as HTMLButtonElement;
-    await waitFor(() => expect(cache.disabled).toBe(false));
-    fireEvent.click(cache);
-    const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
-    await waitFor(() => expect(within(dialog).getByTestId("cache-preview").textContent).toBe("将保存为：CON_.mp4"));
   });
 
   it("says so when a video was asked for but the Content has no picture", async () => {
     mockApi({
       ...contentRoutes(),
-      "GET /api/media/cache-location": { body: CACHE_LOCATION },
+      ...INSPECT,
       "POST /api/contents/c1/cache-media": { status: 202, body: { taskId: "t6" } },
       "GET /api/tasks/t6": {
         body: taskDetail("t6", [stageRun("t6", "cache_media", "succeeded", { progress: 1, reasons: ["audio_only"] })], {
@@ -473,7 +485,7 @@ describe("ContentPage in the desktop client", () => {
     const cache = (await screen.findByTestId("cache-media")) as HTMLButtonElement;
     await waitFor(() => expect(cache.disabled).toBe(false));
     fireEvent.click(cache);
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "缓存本视频" })).getByTestId("cache-start"));
+    await startCache();
     const notice = await screen.findByTestId("cache-audio-only");
     expect(notice.textContent).toContain("该内容没有画面，已缓存为 MP3");
     expect(screen.queryByTestId("tracked-task")).toBeNull();
@@ -484,6 +496,7 @@ describe("ContentPage in the desktop client", () => {
   it("shows no notice when the cache Task got the video it asked for", async () => {
     mockApi({
       ...contentRoutes(),
+      ...INSPECT,
       "POST /api/contents/c1/cache-media": { status: 202, body: { taskId: "t7" } },
       "GET /api/tasks/t7": {
         body: taskDetail("t7", [stageRun("t7", "cache_media", "succeeded", { progress: 1, reasons: [] })], {
@@ -497,7 +510,7 @@ describe("ContentPage in the desktop client", () => {
     const cache = (await screen.findByTestId("cache-media")) as HTMLButtonElement;
     await waitFor(() => expect(cache.disabled).toBe(false));
     fireEvent.click(cache);
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "缓存本视频" })).getByTestId("cache-start"));
+    await startCache();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("tracked-task")).toBeNull());
     expect(screen.queryByTestId("cache-audio-only")).toBeNull();
@@ -512,10 +525,10 @@ describe("ContentPage in the desktop client", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     const save = (await screen.findByTestId("save-cache")) as HTMLButtonElement;
     expect(save.textContent).toBe("另存为…");
-    expect(save.getAttribute("title")).toBe("视频：第一讲.mp4");
+    expect(save.getAttribute("title")).toBe("视频 1080P：第一讲 [1080P].mp4");
     fireEvent.click(save);
     await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledTimes(1));
-    expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(VIDEO_CACHE.localPath as string).grant, "第一讲.mp4");
+    expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(VIDEO_CACHE.localPath as string).grant, "第一讲 [1080P].mp4");
     await waitFor(() => expect(save.disabled).toBe(false));
     expect(screen.queryByTestId("save-cache-saved")).toBeNull();
     fireEvent.click(save);
@@ -528,7 +541,7 @@ describe("ContentPage in the desktop client", () => {
   });
 
   it("offers both caches by file name and saves the one picked", async () => {
-    fakeShell.saveCachedMedia.mockResolvedValue({ savedPath: "D:\\第一讲 (2).mp3" });
+    fakeShell.saveCachedMedia.mockResolvedValue({ savedPath: "D:\\第一讲.mp3" });
     const { calls } = mockApi({
       ...contentRoutes(contentDetail({ media: [AUDIO_CACHE, VIDEO_CACHE] })),
       "POST /api/media/m1/save-grant": { body: SAVE_GRANT(AUDIO_CACHE.localPath as string) },
@@ -536,9 +549,9 @@ describe("ContentPage in the desktop client", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     fireEvent.keyDown(await screen.findByTestId("save-cache"), { key: "Enter" });
     const items = await screen.findAllByRole("menuitem");
-    expect(items.map((item) => item.textContent)).toEqual(["视频：第一讲.mp4", "音频：第一讲 (2).mp3"]);
-    fireEvent.click(screen.getByTestId("save-cache-audio"));
-    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(AUDIO_CACHE.localPath as string).grant, "第一讲 (2).mp3"));
+    expect(items.map((item) => item.textContent)).toEqual(["视频 1080P：第一讲 [1080P].mp4", "音频：第一讲.mp3"]);
+    fireEvent.click(screen.getByTestId("save-cache-m1"));
+    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(AUDIO_CACHE.localPath as string).grant, "第一讲.mp3"));
     expect(await screen.findByTestId("save-cache-saved")).toBeTruthy();
     expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/api/media/m1/save-grant"]);
   });
@@ -608,6 +621,80 @@ describe("ContentPage in the desktop client", () => {
     const player = await screen.findByTestId("player-local");
     expect(player.querySelector("video")?.getAttribute("src")).toBe(`asset://localhost/${encodeURIComponent(VIDEO_CACHE.localPath as string)}`);
     expect(within(player).queryByTestId("player-audio-only")).toBeNull();
+  });
+
+  describe("with several cached qualities", () => {
+    const cacheAt = (id: string, quality: string, createdAt: number) =>
+      media(id, { kind: "platform_cache", retentionPolicy: "evictable", quality, createdAt, displayName: `${id}.mp4`, localPath: `${CACHE_DIR}\\${id}.mp4` });
+    const HD = cacheAt("v1080", "1080", 1);
+    const SD = cacheAt("v720", "720", 2);
+    const OLD = cacheAt("vold", "", 3);
+    const srcOf = (id: string) => `asset://localhost/${encodeURIComponent(`${CACHE_DIR}\\${id}.mp4`)}`;
+
+    async function playLocal(): Promise<HTMLElement> {
+      const local = (await screen.findByTestId("switch-player-local")) as HTMLButtonElement;
+      await waitFor(() => expect(local.disabled).toBe(false));
+      fireEvent.click(local);
+      return screen.findByTestId("player-local");
+    }
+
+    async function pickQuality(player: HTMLElement, assetId: string): Promise<void> {
+      fireEvent.keyDown(within(player).getByTestId("player-quality"), { key: "Enter" });
+      fireEvent.click(within(await within(player).findByTestId("player-quality-menu")).getByTestId(`player-quality-item-${assetId}`));
+    }
+
+    it("plays the best quality, switches to the one picked and keeps it across players", async () => {
+      mockApi(contentRoutes(contentDetail({ media: [SD, OLD, HD] })));
+      renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+      const player = await playLocal();
+      await waitFor(() => expect(player.querySelector("video")?.getAttribute("src")).toBe(srcOf("v1080")));
+      const trigger = await within(player).findByTestId("player-quality");
+      expect(trigger.textContent).toBe("1080P");
+      expect(trigger.closest("[data-control]")?.nextElementSibling?.getAttribute("data-control")).toBe("volume");
+      fireEvent.keyDown(trigger, { key: "Enter" });
+      const menu = await within(player).findByTestId("player-quality-menu");
+      expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["1080P", "720P", "未知画质"]);
+      expect(within(menu).getByTestId("player-quality-item-v1080").getAttribute("aria-checked")).toBe("true");
+      fireEvent.click(within(menu).getByTestId("player-quality-item-v720"));
+      await waitFor(() => expect(player.querySelector("video")?.getAttribute("src")).toBe(srcOf("v720")));
+      expect(within(player).getByTestId("player-quality").textContent).toBe("720P");
+      // The export starts from what the player shows.
+      await waitFor(() => expect(pageState.current?.playingAssetId).toBe("v720"));
+
+      fireEvent.click(screen.getByTestId("switch-player-online"));
+      await waitFor(() => expect(screen.queryByTestId("player-local")).toBeNull());
+      await waitFor(() => expect(pageState.current?.playingAssetId).toBeUndefined());
+      fireEvent.click(screen.getByTestId("switch-player-local"));
+      const again = await screen.findByTestId("player-local");
+      await waitFor(() => expect(again.querySelector("video")?.getAttribute("src")).toBe(srcOf("v720")));
+    });
+
+    it("goes back to the best quality with a notice once the chosen one is deleted", async () => {
+      let media = [SD, OLD, HD];
+      const { calls } = mockApi({
+        ...contentRoutes(),
+        "GET /api/contents/c1": () => ({ body: contentDetail({ media }) }),
+        "DELETE /api/media/v720": () => {
+          media = [OLD, HD];
+          return { status: 204 };
+        },
+      });
+      renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+      const player = await playLocal();
+      await within(player).findByTestId("player-quality");
+      await pickQuality(player, "v720");
+      await waitFor(() => expect(player.querySelector("video")?.getAttribute("src")).toBe(srcOf("v720")));
+
+      fireEvent.click(screen.getByTestId("cache-media"));
+      const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
+      const list = within(dialog).getByTestId("cache-list");
+      expect([...list.querySelectorAll("li")].map((row) => row.firstElementChild?.textContent)).toEqual(["1080P", "720P", "未知画质"]);
+      fireEvent.click(within(list).getByTestId("cache-delete-v720"));
+      fireEvent.click(within(await screen.findByRole("dialog", { name: "删除这份缓存？" })).getByRole("button", { name: "删除" }));
+      expect((await screen.findByTestId("player-quality-notice")).textContent).toContain("所选画质已不可用，已切换到 1080P");
+      await waitFor(() => expect(screen.getByTestId("player-local").querySelector("video")?.getAttribute("src")).toBe(srcOf("v1080")));
+      expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/media/v720"]);
+    });
   });
 
   it("switches between the platform iframe and the cached copy", async () => {
@@ -793,6 +880,7 @@ describe("ContentPage cache progress card", () => {
     let started = 0;
     mockApi({
       ...contentRoutes(),
+      ...INSPECT,
       "POST /api/contents/c1/cache-media": () => {
         started += 1;
         return { status: 202, body: { taskId: started === 1 ? "ta" : "tb" } };
@@ -813,14 +901,14 @@ describe("ContentPage cache progress card", () => {
     const cache = (await screen.findByTestId("cache-media")) as HTMLButtonElement;
     await waitFor(() => expect(cache.disabled).toBe(false));
     fireEvent.click(cache);
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "缓存本视频" })).getByTestId("cache-start"));
+    await startCache();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("tracked-task")).toBeNull());
     expect(screen.queryByTestId("cache-audio-only")).toBeNull();
     expect(localStorage.getItem("amber.cache.dismissed.c1")).toBeNull();
 
     fireEvent.click(cache);
-    fireEvent.click(within(await screen.findByRole("dialog", { name: "缓存本视频" })).getByTestId("cache-start"));
+    await startCache();
     expect(await screen.findByTestId("cache-audio-only")).toBeTruthy();
   });
 });
@@ -955,14 +1043,14 @@ describe("ContentPage toolbar overflow in the desktop client", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     fireEvent.keyDown(await screen.findByTestId("content-menu"), { key: "Enter" });
     const item = await screen.findByTestId("overflow-save-cache");
-    expect(item.textContent).toBe("另存为…视频：第一讲.mp4");
+    expect(item.textContent).toBe("另存为…视频 1080P：第一讲 [1080P].mp4");
     fireEvent.click(item);
-    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(VIDEO_CACHE.localPath as string).grant, "第一讲.mp4"));
+    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(VIDEO_CACHE.localPath as string).grant, "第一讲 [1080P].mp4"));
     expect((await screen.findByTestId("save-cache-saved")).textContent).toBe("已保存到 D:\\视频\\第一讲.mp4");
   });
 
   it("offers both caches in a submenu", async () => {
-    fakeShell.saveCachedMedia.mockResolvedValue({ savedPath: "D:\\第一讲 (2).mp3" });
+    fakeShell.saveCachedMedia.mockResolvedValue({ savedPath: "D:\\第一讲.mp3" });
     mockApi({
       ...contentRoutes(contentDetail({ media: [AUDIO_CACHE, VIDEO_CACHE] })),
       "POST /api/media/m1/save-grant": { body: SAVE_GRANT(AUDIO_CACHE.localPath as string) },
@@ -970,10 +1058,10 @@ describe("ContentPage toolbar overflow in the desktop client", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     fireEvent.keyDown(await screen.findByTestId("content-menu"), { key: "Enter" });
     fireEvent.keyDown(await screen.findByTestId("overflow-save-cache"), { key: "ArrowRight" });
-    const submenu = (await screen.findByTestId("overflow-save-cache-audio")).parentElement as HTMLElement;
-    expect(within(submenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["视频：第一讲.mp4", "音频：第一讲 (2).mp3"]);
-    fireEvent.click(within(submenu).getByTestId("overflow-save-cache-audio"));
-    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(AUDIO_CACHE.localPath as string).grant, "第一讲 (2).mp3"));
+    const submenu = (await screen.findByTestId("overflow-save-cache-m1")).parentElement as HTMLElement;
+    expect(within(submenu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["视频 1080P：第一讲 [1080P].mp4", "音频：第一讲.mp3"]);
+    fireEvent.click(within(submenu).getByTestId("overflow-save-cache-m1"));
+    await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(AUDIO_CACHE.localPath as string).grant, "第一讲.mp3"));
     expect(await screen.findByTestId("save-cache-saved")).toBeTruthy();
   });
 

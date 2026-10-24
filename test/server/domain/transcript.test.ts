@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import {
   checkTranscriptInvariants,
+  deletionOrder,
+  descendantsOf,
   inheritedParagraphStarts,
+  manualMergeChain,
+  remapSourcesThroughChain,
+  revisionBlockers,
+  type RevisionReference,
   revisionTakesPrimary,
   rootRevisionTakesPrimary,
   timingFidelityFor,
@@ -170,5 +176,78 @@ describe("revisionTakesPrimary", () => {
   it("never lets a translation take primary", () => {
     expect(revisionTakesPrimary({ kind: "translated", parentRevisionId: "current" }, undefined)).toBe(false);
     expect(revisionTakesPrimary({ kind: "translated", parentRevisionId: "current" }, primary("asr"))).toBe(false);
+  });
+});
+
+describe("revision lineage helpers", () => {
+  // asr ← corrected ← m1 ← m2 ; corrected ← translated ; asr ← m0
+  const lineage = [
+    { id: "asr", kind: "asr" as const },
+    { id: "corrected", kind: "corrected" as const, parentRevisionId: "asr" },
+    { id: "m0", kind: "manual" as const, parentRevisionId: "asr" },
+    { id: "m1", kind: "manual" as const, parentRevisionId: "corrected" },
+    { id: "translated", kind: "translated" as const, parentRevisionId: "corrected" },
+    { id: "m2", kind: "manual" as const, parentRevisionId: "m1" },
+  ];
+
+  it("lists descendants nearest first without the root", () => {
+    expect(descendantsOf(lineage, "corrected")).toEqual(["m1", "translated", "m2"]);
+    expect(descendantsOf(lineage, "m2")).toEqual([]);
+  });
+
+  it("orders a deletion leaves first", () => {
+    const order = deletionOrder(lineage, new Set(["corrected", "m1", "m2", "translated"]));
+    expect(order.indexOf("m2")).toBeLessThan(order.indexOf("m1"));
+    expect(order.indexOf("m1")).toBeLessThan(order.indexOf("corrected"));
+    expect(order.indexOf("translated")).toBeLessThan(order.indexOf("corrected"));
+    expect(order.at(-1)).toBe("corrected");
+  });
+
+  it("counts a referencing row once and ignores children deleted along", () => {
+    const references: RevisionReference[] = [
+      { category: "children", revisionIds: ["m1"], holderRevisionId: "m2" },
+      { category: "notes", revisionIds: ["m1", "m2"] },
+      { category: "artifacts", revisionIds: ["corrected"] },
+    ];
+    expect(revisionBlockers(references, new Set(["m1"]))).toMatchObject({ children: 1, notes: 1, artifacts: 0 });
+    expect(revisionBlockers(references, new Set(["m1", "m2"]))).toMatchObject({ children: 0, notes: 1, artifacts: 0 });
+  });
+
+  it("folds unreferenced manual revisions up to the first one that must stay", () => {
+    const merged = manualMergeChain("m2", lineage, () => true);
+    expect(merged).toEqual({ chain: ["m2", "m1"], anchorId: "corrected" });
+    // A referenced member stops the chain and becomes the anchor.
+    expect(manualMergeChain("m2", lineage, (id) => id !== "m1")).toEqual({ chain: ["m2"], anchorId: "m1" });
+    // A base with a child other than the chain member below it is kept.
+    const branched = [...lineage, { id: "m3", kind: "manual" as const, parentRevisionId: "m2" }];
+    expect(manualMergeChain("m2", branched, () => true)).toEqual({ chain: [], anchorId: "m2" });
+    // A non-manual base is never folded.
+    expect(manualMergeChain("corrected", lineage, () => true)).toEqual({ chain: [], anchorId: "corrected" });
+    // The callback sees the chain including the candidate.
+    const seen: string[][] = [];
+    manualMergeChain("m2", lineage, (_id, chain) => {
+      seen.push([...chain]);
+      return true;
+    });
+    expect(seen).toEqual([["m2"], ["m2", "m1"]]);
+  });
+
+  it("carries sources up through each folded level, in order and without repeats", () => {
+    const id = (value: string) => value as SegmentId;
+    const levels = [
+      new Map([
+        ["b1", [id("a1")]],
+        ["b2", [id("a1"), id("a2")]],
+        ["b3", []],
+      ]),
+      new Map([
+        ["a1", [id("x1")]],
+        ["a2", [id("x2")]],
+      ]),
+    ];
+    expect(remapSourcesThroughChain([id("b2"), id("b1")], levels)).toEqual(["x1", "x2"]);
+    expect(remapSourcesThroughChain([id("b3")], levels)).toEqual([]);
+    expect(remapSourcesThroughChain([], levels)).toEqual([]);
+    expect(remapSourcesThroughChain([id("b1")], [])).toEqual(["b1"]);
   });
 });

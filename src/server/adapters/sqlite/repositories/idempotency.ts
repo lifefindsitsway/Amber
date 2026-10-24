@@ -21,6 +21,17 @@ export function sqliteIdempotencyRepository(db: SqliteConnection): IdempotencyRe
      ) VALUES (@userId, @route, @key, @requestDigest, @responseStatus, @responseBodyJson, @resourceRefsJson, @createdAt)`,
   );
 
+  // A record is tied to the revisions when any created resource id is one of them or the
+  // response carries one as `transcriptRevisionId`.
+  const deleteReferencing = db.prepare(
+    `DELETE FROM idempotency_record
+     WHERE user_id = @userId
+       AND (
+         EXISTS (SELECT 1 FROM json_each(resource_refs_json) AS ref WHERE ref.value IN (SELECT value FROM json_each(@ids)))
+         OR json_extract(response_body_json, '$.transcriptRevisionId') IN (SELECT value FROM json_each(@ids))
+       )`,
+  );
+
   return {
     get(ownerUserId, route, key): IdempotencyRecord | undefined {
       const row = select.get(ownerUserId, route, key) as IdempotencyRow | undefined;
@@ -39,6 +50,12 @@ export function sqliteIdempotencyRepository(db: SqliteConnection): IdempotencyRe
     },
     insert(record) {
       insert.run({ ...record });
+    },
+    deleteReferencingRevisions(ownerUserId, revisionIds) {
+      if (revisionIds.length === 0) {
+        return 0;
+      }
+      return deleteReferencing.run({ userId: ownerUserId, ids: JSON.stringify(revisionIds) }).changes;
     },
   };
 }

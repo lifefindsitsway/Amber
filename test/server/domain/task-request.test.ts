@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../src/shared/subtitle-style.ts";
 import {
   burnTaskRequestSchema,
+  cacheMediaTaskRequestSchema,
   intentDifferences,
   parseStageInput,
   processContentRequestSchema,
@@ -83,3 +84,16 @@ describe("burn task request schema versions", () => {
     expect(burnTaskRequestSchema.safeParse({ ...v1, delivery: "hard" }).success).toBe(false);
   });
 });
+
+describe("cacheMediaTaskRequestSchema", () => {
+  it("parses every schema version and checks the v3 fields", () => {
+    const v3 = { requestSchemaVersion: 3, kind: "cache_media", type: "video", quality: 720, stem: "课", expectedHeight: 720, assetId: "a", overwrite: { assetId: "b", fileName: "课 [720P].mp4" } };
+    expect(cacheMediaTaskRequestSchema.parse(v3)).toEqual(v3);
+    expect(cacheMediaTaskRequestSchema.parse({ requestSchemaVersion: 2, kind: "cache_media", type: "audio", fileName: "x", assetId: "a" }).requestSchemaVersion).toBe(2);
+    expect(cacheMediaTaskRequestSchema.parse({ requestSchemaVersion: 1, kind: "cache_media", quality: 480 }).requestSchemaVersion).toBe(1);
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, stem: "" }).success).toBe(false);
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, fileName: "x" }).success).toBe(false);
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, expectedHeight: 0 }).success).toBe(false);
+  });
+});
+

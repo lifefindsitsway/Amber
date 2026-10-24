@@ -145,4 +145,23 @@ describe("PlayerView", () => {
     expect(screen.getByTestId("player-subtitles")).toBeTruthy();
     expect(screen.queryByTestId("player-subtitles-iframe-hint")).toBeNull();
   });
+
+  it("gives the quality menu to a cached video only, never to the iframe or an audio-only file", async () => {
+    const sources = [
+      { assetId: "hd", label: "1080p" },
+      { assetId: "sd", label: "720p" },
+    ];
+    const onSelect = vi.fn();
+    const { unmount } = show({ source: YOUTUBE, localSrc: "asset://localhost/hd.mp4", preferLocal: true, localSources: sources, localSourceId: "hd", onSelectLocalSource: onSelect });
+    const player = screen.getByTestId("player-local");
+    expect(player.querySelector("[data-control='quality']")).not.toBeNull();
+    expect(screen.getByTestId("player-quality").textContent).toBe("1080p");
+    unmount();
+    const audio = show({ source: YOUTUBE, localSrc: "asset://localhost/a.mp3", preferLocal: true, localAudioOnly: true, localSources: sources, localSourceId: "hd" });
+    expect(screen.getByTestId("player-local").querySelector("[data-control='quality']")).toBeNull();
+    audio.unmount();
+    show({ source: YOUTUBE, localSources: sources, localSourceId: "hd" });
+    await screen.findByTestId("player-failed");
+    expect(screen.queryByTestId("player-quality")).toBeNull();
+  });
 });

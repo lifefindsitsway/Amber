@@ -188,23 +188,25 @@ const VIDEO_MIME_BY_EXT: Readonly<Record<string, string>> = { mp4: "video/mp4", 
 const VIDEO_BASENAME = "video";
 const scratchIds = monotonicFactory();
 
-/** `--print` output of a format check: announced size (yt-dlp's `NA` when unknown), height, container and video codec. */
-export function parseFormatLine(line: string): { sizeBytes?: number; height?: number; ext?: string; vcodec?: string } | undefined {
+/** `--print` output of a format check: announced size (yt-dlp's `NA` when unknown), height, container, video codec and width. */
+export function parseFormatLine(line: string): { sizeBytes?: number; height?: number; ext?: string; vcodec?: string; width?: number } | undefined {
   if (!line.startsWith(FORMAT_PREFIX)) {
     return undefined;
   }
-  const [size, height, ext, vcodec] = line.slice(FORMAT_PREFIX.length).split(" ");
+  const [size, height, ext, vcodec, width] = line.slice(FORMAT_PREFIX.length).split(" ");
   const number = (text: string | undefined) => (text === undefined || !/^\d+(\.\d+)?$/.test(text) ? undefined : Number(text));
   const text = (value: string | undefined) => (value === undefined || value === "" || value === "NA" ? undefined : value);
   const sizeBytes = number(size);
   const parsedHeight = number(height);
   const parsedExt = text(ext);
   const parsedVcodec = text(vcodec);
+  const parsedWidth = number(width);
   return {
     ...(sizeBytes === undefined ? {} : { sizeBytes }),
     ...(parsedHeight === undefined ? {} : { height: parsedHeight }),
     ...(parsedExt === undefined ? {} : { ext: parsedExt }),
     ...(parsedVcodec === undefined ? {} : { vcodec: parsedVcodec }),
+    ...(parsedWidth === undefined ? {} : { width: parsedWidth }),
   };
 }
 
@@ -223,12 +225,12 @@ function videoSelectionArgs(maxHeight: number): string[] {
 /**
  * One download-free run printing the selected format's `filesize ?? filesize_approx` —
  * yt-dlp derives the approximation from the bitrate and sums both streams of a merged pair
- * (`YoutubeDL.py`) — its height, the container the merge produces and its video codec.
+ * (`YoutubeDL.py`) — its height, the container the merge produces, its video codec and width.
  */
 async function checkVideoFormat(ytDlp: YtDlp, input: VideoSelection): Promise<ReturnType<typeof parseFormatLine>> {
   let selected: ReturnType<typeof parseFormatLine>;
   await ytDlp.run({
-    args: [...videoSelectionArgs(input.maxHeight), "--print", `${FORMAT_PREFIX}%(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s`, input.url],
+    args: [...videoSelectionArgs(input.maxHeight), "--print", `${FORMAT_PREFIX}%(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s`, input.url],
     extractors: input.extractors,
     ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
     signal: input.signal,
@@ -248,7 +250,7 @@ async function checkVideoFormat(ytDlp: YtDlp, input: VideoSelection): Promise<Re
 export async function inspectVideo(
   ytDlp: YtDlp,
   input: VideoSelection,
-): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number }> {
+): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
   const selected = await checkVideoFormat(ytDlp, input);
   const codec = selected?.vcodec?.toLowerCase();
   if (codec === "none" || (codec === undefined && selected?.height === undefined)) {
@@ -265,6 +267,7 @@ export async function inspectVideo(
     mimeType,
     ...(selected?.sizeBytes === undefined ? {} : { sizeBytes: selected.sizeBytes }),
     ...(selected?.height === undefined ? {} : { height: selected.height }),
+    ...(selected?.width === undefined ? {} : { width: selected.width }),
   };
 }
 
@@ -272,8 +275,10 @@ export async function inspectVideo(
  * Downloads a video at most `maxHeight` pixels high to exactly `output.path` (`cache_media`).
  * A first, download-free run (`checkVideoFormat`) reads the selected format's
  * announced size, and a size over `maxBytes` fails with `media_too_large` before anything
- * is fetched. yt-dlp picks the merged file's extension itself, so each run downloads into a
- * private directory of its own inside `output.scratchDir`, which is on the volume of
+ * is fetched. While downloading, yt-dlp is stopped as soon as the bytes received for both
+ * streams together, or an announced total, exceed `maxBytes` (`media_too_large`, nothing
+ * left behind). yt-dlp picks the merged file's extension itself, so each run downloads into
+ * a private directory of its own inside `output.scratchDir`, which is on the volume of
  * `output.path`, and the single result is renamed into place. Progress spans
  * both streams of a merged download.
  */
@@ -299,44 +304,71 @@ export async function downloadVideo(
 
   const dir = join(input.output.scratchDir, scratchIds());
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  // Aborting this controller kills yt-dlp like a cancellation would; `oversize` tells the two apart.
+  const guard = new AbortController();
+  const forward = () => guard.abort(input.signal.reason);
+  input.signal.addEventListener("abort", forward, { once: true });
+  if (input.signal.aborted) {
+    forward();
+  }
+  let oversize: number | undefined;
   try {
     let finished = 0;
     let current = { downloaded: 0, total: 0 };
     let reported = 0;
-    await ytDlp.run({
-      args: [
-        ...selection,
-        "--no-part",
-        "--force-overwrites",
-        "--newline",
-        "--progress-template",
-        PROGRESS_TEMPLATE,
-        "--output",
-        join(dir, `${VIDEO_BASENAME}.%(ext)s`),
-        input.url,
-      ],
-      extractors: input.extractors,
-      ...cookies,
-      signal: input.signal,
-      onStdoutLine: (line) => {
-        if (!line.startsWith(PROGRESS_PREFIX)) {
-          return;
-        }
-        const [downloaded, total, estimate] = line.slice(PROGRESS_PREFIX.length).split(" ").map(Number);
-        const size = Number.isFinite(total) && (total as number) > 0 ? (total as number) : (estimate as number);
-        if (!Number.isFinite(downloaded) || !Number.isFinite(size) || size <= 0) {
-          return;
-        }
-        // The counter restarts when the second stream of a merged pair starts.
-        if ((downloaded as number) < current.downloaded) {
-          finished += current.total;
-        }
-        current = { downloaded: downloaded as number, total: size };
-        const expected = Math.max(selected?.sizeBytes ?? 0, finished + size);
-        reported = Math.max(reported, Math.min(1, (finished + current.downloaded) / expected));
-        input.onProgress(reported);
-      },
-    });
+    try {
+      await ytDlp.run({
+        args: [
+          ...selection,
+          "--no-part",
+          "--force-overwrites",
+          "--newline",
+          "--progress-template",
+          PROGRESS_TEMPLATE,
+          "--output",
+          join(dir, `${VIDEO_BASENAME}.%(ext)s`),
+          input.url,
+        ],
+        extractors: input.extractors,
+        ...cookies,
+        signal: guard.signal,
+        onStdoutLine: (line) => {
+          if (!line.startsWith(PROGRESS_PREFIX) || oversize !== undefined) {
+            return;
+          }
+          const [downloaded, total, estimate] = line.slice(PROGRESS_PREFIX.length).split(" ").map(Number);
+          const received = Number.isFinite(downloaded) ? (downloaded as number) : 0;
+          // The counter restarts when the second stream of a merged pair starts.
+          if (received < current.downloaded) {
+            finished += current.total;
+            current = { downloaded: 0, total: 0 };
+          }
+          const announced = Number.isFinite(total) ? (total as number) : 0;
+          const soFar = finished + Math.max(announced, received);
+          if (soFar > input.maxBytes) {
+            oversize = soFar;
+            guard.abort();
+            return;
+          }
+          const size = Number.isFinite(total) && (total as number) > 0 ? (total as number) : (estimate as number);
+          if (!Number.isFinite(downloaded) || !Number.isFinite(size) || size <= 0) {
+            current = { downloaded: received, total: Math.max(current.total, received) };
+            return;
+          }
+          current = { downloaded: received, total: size };
+          const expected = Math.max(selected?.sizeBytes ?? 0, finished + size);
+          reported = Math.max(reported, Math.min(1, (finished + current.downloaded) / expected));
+          input.onProgress(reported);
+        },
+      });
+    } catch (error) {
+      if (oversize === undefined || input.signal.aborted) {
+        throw error;
+      }
+    }
+    if (oversize !== undefined) {
+      throw tooLarge(oversize, input.maxBytes);
+    }
     const results = (await readdir(dir)).filter((name) => new RegExp(`^${VIDEO_BASENAME}\\.[A-Za-z0-9]+$`).test(name));
     const [name] = results;
     if (name === undefined || results.length > 1) {
@@ -347,6 +379,10 @@ export async function downloadVideo(
     if (mimeType === undefined) {
       throw amberError("media_unsupported_type", `yt-dlp produced a .${ext} file`, { params: { formats: Object.keys(VIDEO_MIME_BY_EXT).join(", ") } });
     }
+    const { size } = await stat(join(dir, name));
+    if (size > input.maxBytes) {
+      throw tooLarge(size, input.maxBytes);
+    }
     await moveFile(join(dir, name), input.output.path);
     return {
       sizeBytes: (await stat(input.output.path)).size,
@@ -354,6 +390,7 @@ export async function downloadVideo(
       ...(selected?.height === undefined ? {} : { height: selected.height }),
     };
   } finally {
+    input.signal.removeEventListener("abort", forward);
     await rm(dir, { recursive: true, force: true });
   }
 }

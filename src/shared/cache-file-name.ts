@@ -4,7 +4,11 @@ import { CACHE_FILE_NAME_MAX_CHARS } from "./defaults.ts";
 /**
  * File names of cached platform media. Shared by the cache
  * dialog's preview and the server, whose result is authoritative. A cache file lies flat in
- * the cache directory as `<stem>.<ext>`; its `storageRef` is `media/<stem>.<ext>`.
+ * the cache directory; its `storageRef` is `media/<file name>`. A video is named
+ * `<stem> [<tier>P].<ext>` after the quality tier of the finished file (see
+ * `cacheQualityTier`), an audio cache `<stem>.mp3`.
+ * Names are never numbered: the same name means the same cache, so a new file replaces the
+ * one it is named like.
  */
 
 /** Extensions a cache file can have, by the container actually produced. */
@@ -24,8 +28,15 @@ export const CACHE_PARTIAL_SUFFIX = ".partial";
  */
 export const WINDOWS_MAX_PATH_UNITS = 259;
 
-/** The longest tail a stem can get on disk: the longest extension plus the partial suffix. */
-const LONGEST_TAIL = `.webm${CACHE_PARTIAL_SUFFIX}`;
+/** The widest quality label the path budget reserves room for. */
+const WIDEST_LABEL = " [2160P]";
+/**
+ * The longest tail a stem can get on disk: the widest quality label, the longest extension
+ * and the partial suffix. Every tier up to 4320 has at most four digits.
+ */
+const LONGEST_TAIL = `${WIDEST_LABEL}.webm${CACHE_PARTIAL_SUFFIX}`;
+/** The label shown in place of a height that is not known yet. */
+const UNKNOWN_HEIGHT_LABEL = "?";
 
 /** Characters Windows refuses in a file name. */
 const FORBIDDEN = /[<>:"/\\|?*]/gu;
@@ -72,32 +83,62 @@ export function sanitizeCacheStem(input: string): string | undefined {
   return unreserve(stem);
 }
 
-/** `stem`, or `stem (n)` for the n-th candidate when the plain name is taken. */
-export function numberedStem(stem: string, n: number): string {
-  return n <= 1 ? stem : `${stem} (${n})`;
-}
-
 /**
- * The n-th candidate stem shortened so that `<dir>\<stem>.webm.partial` stays within
- * `WINDOWS_MAX_PATH_UNITS`; the number suffix is kept whole. `undefined` when not even one
+ * `stem` shortened so that `<dir>\<stem> [2160P].webm.partial` stays within
+ * `WINDOWS_MAX_PATH_UNITS`, never splitting a character. `undefined` when not even one
  * character of the stem fits, i.e. the cache directory itself is too long.
  */
-export function fittedCacheStem(stem: string, n: number, cacheDir: string): string | undefined {
-  const suffix = n <= 1 ? "" : ` (${n})`;
+export function fittedCacheStem(stem: string, cacheDir: string): string | undefined {
   // One more unit for the `_` a device name may get after truncation.
-  const budget = WINDOWS_MAX_PATH_UNITS - cacheDir.length - 1 - suffix.length - LONGEST_TAIL.length - 1;
+  const budget = WINDOWS_MAX_PATH_UNITS - cacheDir.length - 1 - LONGEST_TAIL.length - 1;
   const points = codePoints(stem);
   let units = stem.length;
   while (points.length > 0 && units > budget) {
     units -= (points.pop() as string).length;
   }
   const fitted = trimEnds(points.join(""));
-  return fitted === "" ? undefined : `${unreserve(fitted)}${suffix}`;
+  return fitted === "" ? undefined : unreserve(fitted);
 }
 
-/** The storage ref of a cache file. */
-export function cacheRef(stem: string, ext: CacheExtension): string {
-  return `${CACHE_DIR_NAME}/${stem}.${ext}`;
+/**
+ * The quality tiers a video cache is labelled with, as video platforms name their quality
+ * menus (720P, 1080P, ...).
+ */
+export const CACHE_QUALITY_TIERS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320] as const;
+/** How far above a tier a picture may still be labelled with it (1280×756 is still 720P). */
+const TIER_TOLERANCE = 1.05;
+
+/**
+ * The quality tier of a picture. Its equivalent height is the larger of the short side and
+ * 9/16 of the long side, so landscape, portrait (1080×1920 → 1080) and wide-screen pictures
+ * (1280×534 → 720) are judged alike; the tier is the smallest one the equivalent height stays
+ * within `TIER_TOLERANCE` of (1280×714 → 720, 1920×1072 → 1080). Beyond the largest tier the
+ * equivalent height itself, rounded, is the label. Without a width (a height recorded by an
+ * earlier build) the height alone is the equivalent height. A tier maps to itself.
+ */
+export function cacheQualityTier(height: number, width?: number): number {
+  const equivalent = width === undefined ? height : Math.max(Math.min(width, height), (Math.max(width, height) * 9) / 16);
+  return CACHE_QUALITY_TIERS.find((tier) => equivalent <= tier * TIER_TOLERANCE) ?? Math.round(equivalent);
+}
+
+/** `<stem> [<tier>P]`, or `<stem> [?P]` for a tier not known yet (shown, never written). */
+export function labelledStem(stem: string, tier: number | undefined): string {
+  return `${stem} [${tier === undefined ? UNKNOWN_HEIGHT_LABEL : String(tier)}P]`;
+}
+
+/** The file name of a video cache: `<stem> [<tier>P].<ext>`; `[?P]` when the tier is not known yet. */
+export function videoCacheFileName(stem: string, tier: number | undefined, ext: CacheExtension): string {
+  return `${labelledStem(stem, tier)}.${ext}`;
+}
+
+/** The file name of an audio cache: `<stem>.mp3`. */
+export function audioCacheFileName(stem: string): string {
+  return `${stem}.mp3`;
+}
+
+/** The storage ref of a cache file name (`a [720P].mp4` → `media/a [720P].mp4`). */
+export function cacheRefOf(fileName: string): string {
+  return `${CACHE_DIR_NAME}/${fileName}`;
 }
 
 /** Whether `ref` is a flat cache ref (`media/<name>`). */
@@ -110,11 +151,9 @@ export function cacheFileNameOf(ref: string): string {
   return ref.slice(CACHE_DIR_NAME.length + 1);
 }
 
-/** The stem of a cache ref (`media/a.b.mp4` → `a.b`). */
-export function cacheStemOf(ref: string): string {
-  const name = cacheFileNameOf(ref);
-  const dot = name.lastIndexOf(".");
-  return dot === -1 ? name : name.slice(0, dot);
+/** Windows compares file names case-insensitively; so does every cache name comparison. */
+export function sameCacheFileName(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 /** The extension a cache file gets for the container actually produced. */

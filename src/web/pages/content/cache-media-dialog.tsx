@@ -1,55 +1,103 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CACHE_MEDIA_TYPES, fittedCacheStem, sanitizeCacheStem, type CacheMediaType } from "../../../shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_GB, CACHE_MEDIA_MAX_HEIGHT, DISPLAY_NAME_MAX_CHARS } from "../../../shared/defaults.ts";
-import type { CacheMediaRequest } from "../../../shared/dto/media.ts";
+import { z } from "zod";
+import { CACHE_MEDIA_TYPES, type CacheMediaType } from "../../../shared/cache-file-name.ts";
+import { CACHE_MEDIA_MAX_HEIGHT, DISPLAY_NAME_MAX_CHARS } from "../../../shared/defaults.ts";
+import type { MediaAssetDto } from "../../../shared/dto/content.ts";
+import { cacheMediaInspectDtoSchema, type CacheMediaInspectDto, type CacheMediaRequest } from "../../../shared/dto/media.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import { CACHE_MEDIA_QUALITIES, type CacheMediaQuality } from "../../../shared/enums.ts";
+import { formatBytes } from "../../../shared/units.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
-import { queryKeys } from "../../api/queries.ts";
+import { queryKeys, useUnfinishedTasks } from "../../api/queries.ts";
+import { ConfirmDialog } from "../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
-import { useCacheLocation } from "../../desktop/cached-media.ts";
+import { cacheLocationKey } from "../../desktop/cached-media.ts";
+import { cacheHeight, compareCacheQuality, isAudioOnly, qualityLabel } from "../../player/media-url.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { contentKeys } from "./content-data.ts";
 
 const DEFAULT_QUALITY: CacheMediaQuality = CACHE_MEDIA_QUALITIES.find((quality) => quality === CACHE_MEDIA_MAX_HEIGHT) ?? CACHE_MEDIA_QUALITIES[0];
 
-/** The extension the preview shows; a video without an MP4 source becomes `.webm` on the server. */
-const PREVIEW_EXTENSION: Record<CacheMediaType, string> = { video: "mp4", audio: "mp3" };
+/** The `POST /cache-media` (and `/inspect`) body for a choice; the height cap applies to a video only. */
+export function cacheMediaRequest(type: CacheMediaType, quality: CacheMediaQuality, fileName: string, overwriteAssetId?: string): CacheMediaRequest {
+  const base: CacheMediaRequest = type === "video" ? { type, quality, fileName } : { type, fileName };
+  return overwriteAssetId === undefined ? base : { ...base, overwriteAssetId };
+}
 
-/** The `POST /cache-media` body for a choice; the height tier applies to a video only. */
-export function cacheMediaRequest(type: CacheMediaType, quality: CacheMediaQuality, fileName: string): CacheMediaRequest {
-  return type === "video" ? { type, quality, fileName } : { type, fileName };
+/** Why the inspected request cannot be started; empty when it can. */
+export function cacheBlockers(inspection: CacheMediaInspectDto): Array<"foreignFile" | "pendingName" | "recoveryHold" | "diskLow"> {
+  return [
+    ...(inspection.foreignFile ? (["foreignFile"] as const) : []),
+    ...(inspection.pendingName ? (["pendingName"] as const) : []),
+    ...(inspection.recoveryHold ? (["recoveryHold"] as const) : []),
+    ...(inspection.disk.ok ? [] : (["diskLow"] as const)),
+  ];
+}
+
+/** One cache of the Content as the dialog lists it. */
+export interface CacheRow {
+  assetId: string;
+  type: CacheMediaType;
+  height?: number;
+  fileName: string;
+  sizeBytes: number;
+}
+
+/** The last segment of a local path, Windows or POSIX. */
+function fileNameOf(path: string): string {
+  return path.split(/[\\/]/u).pop() ?? path;
+}
+
+/** The Content's available caches from its media list: video by quality, then audio. */
+export function cacheRowsOf(media: readonly MediaAssetDto[]): CacheRow[] {
+  const caches = media.filter((item) => item.kind === "platform_cache" && item.availability === "available");
+  const rows = (items: MediaAssetDto[], type: CacheMediaType): CacheRow[] =>
+    items.sort(compareCacheQuality).map((item) => {
+      const height = type === "video" ? cacheHeight(item) : undefined;
+      return {
+        assetId: item.id,
+        type,
+        ...(height === undefined ? {} : { height }),
+        fileName: item.displayName ?? (item.localPath === undefined ? item.id : fileNameOf(item.localPath)),
+        sizeBytes: item.sizeBytes,
+      };
+    });
+  return [...rows(caches.filter((item) => !isAudioOnly(item)), "video"), ...rows(caches.filter(isAudioOnly), "audio")];
+}
+
+/** The caches an inspection reported, in the same order as `cacheRowsOf`. */
+function cacheRowsOfInspection(caches: CacheMediaInspectDto["caches"]): CacheRow[] {
+  const order = (row: CacheMediaInspectDto["caches"][number]): number => (row.type === "audio" ? -1 : (row.height ?? 0));
+  return [...caches]
+    .sort((a, b) => order(b) - order(a) || b.createdAt - a.createdAt)
+    .map((row) => ({
+      assetId: row.assetId,
+      type: row.type,
+      ...(row.height === undefined ? {} : { height: row.height }),
+      fileName: row.fileName,
+      sizeBytes: row.sizeBytes,
+    }));
 }
 
 /**
- * Where the cached file will land, as far as the client can tell: the server's cleaning of
- * the name with `untitled` for a name that cleans to nothing, shortened to fit
- * the cache directory when it is known. The server stays authoritative and may append a
- * number when the name is taken.
- */
-export function cachePreviewPath(fileName: string, type: CacheMediaType, untitled: string, cacheDir: string | undefined): string {
-  const stem = sanitizeCacheStem(fileName) ?? sanitizeCacheStem(untitled) ?? untitled;
-  const name = (dir: string | undefined): string => `${(dir === undefined ? undefined : fittedCacheStem(stem, 1, dir)) ?? stem}.${PREVIEW_EXTENSION[type]}`;
-  if (cacheDir === undefined) return name(undefined);
-  // The desktop client reports Windows paths; a POSIX path keeps its own separator.
-  const separator = cacheDir.includes("\\") || !cacheDir.includes("/") ? "\\" : "/";
-  return `${cacheDir.replace(/[\\/]+$/u, "")}${separator}${name(cacheDir)}`;
-}
-
-/**
- * 「缓存本视频」 (desktop client): the user picks a video (height tier) or audio
- * only, and the file name, prefilled with the Content's display title; the dialog previews
- * the path and starts a `cache_media` Task, whose progress the caller follows through
- * `onStarted`.
+ * 「缓存本视频」 (desktop client): the user picks a video (height cap) or audio only and
+ * the file name, prefilled with the Content's display title. 「开始缓存」 first asks the server
+ * what the request would produce: the expected file name, the caches it replaces, another
+ * Content's cache it would overwrite (which needs a confirmation) and what blocks it; 「确认缓存」
+ * then starts a `cache_media` Task, whose progress the caller follows through `onStarted`.
+ * Below, the Content's caches can be deleted one by one, except while it has unfinished Tasks.
  */
 export function CacheMediaDialog(props: {
   contentId: string;
   /** The display title (`customTitle ?? title`), undefined when the Content has none. */
   title: string | undefined;
+  /** The Content's media, for the list of its caches before an inspection reports them. */
+  media: readonly MediaAssetDto[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onStarted: (taskId: string) => void;
@@ -58,37 +106,68 @@ export function CacheMediaDialog(props: {
   return (
     <Modal open={props.open} onOpenChange={props.onOpenChange} title={t("contentView.cache.title")} description={t("contentView.cache.hint")}>
       {/* Mounted only while open, so every opening starts from the current title and defaults. */}
-      <CacheMediaForm contentId={props.contentId} title={props.title} onClose={() => props.onOpenChange(false)} onStarted={props.onStarted} />
+      <CacheMediaForm contentId={props.contentId} title={props.title} media={props.media} onClose={() => props.onOpenChange(false)} onStarted={props.onStarted} />
     </Modal>
   );
 }
 
-function CacheMediaForm(props: { contentId: string; title: string | undefined; onClose: () => void; onStarted: (taskId: string) => void }) {
+function CacheMediaForm(props: { contentId: string; title: string | undefined; media: readonly MediaAssetDto[]; onClose: () => void; onStarted: (taskId: string) => void }) {
   const { t } = useTranslation();
   const client = useApi();
   const queryClient = useQueryClient();
-  const location = useCacheLocation(true);
   const [type, setType] = useState<CacheMediaType>("video");
   const [quality, setQuality] = useState<CacheMediaQuality>(DEFAULT_QUALITY);
   const [fileName, setFileName] = useState(props.title ?? "");
+  const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
+  const path = `/api/contents/${encodeURIComponent(props.contentId)}/cache-media`;
+  const inspect = useMutation({
+    mutationFn: (body: CacheMediaRequest) => client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body }),
+    // The inspection reads the quality of older caches from their files; show it.
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.content(props.contentId) }),
+  });
   const start = useMutation({
-    mutationFn: (body: CacheMediaRequest) =>
-      client.post(`/api/contents/${encodeURIComponent(props.contentId)}/cache-media`, taskAcceptedDtoSchema, { body, idempotent: true }),
+    mutationFn: (body: CacheMediaRequest) => client.post(path, taskAcceptedDtoSchema, { body, idempotent: true }),
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: contentKeys.cacheTask(props.contentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
       props.onClose();
       props.onStarted(accepted.taskId);
     },
+    // A conflict means the inspection is out of date: the next click inspects again.
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        inspect.reset();
+        setOverwriteConfirmed(false);
+      }
+    },
   });
-  const preview = cachePreviewPath(fileName, type, t("cacheFile.untitled"), location.data?.path);
+  // Any change to the choice makes the inspection stale.
+  const edit = (apply: () => void): void => {
+    apply();
+    inspect.reset();
+    start.reset();
+    setOverwriteConfirmed(false);
+  };
+  const inspection = inspect.data;
+  const blockers = inspection === undefined ? [] : cacheBlockers(inspection);
+  const overwrite = inspection?.overwrite;
+  const canConfirm = inspection !== undefined && blockers.length === 0 && (overwrite === undefined || overwriteConfirmed) && !start.isPending;
+  const rows = inspection === undefined ? cacheRowsOf(props.media) : cacheRowsOfInspection(inspection.caches);
+  const error = start.error ?? inspect.error;
   return (
     <div className="flex flex-col gap-3 text-sm">
       <fieldset className="flex flex-col gap-1">
         <legend className="mb-1 text-xs text-muted">{t("contentView.cache.type")}</legend>
         {CACHE_MEDIA_TYPES.map((value) => (
           <label key={value} className="inline-flex items-center gap-2">
-            <input type="radio" name="cache-type" value={value} checked={type === value} onChange={() => setType(value)} data-testid={`cache-type-${value}`} />
+            <input
+              type="radio"
+              name="cache-type"
+              value={value}
+              checked={type === value}
+              onChange={() => edit(() => setType(value))}
+              data-testid={`cache-type-${value}`}
+            />
             {t(`contentView.cache.typeValue.${value}`)}
           </label>
         ))}
@@ -99,7 +178,10 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; o
           <select
             className="h-8 rounded border border-line bg-surface px-2"
             value={quality}
-            onChange={(event) => setQuality(Number(event.target.value) as CacheMediaQuality)}
+            onChange={(event) => {
+              const next = CACHE_MEDIA_QUALITIES.find((value) => String(value) === event.target.value);
+              if (next !== undefined) edit(() => setQuality(next));
+            }}
             data-testid="cache-quality"
           >
             {CACHE_MEDIA_QUALITIES.map((value) => (
@@ -116,24 +198,182 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; o
           className="h-8 rounded border border-line bg-surface px-2"
           value={fileName}
           maxLength={DISPLAY_NAME_MAX_CHARS}
-          onChange={(event) => setFileName(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            edit(() => setFileName(next));
+          }}
           data-testid="cache-file-name"
         />
       </label>
-      <div className="flex flex-col gap-1 text-xs text-muted">
-        <p className="break-all" data-testid="cache-preview">
-          {t("contentView.cache.preview", { path: preview })}
-        </p>
-        <p>{t("contentView.cache.numbered")}</p>
-        <p>{t("contentView.cache.eviction", { max: CACHE_MEDIA_MAX_GB })}</p>
-      </div>
-      {start.error instanceof ApiError ? <ErrorView error={start.error.error} /> : null}
+      {inspection === undefined ? null : (
+        <InspectionPanel
+          inspection={inspection}
+          requestedType={type}
+          blockers={blockers}
+          overwriteConfirmed={overwriteConfirmed}
+          onOverwriteConfirmed={setOverwriteConfirmed}
+        />
+      )}
+      {error instanceof ApiError ? <ErrorView error={error.error} /> : null}
       <div className="flex justify-end gap-2">
         <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-        <Button variant="primary" disabled={start.isPending} onClick={() => start.mutate(cacheMediaRequest(type, quality, fileName))} data-testid="cache-start">
-          {t("contentView.cache.start")}
-        </Button>
+        {inspection === undefined ? (
+          <Button
+            variant="primary"
+            disabled={inspect.isPending}
+            onClick={() => {
+              start.reset();
+              inspect.mutate(cacheMediaRequest(type, quality, fileName));
+            }}
+            data-testid="cache-inspect"
+          >
+            {inspect.isPending ? t("contentView.cache.inspecting") : t("contentView.cache.start")}
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            disabled={!canConfirm}
+            onClick={() => start.mutate(cacheMediaRequest(type, quality, fileName, overwriteConfirmed ? overwrite?.assetId : undefined))}
+            data-testid="cache-confirm"
+          >
+            {t("contentView.cache.confirm")}
+          </Button>
+        )}
       </div>
+      <CacheList contentId={props.contentId} rows={rows} onDeleted={() => inspect.reset()} />
     </div>
+  );
+}
+
+function InspectionPanel(props: {
+  inspection: CacheMediaInspectDto;
+  requestedType: CacheMediaType;
+  blockers: ReturnType<typeof cacheBlockers>;
+  overwriteConfirmed: boolean;
+  onOverwriteConfirmed: (confirmed: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const { inspection } = props;
+  const name = inspection.expectedFileName;
+  const expected =
+    props.requestedType === "audio"
+      ? t("contentView.cache.expectedAudio", { name })
+      : inspection.expected.type === "audio"
+        ? t("contentView.cache.audioInstead", { name })
+        : inspection.expected.height === undefined
+          ? t("contentView.cache.expectedUnknown", { name })
+          : t("contentView.cache.expected", { name });
+  const overwrite = inspection.overwrite;
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-line px-3 py-2 text-xs" data-testid="cache-inspection">
+      <p className="break-all" data-testid="cache-expected-name">
+        {expected}
+      </p>
+      {inspection.replaces.map((item) => (
+        <p key={item.assetId} className="break-all" data-testid="cache-replaces">
+          {props.requestedType === "audio" || inspection.expected.type === "audio"
+            ? t("contentView.cache.replacesAudio")
+            : t("contentView.cache.replaces", { label: qualityLabel(item.height, t) })}
+        </p>
+      ))}
+      {overwrite === undefined ? null : (
+        <div className="flex flex-col gap-1 rounded border border-danger/40 bg-danger/5 px-2 py-1.5" data-testid="cache-overwrite">
+          <p className="break-all">
+            {t("contentView.cache.overwrite", { title: overwrite.title ?? t("contentView.untitled"), name: overwrite.fileName, size: formatBytes(overwrite.sizeBytes) })}
+          </p>
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={props.overwriteConfirmed}
+              onChange={(event) => props.onOverwriteConfirmed(event.target.checked)}
+              data-testid="cache-overwrite-confirm"
+            />
+            {t("contentView.cache.overwriteConfirm")}
+          </label>
+        </div>
+      )}
+      {props.blockers.length === 0 ? null : (
+        <ul className="flex list-disc flex-col gap-1 pl-4 text-danger" role="alert" data-testid="cache-blocked">
+          {props.blockers.map((blocker) =>
+            blocker === "diskLow" ? (
+              <li key={blocker}>
+                {t("contentView.cache.diskLow")}{" "}
+                {t("contentView.cache.diskCache", { free: formatBytes(inspection.disk.cache.freeBytes), reserve: formatBytes(inspection.disk.cache.lowWaterBytes) })}
+                {inspection.disk.data === undefined
+                  ? null
+                  : `; ${t("contentView.cache.diskData", { free: formatBytes(inspection.disk.data.freeBytes), reserve: formatBytes(inspection.disk.data.lowWaterBytes) })}`}
+              </li>
+            ) : (
+              <li key={blocker}>{t(`contentView.cache.${blocker}`)}</li>
+            ),
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Content's caches with a delete button each. The server checks the file is the one it
+ * registered before deleting it, which takes a moment for a large file. Deleting waits until
+ * the Content has no unfinished Task, so a running Task never loses its file.
+ */
+function CacheList(props: { contentId: string; rows: readonly CacheRow[]; onDeleted: () => void }) {
+  const { t } = useTranslation();
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const unfinished = useUnfinishedTasks();
+  const busy = unfinished.data?.items.some((task) => task.contentId === props.contentId) === true;
+  const [confirming, setConfirming] = useState<CacheRow | undefined>(undefined);
+  const remove = useMutation({
+    mutationFn: (assetId: string) => client.delete(`/api/media/${encodeURIComponent(assetId)}`, z.undefined()),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.content(props.contentId) });
+      void queryClient.invalidateQueries({ queryKey: cacheLocationKey });
+      props.onDeleted();
+    },
+  });
+  if (props.rows.length === 0) return null;
+  const labelOf = (row: CacheRow): string => (row.type === "audio" ? t("contentView.cache.audioLabel") : qualityLabel(row.height, t));
+  return (
+    <section className="flex flex-col gap-1 border-t border-line pt-3" data-testid="cache-list">
+      <h3 className="text-xs text-muted">{t("contentView.cache.existing")}</h3>
+      <ul className="flex flex-col gap-1">
+        {props.rows.map((row) => (
+          <li key={row.assetId} className="flex items-center gap-2 text-xs" data-testid={`cache-row-${row.assetId}`}>
+            <span className="shrink-0 font-medium">{labelOf(row)}</span>
+            <span className="min-w-0 flex-1 truncate text-muted" title={row.fileName}>
+              {row.fileName}
+            </span>
+            <span className="shrink-0 text-muted">{formatBytes(row.sizeBytes)}</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy || remove.isPending}
+              {...(busy ? { title: t("contentView.cache.deleteBlocked") } : {})}
+              aria-label={`${t("contentView.cache.delete")} ${labelOf(row)}`}
+              onClick={() => setConfirming(row)}
+              data-testid={`cache-delete-${row.assetId}`}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              {remove.isPending && remove.variables === row.assetId ? t("contentView.cache.deleting") : t("contentView.cache.delete")}
+            </Button>
+          </li>
+        ))}
+      </ul>
+      <ConfirmDialog
+        open={confirming !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(undefined);
+        }}
+        title={t("contentView.cache.deleteTitle")}
+        description={t("contentView.cache.deleteHint", { name: confirming?.fileName ?? "" })}
+        confirmLabel={remove.isPending ? t("contentView.cache.deleting") : t("contentView.cache.delete")}
+        danger
+        onConfirm={async () => {
+          if (confirming !== undefined) await remove.mutateAsync(confirming.assetId);
+        }}
+      />
+    </section>
   );
 }

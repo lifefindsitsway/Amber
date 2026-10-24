@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { API_PAGE_SIZE_DEFAULT, API_PAGE_SIZE_MAX } from "../../../shared/defaults.ts";
-import { transcriptRevisionDtoSchema } from "../../../shared/dto/content.ts";
+import { revisionArchiveRequestSchema, transcriptRevisionDtoSchema, transcriptRevisionListItemDtoSchema } from "../../../shared/dto/content.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import {
   derivedTaskRequestSchema,
@@ -27,6 +27,9 @@ const pageQuerySchema = z
   })
   .strict();
 const mapQuerySchema = z.object({ targetRevision: z.string().min(1) }).strict();
+const deleteRevisionQuerySchema = z
+  .object({ withDescendants: z.enum(["true", "false"]).default("false").transform((value) => value === "true") })
+  .strict();
 
 export interface TranscriptRouteDeps {
   transcripts?: TranscriptService;
@@ -53,6 +56,25 @@ export function registerTranscriptRoutes(app: FastifyInstance, deps: TranscriptR
       const { id } = parseInput(idParamsSchema, request.params, "params");
       const body = parseInput(transcriptDraftRequestSchema, request.body, "body");
       return sendValidated(reply, 200, transcriptDraftDtoSchema, transcripts.putDraft(principalOf(request), id, body));
+    });
+
+    app.delete("/api/contents/:id/transcript/draft", async (request, reply) => {
+      const { id } = parseInput(idParamsSchema, request.params, "params");
+      transcripts.discardDraft(principalOf(request), id);
+      return reply.code(204).send();
+    });
+
+    app.put("/api/transcript/revisions/:rid/archived", async (request, reply) => {
+      const { rid } = parseInput(revisionParamsSchema, request.params, "params");
+      const { archived } = parseInput(revisionArchiveRequestSchema, request.body, "body");
+      return sendValidated(reply, 200, transcriptRevisionListItemDtoSchema, transcripts.setArchived(principalOf(request), rid, archived));
+    });
+
+    app.delete("/api/transcript/revisions/:rid", async (request, reply) => {
+      const { rid } = parseInput(revisionParamsSchema, request.params, "params");
+      const { withDescendants } = parseInput(deleteRevisionQuerySchema, request.query, "query");
+      transcripts.deleteRevision(principalOf(request), rid, { withDescendants });
+      return reply.code(204).send();
     });
 
     app.post("/api/contents/:id/transcript/draft/commit", async (request, reply) => {

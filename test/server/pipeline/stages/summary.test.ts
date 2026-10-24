@@ -23,6 +23,7 @@ import {
   workUnitsOf,
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
+import { countRows } from "../../../tools/sqlite.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -245,6 +246,28 @@ describe("summary stage: single call", () => {
     // Display association only: a single-call summary does not depend on the chapters.
     expect(revision.chapterRevisionId).toBe(chapterRevisionId);
     expect(revision.provenance.inputs).toEqual([{ kind: "transcriptRevision", id: job.revision.id }]);
+  });
+});
+
+describe("summary stage: base revision gone", () => {
+  it("fails without publishing when its base transcript is deleted while the model answers", async () => {
+    let job: ReturnType<typeof regenerate> | undefined;
+    const s = setup(
+      provider((kind, request, signal) => {
+        const base = job as ReturnType<typeof regenerate>;
+        // Another revision takes over as primary and the base goes, as a delete would leave it.
+        const replacement = transcript(s.h, base.contentId, TEXTS);
+        expect(replacement.revision.id).not.toBe(base.revision.id);
+        s.h.repository.withTransaction((scope) => scope.transcripts.deleteRevision(LOCAL.userId, base.revision.id));
+        return cite(kind, request, signal);
+      }),
+      { contextWindowTokens: 128_000 },
+    );
+    job = regenerate(s, TEXTS);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("failed");
+    expect(errorOf(s.h, job.taskId)?.code).toBe("not_found");
+    expect(countRows(s.h.db, "summary_revision")).toBe(0);
   });
 });
 

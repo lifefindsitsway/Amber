@@ -96,6 +96,11 @@ export class SubtitleStageExecutor implements StageExecutor {
         if (revisionId === undefined || judgement.verdict !== "valid") {
           return;
         }
+        // An identical platform revision the user archived is reused as it is, archived: an
+        // archived revision is never made current behind the user's back.
+        if (scope.transcripts.listArchived(content.userId, content.id).some((entry) => entry.revisionId === revisionId)) {
+          return;
+        }
         const current = scope.contents.getIncludingTrashed(content.userId, content.id);
         const currentKind =
           current?.primaryTranscriptRevisionId === undefined ? undefined : scope.transcripts.getRevision(content.userId, current.primaryTranscriptRevisionId)?.kind;

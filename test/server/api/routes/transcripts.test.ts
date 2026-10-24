@@ -1,10 +1,23 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { amberError } from "../../../../src/server/domain/errors.ts";
 import { checkTranscriptInvariants, type TranscriptRevision, type TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import type { SegmentId } from "../../../../src/shared/ids.ts";
 import { SEEK_MATCH_TOLERANCE_MS } from "../../../../src/shared/defaults.ts";
+import { taskDetailDtoSchema, taskListDtoSchema } from "../../../../src/shared/dto/task.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
-import { BOB_TOKEN, configureLlm, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
-import { countRows } from "../../../tools/sqlite.ts";
+import {
+  BOB_TOKEN,
+  configureLlm,
+  countingExecutor,
+  createHarness,
+  createLocalContent,
+  createTaskOfKind,
+  LOCAL,
+  LOCAL_TOKEN,
+  taskOf,
+  type Harness,
+} from "../../../fixtures/pipeline/harness.ts";
+import { countRows, insertRow, tableNames } from "../../../tools/sqlite.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -131,10 +144,12 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
     expect(countRows(h.db, "transcript_revision")).toBe(revisions);
     expect((await app.inject({ method: "GET", url: draftUrl, headers: auth })).statusCode).toBe(200);
 
-    // Confirmed against the primary that is current now, the same draft commits.
+    // Confirmed against the primary that is current now, the same draft commits. Nothing else
+    // uses the earlier manual revision, so it is folded into the new one.
     const confirmed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: fixture.asr.revision.id } });
     expect(confirmed.statusCode).toBe(201);
-    expect(confirmed.json()).toMatchObject({ kind: "manual", parentRevisionId: manual.id });
+    expect(confirmed.json()).toMatchObject({ kind: "manual", parentRevisionId: base.revision.id });
+    expect(h.repository.withTransaction((scope) => scope.transcripts.getRevision(LOCAL.userId, manual.id))).toBeUndefined();
   });
 
   it("refuses drafts that break the revision invariants and bases that cannot be edited", async () => {
@@ -262,5 +277,196 @@ describe("POST /api/contents/:id/transcript/proofread", () => {
     h.disk.low();
     expect((await app.inject({ method: "POST", url, headers: auth })).statusCode).toBe(507);
     expect(countRows(h.db, "task")).toBe(0);
+  });
+});
+
+describe("revision archive, delete and draft discard routes", () => {
+  it("archives, lists, deletes with descendants and discards a draft", async () => {
+    const { h, app, contentId, fixture } = await setup();
+    const listUrl = `/api/contents/${contentId}/transcript/revisions`;
+    const archive = (rid: string, archived: unknown) => app.inject({ method: "PUT", url: `/api/transcript/revisions/${rid}/archived`, headers: auth, payload: { archived } });
+
+    const archived = await archive(fixture.asr.revision.id, true);
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ id: fixture.asr.revision.id, archived: true, deletable: false, descendantIds: [fixture.corrected.revision.id] });
+    expect((await archive(fixture.asr.revision.id, "yes")).statusCode).toBe(400);
+    expect((await archive(fixture.corrected.revision.id, true)).json().error.code).toBe("conflict.revision_is_primary");
+    expect((await archive(fixture.asr.revision.id, true)).statusCode).toBe(200);
+    const listed = (await app.inject({ method: "GET", url: listUrl, headers: auth })).json() as { revisions: Array<{ id: string; archived: boolean; blockers: Record<string, number> }> };
+    expect(listed.revisions.find((item) => item.id === fixture.asr.revision.id)).toMatchObject({ archived: true, blockers: { children: 1 } });
+    expect((await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.asr.revision.id } })).statusCode).toBe(400);
+    expect((await archive(fixture.asr.revision.id, false)).json()).toMatchObject({ archived: false });
+
+    // A manual revision with a translation child: refused alone, deleted with its descendants.
+    const draftUrl = `/api/contents/${contentId}/transcript/draft`;
+    const segments = fixture.corrected.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] }));
+    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments } });
+    const manual = (await app.inject({ method: "POST", url: `${draftUrl}/commit`, headers: auth, payload: { expectedPrimaryRevisionId: fixture.corrected.revision.id } })).json() as { id: string };
+    await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.corrected.revision.id } });
+    const translationId = h.newId();
+    const manualSegments = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, manual.id));
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        {
+          id: translationId,
+          contentId,
+          kind: "translated",
+          parentRevisionId: manual.id,
+          language: "en",
+          timingFidelity: "segment_only",
+          generation: { kind: "manual" },
+          segmentCount: manualSegments.length,
+          createdAt: 9,
+        },
+        manualSegments.map((segment, ordinal) => ({ id: h.newId() as SegmentId, revisionId: translationId, ordinal, startMs: segment.startMs, endMs: segment.endMs, text: "en", sourceSegmentIds: [segment.id] })),
+      ),
+    );
+    const deleteUrl = `/api/transcript/revisions/${manual.id}`;
+    const refused = await app.inject({ method: "DELETE", url: deleteUrl, headers: auth });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatchObject({ code: "conflict.revision_referenced", details: { children: 1, notes: 0 } });
+    expect((await app.inject({ method: "DELETE", url: `${deleteUrl}?withDescendants=maybe`, headers: auth })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `${deleteUrl}?withDescendants=true`, headers: bob })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `${deleteUrl}?withDescendants=true`, headers: auth })).statusCode).toBe(204);
+    expect(countRows(h.db, "transcript_revision", "id IN (?, ?)", manual.id, translationId)).toBe(0);
+    const protectedDelete = await app.inject({ method: "DELETE", url: `/api/transcript/revisions/${fixture.asr.revision.id}?withDescendants=false`, headers: auth });
+    expect(protectedDelete.statusCode).toBe(400);
+    expect(protectedDelete.json().error.code).toBe("invalid_request.revision_kind_protected");
+
+    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments } });
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: bob })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(204);
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(404);
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  /** A manual revision of corrected, one sentence per parent sentence; corrected stays primary. */
+  function insertManual(h: Harness, contentId: string, parentId: string): { revision: TranscriptRevision; segments: TranscriptSegment[] } {
+    const parent = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, parentId));
+    const id = h.newId();
+    const revision: TranscriptRevision = {
+      id,
+      contentId,
+      kind: "manual",
+      parentRevisionId: parentId,
+      language: "zh-CN",
+      timingFidelity: "inherited_segment",
+      generation: { kind: "manual" },
+      segmentCount: parent.length,
+      createdAt: 3,
+    };
+    const segments = parent.map((segment, ordinal) => ({ ...segment, id: h.newId() as SegmentId, revisionId: id, ordinal, sourceSegmentIds: [segment.id] }));
+    h.repository.withTransaction((scope) => scope.transcripts.insertRevision(LOCAL.userId, revision, segments));
+    return { revision, segments };
+  }
+
+  const tableCounts = (h: Harness) => Object.fromEntries(tableNames(h.db).map((table) => [table, countRows(h.db, table)]));
+
+  it("archives a platform original: 200, then listed as archived", async () => {
+    const { h, app, contentId, fixture } = await setup();
+    const platform = fixture.platform.revision.id;
+    const archived = await app.inject({ method: "PUT", url: `/api/transcript/revisions/${platform}/archived`, headers: auth, payload: { archived: true } });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ id: platform, kind: "platform", archived: true, archivedAt: expect.any(Number), deletable: false });
+    const listed = (await app.inject({ method: "GET", url: `/api/contents/${contentId}/transcript/revisions`, headers: auth })).json() as {
+      revisions: Array<{ id: string; archived: boolean }>;
+    };
+    expect(listed.revisions.find((item) => item.id === platform)).toMatchObject({ archived: true });
+    expect(listed.revisions.filter((item) => item.archived).map((item) => item.id)).toEqual([platform]);
+    expect(countRows(h.db, "transcript_revision", "id = ?", platform)).toBe(1);
+  });
+
+  it("refuses a delete held by a note and a citing summary with 409 and their counts, deleting nothing", async () => {
+    const { h, app, contentId, fixture } = await setup();
+    const manual = insertManual(h, contentId, fixture.corrected.revision.id);
+    const [first, second] = manual.segments as [TranscriptSegment, TranscriptSegment];
+    insertRow(h.db, "note", {
+      id: h.newId(), user_id: LOCAL.userId, content_id: contentId, transcript_revision_id: manual.revision.id,
+      start_segment_id: first.id, start_offset: 0, end_segment_id: first.id, end_offset: 1, quote: "大",
+      mark: "underline", color: "blue", created_at: 10, updated_at: 10,
+    });
+    const template = h.db.prepare("SELECT id FROM summary_template WHERE builtin = 1 LIMIT 1").get() as { id: string };
+    insertRow(h.db, "summary_artifact", { id: "sa", content_id: contentId, template_id: template.id });
+    insertRow(h.db, "summary_revision", {
+      id: "sr", artifact_id: "sa", inputs_json: "[]", quality: "normal", body: `要点 [[seg:${second.id}]]`,
+      citations_json: JSON.stringify([{ transcriptRevisionId: manual.revision.id, segmentId: second.id }]), created_at: 10,
+    });
+    const before = tableCounts(h);
+
+    for (const query of ["", "?withDescendants=true"]) {
+      const refused = await app.inject({ method: "DELETE", url: `/api/transcript/revisions/${manual.revision.id}${query}`, headers: auth });
+      expect(refused.statusCode, query).toBe(409);
+      expect(refused.json().error).toMatchObject({
+        class: "conflict",
+        code: "conflict.revision_referenced",
+        details: { children: 0, draft: 0, notes: 1, highlights: 0, chatMessages: 0, artifacts: 1, activeTasks: 0 },
+      });
+      expect(tableCounts(h), query).toEqual(before);
+    }
+    expect(countRows(h.db, "transcript_segment", "revision_id = ?", manual.revision.id)).toBe(manual.segments.length);
+  });
+
+  it("deletes a revision refused for the draft based on it once that draft is discarded", async () => {
+    const { h, app, contentId, fixture } = await setup();
+    const manual = insertManual(h, contentId, fixture.corrected.revision.id);
+    const draftUrl = `/api/contents/${contentId}/transcript/draft`;
+    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: manual.revision.id, segments: [] } });
+    expect(saved.statusCode).toBe(200);
+    const deletion = { method: "DELETE" as const, url: `/api/transcript/revisions/${manual.revision.id}?withDescendants=true`, headers: auth };
+
+    const refused = await app.inject(deletion);
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatchObject({ code: "conflict.revision_referenced", details: { draft: 1, children: 0, notes: 0, artifacts: 0, activeTasks: 0 } });
+    expect(countRows(h.db, "transcript_revision", "id = ?", manual.revision.id)).toBe(1);
+
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(204);
+    expect((await app.inject(deletion)).statusCode).toBe(204);
+    expect(countRows(h.db, "transcript_revision", "id = ?", manual.revision.id)).toBe(0);
+    expect(countRows(h.db, "transcript_segment", "revision_id = ?", manual.revision.id)).toBe(0);
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("still lists and details finished Tasks whose requests named a deleted revision, without exposing its id", async () => {
+    const { h, app, contentId, fixture } = await setup();
+    const modelRef = configureLlm(h);
+    const manual = insertManual(h, contentId, fixture.corrected.revision.id).revision.id;
+    const reproofread = () => createTaskOfKind(h, "reproofread", { modelRef, baseRevisionId: manual }, { contentId });
+    const deleteUrl = `/api/transcript/revisions/${manual}`;
+
+    // Cancelled: while it is unfinished, it holds the revision.
+    const cancelled = reproofread();
+    const held = await app.inject({ method: "DELETE", url: deleteUrl, headers: auth });
+    expect(held.statusCode).toBe(409);
+    expect(held.json().error).toMatchObject({ code: "conflict.revision_referenced", details: { activeTasks: 1 } });
+    expect((await app.inject({ method: "POST", url: `/api/tasks/${cancelled}/cancel`, headers: auth })).statusCode).toBe(200);
+
+    // Failed, then succeeded, both run by the scheduler.
+    h.executors.proofread = { run: async () => Promise.reject(amberError("llm_capability")) };
+    const failed = reproofread();
+    h.scheduler.start();
+    await h.scheduler.whenIdle();
+    h.executors.proofread = countingExecutor();
+    const succeeded = reproofread();
+    h.scheduler.kick();
+    await h.scheduler.whenIdle();
+    const taskIds = [cancelled, failed, succeeded];
+    expect(taskIds.map((id) => taskOf(h, id).statusProjection)).toEqual(["cancelled", "failed", "succeeded"]);
+
+    expect((await app.inject({ method: "DELETE", url: deleteUrl, headers: auth })).statusCode).toBe(204);
+    expect(countRows(h.db, "transcript_revision", "id = ?", manual)).toBe(0);
+    // The finished requests keep what they were asked to do; only the API view must not show it.
+    for (const id of taskIds) expect(taskOf(h, id).requestJson).toContain(manual);
+
+    const list = await app.inject({ method: "GET", url: `/api/tasks?contentId=${contentId}`, headers: auth });
+    expect(list.statusCode).toBe(200);
+    expect(taskListDtoSchema.parse(list.json()).items.map((task) => task.id).sort()).toEqual([...taskIds].sort());
+    expect(JSON.stringify(list.json()).includes(manual)).toBe(false);
+    for (const id of taskIds) {
+      const detail = await app.inject({ method: "GET", url: `/api/tasks/${id}`, headers: auth });
+      expect(detail.statusCode, id).toBe(200);
+      expect(taskDetailDtoSchema.parse(detail.json()).id).toBe(id);
+      expect(JSON.stringify(detail.json()).includes(manual), id).toBe(false);
+    }
   });
 });

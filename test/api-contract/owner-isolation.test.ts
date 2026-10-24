@@ -133,6 +133,13 @@ const MATRIX: Record<string, Entry> = {
   "PUT /api/contents/:id/transcript/draft": owned((ids) => [
     { method: "PUT", url: `/api/contents/${ids.contentId}/transcript/draft`, payload: { baseRevisionId: ids.asrRevisionId, segments: [] } },
   ]),
+  "DELETE /api/contents/:id/transcript/draft": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/transcript/draft` }]),
+  "PUT /api/transcript/revisions/:rid/archived": owned((ids) => [
+    { method: "PUT", url: `/api/transcript/revisions/${ids.asrRevisionId}/archived`, payload: { archived: true } },
+  ]),
+  "DELETE /api/transcript/revisions/:rid": owned((ids) => [
+    { method: "DELETE", url: `/api/transcript/revisions/${ids.correctedRevisionId}?withDescendants=true` },
+  ]),
   "POST /api/contents/:id/transcript/draft/commit": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/transcript/draft/commit`, payload: { expectedPrimaryRevisionId: ids.asrRevisionId } },
   ]),

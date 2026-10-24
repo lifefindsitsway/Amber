@@ -54,8 +54,17 @@ describe("content DTOs", () => {
 
   it("list revisions with an optional primary", () => {
     const revision = { id: "r1", contentId: "c1", kind: "platform", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "platform" }, segmentCount: 3, createdAt: 1 };
-    expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [revision] }).success).toBe(true);
-    expect(transcriptRevisionListDtoSchema.safeParse({ primaryTranscriptRevisionId: "r1", revisions: [{ ...revision, kind: "draft" }] }).success).toBe(false);
+    const item = {
+      ...revision,
+      archived: false,
+      deletable: true,
+      blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+      descendantIds: [],
+    };
+    expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [item] }).success).toBe(true);
+    // A list item carries its archive mark and blockers; a bare revision is not one.
+    expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [revision] }).success).toBe(false);
+    expect(transcriptRevisionListDtoSchema.safeParse({ primaryTranscriptRevisionId: "r1", revisions: [{ ...item, kind: "draft" }] }).success).toBe(false);
   });
 
   it("choose a primary by revision id only", () => {

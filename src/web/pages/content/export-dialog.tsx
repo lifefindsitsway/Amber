@@ -12,7 +12,7 @@ import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { rootsOf, useChapters, useRevisions, useSummaries } from "./content-data.ts";
+import { rootsOf, useChapters, useRevisions, useSummaries, visibleRevisions } from "./content-data.ts";
 import { revisionLabel, templateName } from "./labels.ts";
 
 /** What the left side of the dialog has ticked. */
@@ -105,10 +105,12 @@ function ExportForm(props: { templateId?: string }) {
 
   const readable = all.filter((revision) => revision.kind !== "translated");
   const primary = all.find((revision) => revision.id === primaryId);
-  const roots = rootsOf(all).filter((root) => root.id !== primaryId);
+  // Archived originals stay out of the choices, as in every version picker.
+  const roots = rootsOf(all).filter((root) => root.id !== primaryId && !root.archived);
   const transcriptRevision = transcriptId ?? primaryId ?? readable.at(-1)?.id;
   const summaryTemplate = templateId !== undefined && generated.some((entry) => entry.template.id === templateId) ? templateId : generated[0]?.template.id;
   const subtitleRevision = subtitleId ?? primaryId ?? all.at(-1)?.id;
+  const subtitleChoices = visibleRevisions(all, primaryId, { include: [subtitleRevision] });
   const pairs = translationsOf(subtitleRevision, all);
   const translation = pairs.find((revision) => revision.id === translationId)?.id ?? pairs[0]?.id;
   const label = (revision: TranscriptRevisionDto): string => revisionLabel(revision, primaryId, t, i18n, all);
@@ -173,7 +175,7 @@ function ExportForm(props: { templateId?: string }) {
             <label className="flex flex-col gap-1">
               <span className="text-xs text-muted">{t("contentView.export.subtitleRevision")}</span>
               <select className={select} value={subtitleRevision} onChange={(event) => setSubtitleId(event.target.value)} data-testid="export-subtitle-revision">
-                {all.map((revision) => (
+                {subtitleChoices.map((revision) => (
                   <option key={revision.id} value={revision.id}>
                     {label(revision)}
                   </option>

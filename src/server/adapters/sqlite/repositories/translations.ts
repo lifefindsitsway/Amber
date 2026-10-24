@@ -39,6 +39,10 @@ export function sqliteTranslationRepository(db: SqliteConnection): TranslationRe
     "INSERT INTO translation_artifact (id, content_id, target_language, current_revision_id) VALUES (?, ?, ?, ?)",
   );
   const setCurrent = db.prepare("UPDATE translation_artifact SET current_revision_id = ? WHERE id = ?");
+  const deleteArtifact = db.prepare(
+    `DELETE FROM translation_artifact
+     WHERE content_id = ? AND target_language = ? AND content_id IN (SELECT id FROM content WHERE user_id = ?)`,
+  );
 
   return {
     getArtifact(ownerUserId, contentId, targetLanguage) {
@@ -61,6 +65,9 @@ export function sqliteTranslationRepository(db: SqliteConnection): TranslationRe
       } else {
         setCurrent.run(revisionId, existing.id);
       }
+    },
+    deleteArtifact(ownerUserId, contentId, targetLanguage) {
+      return deleteArtifact.run(contentId, targetLanguage, ownerUserId).changes > 0;
     },
   };
 }

@@ -141,4 +141,16 @@ describe("LocalFileStore", () => {
     expect(existsSync(join(root, "assets", "u", "old"))).toBe(false);
     expect(existsSync(join(root, "assets", "u", "fresh"))).toBe(true);
   });
+
+  it("leaves the cache directory out of the data directory's usage, wherever it is at the time", async () => {
+    const root = tempDataDir("amber-files-");
+    let cacheDir = join(root, "media");
+    const store = new LocalFileStore(root, { usageExclude: () => [cacheDir] });
+    await store.writeAtomic("assets/u/a.bin", Buffer.alloc(10));
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, "第一讲.mp4"), Buffer.alloc(1000));
+    expect((await store.diskUsage()).usedBytes).toBe(10);
+    cacheDir = join(tempDataDir("amber-files-cache-"), "media");
+    expect((await store.diskUsage()).usedBytes).toBe(1010);
+  });
 });

@@ -5,7 +5,7 @@ import { highlightsDtoSchema } from "../../src/shared/dto/highlight.ts";
 import { taskAcceptedDtoSchema } from "../../src/shared/dto/task.ts";
 import { transcriptSegmentPageDtoSchema } from "../../src/shared/dto/transcript.ts";
 import { translationRequestSchema, translationsDtoSchema } from "../../src/shared/dto/translation.ts";
-import { BILI_REVISION, BILIBILI_CONTENT, segmentId } from "./mock-backend.ts";
+import { BILI_REVISION, BILIBILI_CONTENT, revisionListItem, segmentId } from "./mock-backend.ts";
 
 /**
  * The fake AI highlights, translations and file exports of the browser smoke, for the
@@ -94,7 +94,7 @@ export async function handleOutputs(route: Route, request: Request, url: URL): P
     if (contentId !== BILIBILI_CONTENT || state.languages.length === 0) return false;
     await fulfillJson(
       route,
-      transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: BILI_REVISION, revisions: [biliRevision(), ...state.languages.map(translated)] }),
+      transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: BILI_REVISION, revisions: [biliRevision(), ...state.languages.map(translated)].map(revisionListItem) }),
     );
     return true;
   }

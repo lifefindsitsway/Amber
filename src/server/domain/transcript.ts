@@ -246,3 +246,155 @@ export function revisionTakesPrimary(
       return false;
   }
 }
+
+/** The kinds the pipeline keeps as evidence: they can be archived but never permanently deleted. */
+export const PROTECTED_REVISION_KINDS: ReadonlySet<TranscriptKind> = new Set(["platform", "asr"]);
+
+/** What can keep a transcript revision from being deleted, by category. */
+export const REVISION_BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks"] as const;
+export type RevisionBlockerCategory = (typeof REVISION_BLOCKER_CATEGORIES)[number];
+export type RevisionBlockers = Record<RevisionBlockerCategory, number>;
+
+/**
+ * One stored row that points at transcript revisions of a Content, directly or through one
+ * of their sentences. `revisionIds` are the revisions it reaches (sentence references are
+ * already resolved to their revision). `holderRevisionId` is set when the row is itself a
+ * revision of the Content, i.e. a child: deleting it together with its parent removes the
+ * reference instead of breaking it.
+ */
+export interface RevisionReference {
+  category: RevisionBlockerCategory;
+  revisionIds: readonly string[];
+  holderRevisionId?: string;
+}
+
+type Lineage = Pick<TranscriptRevision, "id" | "parentRevisionId">;
+
+export function emptyRevisionBlockers(): RevisionBlockers {
+  return { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 };
+}
+
+export function hasRevisionBlockers(blockers: RevisionBlockers, ignore: ReadonlySet<RevisionBlockerCategory> = new Set()): boolean {
+  return REVISION_BLOCKER_CATEGORIES.some((category) => !ignore.has(category) && blockers[category] > 0);
+}
+
+/**
+ * Counts, per category, the referencing rows that would be left dangling if every revision
+ * in `ids` were deleted: a row counts once however many of the ids it reaches, and a child
+ * revision that is itself in `ids` does not count.
+ */
+export function revisionBlockers(references: readonly RevisionReference[], ids: ReadonlySet<string>): RevisionBlockers {
+  const blockers = emptyRevisionBlockers();
+  for (const reference of references) {
+    if (reference.holderRevisionId !== undefined && ids.has(reference.holderRevisionId)) {
+      continue;
+    }
+    if (reference.revisionIds.some((id) => ids.has(id))) {
+      blockers[reference.category] += 1;
+    }
+  }
+  return blockers;
+}
+
+/** Every revision derived from `rootId`, nearest first; the root itself is not included. */
+export function descendantsOf(revisions: readonly Lineage[], rootId: string): string[] {
+  const children = new Map<string, string[]>();
+  for (const revision of revisions) {
+    if (revision.parentRevisionId !== undefined) {
+      const list = children.get(revision.parentRevisionId) ?? [];
+      list.push(revision.id);
+      children.set(revision.parentRevisionId, list);
+    }
+  }
+  const found: string[] = [];
+  const seen = new Set([rootId]);
+  const queue = [rootId];
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    for (const child of children.get(next) ?? []) {
+      if (!seen.has(child)) {
+        seen.add(child);
+        found.push(child);
+        queue.push(child);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The order in which a set of revisions can be deleted one by one: every revision after all
+ * of its descendants in the set, so no statement ever removes a parent that still has a
+ * child (the parent key is checked at the end of each statement).
+ */
+export function deletionOrder(revisions: readonly Lineage[], ids: ReadonlySet<string>): string[] {
+  const byId = new Map(revisions.map((revision) => [revision.id, revision]));
+  const depth = (id: string): number => {
+    let level = 0;
+    for (let parent = byId.get(id)?.parentRevisionId; parent !== undefined; parent = byId.get(parent)?.parentRevisionId) {
+      level += 1;
+      if (level > byId.size) break;
+    }
+    return level;
+  };
+  return [...ids].map((id) => ({ id, depth: depth(id) })).sort((a, b) => b.depth - a.depth || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((entry) => entry.id);
+}
+
+/**
+ * The run of manual revisions a manual commit replaces: starting from the draft's base and
+ * walking up the parents, each `manual` revision joins while its only child (if any) is the
+ * chain member below it and `unreferenced(id, chainWithIt)` holds; the first revision that
+ * does not qualify (or is not manual) is the anchor the new revision descends from. A manual
+ * revision without a parent never joins, so a non-empty chain always has an anchor. `chain`
+ * lists the base first, i.e. in a safe deletion order.
+ */
+export function manualMergeChain(
+  baseId: string,
+  revisions: readonly Pick<TranscriptRevision, "id" | "parentRevisionId" | "kind">[],
+  unreferenced: (revisionId: string, chain: readonly string[]) => boolean,
+): { chain: string[]; anchorId: string } {
+  const byId = new Map(revisions.map((revision) => [revision.id, revision]));
+  const chain: string[] = [];
+  let cursor = byId.get(baseId);
+  while (cursor !== undefined && cursor.kind === "manual") {
+    const parent = cursor.parentRevisionId === undefined ? undefined : byId.get(cursor.parentRevisionId);
+    if (parent === undefined) {
+      break;
+    }
+    const id = cursor.id;
+    const below = chain.at(-1);
+    const otherChild = revisions.some((revision) => revision.parentRevisionId === id && revision.id !== below);
+    if (otherChild || !unreferenced(id, [...chain, id])) {
+      break;
+    }
+    chain.push(id);
+    cursor = parent;
+  }
+  return { chain, anchorId: cursor?.id ?? baseId };
+}
+
+/**
+ * Re-expresses sentence sources of the base through the revisions being merged away:
+ * `levels[i]` maps each sentence of the i-th chain member (base first) to its own sources
+ * one level up. Order is kept, repeats dropped, and a sentence whose sources have none at
+ * some level ends with none.
+ */
+export function remapSourcesThroughChain(
+  sources: readonly SegmentId[],
+  levels: ReadonlyArray<ReadonlyMap<string, readonly SegmentId[]>>,
+): SegmentId[] {
+  let current: SegmentId[] = [...sources];
+  for (const level of levels) {
+    const next: SegmentId[] = [];
+    const seen = new Set<string>();
+    for (const source of current) {
+      for (const parent of level.get(source) ?? []) {
+        if (!seen.has(parent)) {
+          seen.add(parent);
+          next.push(parent);
+        }
+      }
+    }
+    current = next;
+  }
+  return current;
+}

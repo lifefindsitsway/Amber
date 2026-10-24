@@ -28,9 +28,12 @@ import { FilePicker } from "../../ui/file-picker.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { BurnDialog, BurnTracker } from "./burn-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, segmentAt, useRevisions, useSegments } from "./content-data.ts";
+import { contentKeys, revisionGroups, segmentAt, useRevisions, useSegments, visibleRevisions } from "./content-data.ts";
 import { subtitleExportBody } from "./export-dialog.tsx";
 import { revisionBasis, revisionLabel } from "./labels.ts";
+import { AsrBanner } from "./asr-banner.tsx";
+import { RevisionActions } from "./revision-actions-dialog.tsx";
+import { RevisionToggleBar, type RevisionToggles } from "./transcript-tab.tsx";
 import { useLocatedSegment } from "./same-sentence.ts";
 import { useSentenceMenu } from "./sentence-menu.tsx";
 import { VirtualRows } from "./virtual-rows.tsx";
@@ -79,13 +82,39 @@ export function SubtitlesTab() {
   const desktop = useDesktop();
   const [burning, setBurning] = useState(false);
   const [burnTaskId, setBurnTaskId] = useState<string | undefined>(undefined);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   const all = revisions.data?.revisions ?? [];
   const primaryId = revisions.data?.primaryTranscriptRevisionId;
   // A translation opened from the translation tab arrives as `?revision=`.
   const requested = params.get("revision");
+  const missing = revisions.isSuccess && requested !== null && !all.some((item) => item.id === requested);
   const revision =
-    all.find((item) => item.id === picked) ?? all.find((item) => item.id === requested) ?? all.find((item) => item.id === primaryId) ?? all.at(-1);
+    all.find((item) => item.id === picked) ??
+    all.find((item) => item.id === requested) ??
+    all.find((item) => item.id === primaryId) ??
+    visibleRevisions(all, primaryId).at(-1) ??
+    all.at(-1);
+  const groups = revisionGroups(all, primaryId);
+  // A shown revision that sits behind a toggle (a deep link, say) opens that toggle.
+  const historyOpen = showHistory || (revision !== undefined && groups.history.has(revision.id));
+  const archivedOpen = showArchived || (revision !== undefined && groups.archived.has(revision.id));
+  const listed = visibleRevisions(all, primaryId, { showHistory: historyOpen, showArchived: archivedOpen, include: [revision?.id] });
+  const toggles: RevisionToggles = {
+    historyCount: groups.history.size,
+    historyOpen,
+    setHistoryOpen: (open) => {
+      setShowHistory(open);
+      if (!open && revision !== undefined && groups.history.has(revision.id)) setPicked(primaryId);
+    },
+    archivedCount: groups.archived.size,
+    archivedOpen,
+    setArchivedOpen: (open) => {
+      setShowArchived(open);
+      if (!open && revision !== undefined && groups.archived.has(revision.id)) setPicked(primaryId);
+    },
+  };
   const segments = useSegments(revision?.id);
   const located = useLocatedSegment(revision?.id);
   const tracking = capabilities.timeTracking === "supported";
@@ -135,6 +164,7 @@ export function SubtitlesTab() {
 
   return (
     <div ref={menuTarget} className="flex h-full min-h-0 flex-col" {...(revision === undefined ? {} : { "data-revision-id": revision.id })}>
+      <AsrBanner contentId={page.content.id} revisions={all} primaryId={primaryId} />
       {/* Two rows whose leading selects share one column, so they line up and keep the same width.
           The column leaves the other controls 16rem, about what either row needs to stay on one line. */}
       <div className="grid grid-cols-[minmax(11rem,min(22.5rem,calc(100%_-_16.75rem)))_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2" data-testid="subtitles-toolbar">
@@ -148,7 +178,7 @@ export function SubtitlesTab() {
               title={revisionBasis(revision, all, t, i18n)}
               data-testid="subtitles-version"
             >
-              {all.map((item) => (
+              {listed.map((item) => (
                 <option key={item.id} value={item.id} title={revisionBasis(item, all, t, i18n)}>
                   {revisionLabel(item, primaryId, t, i18n, all)}
                 </option>
@@ -165,6 +195,10 @@ export function SubtitlesTab() {
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
+          {revision === undefined ? null : (
+            <RevisionActions contentId={page.content.id} revision={revision} revisions={all} primaryId={primaryId} onDeleted={() => setPicked(primaryId)} />
+          )}
+          <RevisionToggleBar toggles={toggles} />
           {tracking ? (
             <label className="flex items-center gap-1 text-xs" data-testid="follow-toggle">
               <input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />
@@ -244,6 +278,7 @@ export function SubtitlesTab() {
           </Button>
         </div>
       </div>
+      {missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
       {download.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={download.error.error} /></div> : null}
       {retranscribe.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={retranscribe.error.error} /></div> : null}
@@ -292,6 +327,7 @@ export function SubtitlesTab() {
           open
           onOpenChange={setBurning}
           onStarted={setBurnTaskId}
+          playingAssetId={page.playingAssetId}
         />
       ) : null}
       <ImportSubtitleDialog open={importing} onClose={() => setImporting(false)} defaultLanguage={page.content.rawLanguage} />

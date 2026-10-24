@@ -11,7 +11,7 @@ import { translateRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
-import { stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
+import { assertBaseRevisionExists, stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
 
 export interface TranslateStageDeps {
@@ -148,6 +148,7 @@ export class TranslateStageExecutor implements StageExecutor {
         reasons: [],
       },
       publish: (scope) => {
+        assertBaseRevisionExists(scope, owner, content.id, base.id);
         for (const entry of published) {
           scope.transcripts.insertRevision(owner, entry.revision, entry.segments);
           scope.translations.setCurrent(owner, content.id, entry.language, entry.revision.id, entry.artifactId);

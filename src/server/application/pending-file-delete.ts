@@ -9,6 +9,8 @@ import type { FileStore } from "../ports/file-store.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { CacheGate } from "../pipeline/cache-gate.ts";
+import { CachePathLocks } from "../pipeline/cache-path-locks.ts";
+import { cacheRowsAt, matchesIdentity } from "../pipeline/cache-swap.ts";
 import type { MediaFiles } from "../pipeline/media-files.ts";
 import { samePath } from "./cache-root.ts";
 
@@ -20,6 +22,11 @@ export interface PendingFileDeleterOptions {
   dataDir: string;
   /** Cache files are removed under a shared lease, so a cache move never races the worker. */
   gate: Pick<CacheGate, "tryShared">;
+  /**
+   * Serializes removing a cache file with publishing a new cache at the same path.
+   * Defaults to a private set of locks, enough where nothing else touches the cache.
+   */
+  locks?: Pick<CachePathLocks, "withLock">;
   /**
    * A store over a cache directory other than the current one, or `undefined` while it is
    * unreachable or not Amber's own. Absent where the cache directory never moves (server
@@ -40,6 +47,8 @@ export interface PendingFile {
   store: PendingFileDelete["store"];
   storageRef: string;
   expectedSizeBytes?: number;
+  /** `sha256:<hex>` of the file meant; recorded for caches, whose names a newer cache may take. */
+  expectedDigest?: string;
   userId?: string;
 }
 
@@ -98,6 +107,7 @@ export function filesOfAssets(scope: RepositoryScope, assets: readonly MediaAsse
       store: asset.kind === "platform_cache" ? "cache" : "data",
       storageRef: asset.storageRef,
       expectedSizeBytes: asset.sizeBytes,
+      ...(asset.kind === "platform_cache" && asset.fingerprint !== undefined && asset.fingerprint !== "" ? { expectedDigest: asset.fingerprint } : {}),
       userId: asset.userId,
     });
   }
@@ -115,9 +125,11 @@ function contentDirOf(ref: string): string | undefined {
  * registers its files in its own transaction (`register`); committing it is the deletion.
  * This single-flight worker removes them afterwards, each only through the root it was
  * registered under: a ref is never read against a cache directory that replaced that root,
- * which may hold another file of the same name. Before removing, a file's size is checked
- * against the size recorded at registration; a different file is left alone and only its
- * registration dropped, a file already gone counts as removed. A failure waits
+ * which may hold another file of the same name. Before removing, a file's size, and its
+ * SHA-256 when one was recorded, are checked against the registration; a different file is
+ * left alone and only its registration dropped, a file already gone counts as removed. A
+ * cache file is removed under its path's lock, and not at all while an available row holds
+ * the path in the current cache directory: a newer cache took the name. A failure waits
  * `retryBackoffMs`; while the cache lease is held exclusively (a move) the cache rows wait
  * `TRASH_RETRY_BASE_MS`, and rows of a root that cannot be reached wait the cap.
  *
@@ -134,8 +146,11 @@ export class PendingFileDeleter {
   private queued = false;
   private stopped = false;
 
+  private readonly locks: Pick<CachePathLocks, "withLock">;
+
   constructor(options: PendingFileDeleterOptions) {
     this.options = options;
+    this.locks = options.locks ?? new CachePathLocks();
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
     this.isWindows = options.isWindows ?? process.platform === "win32";
@@ -163,6 +178,7 @@ export class PendingFileDeleter {
         rootPath: roots[file.store],
         storageRef: file.storageRef,
         ...(file.expectedSizeBytes === undefined ? {} : { expectedSizeBytes: file.expectedSizeBytes }),
+        ...(file.expectedDigest === undefined ? {} : { expectedDigest: file.expectedDigest }),
         ...(file.userId === undefined ? {} : { userId: file.userId }),
         attempts: 0,
         nextAttemptAt: now,
@@ -337,15 +353,26 @@ export class PendingFileDeleter {
         this.postpone(rows, TRASH_RETRY_MAX_MS);
         return;
       }
+      const current = store === this.options.media.cache;
       for (const row of rows) {
         if (this.stopped) {
           return;
         }
-        await this.removeOne(store, row);
+        await this.locks.withLock(row.storageRef, async () => {
+          if (current && this.heldByAvailableRow(row.storageRef)) {
+            this.options.repository.withTransaction((scope) => scope.pendingFileDeletes.delete(row.id));
+            return;
+          }
+          await this.removeOne(store, row);
+        });
       }
     } finally {
       release();
     }
+  }
+
+  private heldByAvailableRow(ref: string): boolean {
+    return this.options.repository.withTransaction((scope) => cacheRowsAt(scope, ref).some((asset) => asset.availability === "available"));
   }
 
   /** The store a cache root is read through now: the current cache store, another of Amber's roots, or nothing. */
@@ -366,7 +393,10 @@ export class PendingFileDeleter {
           repository.withTransaction((scope) => scope.pendingFileDeletes.delete(row.id));
           return;
         }
-        if (stored.sizeBytes !== row.expectedSizeBytes) {
+        const same =
+          stored.sizeBytes === row.expectedSizeBytes &&
+          (row.expectedDigest === undefined || (await matchesIdentity(store.pathOf(row.storageRef), { sizeBytes: stored.sizeBytes, digest: row.expectedDigest })) === true);
+        if (!same) {
           // Another file took the name since; it is not Amber's to remove.
           repository.withTransaction((scope) => scope.pendingFileDeletes.delete(row.id));
           logger.warn("pending_file_mismatch", { store: row.store });

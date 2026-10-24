@@ -40,6 +40,11 @@ function filled(value: unknown): string | undefined {
 
 const pad = (value: number): string => String(value).padStart(2, "0");
 
+/** `MM-DD HH:mm` in local time, as revision labels show it. */
+export function revisionTimeLabel(epochMs: number): string {
+  return revisionTime(epochMs, false);
+}
+
 /** `MM-DD HH:mm` in local time, with `:ss` when two revisions would otherwise read the same. */
 function revisionTime(epochMs: number, seconds: boolean): string {
   const date = new Date(epochMs);
@@ -63,10 +68,10 @@ function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18
  * "校对稿 · deepseek-flash · 10-04 11:50" style label: kind, a translation's language, the
  * model that produced it and when, so several proofreads of one Content tell apart without
  * numbering. Given the revisions listed beside it, the time gains seconds where two labels
- * would collide. The primary revision is marked as the current one.
+ * would collide. The primary revision is marked as the current one, an archived one as such.
  */
 export function revisionLabel(
-  revision: TranscriptRevisionDto,
+  revision: TranscriptRevisionDto & { archived?: boolean },
   primaryId: string | undefined,
   t: TFunction,
   i18n?: Pick<I18n, "exists">,
@@ -75,7 +80,8 @@ export function revisionLabel(
   const label = baseLabel(revision, t, i18n, false);
   const collides = among.some((other) => other.id !== revision.id && baseLabel(other, t, i18n, false) === label);
   const base = collides ? baseLabel(revision, t, i18n, true) : label;
-  return revision.id === primaryId ? t("contentView.revision.current", { label: base }) : base;
+  const tagged = revision.archived === true ? t("contentView.revisions.archivedTag", { label: base }) : base;
+  return revision.id === primaryId ? t("contentView.revision.current", { label: tagged }) : tagged;
 }
 
 /** "基于：…" naming the revision this one was made from, when it is among the listed ones. */

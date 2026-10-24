@@ -167,6 +167,17 @@ function numberedPage<T>(ordered: readonly T[], url: URL): { items: T[]; total: 
   return { items: ordered.slice((page - 1) * limit, page * limit), total: ordered.length };
 }
 
+/** A revision as the revision list returns it: unarchived, nothing blocking. */
+export function revisionListItem<T extends object>(revision: T) {
+  return {
+    ...revision,
+    archived: false,
+    deletable: false,
+    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+    descendantIds: [] as string[],
+  };
+}
+
 function revision(id: string, contentId: string) {
   return {
     id,
@@ -980,9 +991,9 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
       [`GET /api/contents/${YOUTUBE_CONTENT}/chapters`]: () => chaptersDtoSchema.parse({ revisions: [] }),
       [`GET /api/contents/${BILIBILI_CONTENT}/chapters`]: () => chaptersDtoSchema.parse({ revisions: [] }),
       [`GET /api/contents/${YOUTUBE_CONTENT}/transcript/revisions`]: () =>
-        transcriptRevisionListDtoSchema.parse({ ...(finished ? { primaryTranscriptRevisionId: REVISION } : {}), revisions: finished ? [revision(REVISION, YOUTUBE_CONTENT)] : [] }),
+        transcriptRevisionListDtoSchema.parse({ ...(finished ? { primaryTranscriptRevisionId: REVISION } : {}), revisions: finished ? [revisionListItem(revision(REVISION, YOUTUBE_CONTENT))] : [] }),
       [`GET /api/contents/${BILIBILI_CONTENT}/transcript/revisions`]: () =>
-        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: BILI_REVISION, revisions: [revision(BILI_REVISION, BILIBILI_CONTENT)] }),
+        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: BILI_REVISION, revisions: [revisionListItem(revision(BILI_REVISION, BILIBILI_CONTENT))] }),
       [`GET /api/transcript/revisions/${REVISION}/segments`]: () =>
         transcriptSegmentPageDtoSchema.parse({ revision: revision(REVISION, YOUTUBE_CONTENT), items: segments(REVISION) }),
       [`GET /api/transcript/revisions/${BILI_REVISION}/segments`]: () =>
@@ -1010,14 +1021,14 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
       [`GET /api/contents/${LOCAL_CONTENT}/summaries`]: () => summaries(LOCAL_REVISION, LOCAL_CONTENT, true),
       [`GET /api/contents/${LOCAL_CONTENT}/chapters`]: () => chaptersDtoSchema.parse({ revisions: [] }),
       [`GET /api/contents/${LOCAL_CONTENT}/transcript/revisions`]: () =>
-        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: LOCAL_REVISION, revisions: [revision(LOCAL_REVISION, LOCAL_CONTENT)] }),
+        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: LOCAL_REVISION, revisions: [revisionListItem(revision(LOCAL_REVISION, LOCAL_CONTENT))] }),
       [`GET /api/transcript/revisions/${LOCAL_REVISION}/segments`]: () =>
         transcriptSegmentPageDtoSchema.parse({ revision: revision(LOCAL_REVISION, LOCAL_CONTENT), items: segments(LOCAL_REVISION) }),
       [`GET /api/contents/${NOTES_CONTENT}`]: () => contentDetailDtoSchema.parse({ ...notesContent(), media: [] }),
       [`GET /api/contents/${NOTES_CONTENT}/summaries`]: () => summaries(NOTES_REVISION, NOTES_CONTENT, false),
       [`GET /api/contents/${NOTES_CONTENT}/chapters`]: () => notesChapters(),
       [`GET /api/contents/${NOTES_CONTENT}/transcript/revisions`]: () =>
-        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: NOTES_REVISION, revisions: [notesRevision(NOTES_ASR_REVISION), notesRevision(NOTES_REVISION)] }),
+        transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: NOTES_REVISION, revisions: [notesRevision(NOTES_ASR_REVISION), notesRevision(NOTES_REVISION)].map(revisionListItem) }),
       [`GET /api/transcript/revisions/${NOTES_ASR_REVISION}/segments`]: () =>
         transcriptSegmentPageDtoSchema.parse({ revision: notesRevision(NOTES_ASR_REVISION), items: notesSegments(NOTES_ASR_REVISION) }),
       [`GET /api/transcript/revisions/${NOTES_REVISION}/segments`]: () =>

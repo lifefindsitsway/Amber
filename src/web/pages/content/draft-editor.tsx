@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { z } from "zod";
 import { queryKeys } from "../../api/queries.ts";
 import { transcriptRevisionDtoSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import { transcriptDraftDtoSchema, type TranscriptDraftRequest } from "../../../shared/dto/transcript.ts";
@@ -38,6 +39,7 @@ export function DraftEditor(props: { base: TranscriptRevisionDto; primaryRevisio
   const [segments, setSegments] = useState<DraftSegment[] | undefined>(undefined);
   const [baseRevisionId, setBaseRevisionId] = useState(props.base.id);
   const [conflict, setConflict] = useState<string | undefined>(undefined);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const dirty = useRef(false);
 
   const initial = useQuery({
@@ -71,6 +73,8 @@ export function DraftEditor(props: { base: TranscriptRevisionDto; primaryRevisio
   useEffect(() => {
     if (segments === undefined || !dirty.current) return;
     const timer = setTimeout(() => {
+      // A commit or discard in the meantime has taken over the edits.
+      if (!dirty.current) return;
       dirty.current = false;
       void saveDraft({ baseRevisionId, segments }).catch(() => undefined);
     }, AUTOSAVE_DELAY_MS);
@@ -100,6 +104,23 @@ export function DraftEditor(props: { base: TranscriptRevisionDto; primaryRevisio
     },
   });
 
+  // Discarding is explicit and confirmed: the draft's unfinished edits are gone for good.
+  const discard = useMutation({
+    mutationFn: async () => {
+      dirty.current = false;
+      try {
+        await client.delete(`/api/contents/${encodeURIComponent(contentId)}/transcript/draft`, z.undefined());
+      } catch (error) {
+        // Nothing was saved yet, so there is nothing to discard.
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
+      props.onClose();
+    },
+  });
+
   if (initial.isError) {
     return initial.error instanceof ApiError ? <ErrorView error={initial.error.error} /> : null;
   }
@@ -115,6 +136,16 @@ export function DraftEditor(props: { base: TranscriptRevisionDto; primaryRevisio
       <div className="flex items-center gap-2 border-b border-line px-4 py-2">
         <span className="text-xs text-muted">{save.isPending ? t("contentView.draft.saving") : t("contentView.draft.autosave")}</span>
         <div className="ml-auto flex gap-2">
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={discard.isPending || commit.isPending}
+            onClick={() => (confirmDiscard ? discard.mutate() : setConfirmDiscard(true))}
+            title={t("contentView.revisions.discardDraftHint")}
+            data-testid="draft-discard"
+          >
+            {confirmDiscard ? t("contentView.revisions.discardDraftConfirm") : t("contentView.revisions.discardDraft")}
+          </Button>
           <Button size="sm" onClick={props.onClose}>
             {t("contentView.draft.exit")}
           </Button>
@@ -123,6 +154,11 @@ export function DraftEditor(props: { base: TranscriptRevisionDto; primaryRevisio
           </Button>
         </div>
       </div>
+      {discard.error instanceof ApiError ? (
+        <div className="px-4 pt-2">
+          <ErrorView error={discard.error.error} />
+        </div>
+      ) : null}
       {commit.error instanceof ApiError && conflict === undefined ? (
         <div className="px-4 pt-2">
           <ErrorView error={commit.error.error} />

@@ -15,6 +15,7 @@ interface MediaAssetRow {
   size_bytes: number;
   duration_ms: number | null;
   quality: string | null;
+  quality_verified: number;
   fingerprint: string | null;
   acquisition: NonNullable<MediaAsset["acquisition"]> | null;
   availability: MediaAsset["availability"];
@@ -35,6 +36,8 @@ function toMediaAsset(row: MediaAssetRow): MediaAsset {
     sizeBytes: row.size_bytes,
     durationMs: row.duration_ms,
     quality: row.quality,
+    // Absent rather than false: only a verified quality is worth carrying around.
+    qualityVerified: row.quality_verified === 1 ? true : null,
     fingerprint: row.fingerprint,
     acquisition: row.acquisition,
     availability: row.availability,
@@ -61,7 +64,7 @@ export function sqliteMediaAssetRepository(db: SqliteConnection): MediaAssetRepo
   );
   const update = db.prepare(
     `UPDATE media_asset SET storage_ref = @storageRef, mime_type = @mimeType, size_bytes = @sizeBytes, duration_ms = @durationMs,
-       fingerprint = @fingerprint, availability = @availability
+       quality = @quality, quality_verified = @qualityVerified, fingerprint = @fingerprint, availability = @availability
      WHERE id = @id AND user_id = @userId`,
   );
   const remove = db.prepare("DELETE FROM media_asset WHERE id = ? AND user_id = ?");
@@ -69,10 +72,10 @@ export function sqliteMediaAssetRepository(db: SqliteConnection): MediaAssetRepo
   const insert = db.prepare(
     `INSERT INTO media_asset (
        id, user_id, content_id, kind, task_id, storage_ref, display_name, mime_type, size_bytes, duration_ms,
-       quality, fingerprint, acquisition, availability, retention_policy, created_at
+       quality, quality_verified, fingerprint, acquisition, availability, retention_policy, created_at
      ) VALUES (
        @id, @userId, @contentId, @kind, @taskId, @storageRef, @displayName, @mimeType, @sizeBytes, @durationMs,
-       @quality, @fingerprint, @acquisition, @availability, @retentionPolicy, @createdAt
+       @quality, @qualityVerified, @fingerprint, @acquisition, @availability, @retentionPolicy, @createdAt
      )`,
   );
 
@@ -118,6 +121,7 @@ export function sqliteMediaAssetRepository(db: SqliteConnection): MediaAssetRepo
         sizeBytes: asset.sizeBytes,
         durationMs: nullable(asset.durationMs),
         quality: nullable(asset.quality),
+        qualityVerified: asset.qualityVerified === true ? 1 : 0,
         fingerprint: nullable(asset.fingerprint),
         acquisition: nullable(asset.acquisition),
         availability: asset.availability,
@@ -133,6 +137,8 @@ export function sqliteMediaAssetRepository(db: SqliteConnection): MediaAssetRepo
         mimeType: asset.mimeType,
         sizeBytes: asset.sizeBytes,
         durationMs: nullable(asset.durationMs),
+        quality: nullable(asset.quality),
+        qualityVerified: asset.qualityVerified === true ? 1 : 0,
         fingerprint: nullable(asset.fingerprint),
         availability: asset.availability,
       }).changes;

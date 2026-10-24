@@ -5,6 +5,7 @@ import { BilibiliPlayer } from "./bilibili-player.tsx";
 import type { PlayerSource } from "./capabilities.ts";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
 import { LocalPlayer } from "./local-player.tsx";
+import type { QualitySource } from "./player-menus.tsx";
 import type { ChapterEntry } from "./seek-bar.tsx";
 import type { SubtitleTrackModel } from "./subtitle-overlay.tsx";
 import { YoutubePlayer } from "./youtube-player.tsx";
@@ -25,6 +26,9 @@ export type ActivePlayer = "iframe" | "local" | "none";
  * shows one frame of the other's strip. `chapters`, `autoplay`, `onEndedAdvance` and
  * `loopCollection` go to the `<video>` player, and so do `subtitles`; a platform iframe cannot
  * carry them, so while subtitles are wanted there it says where they can be seen.
+ * `localSources`, `localSourceId` and `onSelectLocalSource` are the cached qualities of the
+ * file `localSrc` plays; the page gives them only while a video cache plays, and they never
+ * reach an audio-only file.
  */
 export function PlayerView(props: {
   source: PlayerSource;
@@ -41,6 +45,9 @@ export function PlayerView(props: {
   onEndedAdvance?: () => Promise<AdvanceResult>;
   loopCollection?: LoopCollectionChoice | undefined;
   subtitles?: SubtitleTrackModel | undefined;
+  localSources?: readonly QualitySource[] | undefined;
+  localSourceId?: string | undefined;
+  onSelectLocalSource?: ((assetId: string) => void) | undefined;
 }) {
   const { t } = useTranslation();
   const [failed, setFailed] = useState(false);
@@ -64,6 +71,10 @@ export function PlayerView(props: {
         {...(props.onEndedAdvance === undefined ? {} : { onEndedAdvance: props.onEndedAdvance })}
         loopCollection={props.loopCollection}
         subtitles={props.subtitles}
+        activeSourceId={props.localSourceId}
+        {...(props.localAudioOnly === true || props.localSources === undefined
+          ? {}
+          : { sources: props.localSources, onSelectSource: props.onSelectLocalSource })}
       />
     );
   } else if (failed && platform) {

@@ -159,6 +159,21 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
     `INSERT INTO transcript_segment_source (child_segment_id, parent_segment_id, position)
      VALUES (?, ?, ?)`,
   );
+  const deleteRevision = db.prepare(
+    `DELETE FROM transcript_revision
+     WHERE id = ? AND content_id IN (SELECT id FROM content WHERE user_id = ?)`,
+  );
+  const archivedOfContent = db.prepare(
+    `SELECT archive.revision_id, archive.archived_at FROM transcript_revision_archive AS archive
+     JOIN content ON content.id = archive.content_id
+     WHERE archive.content_id = ? AND content.user_id = ?
+     ORDER BY archive.archived_at, archive.revision_id`,
+  );
+  const insertArchive = db.prepare(
+    `INSERT INTO transcript_revision_archive (revision_id, content_id, archived_at) VALUES (?, ?, ?)
+     ON CONFLICT (revision_id) DO NOTHING`,
+  );
+  const deleteArchive = db.prepare("DELETE FROM transcript_revision_archive WHERE revision_id = ?");
 
   return {
     insertRevision(ownerUserId, revision, segments) {
@@ -267,6 +282,26 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
     },
     deleteDraft(ownerUserId, contentId) {
       return deleteDraft.run(contentId, ownerUserId).changes > 0;
+    },
+    deleteRevision(ownerUserId, revisionId) {
+      return deleteRevision.run(revisionId, ownerUserId).changes > 0;
+    },
+    listArchived(ownerUserId, contentId) {
+      return (archivedOfContent.all(contentId, ownerUserId) as Array<{ revision_id: string; archived_at: number }>).map((row) => ({
+        revisionId: row.revision_id,
+        archivedAt: row.archived_at,
+      }));
+    },
+    setArchived(ownerUserId, revisionId, archivedAt) {
+      const revision = ownedRevision.get(revisionId, ownerUserId) as RevisionRow | undefined;
+      if (revision === undefined) {
+        throw notFound("transcript revision", revisionId);
+      }
+      if (archivedAt === undefined) {
+        deleteArchive.run(revisionId);
+      } else {
+        insertArchive.run(revisionId, revision.content_id, archivedAt);
+      }
     },
   };
 }

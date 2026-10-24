@@ -20,6 +20,13 @@ const second = revision("r2", { kind: "corrected", parentRevisionId: "r1", gener
 const all: TranscriptRevisionDto[] = [platform, first, second];
 
 describe("revisionLabel", () => {
+  it("names a manual revision by its time and tags an archived one", () => {
+    const t = i18n.t.bind(i18n);
+    const manual = revision("m1", { kind: "manual", parentRevisionId: "r0", createdAt: at(12, 5) });
+    expect(revisionLabel(manual, undefined, t, i18n)).toBe("手动修订 · 10-04 12:05");
+    expect(revisionLabel({ ...manual, archived: true }, undefined, t, i18n)).toBe("手动修订 · 10-04 12:05 · 已归档");
+  });
+
   it("names kind, model and time so two proofreads by one model tell apart, and marks the current one", () => {
     const t = i18n.t.bind(i18n);
     expect(all.map((item) => revisionLabel(item, "r2", t, i18n, all))).toEqual([

@@ -7,7 +7,7 @@ import { useSubtitleFontFallback } from "../../player/subtitle-font.ts";
 import type { SubtitleStatus, SubtitleTrackModel } from "../../player/subtitle-overlay.tsx";
 import { useSubtitlePrefs, type SubtitleDisplayMode, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
 import { useContentPage } from "./content-context.tsx";
-import { readableRevisions, useRevisions, useSegments } from "./content-data.ts";
+import { readableRevisions, useRevisions, useSegments, visibleRevisions } from "./content-data.ts";
 import { translationsOf } from "./export-dialog.tsx";
 import { revisionLabel } from "./labels.ts";
 
@@ -44,6 +44,8 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   const readable = useMemo(() => readableRevisions(all), [all]);
   const track = prefs.track;
   const originalId = present(track.revisionId, readable) ?? present(primaryId, readable) ?? readable.at(-1)?.id;
+  // The picker lists what the version pickers list, plus the original being shown.
+  const pickable = useMemo(() => visibleRevisions(readable, primaryId, { include: [originalId] }), [readable, primaryId, originalId]);
   const translations = useMemo(() => translationsOf(originalId, all), [originalId, all]);
   const translationId = present(track.translationRevisionId, translations) ?? latest(translations)?.id;
   const mode: SubtitleDisplayMode = usesTranslation(track.mode) && translationId === undefined ? "original" : track.mode;
@@ -99,7 +101,7 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   return {
     mode,
     setMode,
-    originals: readable.map((revision) => ({ id: revision.id, label: revisionLabel(revision, primaryId, t, i18n, readable) })),
+    originals: pickable.map((revision) => ({ id: revision.id, label: revisionLabel(revision, primaryId, t, i18n, readable) })),
     originalId,
     // A translation belongs to its original, so picking another original forgets it.
     setOriginal: (id) => prefs.setTrack({ version: 1, mode: track.mode, revisionId: id }),

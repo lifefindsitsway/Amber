@@ -1,3 +1,4 @@
+import { isCacheRef } from "../../shared/cache-file-name.ts";
 import type { BurnOutputDto } from "../../shared/dto/media.ts";
 import type { SaveGrantDto } from "../../shared/dto/local-media.ts";
 import { amberError } from "../domain/errors.ts";
@@ -6,6 +7,8 @@ import type { RequestPrincipal } from "../domain/user.ts";
 import type { FileGrantIssuer } from "../ports/file-grant.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { CacheGate } from "../pipeline/cache-gate.ts";
+import { CachePathLocks } from "../pipeline/cache-path-locks.ts";
+import { cacheRowsAt, matchesIdentity } from "../pipeline/cache-swap.ts";
 import { gateConflict } from "../pipeline/gate-conflict.ts";
 import type { MediaFiles } from "../pipeline/media-files.ts";
 import { isTerminalProjection } from "../pipeline/projection.ts";
@@ -19,6 +22,11 @@ export interface MediaAssetServiceOptions {
   gate: Pick<CacheGate, "tryShared" | "exclusiveReason">;
   /** Local mode only: signs `burn_output` / `cache_save` grants for the shell. */
   grants?: FileGrantIssuer;
+  /**
+   * Serializes removing a cache file with publishing and removing others at the same path.
+   * Defaults to a private set of locks, enough where nothing else touches the cache.
+   */
+  locks?: Pick<CachePathLocks, "withLock">;
 }
 
 /** Kinds a browser may stream in server mode. */
@@ -43,8 +51,11 @@ export interface PlayableMedia {
 export class MediaAssetService {
   private readonly options: MediaAssetServiceOptions;
 
+  private readonly locks: Pick<CachePathLocks, "withLock">;
+
   constructor(options: MediaAssetServiceOptions) {
     this.options = options;
+    this.locks = options.locks ?? new CachePathLocks();
   }
 
   /** Only available uploads and caches are served; anything else, or a file gone from disk, is `not_found`. */
@@ -72,18 +83,31 @@ export class MediaAssetService {
    * client removes after saving it. Refused while the Content has an unfinished Task, and
    * for a cache while the cache is being moved (`conflict.cache_migrating`). The database
    * changes first; the file goes after the commit.
+   *
+   * A cache already `evicted` is done: its file, if any, is not touched, since its name may
+   * belong to a newer cache by now. An available cache's file is removed under its path's
+   * lock and only when no other available row holds the path and the file is the one the
+   * row describes (size and SHA-256 equal to its fingerprint); otherwise, or when the row
+   * has no fingerprint, `conflict.cache_file_foreign` and nothing changes.
    */
   async delete(principal: RequestPrincipal, assetId: string): Promise<void> {
     const owner = principal.userId;
-    const kind = this.options.repository.withTransaction((scope) => visibleAsset(scope, owner, assetId)?.kind);
-    if (kind === undefined) {
+    const found = this.options.repository.withTransaction((scope) => visibleAsset(scope, owner, assetId));
+    if (found === undefined) {
       throw amberError("not_found", "media asset not found");
     }
-    const release = kind === "platform_cache" ? this.options.gate.tryShared() : () => undefined;
+    if (found.kind === "platform_cache" && found.availability === "evicted") {
+      return;
+    }
+    const release = found.kind === "platform_cache" ? this.options.gate.tryShared() : () => undefined;
     if (release === undefined) {
       throw gateConflict(this.options.gate);
     }
     try {
+      if (found.kind === "platform_cache") {
+        await this.locks.withLock(found.storageRef, () => this.deleteCache(owner, assetId));
+        return;
+      }
       const removed = this.options.repository.withTransaction((scope) => {
         const asset = visibleAsset(scope, owner, assetId);
         if (asset === undefined) {
@@ -94,8 +118,8 @@ export class MediaAssetService {
         }
         switch (asset.kind) {
           case "platform_cache":
-            scope.mediaAssets.update(owner, { ...asset, availability: "evicted" });
-            return asset;
+            // Removed above, under its path's lock; a kind never changes.
+            throw new TypeError("a cache is removed through its path lock");
           case "managed_upload":
             scope.mediaAssets.delete(owner, asset.id);
             return asset;
@@ -116,6 +140,59 @@ export class MediaAssetService {
       await this.options.media.storeFor(removed.kind).remove(removed.storageRef);
     } finally {
       release();
+    }
+  }
+
+  /** The cache half of `delete`, under the path's lock. */
+  private async deleteCache(owner: string, assetId: string): Promise<void> {
+    const { repository, media } = this.options;
+    const files = media.storeFor("platform_cache");
+    const check = () =>
+      repository.withTransaction((scope) => {
+        const asset = visibleAsset(scope, owner, assetId);
+        if (asset === undefined) {
+          throw amberError("not_found", "media asset not found");
+        }
+        if (scope.tasks.listByContent(owner, asset.contentId).some((task) => !isTerminalProjection(task.statusProjection))) {
+          throw amberError("conflict", "the content has unfinished tasks", { code: "conflict.tasks_unfinished" });
+        }
+        const sharedPath = cacheRowsAt(scope, asset.storageRef).some((other) => other.id !== asset.id && other.availability === "available");
+        return { asset, sharedPath };
+      });
+    const { asset, sharedPath } = check();
+    if (asset.availability === "evicted") {
+      return;
+    }
+    // Another available row at the path means the file is not this row's to remove; a ref
+    // of the obsolete nested layout is not in the flat cache directory at all.
+    let removeFile = !sharedPath && isCacheRef(asset.storageRef);
+    if (removeFile) {
+      const stored = await files.stat(asset.storageRef);
+      if (stored !== null) {
+        if (asset.fingerprint === undefined || asset.fingerprint === "") {
+          throw amberError("conflict", "the cache has no fingerprint to verify its file by", { code: "conflict.cache_file_foreign" });
+        }
+        if ((await matchesIdentity(files.pathOf(asset.storageRef), { sizeBytes: stored.sizeBytes, digest: asset.fingerprint })) !== true) {
+          throw amberError("conflict", "the file at the cache path is not the registered cache", { code: "conflict.cache_file_foreign" });
+        }
+      } else {
+        removeFile = false;
+      }
+    }
+    repository.withTransaction((scope) => {
+      const current = visibleAsset(scope, owner, assetId);
+      if (current === undefined) {
+        throw amberError("not_found", "media asset not found");
+      }
+      if (scope.tasks.listByContent(owner, current.contentId).some((task) => !isTerminalProjection(task.statusProjection))) {
+        throw amberError("conflict", "the content has unfinished tasks", { code: "conflict.tasks_unfinished" });
+      }
+      if (current.availability === "available") {
+        scope.mediaAssets.update(owner, { ...current, availability: "evicted" });
+      }
+    });
+    if (removeFile) {
+      await files.remove(asset.storageRef);
     }
   }
 

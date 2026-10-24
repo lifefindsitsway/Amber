@@ -165,10 +165,10 @@ const cacheMediaTaskRequestV1Schema = z
   .strict();
 
 /**
- * `Task.requestJson` of a `cache_media` Task, schema version 2 (client only): what to
- * cache, the height tier of a video, and the cleaned, de-duplicated file stem and the id
- * of the asset to register, all frozen at submission so a retried or recovered Task
- * writes exactly the file the user saw announced.
+ * `Task.requestJson` of a `cache_media` Task, schema version 2: the file name was decided
+ * at submission, before the downloaded quality was known. Kept so such a Task parses; the
+ * stage completes it only when its asset is already registered and otherwise removes the
+ * file it may have left and fails with `invalid_request.cache_request_outdated`.
  */
 export const cacheMediaTaskRequestV2Schema = z
   .object({
@@ -182,9 +182,32 @@ export const cacheMediaTaskRequestV2Schema = z
   .strict();
 export type CacheMediaTaskRequestV2 = z.infer<typeof cacheMediaTaskRequestV2Schema>;
 
+/**
+ * `Task.requestJson` of a `cache_media` Task, schema version 3 (client only), frozen at
+ * submission: what to cache, the height cap of a video, the cleaned stem of the file name,
+ * the height the format check expected (absent when unknown), the id of the asset to
+ * register and the user's confirmation to replace another Content's cache holding the
+ * expected name. The quality label and extension of the file come from the finished
+ * download, so the stem is frozen and the full name is not.
+ */
+export const cacheMediaTaskRequestV3Schema = z
+  .object({
+    requestSchemaVersion: z.literal(3),
+    kind: z.literal("cache_media"),
+    type: z.enum(CACHE_MEDIA_TYPES),
+    quality: z.union(CACHE_MEDIA_QUALITIES.map((quality) => z.literal(quality))).exactOptional(),
+    stem: z.string().min(1),
+    expectedHeight: z.number().int().positive().exactOptional(),
+    assetId: z.string().min(1),
+    overwrite: z.object({ assetId: z.string().min(1), fileName: z.string().min(1) }).strict().exactOptional(),
+  })
+  .strict();
+export type CacheMediaTaskRequestV3 = z.infer<typeof cacheMediaTaskRequestV3Schema>;
+
 export const cacheMediaTaskRequestSchema = z.discriminatedUnion("requestSchemaVersion", [
   cacheMediaTaskRequestV1Schema,
   cacheMediaTaskRequestV2Schema,
+  cacheMediaTaskRequestV3Schema,
 ]);
 export type CacheMediaTaskRequest = z.infer<typeof cacheMediaTaskRequestSchema>;
 

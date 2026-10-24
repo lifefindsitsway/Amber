@@ -117,6 +117,29 @@ describe("useContentSubtitles", () => {
     expect(readTrack("u1", "c1")).toEqual({ version: 1, mode: "original", revisionId: "r2" });
   });
 
+  it("offers one manual original: the one the corrected primary descends from, unless another is the one shown", async () => {
+    // r0 (asr) ← m1 ← r1 (corrected, primary) ; r0 ← m0, an earlier edit off the primary's line
+    routes({
+      "GET /api/contents/c1/transcript/revisions": {
+        body: {
+          primaryTranscriptRevisionId: "r1",
+          revisions: [
+            revision("r0", { kind: "asr", createdAt: 1 }),
+            revision("m0", { kind: "manual", parentRevisionId: "r0", createdAt: 2 }),
+            revision("m1", { kind: "manual", parentRevisionId: "r0", createdAt: 3 }),
+            revision("r1", { kind: "corrected", parentRevisionId: "m1", createdAt: 4 }),
+          ],
+        },
+      },
+    });
+    const { result } = setup();
+    await waitFor(() => expect(result.current?.originals.map((item) => item.id)).toEqual(["r0", "m1", "r1"]));
+    expect(result.current?.originalId).toBe("r1");
+    // A remembered earlier edit stays listed so the picker keeps showing its own value.
+    act(() => writeTrack("u1", "c1", { version: 1, mode: "off", revisionId: "m0" }));
+    expect(result.current?.originals.map((item) => item.id)).toEqual(["r0", "m0", "m1", "r1"]);
+  });
+
   it("says loading, then a retryable failure, then empty", async () => {
     let failures = 1;
     routes({

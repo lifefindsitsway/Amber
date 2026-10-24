@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  audioCacheFileName,
   cacheExtensionOf,
   cacheFileNameOf,
-  cacheRef,
-  cacheStemOf,
+  cacheQualityTier,
+  CACHE_QUALITY_TIERS,
+  cacheRefOf,
   fittedCacheStem,
   isCacheRef,
   isValidCacheFileName,
-  numberedStem,
+  labelledStem,
+  sameCacheFileName,
   sanitizeCacheStem,
+  videoCacheFileName,
   WINDOWS_MAX_PATH_UNITS,
 } from "../../src/shared/cache-file-name.ts";
 import { CACHE_FILE_NAME_MAX_CHARS } from "../../src/shared/defaults.ts";
@@ -71,36 +75,93 @@ describe("sanitizeCacheStem", () => {
 describe("fittedCacheStem", () => {
   const dir = "C:\\Users\\someone\\AppData\\Roaming\\Amber\\media";
 
-  it("keeps a short stem and appends the number", () => {
-    expect(fittedCacheStem("课程", 1, dir)).toBe("课程");
-    expect(fittedCacheStem("课程", 3, dir)).toBe("课程 (3)");
-    expect(numberedStem("课程", 1)).toBe("课程");
-    expect(numberedStem("课程", 2)).toBe("课程 (2)");
+  it("keeps a short stem as it is and never numbers it", () => {
+    expect(fittedCacheStem("课程", dir)).toBe("课程");
+    expect(fittedCacheStem("课程 (2)", dir)).toBe("课程 (2)");
   });
 
-  it("budgets the longest partial path in UTF-16 units", () => {
+  it("budgets the widest labelled partial path in UTF-16 units", () => {
     const longDir = `C:\\${"d".repeat(200)}`;
-    const stem = fittedCacheStem("😀".repeat(40), 12, longDir) as string;
-    const path = `${longDir}\\${stem}.webm.partial`;
+    const stem = fittedCacheStem("😀".repeat(40), longDir) as string;
+    const path = `${longDir}\\${videoCacheFileName(stem, 2160, "webm")}.partial`;
     expect(path.length).toBeLessThanOrEqual(WINDOWS_MAX_PATH_UNITS);
-    expect(stem.endsWith(" (12)")).toBe(true);
+    expect(path.length).toBeGreaterThan(WINDOWS_MAX_PATH_UNITS - 4);
     // Never splits a surrogate pair.
-    expect(/[\uD800-\uDBFF]$/u.test(stem.slice(0, -" (12)".length))).toBe(false);
+    expect(/[\uD800-\uDBFF]$/u.test(stem)).toBe(false);
+  });
+
+  it("keeps the widest label within the budget too", () => {
+    const longDir = `C:\\${"d".repeat(150)}`;
+    const stem = fittedCacheStem("a".repeat(200), longDir) as string;
+    expect(`${longDir}\\${videoCacheFileName(stem, 4320, "webm")}.partial`.length).toBeLessThanOrEqual(WINDOWS_MAX_PATH_UNITS);
+  });
+
+  it("escapes a device name the truncation exposes", () => {
+    const longDir = `C:\\${"d".repeat(200)}`;
+    const budget = WINDOWS_MAX_PATH_UNITS - longDir.length - 1 - " [2160P].webm.partial".length - 1;
+    const stem = fittedCacheStem(`CON${" ".repeat(budget - 3)}x`, longDir);
+    expect(stem).toBe("CON_");
   });
 
   it("gives up when the directory alone is too long", () => {
-    expect(fittedCacheStem("a", 1, `C:\\${"d".repeat(250)}`)).toBeUndefined();
+    expect(fittedCacheStem("a", `C:\\${"d".repeat(250)}`)).toBeUndefined();
+  });
+});
+
+describe("cacheQualityTier", () => {
+  it("names a picture after the tier platforms would call it", () => {
+    expect(cacheQualityTier(714, 1280)).toBe(720);
+    expect(cacheQualityTier(1072, 1920)).toBe(1080);
+    expect(cacheQualityTier(1080, 1920)).toBe(1080);
+    expect(cacheQualityTier(360, 640)).toBe(360);
+    expect(cacheQualityTier(756, 1280)).toBe(720);
+    expect(cacheQualityTier(800, 1422)).toBe(1080);
+  });
+
+  it("judges portrait, wide-screen and 4:3 pictures by the same equivalent height", () => {
+    expect(cacheQualityTier(1920, 1080)).toBe(1080);
+    expect(cacheQualityTier(1280, 720)).toBe(720);
+    expect(cacheQualityTier(534, 1280)).toBe(720);
+    expect(cacheQualityTier(1080, 1440)).toBe(1080);
+  });
+
+  it("uses the height alone without a width, maps every tier to itself and keeps sizes beyond the largest tier", () => {
+    expect(cacheQualityTier(714)).toBe(720);
+    expect(cacheQualityTier(1072)).toBe(1080);
+    for (const tier of CACHE_QUALITY_TIERS) expect(cacheQualityTier(tier)).toBe(tier);
+    expect(cacheQualityTier(5000)).toBe(5000);
+    expect(cacheQualityTier(100, 160)).toBe(144);
+  });
+});
+
+describe("cache file names", () => {
+  it("labels a video with its tier and an upper-case P, and leaves audio unlabelled", () => {
+    expect(videoCacheFileName("第 1 讲", 720, "mp4")).toBe("第 1 讲 [720P].mp4");
+    expect(videoCacheFileName("第 1 讲", 1080, "webm")).toBe("第 1 讲 [1080P].webm");
+    expect(videoCacheFileName("第 1 讲", undefined, "mp4")).toBe("第 1 讲 [?P].mp4");
+    expect(labelledStem("a", 2160)).toBe("a [2160P]");
+    expect(audioCacheFileName("第 1 讲")).toBe("第 1 讲.mp3");
+  });
+
+  it("writes only labelled names the store accepts; the unknown label is for display", () => {
+    expect(isValidCacheFileName(videoCacheFileName("a", 720, "mp4"))).toBe(true);
+    expect(isValidCacheFileName(videoCacheFileName("a", undefined, "mp4"))).toBe(false);
+    expect(isValidCacheFileName(audioCacheFileName("a"))).toBe(true);
+  });
+
+  it("compares names the way Windows does", () => {
+    expect(sameCacheFileName("Lecture [720P].MP4", "lecture [720P].mp4")).toBe(true);
+    expect(sameCacheFileName("a [720P].mp4", "a [1080P].mp4")).toBe(false);
   });
 });
 
 describe("cache refs", () => {
   it("builds and reads flat refs", () => {
-    expect(cacheRef("a.b", "mp4")).toBe("media/a.b.mp4");
+    expect(cacheRefOf("a.b [720P].mp4")).toBe("media/a.b [720P].mp4");
     expect(isCacheRef("media/a.mp4")).toBe(true);
     expect(isCacheRef("media/a/b.mp4")).toBe(false);
     expect(isCacheRef("assets/u/c/a")).toBe(false);
     expect(cacheFileNameOf("media/a.b.mp4")).toBe("a.b.mp4");
-    expect(cacheStemOf("media/a.b.mp4")).toBe("a.b");
     expect(cacheExtensionOf("video/mp4")).toBe("mp4");
     expect(cacheExtensionOf("video/webm")).toBe("webm");
     expect(cacheExtensionOf("audio/mpeg")).toBe("mp3");

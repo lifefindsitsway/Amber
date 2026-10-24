@@ -9,6 +9,7 @@ interface PendingFileDeleteRow {
   root_path: string;
   storage_ref: string;
   expected_size_bytes: number | null;
+  expected_digest: string | null;
   user_id: string | null;
   attempts: number;
   next_attempt_at: number;
@@ -23,6 +24,7 @@ function toEntry(row: PendingFileDeleteRow): PendingFileDelete {
     rootPath: row.root_path,
     storageRef: row.storage_ref,
     expectedSizeBytes: row.expected_size_bytes,
+    expectedDigest: row.expected_digest,
     userId: row.user_id,
     attempts: row.attempts,
     nextAttemptAt: row.next_attempt_at,
@@ -35,9 +37,9 @@ export function sqlitePendingFileDeleteRepository(db: SqliteConnection): Pending
   // The first registration of a file wins: its size and owner describe the file being purged.
   const insert = db.prepare(
     `INSERT OR IGNORE INTO pending_file_delete (
-       id, store, root_path, storage_ref, expected_size_bytes, user_id, attempts, next_attempt_at, last_error, created_at
+       id, store, root_path, storage_ref, expected_size_bytes, expected_digest, user_id, attempts, next_attempt_at, last_error, created_at
      ) VALUES (
-       @id, @store, @rootPath, @storageRef, @expectedSizeBytes, @userId, @attempts, @nextAttemptAt, @lastError, @createdAt
+       @id, @store, @rootPath, @storageRef, @expectedSizeBytes, @expectedDigest, @userId, @attempts, @nextAttemptAt, @lastError, @createdAt
      )`,
   );
   const due = db.prepare("SELECT * FROM pending_file_delete WHERE next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?");
@@ -54,6 +56,7 @@ export function sqlitePendingFileDeleteRepository(db: SqliteConnection): Pending
         rootPath: entry.rootPath,
         storageRef: entry.storageRef,
         expectedSizeBytes: nullable(entry.expectedSizeBytes),
+        expectedDigest: nullable(entry.expectedDigest),
         userId: nullable(entry.userId),
         attempts: entry.attempts,
         nextAttemptAt: entry.nextAttemptAt,

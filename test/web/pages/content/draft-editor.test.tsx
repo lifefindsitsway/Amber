@@ -55,4 +55,27 @@ describe("DraftEditor", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(commitBodies()).toEqual([{ expectedPrimaryRevisionId: "r1" }, { expectedPrimaryRevisionId: "r2" }]);
   });
+  it("discards the draft only after a second confirmation, and a draft never saved is simply left", async () => {
+    const { calls } = mockApi({
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "r1", segments: draftFromSegments(SEGMENTS), updatedAt: 1 } },
+      "DELETE /api/contents/c1/transcript/draft": { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } },
+    });
+    const onClose = vi.fn();
+    const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn() };
+    renderApp(
+      <ContentPageProvider value={state}>
+        <DraftEditor base={revision("r1")} primaryRevisionId="r1" onClose={onClose} />
+      </ContentPageProvider>,
+    );
+    await screen.findByDisplayValue("今天讲检索。");
+    const discard = screen.getByTestId("draft-discard");
+    expect(discard.textContent).toBe("放弃草稿");
+    fireEvent.click(discard);
+    expect(discard.textContent).toBe("确认放弃草稿");
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    fireEvent.click(discard);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1/transcript/draft"]);
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
+  });
 });

@@ -18,6 +18,7 @@ import { sqlitePlatformAccountRepository } from "./repositories/platform-account
 import { sqliteOtherModelProfileRepository } from "./repositories/other-model-profiles.ts";
 import { sqliteAsrProfileRepository, sqliteProviderProfileRepository } from "./repositories/provider-profiles.ts";
 import { sqliteReferenceTextRepository } from "./repositories/reference-texts.ts";
+import { sqliteRevisionReferenceRepository } from "./repositories/revision-references.ts";
 import { sqliteRollupPartialRepository } from "./repositories/rollup-partials.ts";
 import { sqliteSearchIndexRepository } from "./repositories/search-index.ts";
 import { sqliteSecretEnvelopeStore } from "./repositories/secret-envelopes.ts";
@@ -52,6 +53,7 @@ export class SqliteRepository implements Repository {
       collections: sqliteCollectionRepository(db),
       mediaAssets: sqliteMediaAssetRepository(db),
       transcripts: sqliteTranscriptRepository(db),
+      revisionReferences: sqliteRevisionReferenceRepository(db),
       secretEnvelopes: sqliteSecretEnvelopeStore(db),
       importBatches: sqliteImportBatchRepository(db),
       tasks: sqliteTaskRepository(db),

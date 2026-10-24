@@ -36,10 +36,22 @@ interface ForeignKey {
   id: number;
   table: string;
   from: string;
+  /** Null when the key names the parent's primary key implicitly. */
+  to?: string | null;
 }
 
 const columnsOf = (db: SqliteConnection, table: string) => db.pragma(`table_info(${table})`) as Column[];
 const foreignKeysOf = (db: SqliteConnection, table: string) => db.pragma(`foreign_key_list(${table})`) as ForeignKey[];
+
+/**
+ * Whether `key` alone identifies one parent row by its `id`: a single-column key does, and so
+ * does the `id` column of a composite key whose columns are all NOT NULL.
+ */
+function joinsOnId(keys: readonly ForeignKey[], columns: readonly Column[], key: ForeignKey): boolean {
+  const parts = keys.filter((other) => other.id === key.id);
+  if (parts.length === 1) return true;
+  return key.to === "id" && parts.every((part) => columns.find((column) => column.name === part.from)?.notnull === 1);
+}
 
 function secretRow(userId: string): Record<string, unknown> {
   return {
@@ -158,6 +170,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const primary = transcripts.corrected.revision.id;
   const firstSegment = transcripts.corrected.segments[0]?.id;
   row("transcript_draft", { id: nextId(), content_id: content, base_revision_id: primary, segments_json: json([]), updated_at: T0 });
+  row("transcript_revision_archive", { revision_id: transcripts.asr.revision.id, content_id: content, archived_at: T0 });
   row("reference_text", { id: nextId(), content_id: content, origin: "md_import", text: "# notes", created_at: T0 });
   row("note", {
     id: nextId(), user_id: userId, content_id: content, transcript_revision_id: primary, start_segment_id: firstSegment,
@@ -262,7 +275,7 @@ function ownerPath(db: SqliteConnection, table: string): ForeignKey[] {
   if (table === "rollup_partial") return [{ id: 0, table: "summary_revision", from: "summary_revision_id" }, ...ownerPath(db, "summary_revision")];
   const columns = columnsOf(db, table);
   for (const key of foreignKeysOf(db, table)) {
-    const single = foreignKeysOf(db, table).filter((other) => other.id === key.id).length === 1;
+    const single = joinsOnId(foreignKeysOf(db, table), columns, key);
     const notNull = columns.find((column) => column.name === key.from)?.notnull === 1;
     if (single && notNull && key.table !== table) return [key, ...ownerPath(db, key.table)];
   }
@@ -296,7 +309,7 @@ describe("every persistent table traces to a userId", () => {
         const viaColumn = userColumn !== undefined && (userColumn.notnull === 1 || ROW_INVARIANT_TABLES.includes(table));
         const keys = foreignKeysOf(db, table);
         const viaChain = keys.some((key) => {
-          const single = keys.filter((other) => other.id === key.id).length === 1;
+          const single = joinsOnId(keys, columns, key);
           const notNull = columns.find((column) => column.name === key.from)?.notnull === 1;
           return traceable.has(key.table) && key.table !== table && (notNull || ROW_INVARIANT_TABLES.includes(table)) && single;
         });

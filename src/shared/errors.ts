@@ -158,6 +158,15 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.cache_migrating": {},
   // The previous cache move still has old files to remove.
   "conflict.cache_cleanup_pending": {},
+  "conflict.cache_name_taken": { detailsKeys: ["fileName", "holderContentId", "holderTitle", "actualHeight"] },
+  "conflict.cache_name_pending": {},
+  // A cache download that does not fit the free space above the low-water mark of one volume.
+  "disk_low.cache_volume": { detailsKeys: ["volume", "needBytes", "freeBytes", "lowWaterBytes"] },
+  "conflict.cache_file_busy": {},
+  "conflict.cache_file_foreign": {},
+  "conflict.cache_recovery_pending": {},
+  "conflict.revision_is_primary": {},
+  "conflict.revision_referenced": { detailsKeys: ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks"] },
   // The custom cache directory is not reachable: drive unplugged or directory removed.
   "conflict.cache_unavailable": {},
   // Purging a Content while one of its chat answers is still streaming.
@@ -247,6 +256,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.allowlist_entry": {},
   "invalid_request.schema": { detailsKeys: ["path"] },
   "invalid_request.cache_request_outdated": {},
+  "invalid_request.cache_probe_failed": {},
+  "invalid_request.revision_kind_protected": {},
   // A soft-subtitle MP4 export whose source has streams outside the MP4 policy.
   "invalid_request.container_unsupported": { detailsKeys: ["streams"] },
   // A note anchor outside its revision, out of order, or splitting a surrogate pair.

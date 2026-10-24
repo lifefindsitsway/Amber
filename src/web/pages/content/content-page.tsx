@@ -44,7 +44,7 @@ import { useMainWidth, useWindowWidth } from "../../layout-width.tsx";
 import { playerSourceOf } from "../../player/capabilities.ts";
 import { saveCachedCopy } from "../../desktop/cached-media.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
-import { isAudioOnly, playableCache, playableCaches, usePlaybackMedia, type LocalAsset } from "../../player/media-url.ts";
+import { allPlayableCaches, cacheHeight, isAudioOnly, playableCache, playableVideoCaches, qualityLabel, usePlaybackMedia, type LocalAsset } from "../../player/media-url.ts";
 import { useListLoopEntry, useLoopCollectionChoice, usePlaylistAdvance, type AdvanceResult, type LoopCollectionChoice } from "../../player/list-loop.ts";
 import { PlayerController, PlayerControllerProvider, usePlayerCapabilities } from "../../player/player-controller.tsx";
 import { PlayerView, type ActivePlayer } from "../../player/player-view.tsx";
@@ -60,6 +60,7 @@ import { DeleteContentDialog } from "../../components/delete-content-dialog.tsx"
 import { CacheMediaDialog } from "./cache-media-dialog.tsx";
 import { ContentPageProvider, useContentPage, type ContentPageState, type ContentTab, type SegmentSelection } from "./content-context.tsx";
 import { useChapters, useContentDetail, useContentTaskRefresh, useHighlights, useUnfinishedCacheTask } from "./content-data.ts";
+import type { QualitySource } from "../../player/player-menus.tsx";
 import { useContentSubtitles } from "./content-subtitles.ts";
 import { visibleHighlights } from "./highlight-items.ts";
 import { OutputTabs } from "./output-tabs.tsx";
@@ -108,6 +109,7 @@ function ContentLayout(props: { content: ContentDetailDto }) {
   const [highlightThreshold, setHighlightThreshold] = useState(HIGHLIGHT_THRESHOLD_DEFAULT);
   // Bumped by every 「样式与位置」 request from elsewhere on the page (the export dialog).
   const [subtitleEditRequest, setSubtitleEditRequest] = useState(0);
+  const [playingAssetId, setPlayingAssetId] = useState<string | undefined>(undefined);
 
   const state = useMemo<ContentPageState>(
     () => ({
@@ -129,8 +131,9 @@ function ContentLayout(props: { content: ContentDetailDto }) {
       highlightThreshold,
       setHighlightThreshold,
       openSubtitleEditor: () => setSubtitleEditRequest((request) => request + 1),
+      playingAssetId,
     }),
-    [content, selection, controller, setParams, highlightThreshold],
+    [content, selection, controller, setParams, highlightThreshold, playingAssetId],
   );
 
   return (
@@ -139,7 +142,7 @@ function ContentLayout(props: { content: ContentDetailDto }) {
         <ChatComposerProvider composer={composer}>
           {/* Above the tabs, so a note draft survives switching tab or revision. */}
           <NotesUiProvider>
-            <Columns subtitleEditRequest={subtitleEditRequest} />
+            <Columns subtitleEditRequest={subtitleEditRequest} onPlayingCache={setPlayingAssetId} />
             <SelectionToolbar
               actions={(snapshot, close) =>
                 snapshot.bounds === undefined ? null : <NoteSelectionActions bounds={snapshot.bounds} rect={snapshot.rect} close={close} />
@@ -183,6 +186,16 @@ interface PlaybackControls {
   /** The last cache Task asked for a video but the Content has no picture, so audio was cached. */
   cachedAudioInstead: boolean;
   dismissCachedAudio: () => void;
+  /** The video cache the local player should load: the newest of the chosen quality, else the best one. */
+  cacheAssetId?: string;
+  /** Every playable video cache by quality, as the player's quality menu lists them. */
+  cacheSources: QualitySource[];
+  selectCache: (assetId: string) => void;
+  /** Says the chosen quality went away and which one plays instead. */
+  qualityNotice?: string;
+  dismissQualityNotice: () => void;
+  /** Reports the video cache the local player shows, for the subtitled video export. */
+  onPlayingCache: (assetId: string | undefined) => void;
 }
 
 /** Whether a finished cache Task fell back to audio because the Content has no picture. */
@@ -196,7 +209,7 @@ export function cachedAudioInstead(detail: TaskDetailDto): boolean {
  * the local player when there is one (the iframe cannot carry subtitles; without a cache it
  * says so under the player).
  */
-function Columns(props: { subtitleEditRequest: number }) {
+function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId: string | undefined) => void }) {
   const { t } = useTranslation();
   const { content } = useContentPage();
   const desktop = useDesktop();
@@ -217,6 +230,22 @@ function Columns(props: { subtitleEditRequest: number }) {
   const platform = content.source.kind === "youtube" || content.source.kind === "bilibili";
   const cache = playableCache(content);
   const cached = cache !== undefined;
+  const videoCaches = playableVideoCaches(content);
+  // The chosen quality (a height, "" for an unknown one) holds for this page whatever file
+  // carries it, so a cache replaced at the same quality is picked up by itself.
+  const [selectedQuality, setSelectedQuality] = useState<string | undefined>(undefined);
+  const [qualityNotice, setQualityNotice] = useState<string | undefined>(undefined);
+  const qualityOf = (asset: LocalAsset): string => String(cacheHeight(asset) ?? "");
+  const chosenCache = selectedQuality === undefined ? undefined : videoCaches.find((asset) => qualityOf(asset) === selectedQuality);
+  const effectiveCache = chosenCache ?? videoCaches[0];
+  const qualityKey = videoCaches.map(qualityOf).join(",");
+  const bestLabel = videoCaches[0] === undefined ? undefined : qualityLabel(cacheHeight(videoCaches[0]), t);
+  useEffect(() => {
+    if (selectedQuality === undefined || chosenCache !== undefined) return;
+    setSelectedQuality(undefined);
+    if (bestLabel !== undefined) setQualityNotice(t("contentView.player.quality.unavailable", { label: bestLabel }));
+    // The set of qualities is what matters, not the identity of the list.
+  }, [selectedQuality, qualityKey]);
   const dismissedKey = cacheDismissedStorageKey(content.id);
   const unfinishedCache = useUnfinishedCacheTask(content.id, desktop && platform);
   const restored = useRef(false);
@@ -260,6 +289,17 @@ function Columns(props: { subtitleEditRequest: number }) {
     },
     cachedAudioInstead: audioInstead,
     dismissCachedAudio: () => setAudioInstead(false),
+    ...(effectiveCache === undefined ? {} : { cacheAssetId: effectiveCache.id }),
+    cacheSources: videoCaches.map((asset) => ({ assetId: asset.id, label: qualityLabel(cacheHeight(asset), t) })),
+    selectCache: (assetId) => {
+      const asset = videoCaches.find((item) => item.id === assetId);
+      if (asset === undefined) return;
+      setSelectedQuality(qualityOf(asset));
+      setQualityNotice(undefined);
+    },
+    ...(qualityNotice === undefined ? {} : { qualityNotice }),
+    dismissQualityNotice: () => setQualityNotice(undefined),
+    onPlayingCache: props.onPlayingCache,
   };
   const subtitles = useContentSubtitles(content, props.subtitleEditRequest);
   const [outputsWidth, setOutputsWidth] = useState(() => Number(localStorage.getItem(WIDTH_KEY)) || OUTPUTS_DEFAULT_PX);
@@ -313,6 +353,7 @@ function Columns(props: { subtitleEditRequest: number }) {
         <CacheMediaDialog
           contentId={content.id}
           title={content.title}
+          media={content.media}
           open={caching}
           onOpenChange={setCaching}
           onStarted={(taskId) => {
@@ -650,7 +691,7 @@ function PlayerModeMenu(props: { playback: PlaybackControls; desktop: boolean })
 
 /**
  * 「另存为…」 (desktop client): copies an available platform cache out of the
- * cache directory. With a video and an audio cache a menu names both files; cancelling the
+ * cache directory. With several caches a menu names each file, a video with its quality; cancelling the
  * save dialog says nothing. Owned by the toolbar, so its outcome stays visible while the button
  * sits in the "⋯" menu.
  */
@@ -658,12 +699,14 @@ function useSaveCache() {
   const { t } = useTranslation();
   const client = useApi();
   const { content } = useContentPage();
-  const caches = playableCaches(content);
+  const caches = allPlayableCaches(content);
   const mutation = useMutation({
     mutationFn: (asset: LocalAsset) => saveCachedCopy(client, asset.id, asset.displayName ?? fileNameOf(asset.localPath)),
   });
-  const label = (asset: LocalAsset): string =>
-    t(isAudioOnly(asset) ? "contentView.saveCache.audio" : "contentView.saveCache.video", { name: asset.displayName ?? fileNameOf(asset.localPath) });
+  const label = (asset: LocalAsset): string => {
+    const name = asset.displayName ?? fileNameOf(asset.localPath);
+    return isAudioOnly(asset) ? t("contentView.saveCache.audio", { name }) : t("contentView.saveCache.video", { name, quality: qualityLabel(cacheHeight(asset), t) });
+  };
   return { caches, mutation, label };
 }
 
@@ -701,7 +744,7 @@ function SaveCacheButton(props: { save: SaveCache }) {
               key={asset.id}
               className="cursor-pointer truncate rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
               onSelect={() => mutation.mutate(asset)}
-              data-testid={`save-cache-${isAudioOnly(asset) ? "audio" : "video"}`}
+              data-testid={`save-cache-${asset.id}`}
             >
               {label(asset)}
             </DropdownMenu.Item>
@@ -712,7 +755,7 @@ function SaveCacheButton(props: { save: SaveCache }) {
   );
 }
 
-/** 「另存为…」 inside the "⋯" menu: one cache is a plain entry, two open a submenu naming both files. */
+/** 「另存为…」 inside the "⋯" menu: one cache is a plain entry, several open a submenu naming each file. */
 function SaveCacheMenu(props: { save: SaveCache }) {
   const { t } = useTranslation();
   const { caches, mutation, label } = props.save;
@@ -748,7 +791,7 @@ function SaveCacheMenu(props: { save: SaveCache }) {
               key={asset.id}
               className="cursor-pointer truncate rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
               onSelect={() => mutation.mutate(asset)}
-              data-testid={`overflow-save-cache-${isAudioOnly(asset) ? "audio" : "video"}`}
+              data-testid={`overflow-save-cache-${asset.id}`}
             >
               {label(asset)}
             </DropdownMenu.Item>
@@ -870,7 +913,14 @@ function MiddleColumn(props: { toolbar: ReactNode; playerHidden: boolean; playba
   const { content, highlightThreshold } = useContentPage();
   const { playback } = props;
   const source = useMemo(() => playerSourceOf(content), [content]);
-  const local = usePlaybackMedia(content);
+  const local = usePlaybackMedia(content, playback.cacheAssetId);
+  // The quality menu applies only to a video cache (never to an original file), and the
+  // export starts from that cache only while the local player is the one on screen.
+  const loadedCache = local.audioOnly ? undefined : playback.cacheSources.find((source) => source.assetId === local.assetId);
+  const playingCacheId = playback.active === "local" ? loadedCache?.assetId : undefined;
+  const { onPlayingCache } = playback;
+  useEffect(() => onPlayingCache(playingCacheId), [onPlayingCache, playingCacheId]);
+  useAutoDismiss(playback.qualityNotice, playback.dismissQualityNotice);
   const capabilities = usePlayerCapabilities();
   const chapters = useChapters(content.id);
   const highlights = useHighlights(content.id);
@@ -889,6 +939,8 @@ function MiddleColumn(props: { toolbar: ReactNode; playerHidden: boolean; playba
             onActiveChange={playback.setActive}
             {...(local.src === undefined ? {} : { localSrc: local.src })}
             localAudioOnly={local.audioOnly}
+            localSourceId={local.assetId}
+            {...(loadedCache === undefined ? {} : { localSources: playback.cacheSources, onSelectLocalSource: playback.selectCache })}
             {...(playback.openCache === undefined ? {} : { onCache: playback.openCache })}
             {...(props.desktop && missingOriginal(content) !== undefined ? { localHint: t("contentView.player.localMissing") } : {})}
             chapters={chapterList}
@@ -913,6 +965,14 @@ function MiddleColumn(props: { toolbar: ReactNode; playerHidden: boolean; playba
             }
           />
         </div>
+      )}
+      {playback.qualityNotice === undefined ? null : (
+        <p className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm" role="status" data-testid="player-quality-notice">
+          <span className="min-w-0 flex-1">{playback.qualityNotice}</span>
+          <Button size="sm" variant="ghost" onClick={playback.dismissQualityNotice}>
+            {t("common.action.close")}
+          </Button>
+        </p>
       )}
       <TitleRow content={content} />
       <PlatformLoginExpired content={content} />

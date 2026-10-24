@@ -63,12 +63,12 @@ export const SEARCH_SHORT_QUERY_MAX_CHARS = 2;
 /** Result cap for the short-query fallback. */
 export const SEARCH_SHORT_QUERY_LIMIT = 200;
 
-/** Total size cap of the data directory, in GB. */
+/** Total size cap of the data directory excluding the media cache directory, in GB. */
 export const MAX_DATA_GB = 30;
 /** New tasks pause when free space drops below this, in GB. */
 export const LOW_WATER_FREE_GB = 10;
-/** New tasks pause when the free-space ratio drops below this. */
-export const LOW_WATER_FREE_RATIO = 0.2;
+/** New tasks pause when the free-space ratio drops below this; 0 leaves only the absolute floor. */
+export const LOW_WATER_FREE_RATIO = 0;
 /** Per-file upload cap, in GB. */
 export const MAX_UPLOAD_GB = 10;
 /** Default retention policy for `managed_upload` assets. */
@@ -279,8 +279,12 @@ export const OUTBOUND_MAX_REDIRECTS = 5;
 export const QR_ATTEMPT_TTL_MS = 180000;
 /** Seek accuracy tolerance of the local player. */
 export const PLAYER_SEEK_TOLERANCE_MS = 500;
-/** Total size cap of `platform_cache` assets, in GB; the oldest are evicted beyond it. */
-export const CACHE_MEDIA_MAX_GB = 20;
+/** Space a video cache download reserves on the cache volume, as a multiple of its estimated size (separate streams plus the merge). */
+export const CACHE_DOWNLOAD_PEAK_FACTOR = 2;
+/** Per-volume reservation of a cache download whose size or duration is unknown, in GB. */
+export const CACHE_UNKNOWN_SIZE_RESERVE_GB = 2;
+/** How often a running cache download re-reads the free space of both volumes. */
+export const CACHE_DISK_CHECK_INTERVAL_MS = 5000;
 /** Lifetime of a local file grant issued by the desktop shell. */
 export const FILE_GRANT_TTL_MS = 300000;
 /**

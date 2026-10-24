@@ -19,6 +19,8 @@ export interface ContentPageState {
   setHighlightThreshold(value: number): void;
   /** Turns the local player's subtitles on if needed and opens its style and position editor. */
   openSubtitleEditor(): void;
+  /** The video cache the local player is showing, if any; the subtitled video export starts from it. */
+  playingAssetId?: string | undefined;
 }
 
 export const CONTENT_TABS = ["summary", "transcript", "subtitles", "translation", "ai-highlights"] as const;

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PLAYER_CONTROLS_IDLE_MS, PLAYER_SEEK_TOLERANCE_MS, PLAYER_SKIP_SECONDS, PLAYER_VOLUME_STEP } from "../../../src/shared/defaults.ts";
 import type { AdvanceResult } from "../../../src/web/player/list-loop.ts";
@@ -32,6 +33,26 @@ vi.mock("../../../src/web/player/player-menus.tsx", () => ({
   PlayerSettingsMenu: (props: { container: HTMLElement | null }) => {
     menus.containers.push(props.container);
     return <button type="button" data-testid="settings-menu" />;
+  },
+  QualityMenu: (props: {
+    sources: ReadonlyArray<{ assetId: string; label: string }>;
+    activeId: string | undefined;
+    onSelect: (assetId: string) => void;
+    container: HTMLElement | null;
+    onOpenChange?: (open: boolean) => void;
+  }) => {
+    menus.containers.push(props.container);
+    return (
+      <>
+        <span data-testid="quality-active">{props.sources.find((source) => source.assetId === props.activeId)?.label}</span>
+        {props.sources.map((source) => (
+          <button key={source.assetId} type="button" data-testid={`quality-item-${source.assetId}`} onClick={() => props.onSelect(source.assetId)}>
+            {source.label}
+          </button>
+        ))}
+        <button type="button" data-testid="quality-menu-open" onClick={() => props.onOpenChange?.(true)} />
+      </>
+    );
   },
 }));
 
@@ -441,5 +462,284 @@ describe("LocalPlayer", () => {
     forced.unmount();
     settings.autoplay = true;
     expect(show().video.autoplay).toBe(true);
+  });
+
+  describe("switching between cached qualities", () => {
+    const SOURCES = [
+      { assetId: "hd", label: "1080P" },
+      { assetId: "sd", label: "720P" },
+    ];
+    const SRC: Record<string, string> = { hd: "/hd.mp4", sd: "/sd.mp4", ld: "/ld.mp4", hd2: "/hd.mp4" };
+
+    /**
+     * The page side: the chosen source becomes the active one, with its own file. `sources`
+     * replaces the list; `dropOnSelect` removes a source from it once another is chosen, as
+     * when a cache is deleted while the player switches.
+     */
+    function Switcher(props: {
+      onSelect?: (assetId: string) => void;
+      onEndedAdvance?: () => Promise<AdvanceResult>;
+      sameSrc?: boolean;
+      sources?: typeof SOURCES;
+      dropOnSelect?: string;
+    }) {
+      const [active, setActive] = useState("hd");
+      const [sources, setSources] = useState(props.sources ?? SOURCES);
+      return (
+        <LocalPlayer
+          src={props.sameSrc === true ? "/same.mp4" : (SRC[active] ?? "")}
+          sources={sources}
+          activeSourceId={active}
+          onSelectSource={(assetId) => {
+            props.onSelect?.(assetId);
+            // Like the page, a source that is no longer listed is not switched to.
+            if (!sources.some((source) => source.assetId === assetId)) return;
+            if (props.dropOnSelect !== undefined) setSources((list) => list.filter((source) => source.assetId !== props.dropOnSelect));
+            setActive(assetId);
+          }}
+          {...(props.onEndedAdvance === undefined ? {} : { onEndedAdvance: props.onEndedAdvance })}
+        />
+      );
+    }
+
+    function showSwitcher(props: Parameters<typeof Switcher>[0] = {}, controller = new PlayerController()) {
+      render(
+        <PlayerControllerProvider controller={controller}>
+          <Switcher {...props} />
+        </PlayerControllerProvider>,
+      );
+      const root = screen.getByTestId("player-local");
+      return { root, current: () => root.querySelector("video") as HTMLVideoElement };
+    }
+
+    /** The new file's metadata arrives with `seconds` of length. */
+    function loaded(video: HTMLVideoElement, seconds: number): void {
+      Object.defineProperty(video, "duration", { configurable: true, value: seconds });
+      fireEvent.loadedMetadata(video);
+    }
+
+    it("puts the quality button first in the right-hand group, only when there are sources", () => {
+      const { root } = showSwitcher();
+      const order = [...root.querySelectorAll<HTMLElement>("[data-control]")].map((element) => element.dataset["control"]);
+      expect(order).toEqual(["play", "clock", "rate", "quality", "volume", "settings", "fullscreen"]);
+      expect(within(root).getByTestId("quality-active").textContent).toBe("1080P");
+      expect(menus.containers.at(-1)).toBe(root);
+    });
+
+    it("offers no quality button for an audio-only file", () => {
+      const { root } = show({ src: "/a.mp3", audioOnly: true, sources: SOURCES, activeSourceId: "hd" });
+      expect(root.querySelector("[data-control='quality']")).toBeNull();
+    });
+
+    it("keeps the controls shown while the quality menu is open", () => {
+      vi.useFakeTimers();
+      const { root, current } = showSwitcher();
+      playable(current()).play.call(current());
+      fireEvent.pointerMove(root);
+      fireEvent.click(within(root).getByTestId("quality-menu-open"));
+      act(() => vi.advanceTimersByTime(PLAYER_CONTROLS_IDLE_MS + 1));
+      expect(root.dataset["controls"]).toBe("shown");
+    });
+
+    it("loads the new file in a new element, resumes where it was and keeps playing and the speed", () => {
+      settings.autoplay = true;
+      const { root, current } = showSwitcher();
+      const first = current();
+      playable(first);
+      void first.play();
+      first.currentTime = 42;
+      fireEvent.click(within(root).getByTestId("rate-menu"));
+      expect(first.playbackRate).toBe(1.5);
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      const second = current();
+      expect(second).not.toBe(first);
+      expect(second.getAttribute("src")).toBe("/sd.mp4");
+      // Nothing starts by itself while switching, whatever the autoplay setting says.
+      expect(second.autoplay).toBe(false);
+      expect(second.playbackRate).toBe(1.5);
+      const { play } = playable(second);
+      loaded(second, 100);
+      expect(second.currentTime).toBe(42);
+      expect(play).toHaveBeenCalledTimes(1);
+      expect(second.autoplay).toBe(false);
+      expect(within(root).getByTestId("quality-active").textContent).toBe("720P");
+    });
+
+    it("stays paused when it was paused, and clamps to the end of a shorter file", () => {
+      const { root, current } = showSwitcher();
+      const first = current();
+      first.currentTime = 42;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      const second = current();
+      const { play } = playable(second);
+      loaded(second, 30);
+      expect(second.currentTime).toBe(30);
+      expect(play).not.toHaveBeenCalled();
+    });
+
+    it("reloads even when the new source has the same URL", () => {
+      const { root, current } = showSwitcher({ sameSrc: true });
+      const first = current();
+      first.currentTime = 7;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      const second = current();
+      expect(second).not.toBe(first);
+      expect(second.getAttribute("src")).toBe("/same.mp4");
+      loaded(second, 100);
+      expect(second.currentTime).toBe(7);
+    });
+
+    it("goes back to the previous file with a notice when the new one fails to load", () => {
+      const onSelect = vi.fn<(assetId: string) => void>();
+      const { root, current } = showSwitcher({ onSelect });
+      const first = current();
+      playable(first);
+      void first.play();
+      first.currentTime = 12;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      fireEvent.error(current());
+      expect(onSelect.mock.calls).toEqual([["sd"], ["hd"]]);
+      const third = current();
+      expect(third.getAttribute("src")).toBe("/hd.mp4");
+      expect(within(root).getByTestId("player-notice").textContent).toBe("无法加载所选清晰度，已切回 1080P");
+      const { play } = playable(third);
+      loaded(third, 100);
+      expect(third.currentTime).toBe(12);
+      expect(play).toHaveBeenCalledTimes(1);
+      // A failure outside a switch is not a reason to switch.
+      fireEvent.error(third);
+      expect(onSelect).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the position and play state of the first pick when another quality is picked before it loaded", () => {
+      const onSelect = vi.fn<(assetId: string) => void>();
+      const { root, current } = showSwitcher({ onSelect, sources: [...SOURCES, { assetId: "ld", label: "480P" }] });
+      const first = current();
+      playable(first);
+      void first.play();
+      first.currentTime = 42;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      // The 720p file is still loading: its element reads 0 and paused.
+      const second = current();
+      playable(second);
+      expect(second.currentTime).toBe(0);
+      fireEvent.click(within(root).getByTestId("quality-item-ld"));
+      const third = current();
+      expect(third.getAttribute("src")).toBe("/ld.mp4");
+      const { play } = playable(third);
+      loaded(third, 100);
+      expect(third.currentTime).toBe(42);
+      expect(play).toHaveBeenCalledTimes(1);
+      expect(onSelect.mock.calls).toEqual([["sd"], ["ld"]]);
+    });
+
+    it("falls back to the file that last played when a re-picked quality fails", () => {
+      const onSelect = vi.fn<(assetId: string) => void>();
+      const { root, current } = showSwitcher({ onSelect, sources: [...SOURCES, { assetId: "ld", label: "480P" }] });
+      current().currentTime = 21;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      fireEvent.click(within(root).getByTestId("quality-item-ld"));
+      fireEvent.error(current());
+      expect(onSelect.mock.calls).toEqual([["sd"], ["ld"], ["hd"]]);
+      expect(within(root).getByTestId("player-notice").textContent).toBe("无法加载所选清晰度，已切回 1080P");
+      loaded(current(), 100);
+      expect(current().currentTime).toBe(21);
+    });
+
+    it("ends the switch with a notice when the file to fall back to is gone too", async () => {
+      settings.endBehavior = "loop_list";
+      const onSelect = vi.fn<(assetId: string) => void>();
+      const onEndedAdvance = vi.fn(async (): Promise<AdvanceResult> => "stay");
+      const { root, current } = showSwitcher({ onSelect, onEndedAdvance, dropOnSelect: "hd" });
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      fireEvent.error(current());
+      // Nothing to go back to: no request for the deleted file, and the plain failure notice.
+      expect(onSelect.mock.calls).toEqual([["sd"]]);
+      expect(within(root).getByTestId("player-notice").textContent).toBe("无法加载所选清晰度");
+      // The switch is over, so the end of the video steps the list loop again.
+      fireEvent.ended(current());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(onEndedAdvance).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets a seek during the switch win over the carried position", () => {
+      const controller = new PlayerController();
+      const { root, current } = showSwitcher({}, controller);
+      const first = current();
+      playable(first);
+      void first.play();
+      first.currentTime = 42;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      act(() => controller.seek(90_000));
+      const second = current();
+      const { play } = playable(second);
+      loaded(second, 100);
+      expect(second.currentTime).toBe(90);
+      expect(play).toHaveBeenCalledTimes(1);
+    });
+
+    it("steps the arrow keys from the carried position during the switch", () => {
+      const { root, current } = showSwitcher();
+      current().currentTime = 42;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      fireEvent.keyDown(root, { key: "ArrowRight" });
+      loaded(current(), 100);
+      expect(current().currentTime).toBe(42 + PLAYER_SKIP_SECONDS);
+    });
+
+    it("lets a pause during the switch win over the carried play state", () => {
+      const { root, current } = showSwitcher();
+      const first = current();
+      playable(first);
+      void first.play();
+      first.currentTime = 42;
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      const second = current();
+      const { play } = playable(second);
+      fireEvent.click(root.querySelector("[data-control='play']") as HTMLElement);
+      loaded(second, 100);
+      expect(second.currentTime).toBe(42);
+      expect(play).not.toHaveBeenCalled();
+      expect(second.paused).toBe(true);
+      expect(root.querySelector("[data-control='play']")?.getAttribute("aria-label")).toBe("播放");
+    });
+
+    it("does not step the list loop when the old file ends during the switch", async () => {
+      settings.endBehavior = "loop_list";
+      const onEndedAdvance = vi.fn(async (): Promise<AdvanceResult> => "stay");
+      const { root, current } = showSwitcher({ onEndedAdvance });
+      fireEvent.click(within(root).getByTestId("quality-item-sd"));
+      fireEvent.ended(current());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(onEndedAdvance).not.toHaveBeenCalled();
+      loaded(current(), 100);
+      fireEvent.ended(current());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(onEndedAdvance).toHaveBeenCalledTimes(1);
+    });
+
+    it("carries the position over when the page replaces the file by itself", () => {
+      const controller = new PlayerController();
+      const view = (activeSourceId: string) => (
+        <PlayerControllerProvider controller={controller}>
+          <LocalPlayer src="/hd.mp4" sources={SOURCES} activeSourceId={activeSourceId} onSelectSource={() => undefined} />
+        </PlayerControllerProvider>
+      );
+      const { rerender } = render(view("hd"));
+      const root = screen.getByTestId("player-local");
+      const first = root.querySelector("video") as HTMLVideoElement;
+      first.currentTime = 33;
+      rerender(view("hd2"));
+      const second = root.querySelector("video") as HTMLVideoElement;
+      expect(second).not.toBe(first);
+      loaded(second, 100);
+      expect(second.currentTime).toBe(33);
+    });
   });
 });

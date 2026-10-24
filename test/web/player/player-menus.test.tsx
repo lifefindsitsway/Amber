@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { PLAYBACK_RATES, PLAYER_MENU_CONTENT_CLASS, PLAYER_MENU_ITEM_CLASS, PlaybackRateMenu, PlayerSettingsMenu } from "../../../src/web/player/player-menus.tsx";
+import { PLAYBACK_RATES, PLAYER_MENU_CONTENT_CLASS, PLAYER_MENU_ITEM_CLASS, PlaybackRateMenu, PlayerSettingsMenu, QualityMenu } from "../../../src/web/player/player-menus.tsx";
 import type { LoopCollectionChoice } from "../../../src/web/player/list-loop.ts";
 import type { EndBehavior, PlayerSettings } from "../../../src/web/player/player-settings.ts";
 
@@ -157,5 +157,44 @@ describe("PlayerSettingsMenu", () => {
     open(screen.getByTestId("player-settings"));
     const reopened = within(screen.getByTestId("player-root")).getByTestId("player-settings-menu");
     expect(within(reopened).getByRole("menuitemradio", { name: "合集 colB" }).getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("QualityMenu", () => {
+  const SOURCES = [
+    { assetId: "hd", label: "1080P" },
+    { assetId: "sd", label: "720P" },
+    { assetId: "old", label: "未知画质" },
+  ];
+
+  function QualityHarness(props: { onSelect: (assetId: string) => void; onOpenChange: (open: boolean) => void }) {
+    const [root, setRoot] = useState<HTMLDivElement | null>(null);
+    return (
+      <div ref={setRoot} data-testid="player-root">
+        <QualityMenu sources={SOURCES} activeId="sd" onSelect={props.onSelect} container={root} onOpenChange={props.onOpenChange} />
+      </div>
+    );
+  }
+
+  it("names the loaded quality, lists every source in order with it marked, and asks for another one", () => {
+    const onSelect = vi.fn();
+    const onOpenChange = vi.fn();
+    render(<QualityHarness onSelect={onSelect} onOpenChange={onOpenChange} />);
+    const trigger = screen.getByTestId("player-quality");
+    expect(trigger.textContent).toBe("720P");
+    expect(trigger.getAttribute("aria-label")).toBe("清晰度");
+    open(trigger);
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    const menu = within(screen.getByTestId("player-root")).getByTestId("player-quality-menu");
+    expectPlayerMenu(menu);
+    expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["1080P", "720P", "未知画质"]);
+    expect(within(menu).getByTestId("player-quality-item-sd").getAttribute("aria-checked")).toBe("true");
+    // The loaded one is not a switch.
+    fireEvent.click(within(menu).getByTestId("player-quality-item-sd"));
+    expect(onSelect).not.toHaveBeenCalled();
+    open(screen.getByTestId("player-quality"));
+    fireEvent.click(within(screen.getByTestId("player-quality-menu")).getByTestId("player-quality-item-hd"));
+    expect(onSelect).toHaveBeenCalledWith("hd");
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
   });
 });

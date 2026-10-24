@@ -78,11 +78,26 @@ export const cacheMigrationDtoSchema = z.discriminatedUnion("phase", [
 ]);
 export type CacheMigrationDto = z.infer<typeof cacheMigrationDtoSchema>;
 
+/** An interrupted cache replacement waiting for the user: keep the file now at the path, or restore the displaced copy. */
+export const cacheHoldDtoSchema = z
+  .object({
+    assetId: z.string().min(1),
+    contentId: z.string().min(1).exactOptional(),
+    title: z.string().exactOptional(),
+    fileName: z.string(),
+    currentSizeBytes: byteCountSchema.exactOptional(),
+    displacedSizeBytes: byteCountSchema.exactOptional(),
+  })
+  .strict();
+export type CacheHoldDto = z.infer<typeof cacheHoldDtoSchema>;
+
 /**
  * `GET /api/media/cache-location` [client]. `path` is the directory
  * shown to the user and opened by the shell, the cache directory itself: `<data dir>/media`
  * by default, otherwise the `media` directory the user chose. `usedBytes` / `fileCount` count the `available`
- * `platform_cache` rows, not the bytes on disk.
+ * `platform_cache` rows, not the bytes on disk; `freeBytes` / `totalBytes` describe the
+ * volume the directory is on. There is no size cap. `holds` lists interrupted replacements
+ * the start-up recovery could not settle by itself and that wait for the user.
  */
 export const cacheLocationDtoSchema = z
   .object({
@@ -91,7 +106,9 @@ export const cacheLocationDtoSchema = z
     available: z.boolean(),
     fileCount: byteCountSchema,
     usedBytes: byteCountSchema,
-    maxBytes: byteCountSchema,
+    freeBytes: byteCountSchema,
+    totalBytes: byteCountSchema,
+    holds: z.array(cacheHoldDtoSchema),
     migration: cacheMigrationDtoSchema.exactOptional(),
   })
   .strict();

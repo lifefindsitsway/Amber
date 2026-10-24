@@ -373,6 +373,37 @@ describe("proofread stage", () => {
     expect(usage.find((row) => row.workUnitId === units[1]?.id)?.artifactRevisionId).toBeUndefined();
   });
 
+  it("fails without publishing when its base transcript is deleted while the model answers", async () => {
+    let base: ReturnType<typeof seedContent> | undefined;
+    let gone = false;
+    const s = setup(
+      fakeProvider((targets, request, opts) => {
+        if (!gone) {
+          gone = true;
+          const { contentId, revision: old, segments } = base as ReturnType<typeof seedContent>;
+          // Another revision takes over as primary and the base goes, as a delete would leave it.
+          const replacementId = s.h.newId();
+          s.h.repository.withTransaction((scope) => {
+            scope.transcripts.insertRevision(
+              LOCAL.userId,
+              { ...old, id: replacementId, createdAt: 3 },
+              segments.map((segment) => ({ ...segment, id: s.h.newId() as SegmentId, revisionId: replacementId })),
+            );
+            scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, replacementId, 3);
+            scope.transcripts.deleteRevision(LOCAL.userId, old.id);
+          });
+        }
+        return corrected(targets, request, opts);
+      }),
+    );
+    base = seedContent(s.h, 5);
+    const taskId = reproofread(s, base.contentId, base.revision.id);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    expect(stageRunsOf(s.h, taskId).find((run) => run.stage === "proofread")?.error?.code).toBe("not_found");
+    expect(s.h.db.prepare("SELECT count(*) AS n FROM transcript_revision WHERE kind = 'corrected'").get()).toEqual({ n: 0 });
+  });
+
   it("a half that fails publishes nothing; the next attempt reuses the split and the half that was done", async () => {
     const dropped = PROOFREAD_CHUNK_SENTENCES + 5;
     let rejectOnce = true;

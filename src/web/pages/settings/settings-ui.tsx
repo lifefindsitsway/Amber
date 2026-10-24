@@ -70,12 +70,13 @@ export function ConfirmButton(props: {
   variant?: "secondary" | "danger" | "primary" | "ghost";
   disabled?: boolean;
   size?: "sm" | "md";
+  testId?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button variant={props.variant ?? "secondary"} size={props.size ?? "sm"} disabled={props.disabled} onClick={() => setOpen(true)}>
+      <Button variant={props.variant ?? "secondary"} size={props.size ?? "sm"} disabled={props.disabled} data-testid={props.testId} onClick={() => setOpen(true)}>
         {props.label}
       </Button>
       <Modal open={open} onOpenChange={setOpen} title={t("settings.common.confirmTitle")}>

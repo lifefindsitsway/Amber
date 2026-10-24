@@ -122,6 +122,8 @@ export interface PendingFileDelete {
   rootPath: string;
   storageRef: string;
   expectedSizeBytes?: number;
+  /** `sha256:<hex>` of the file meant, from its asset's fingerprint; absent for entries registered before digests were recorded. */
+  expectedDigest?: string;
   userId?: string;
   attempts: number;
   nextAttemptAt: number;

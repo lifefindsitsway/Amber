@@ -85,4 +85,22 @@ describe("ExportDialog", () => {
     fireEvent.click(screen.getByTestId("export-format-srt"));
     await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toEqual({ format: "srt", revisionId: "r1" }));
   });
+
+  it("offers one manual revision for subtitles: the one the corrected primary descends from", async () => {
+    // asr ← m1 ← r1 (corrected, primary) ; asr ← m0, an earlier edit off the primary's line
+    const revisions = [
+      revision("asr", { kind: "asr", createdAt: 1 }),
+      revision("m0", { kind: "manual", parentRevisionId: "asr", createdAt: 2 }),
+      revision("m1", { kind: "manual", parentRevisionId: "asr", createdAt: 3 }),
+      revision("r1", { kind: "corrected", parentRevisionId: "m1", createdAt: 4 }),
+    ];
+    mockApi({ ...contentRoutes(), "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions } } });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    const subtitles = (await screen.findByTestId("export-subtitle-revision")) as HTMLSelectElement;
+    expect([...subtitles.options].map((option) => option.value)).toEqual(["asr", "m1", "r1"]);
+    expect(subtitles.value).toBe("r1");
+    const transcript = screen.getByTestId("export-transcript-revision") as HTMLSelectElement;
+    expect([...transcript.options].map((option) => option.value)).not.toContain("m0");
+  });
 });

@@ -7,15 +7,34 @@ import type {
   TranscriptSegmentDto,
   TranscriptSegmentPageDto,
 } from "../../shared/dto/transcript.ts";
-import type { TranscriptRevisionDto } from "../../shared/dto/content.ts";
+import type { TranscriptRevisionDto, TranscriptRevisionListItemDto } from "../../shared/dto/content.ts";
 import type { SegmentId } from "../../shared/ids.ts";
 import type { Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import { mapSegment } from "../domain/segment-map.ts";
-import { inheritedParagraphStarts, timingFidelityFor, type TranscriptDraft, type TranscriptRevision, type TranscriptSegment } from "../domain/transcript.ts";
+import {
+  deletionOrder,
+  descendantsOf,
+  emptyRevisionBlockers,
+  hasRevisionBlockers,
+  inheritedParagraphStarts,
+  manualMergeChain,
+  PROTECTED_REVISION_KINDS,
+  remapSourcesThroughChain,
+  revisionBlockers,
+  timingFidelityFor,
+  type RevisionBlockerCategory,
+  type TranscriptDraft,
+  type TranscriptRevision,
+  type TranscriptSegment,
+} from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { transcriptRevisionDto } from "./contents.ts";
+import { revisionListItems } from "./revision-references.ts";
+
+/** The draft being committed is the one that disappears with the commit, so it never blocks merging its base. */
+const MERGE_IGNORES: ReadonlySet<RevisionBlockerCategory> = new Set(["draft"]);
 
 export interface TranscriptServiceOptions {
   repository: Repository;
@@ -196,6 +215,25 @@ export class TranscriptService {
         }
       });
 
+      // Manual revisions directly above the draft that nothing else uses are folded into the
+      // new one: it descends from the first revision that has to stay (the anchor) and its
+      // sources are carried up through the folded revisions. The primary does not count as a
+      // use because the new revision takes it over before the old ones are deleted. An
+      // unfinished Task of the Content counts as a use of every revision (its stages may read
+      // the primary as their base when they run), so nothing is merged while one is running.
+      const revisions = scope.transcripts.listRevisions(owner, contentId);
+      const references = scope.revisionReferences.listReferences(owner, contentId);
+      const { chain, anchorId } = manualMergeChain(
+        base.id,
+        revisions,
+        (_id, candidate) => !hasRevisionBlockers(revisionBlockers(references, new Set(candidate)), MERGE_IGNORES),
+      );
+      const levels = chain.map((id) =>
+        id === base.id
+          ? new Map([...baseSegments].map(([segmentId, segment]) => [segmentId, segment.sourceSegmentIds]))
+          : new Map(scope.transcripts.listSegments(owner, id).map((segment) => [segment.id as string, segment.sourceSegmentIds])),
+      );
+
       const revisionId = this.newId();
       // The editor works sentence by sentence; paragraphing is carried over from the base.
       const paragraphStarts = inheritedParagraphStarts(baseSegments, draft.segments);
@@ -212,7 +250,7 @@ export class TranscriptService {
           text: segment.text,
           ...(speakerId === undefined ? {} : { speakerId }),
           ...(paragraphStart === undefined ? {} : { paragraphStart }),
-          sourceSegmentIds: segment.sourceSegmentIds as SegmentId[],
+          sourceSegmentIds: remapSourcesThroughChain(segment.sourceSegmentIds, levels),
         };
       });
       const now = this.now();
@@ -220,7 +258,7 @@ export class TranscriptService {
         id: revisionId,
         contentId,
         kind: "manual",
-        parentRevisionId: base.id,
+        parentRevisionId: anchorId,
         language: base.language,
         timingFidelity: timingFidelityFor("manual"),
         generation: { kind: "manual" },
@@ -229,9 +267,100 @@ export class TranscriptService {
       };
       scope.transcripts.insertRevision(owner, revision, segments);
       scope.contents.setPrimaryTranscript(owner, contentId, revisionId, now);
-      scope.search.syncContent(owner, contentId);
       scope.transcripts.deleteDraft(owner, contentId);
+      // Base first: each folded revision is a leaf once the one below it is gone.
+      for (const id of chain) {
+        scope.transcripts.deleteRevision(owner, id);
+      }
+      scope.idempotency.deleteReferencingRevisions(owner, chain);
+      scope.search.syncContent(owner, contentId);
       return transcriptRevisionDto(revision);
+    });
+  }
+
+  /**
+   * `DELETE /contents/:id/transcript/draft`: the user's explicit "discard draft". The draft
+   * is the only thing lost; its base revision is untouched.
+   */
+  discardDraft(principal: RequestPrincipal, contentId: string): void {
+    const owner = principal.userId;
+    this.options.repository.withTransaction((scope) => {
+      ownedContent(scope, owner, contentId);
+      if (!scope.transcripts.deleteDraft(owner, contentId)) {
+        throw amberError("not_found", "no draft for this content");
+      }
+    });
+  }
+
+  /**
+   * Archives or restores one revision; only the mark changes, never the revision. The
+   * current transcript cannot be archived, nor a revision a draft is being edited from.
+   */
+  setArchived(principal: RequestPrincipal, revisionId: string, archived: boolean): TranscriptRevisionListItemDto {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => {
+      const { revision, content } = ownedRevision(scope, owner, revisionId);
+      if (archived) {
+        if (content.primaryTranscriptRevisionId === revision.id) {
+          throw amberError("conflict", "the primary transcript cannot be archived", { code: "conflict.revision_is_primary" });
+        }
+        if (scope.transcripts.getDraft(owner, content.id)?.baseRevisionId === revision.id) {
+          throw amberError("conflict", "a draft is based on this revision", {
+            code: "conflict.revision_referenced",
+            details: { ...emptyRevisionBlockers(), draft: 1 },
+          });
+        }
+      }
+      scope.transcripts.setArchived(owner, revision.id, archived ? this.now() : undefined);
+      const revisions = scope.transcripts.listRevisions(owner, content.id);
+      return revisionListItems(scope, owner, content, revisions).find((item) => item.id === revision.id) as TranscriptRevisionListItemDto;
+    });
+  }
+
+  /**
+   * Permanent deletion of a revision, with its descendants when asked. Everything is checked
+   * against the whole set in one transaction and nothing is deleted unless all checks pass:
+   * platform and ASR originals are evidence and only archivable, the primary has to be
+   * switched first, and any row that would be left pointing into the set blocks the delete.
+   * A deleted translation that is its language's current one hands over to the latest
+   * remaining translation of that language; idempotency records naming the set go too, so a
+   * replayed request runs again instead of answering with a deleted id.
+   */
+  deleteRevision(principal: RequestPrincipal, revisionId: string, options: { withDescendants: boolean }): void {
+    const owner = principal.userId;
+    this.options.repository.withTransaction((scope) => {
+      const { revision, content } = ownedRevision(scope, owner, revisionId);
+      const revisions = scope.transcripts.listRevisions(owner, content.id);
+      const ids = new Set([revision.id, ...(options.withDescendants ? descendantsOf(revisions, revision.id) : [])]);
+      const members = revisions.filter((candidate) => ids.has(candidate.id));
+      if (members.some((member) => PROTECTED_REVISION_KINDS.has(member.kind))) {
+        throw amberError("invalid_request", "platform and ASR originals can only be archived", { code: "invalid_request.revision_kind_protected" });
+      }
+      if (content.primaryTranscriptRevisionId !== undefined && ids.has(content.primaryTranscriptRevisionId)) {
+        throw amberError("conflict", "the primary transcript cannot be deleted", { code: "conflict.revision_is_primary" });
+      }
+      const blockers = revisionBlockers(scope.revisionReferences.listReferences(owner, content.id), ids);
+      if (hasRevisionBlockers(blockers)) {
+        throw amberError("conflict", "the revision is still referenced", { code: "conflict.revision_referenced", details: { ...blockers } });
+      }
+      for (const artifact of scope.translations.listArtifacts(owner, content.id)) {
+        if (artifact.currentRevisionId === undefined || !ids.has(artifact.currentRevisionId)) {
+          continue;
+        }
+        const successor = revisions
+          .filter((candidate) => candidate.kind === "translated" && candidate.language === artifact.targetLanguage && !ids.has(candidate.id))
+          .at(-1);
+        if (successor === undefined) {
+          scope.translations.deleteArtifact(owner, content.id, artifact.targetLanguage);
+        } else {
+          scope.translations.setCurrent(owner, content.id, artifact.targetLanguage, successor.id, artifact.id);
+        }
+      }
+      for (const id of deletionOrder(revisions, ids)) {
+        scope.transcripts.deleteRevision(owner, id);
+      }
+      scope.idempotency.deleteReferencingRevisions(owner, [...ids]);
+      scope.search.syncContent(owner, content.id);
     });
   }
 
@@ -271,7 +400,20 @@ function ownedContent(scope: RepositoryScope, owner: string, contentId: string):
   return content;
 }
 
-/** A manual revision is edited from one of the Content's own transcripts; a translation never serves as its base. */
+/** A revision of a Content that is the principal's and outside the trash. */
+function ownedRevision(scope: RepositoryScope, owner: string, revisionId: string): { revision: TranscriptRevision; content: Content } {
+  const revision = scope.transcripts.getRevision(owner, revisionId);
+  const content = revision === undefined ? undefined : scope.contents.get(owner, revision.contentId);
+  if (revision === undefined || content === undefined) {
+    throw amberError("not_found", "transcript revision not found");
+  }
+  return { revision, content };
+}
+
+/**
+ * A manual revision is edited from one of the Content's own transcripts; a translation never
+ * serves as its base, and neither does an archived revision until it is restored.
+ */
 function editableBase(scope: RepositoryScope, owner: string, contentId: string, revisionId: string): TranscriptRevision {
   const revision = scope.transcripts.getRevision(owner, revisionId);
   if (revision === undefined || revision.contentId !== contentId) {
@@ -279,6 +421,9 @@ function editableBase(scope: RepositoryScope, owner: string, contentId: string, 
   }
   if (revision.kind === "translated") {
     throw amberError("invalid_request", "a translation cannot be the base of a manual revision", { params: { detail: "baseRevisionId" } });
+  }
+  if (scope.transcripts.listArchived(owner, contentId).some((entry) => entry.revisionId === revisionId)) {
+    throw amberError("invalid_request", "an archived revision cannot be the base of a manual revision", { params: { detail: "baseRevisionId" } });
   }
   return revision;
 }
