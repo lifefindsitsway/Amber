@@ -264,6 +264,23 @@ describe("ContentPage", () => {
     expect(screen.queryByTestId("switch-player")).toBeNull();
   });
 
+  it("shows the publish date in Beijing time between the source and the duration, with the time on hover", async () => {
+    mockApi(contentRoutes(contentDetail({ publishedAt: Date.UTC(2024, 4, 17, 13, 25) })));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    const published = await screen.findByTestId("content-published");
+    expect(published.textContent).toBe("2024-05-17");
+    expect(published.getAttribute("title")).toBe("发布时间：2024-05-17 21:25");
+    const row = published.parentElement;
+    expect([...(row?.children ?? [])].slice(0, 3).map((child) => child.textContent)).toEqual(["B 站", "2024-05-17", "10:00"]);
+  });
+
+  it("leaves the publish date out when the Content has none", async () => {
+    mockApi(contentRoutes(contentDetail({ source: { kind: "local" }, media: [] })));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    await screen.findByTestId("content-title");
+    expect(screen.queryByTestId("content-published")).toBeNull();
+  });
+
   it("renames from the title row and marks a pinned Content", async () => {
     const { calls } = mockApi({
       ...contentRoutes(contentDetail({ pinnedAt: 5 })),

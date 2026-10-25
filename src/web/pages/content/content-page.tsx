@@ -39,7 +39,7 @@ import { NotesUiProvider } from "../../notes/note-ui-context.tsx";
 import { CollectionMembershipDialog } from "../../components/collection-membership-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { RenameContentDialog } from "../../components/rename-content-dialog.tsx";
-import { formatDuration } from "../../format.ts";
+import { formatDuration, formatPublishedDate, formatPublishedDateTime } from "../../format.ts";
 import { useMainWidth, useWindowWidth } from "../../layout-width.tsx";
 import { playerSourceOf } from "../../player/capabilities.ts";
 import { saveCachedCopy } from "../../desktop/cached-media.ts";
@@ -1021,6 +1021,11 @@ function TitleRow(props: { content: ContentDetailDto }) {
       <RenameContentDialog contentId={renaming ? content.id : undefined} onOpenChange={setRenaming} />
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
         <span className="rounded bg-sunken px-1.5 py-0.5">{t(`common.source.${content.source.kind}`)}</span>
+        {content.publishedAt === undefined ? null : (
+          <span title={t("contentView.publishedAt", { time: formatPublishedDateTime(content.publishedAt) })} data-testid="content-published">
+            {formatPublishedDate(content.publishedAt)}
+          </span>
+        )}
         {content.durationMs === undefined ? null : <span>{formatDuration(content.durationMs)}</span>}
         {content.collections.map((collection) => (
           <Link key={collection.id} to={`/collections/${collection.id}`} className="text-accent hover:underline">

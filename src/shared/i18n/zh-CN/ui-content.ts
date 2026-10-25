@@ -1,6 +1,7 @@
 /** UI copy of the content detail page; keys are dot paths under `contentView`. */
 export const contentView = {
   untitled: "未命名内容",
+  publishedAt: "发布时间：{{time}}",
   citation: {
     jump: "跳转",
     unresolved: "引用无法定位",
