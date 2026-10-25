@@ -24,7 +24,7 @@ import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { diskLowError, type DiskUsageProbe } from "../pipeline/disk-watermark.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
-import { laneConflict, laneKeys } from "../pipeline/lane.ts";
+import { laneConflict, laneKeys, mutationLaneError } from "../pipeline/lane.ts";
 import { isTerminalProjection } from "../pipeline/projection.ts";
 import { transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
@@ -302,8 +302,9 @@ export class CollectionService {
           .listByCollection(owner, collectionId)
           .filter((task) => !isTerminalProjection(task.statusProjection))
           .map((task) => ({ task, keys: laneKeys(task, undefined) }));
-        if (laneConflict(laneKeys(candidate, undefined), others) !== undefined) {
-          throw amberError("conflict", "another unfinished task summarizes this collection", { code: "conflict.mutation_lane" });
+        const blocking = laneConflict(laneKeys(candidate, undefined), others);
+        if (blocking !== undefined) {
+          throw mutationLaneError(blocking, "another unfinished task summarizes this collection");
         }
         const task = createTask(scope, outbox, {
           task: { id: this.newId(), userId: owner, collectionId, kind: "summarize_collection", requestJson, createdAt: this.now() },

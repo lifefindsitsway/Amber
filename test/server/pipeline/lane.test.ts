@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../../src/server/domain/task.ts";
-import { laneConflict, laneKeys } from "../../../src/server/pipeline/lane.ts";
+import { TASK_KINDS } from "../../../src/shared/enums.ts";
+import { laneConflict, laneKeys, mutationLaneError } from "../../../src/server/pipeline/lane.ts";
 
 const task = (id: string, kind: Task["kind"], request: Record<string, unknown> = {}): Task => ({
   id, userId: "u", contentId: "c", kind, requestJson: JSON.stringify(request), statusProjection: "queued", createdAt: 1,
@@ -35,5 +36,14 @@ describe("mutation lane: Tasks whose stages overlap on one Content exclude each 
     const processing = laneKeys(task("p", "process_content"), "bilibili");
     expect(laneConflict(cache, [{ task: task("p", "process_content"), keys: processing }])).toBeUndefined();
     expect(laneConflict(burn, [{ task: task("p", "process_content"), keys: processing }])).toBeUndefined();
+  });
+
+  it("names the kind of the Task holding the lane in the refusal", () => {
+    const error = mutationLaneError(task("y", "burn"), "busy").appError;
+    expect(error.code).toBe("conflict.mutation_lane");
+    expect(error.userMessage).toBe("已有一个「导出字幕视频」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试");
+    for (const kind of TASK_KINDS) {
+      expect(mutationLaneError(task("k", kind), "busy").appError.userMessage).toMatch(/^已有一个「[^」{}]+」任务正在进行/u);
+    }
   });
 });

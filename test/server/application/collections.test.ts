@@ -213,6 +213,7 @@ describe("collection summary", () => {
     });
     expect(h.collections.getSummary(LOCAL, collectionId)).toEqual({ stale: false, activeTaskId: result.body.taskId });
     expect(await codeOf(() => h.collections.createSummary(LOCAL, collectionId, {}))).toBe("conflict.mutation_lane");
+    expect((await errorOf(() => h.collections.createSummary(LOCAL, collectionId, {})))?.userMessage).toBe("已有一个「合集归纳」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试");
   });
 
   it("freezes the user's default output language when the request names none", async () => {

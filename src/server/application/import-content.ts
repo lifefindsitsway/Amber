@@ -21,7 +21,7 @@ import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { diskLowError, type DiskUsageProbe } from "../pipeline/disk-watermark.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
 import type { FairSemaphore } from "../pipeline/fair-semaphore.ts";
-import { laneConflict, laneKeys } from "../pipeline/lane.ts";
+import { laneConflict, laneKeys, mutationLaneError } from "../pipeline/lane.ts";
 import { isTerminalProjection } from "../pipeline/projection.ts";
 import { expiringOnRefusal } from "../pipeline/stages/platform-access.ts";
 import { type Outbox, transact } from "../pipeline/publish.ts";
@@ -530,7 +530,7 @@ export class ImportContentService {
       if (sameSummary || sameIntent(candidate.kind, requestJson, blocking)) {
         return { task: blocking, created: false };
       }
-      throw amberError("conflict", "another unfinished task works on this content", { code: "conflict.mutation_lane" });
+      throw mutationLaneError(blocking, "another unfinished task works on this content");
     }
 
     const latest = tasks.filter((task) => task.kind === "process_content").at(-1);

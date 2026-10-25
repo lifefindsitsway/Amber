@@ -14,7 +14,7 @@ import type { Logger } from "../ports/logger.ts";
 import type { Repository, RepositoryScope, TaskCursor } from "../ports/repository.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
 import { downstreamStages, stageSpec } from "../pipeline/graph.ts";
-import { laneConflict, laneKeys } from "../pipeline/lane.ts";
+import { laneConflict, laneKeys, mutationLaneError } from "../pipeline/lane.ts";
 import { isTerminalProjection, latestAttempts, taskWait, type TaskWait } from "../pipeline/projection.ts";
 import { type Outbox, transact } from "../pipeline/publish.ts";
 import { asrModelRefProblem, modelRefProblem, unmetRequirement, type CredentialStatusSource } from "../pipeline/requirements.ts";
@@ -372,8 +372,9 @@ export class TaskService {
     const others = siblings
       .filter((task) => task.id !== state.task.id && !isTerminalProjection(task.statusProjection))
       .map((task) => ({ task, keys: laneKeys(task, sourceKind) }));
-    if (laneConflict(laneKeys(state.task, sourceKind), others) !== undefined) {
-      throw amberError("conflict", "another unfinished task works on the same stages", { code: "conflict.mutation_lane" });
+    const blocking = laneConflict(laneKeys(state.task, sourceKind), others);
+    if (blocking !== undefined) {
+      throw mutationLaneError(blocking, "another unfinished task works on the same stages");
     }
     const latest = latestAttempts(state.runs);
     const reopened = new Set(downstreamStages(state.graph, run.stage));

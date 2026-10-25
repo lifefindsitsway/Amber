@@ -71,6 +71,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "asr_failed.job_expired": "转写作业在服务端已不存在或已过期，请从这步重跑（会重新提交）",
   "asr_failed.model_unavailable": "所配置的转写模型不存在，或在所选地域不可用，请检查配置",
   "asr_quota.free_tier_exhausted": "该模型的免费额度已用完，且账号开启了「免费额度用完即停」；请换用其它模型，或在阿里云百炼控制台关闭该开关后从这步重跑",
+  "conflict.mutation_lane": "已有一个「{{task}}」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试",
   "conflict.duplicate_file": "已有相同的文件，可选择仍然导入",
   "conflict.primary_changed": "当前稿已变化，请重新载入后再提交",
   "conflict.last_admin": "至少保留一个管理员",

@@ -104,6 +104,16 @@ function setup() {
   return { h, service, cache, cacheDir, probed, inspected, source, ledger, holds, heavyRuns, sameVolume, recoveries };
 }
 
+/** The user message of the error the promise rejects with. */
+async function messageOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+  } catch (error) {
+    return isAmberError(error) ? error.appError.userMessage : undefined;
+  }
+  return undefined;
+}
+
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -377,6 +387,8 @@ describe("ClientMediaTaskService.cacheMedia", () => {
     finishTasks(h, contentId);
     createTaskOfKind(h, "burn", { mode: "original", revisionId: "r" }, { contentId });
     expect(await codeOf(service.cacheMedia(LOCAL, contentId, {}))).toBe("conflict.mutation_lane");
+    // The refusal names the Task to wait for or cancel.
+    expect(await messageOf(service.cacheMedia(LOCAL, contentId, {}))).toBe("已有一个「导出字幕视频」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试");
     // Other Contents are not affected.
     expect((await service.cacheMedia(LOCAL, platformContent(h, { title: "T" }), {})).status).toBe(202);
   });
@@ -445,6 +457,7 @@ describe("ClientMediaTaskService.burn", () => {
     addCache(h, fixture.contentId, "media/a.mp4");
     const cacheTask = await service.cacheMedia(LOCAL, fixture.contentId, { type: "audio" });
     expect(await codeOf(service.burn(LOCAL, fixture.contentId, body))).toBe("conflict.mutation_lane");
+    expect(await messageOf(service.burn(LOCAL, fixture.contentId, body))).toBe("已有一个「缓存视频」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试");
     expect(taskOf(h, cacheTask.body.taskId).kind).toBe("cache_media");
     finishTasks(h, fixture.contentId);
     expect((await service.burn(LOCAL, fixture.contentId, body)).status).toBe(202);

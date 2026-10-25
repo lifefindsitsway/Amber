@@ -1,4 +1,6 @@
 import type { StageId } from "../../shared/enums.ts";
+import { common } from "../../shared/i18n/zh-CN/ui-common.ts";
+import { type AmberError, amberError } from "../domain/errors.ts";
 import type { Task } from "../domain/task.ts";
 import { taskRequestView } from "../domain/task-request.ts";
 import type { ContentSourceKind } from "../domain/platform.ts";
@@ -43,4 +45,12 @@ export function laneConflict(
 ): Task | undefined {
   const wanted = new Set(candidateKeys);
   return others.find(({ keys }) => keys.some((key) => wanted.has(key)))?.task;
+}
+
+/**
+ * The `conflict.mutation_lane` refusal, naming the kind of the unfinished Task that holds
+ * the lane, so the user knows which Task to wait for or cancel.
+ */
+export function mutationLaneError(blocking: Pick<Task, "kind">, internalMessage: string): AmberError {
+  return amberError("conflict", internalMessage, { code: "conflict.mutation_lane", params: { task: common.taskKind[blocking.kind] } });
 }

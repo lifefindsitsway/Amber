@@ -374,6 +374,13 @@ describe("retry-stage on a failed stage", () => {
     expect(await codeOf(() => h.tasks.retryStage(LOCAL, first.body.taskIds[0] as string, { stage: "source" }))).toBe(
       "conflict.mutation_lane",
     );
+    let refusal: string | undefined;
+    try {
+      h.tasks.retryStage(LOCAL, first.body.taskIds[0] as string, { stage: "source" });
+    } catch (error) {
+      refusal = isAmberError(error) ? error.appError.userMessage : undefined;
+    }
+    expect(refusal).toBe("已有一个「处理视频」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试");
   });
 
   const calls = (h: Harness, stage: "chapter" | "summary") => (h.executors[stage] as unknown as { calls: number }).calls;

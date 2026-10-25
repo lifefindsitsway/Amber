@@ -17,7 +17,7 @@ import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { diskLowError, type DiskUsageProbe } from "../pipeline/disk-watermark.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
-import { laneConflict, laneKeys } from "../pipeline/lane.ts";
+import { laneConflict, laneKeys, mutationLaneError } from "../pipeline/lane.ts";
 import { isTerminalProjection } from "../pipeline/projection.ts";
 import { transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
@@ -177,8 +177,9 @@ export class DerivedTaskService {
           .listByContent(owner, contentId)
           .filter((task) => !isTerminalProjection(task.statusProjection))
           .map((task) => ({ task, keys: laneKeys(task, content.source.kind) }));
-        if (laneConflict(laneKeys(candidate, content.source.kind), others) !== undefined) {
-          throw amberError("conflict", "another unfinished task works on the same stages", { code: "conflict.mutation_lane" });
+        const blocking = laneConflict(laneKeys(candidate, content.source.kind), others);
+        if (blocking !== undefined) {
+          throw mutationLaneError(blocking, "another unfinished task works on the same stages");
         }
         const task = createTask(scope, outbox, {
           task: { id: this.newId(), userId: owner, contentId, kind, requestJson, createdAt: this.now() },
