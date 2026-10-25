@@ -75,11 +75,13 @@ function inspection(overrides: Record<string, unknown> = {}) {
 }
 const INSPECT = { "POST /api/contents/c1/cache-media/inspect": { body: inspection() } };
 
-/** Inspects, then confirms, the cache request the dialog holds. */
+/** Starts the cache request the dialog holds: inspected, then confirmed when the dialog asks. */
 async function startCache(): Promise<void> {
   const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
   fireEvent.click(within(dialog).getByTestId("cache-inspect"));
-  fireEvent.click(await within(dialog).findByTestId("cache-confirm"));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "缓存本视频" }) === null || within(dialog).queryByTestId("cache-confirm") !== null).toBe(true));
+  const confirm = within(dialog).queryByTestId("cache-confirm");
+  if (confirm !== null) fireEvent.click(confirm);
 }
 const EXPIRES_AT = Date.now() + 60_000;
 const SAVE_GRANT = (path: string) => ({ grant: { path, purpose: "cache_save", expiresAt: EXPIRES_AT, sig: "test-signature" } });
@@ -423,19 +425,18 @@ describe("ContentPage in the desktop client", () => {
     expect(quality.value).toBe("1080");
     expect([...quality.options].map((option) => option.textContent)).toEqual(["360P", "480P", "720P", "1080P"]);
     fireEvent.change(quality, { target: { value: "720" } });
+    // Nothing in the answer needs the user, so one click inspects and starts the Task.
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
-    expect((await within(dialog).findByTestId("cache-expected-name")).textContent).toBe("将保存为 第一讲 [720P].mp4（预估，以下载后的实际画质为准）");
-    expect(calls.find((call) => call.path === "/api/contents/c1/cache-media/inspect")?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
-    expect(calls.some((call) => call.path === "/api/contents/c1/cache-media")).toBe(false);
-    fireEvent.click(within(dialog).getByTestId("cache-confirm"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "缓存本视频" })).toBeNull();
+    expect(calls.find((call) => call.path === "/api/contents/c1/cache-media/inspect")?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
     expect(await screen.findByTestId("stage-cache_media")).toBeTruthy();
     const post = calls.find((call) => call.path === "/api/contents/c1/cache-media");
     expect(post?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
     expect(post?.headers["idempotency-key"]).toBeTruthy();
   });
 
-  it("caches audio only under a name the user typed, showing the name the server expects", async () => {
+  it("caches audio only under the name the user typed, right after the inspection", async () => {
     const { calls } = mockApi({
       ...contentRoutes(),
       "POST /api/contents/c1/cache-media/inspect": { body: inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "课程第 1 讲.mp3" }) },
@@ -462,8 +463,6 @@ describe("ContentPage in the desktop client", () => {
     expect(within(dialog).getByTestId("cache-quality")).toBeTruthy();
     fireEvent.click(within(dialog).getByTestId("cache-type-audio"));
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
-    expect((await within(dialog).findByTestId("cache-expected-name")).textContent).toBe("将保存为 课程第 1 讲.mp3");
-    fireEvent.click(within(dialog).getByTestId("cache-confirm"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
     expect(calls.find((call) => call.path === "/api/contents/c1/cache-media")?.body).toEqual({ type: "audio", fileName: "课程:第 1 讲?.mp3" });
   });

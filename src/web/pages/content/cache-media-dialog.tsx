@@ -39,6 +39,21 @@ export function cacheBlockers(inspection: CacheMediaInspectDto): Array<"foreignF
   ];
 }
 
+/**
+ * Whether the inspected request needs the user before it starts: something blocks it, it
+ * would overwrite another Content's cache, replace one of this Content's caches (whose file
+ * may carry another name and is then deleted), or cache audio where a video was asked for.
+ * Anything else starts right after the inspection, without a second click.
+ */
+export function needsReview(inspection: CacheMediaInspectDto, requestedType: CacheMediaType): boolean {
+  return (
+    cacheBlockers(inspection).length > 0 ||
+    inspection.overwrite !== undefined ||
+    inspection.replaces.length > 0 ||
+    (requestedType === "video" && inspection.expected.type === "audio")
+  );
+}
+
 /** One cache of the Content as the dialog lists it. */
 export interface CacheRow {
   assetId: string;
@@ -88,8 +103,10 @@ function cacheRowsOfInspection(caches: CacheMediaInspectDto["caches"]): CacheRow
  * 「缓存本视频」 (desktop client): the user picks a video (height cap) or audio only and
  * the file name, prefilled with the Content's display title. 「开始缓存」 first asks the server
  * what the request would produce: the expected file name, the caches it replaces, another
- * Content's cache it would overwrite (which needs a confirmation) and what blocks it; 「确认缓存」
- * then starts a `cache_media` Task, whose progress the caller follows through `onStarted`.
+ * Content's cache it would overwrite (which needs a confirmation) and what blocks it. When
+ * none of that needs the user (`needsReview`), the `cache_media` Task starts right away;
+ * otherwise the dialog shows the answer and 「确认缓存」 starts it. The caller follows the
+ * Task's progress through `onStarted`.
  * Below, the Content's caches can be deleted one by one, except while it has unfinished Tasks.
  */
 export function CacheMediaDialog(props: {
@@ -119,6 +136,8 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   const [quality, setQuality] = useState<CacheMediaQuality>(DEFAULT_QUALITY);
   const [fileName, setFileName] = useState(props.title ?? "");
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
+  // Set once an inspection found something for the user to decide (or its automatic start failed).
+  const [reviewing, setReviewing] = useState(false);
   const path = `/api/contents/${encodeURIComponent(props.contentId)}/cache-media`;
   const inspect = useMutation({
     mutationFn: (body: CacheMediaRequest) => client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body }),
@@ -133,11 +152,15 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
       props.onClose();
       props.onStarted(accepted.taskId);
     },
-    // A conflict means the inspection is out of date: the next click inspects again.
+    // A conflict means the inspection is out of date: the next click inspects again. Any other
+    // failure leaves the answer on screen, so 「确认缓存」 can retry it.
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) {
         inspect.reset();
         setOverwriteConfirmed(false);
+        setReviewing(false);
+      } else {
+        setReviewing(true);
       }
     },
   });
@@ -147,8 +170,12 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
     inspect.reset();
     start.reset();
     setOverwriteConfirmed(false);
+    setReviewing(false);
   };
   const inspection = inspect.data;
+  const shown = reviewing ? inspection : undefined;
+  // The form stays put while a Task is being started from it.
+  const locked = start.isPending;
   const blockers = inspection === undefined ? [] : cacheBlockers(inspection);
   const overwrite = inspection?.overwrite;
   const canConfirm = inspection !== undefined && blockers.length === 0 && (overwrite === undefined || overwriteConfirmed) && !start.isPending;
@@ -166,6 +193,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
               value={value}
               checked={type === value}
               onChange={() => edit(() => setType(value))}
+              disabled={locked}
               data-testid={`cache-type-${value}`}
             />
             {t(`contentView.cache.typeValue.${value}`)}
@@ -182,6 +210,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
               const next = CACHE_MEDIA_QUALITIES.find((value) => String(value) === event.target.value);
               if (next !== undefined) edit(() => setQuality(next));
             }}
+            disabled={locked}
             data-testid="cache-quality"
           >
             {CACHE_MEDIA_QUALITIES.map((value) => (
@@ -202,12 +231,13 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
             const next = event.target.value;
             edit(() => setFileName(next));
           }}
+          disabled={locked}
           data-testid="cache-file-name"
         />
       </label>
-      {inspection === undefined ? null : (
+      {shown === undefined ? null : (
         <InspectionPanel
-          inspection={inspection}
+          inspection={shown}
           requestedType={type}
           blockers={blockers}
           overwriteConfirmed={overwriteConfirmed}
@@ -217,17 +247,29 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
       {error instanceof ApiError ? <ErrorView error={error.error} /> : null}
       <div className="flex justify-end gap-2">
         <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-        {inspection === undefined ? (
+        {shown === undefined ? (
           <Button
             variant="primary"
-            disabled={inspect.isPending}
+            disabled={inspect.isPending || start.isPending}
             onClick={() => {
               start.reset();
-              inspect.mutate(cacheMediaRequest(type, quality, fileName));
+              const body = cacheMediaRequest(type, quality, fileName);
+              const requestedType = type;
+              inspect.mutate(body, {
+                // Passed to this call rather than to `useMutation`: it is dropped once the dialog
+                // closes or the choice changes (`inspect.reset()`), so neither starts a Task.
+                onSuccess: (answer) => {
+                  if (needsReview(answer, requestedType)) {
+                    setReviewing(true);
+                  } else {
+                    start.mutate(body);
+                  }
+                },
+              });
             }}
             data-testid="cache-inspect"
           >
-            {inspect.isPending ? t("contentView.cache.inspecting") : t("contentView.cache.start")}
+            {inspect.isPending ? t("contentView.cache.inspecting") : start.isPending ? t("contentView.cache.starting") : t("contentView.cache.start")}
           </Button>
         ) : (
           <Button
@@ -240,7 +282,14 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
           </Button>
         )}
       </div>
-      <CacheList contentId={props.contentId} rows={rows} onDeleted={() => inspect.reset()} />
+      <CacheList
+        contentId={props.contentId}
+        rows={rows}
+        onDeleted={() => {
+          inspect.reset();
+          setReviewing(false);
+        }}
+      />
     </div>
   );
 }

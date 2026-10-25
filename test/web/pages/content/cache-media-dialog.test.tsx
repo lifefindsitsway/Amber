@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { MediaAssetDto } from "../../../../src/shared/dto/content.ts";
 import type { CacheMediaInspectDto } from "../../../../src/shared/dto/media.ts";
-import { CacheMediaDialog, cacheBlockers, cacheMediaRequest, cacheRowsOf } from "../../../../src/web/pages/content/cache-media-dialog.tsx";
+import { CacheMediaDialog, cacheBlockers, cacheMediaRequest, cacheRowsOf, needsReview } from "../../../../src/web/pages/content/cache-media-dialog.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { task } from "../../../fixtures/web/shell-data.ts";
 
@@ -48,6 +49,31 @@ function show(routes: Parameters<typeof mockApi>[0], media: MediaAssetDto[] = []
   return { ...api, onStarted, onOpenChange, dialog: screen.getByRole("dialog", { name: "缓存本视频" }) };
 }
 
+/** Holds the answers to the matching requests until `release` is called; stub the API first. */
+function holdRequests(match: (url: string) => boolean): () => void {
+  let release: (value: unknown) => void = () => undefined;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const answered = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (match(String(input))) await held;
+    return answered(input, init);
+  });
+  return () => release(undefined);
+}
+
+const isInspect = (url: string): boolean => url.endsWith("/cache-media/inspect");
+const isStart = (url: string): boolean => url.endsWith("/cache-media");
+
+/** The dialog as a page opens it: closing it unmounts the form. */
+function Opened(props: { onStarted: (taskId: string) => void }) {
+  const [open, setOpen] = useState(true);
+  return <CacheMediaDialog contentId="c1" title="第一讲" media={[]} open={open} onOpenChange={setOpen} onStarted={props.onStarted} />;
+}
+
+const REPLACED = { assetId: "old", fileName: "第一讲 [1080P].mp4", height: 1080, sizeBytes: GB };
+
 async function inspect(dialog: HTMLElement): Promise<HTMLButtonElement> {
   fireEvent.click(within(dialog).getByTestId("cache-inspect"));
   return (await within(dialog).findByTestId("cache-confirm")) as HTMLButtonElement;
@@ -73,6 +99,24 @@ describe("cacheBlockers", () => {
   });
 });
 
+describe("needsReview", () => {
+  const overwrite = { assetId: "x1", contentId: "c9", fileName: "第一讲 [1080P].mp4", sizeBytes: GB };
+  it.each([
+    ["nothing to decide", inspection(), "video", false],
+    ["an unknown height", inspection({ expected: { type: "video", ext: "mp4" }, expectedFileName: "第一讲 [?P].mp4" }), "video", false],
+    ["audio asked and expected", inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "第一讲.mp3" }), "audio", false],
+    ["a cache of this Content replaced", inspection({ replaces: [REPLACED] }), "video", true],
+    ["another Content's cache overwritten", inspection({ overwrite }), "video", true],
+    ["a foreign file", inspection({ foreignFile: true }), "video", true],
+    ["another Content's unfinished Task", inspection({ pendingName: true }), "video", true],
+    ["an interrupted replacement", inspection({ recoveryHold: true }), "video", true],
+    ["a low disk", inspection({ disk: { ...DISK, ok: false } }), "video", true],
+    ["audio where a video was asked", inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "第一讲.mp3" }), "video", true],
+  ] as const)("%s → %s", (_case, answer, type, expected) => {
+    expect(needsReview(answer, type)).toBe(expected);
+  });
+});
+
 describe("cacheRowsOf", () => {
   it("lists the available caches, video by quality with unknown last, then audio", () => {
     const rows = cacheRowsOf([
@@ -93,8 +137,46 @@ describe("cacheRowsOf", () => {
 });
 
 describe("CacheMediaDialog", () => {
-  it("inspects first, then starts the cache the user confirmed", async () => {
-    const { dialog, calls, onStarted, onOpenChange } = show({ [INSPECT]: { body: inspection({ replaces: [{ assetId: "old", fileName: "第一讲 [1080P].mp4", height: 1080, sizeBytes: GB }] }) } });
+  it("starts right after the inspection when nothing needs the user", async () => {
+    const { dialog, calls, onStarted, onOpenChange } = show({ [INSPECT]: { body: inspection() } });
+    const release = holdRequests(isStart);
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    const button = within(dialog).getByTestId("cache-inspect") as HTMLButtonElement;
+    await waitFor(() => expect(button.textContent).toBe("正在开始缓存…"));
+    expect(button.disabled).toBe(true);
+    expect((within(dialog).getByTestId("cache-file-name") as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByTestId("cache-quality") as HTMLSelectElement).disabled).toBe(true);
+    expect(within(dialog).queryByTestId("cache-inspection")).toBeNull();
+    expect(within(dialog).queryByTestId("cache-confirm")).toBeNull();
+    release();
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t1"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(within(dialog).queryByTestId("cache-confirm")).toBeNull();
+    const posts = calls.filter((call) => call.method === "POST");
+    expect(posts.map((call) => [call.path, call.body])).toEqual([
+      ["/api/contents/c1/cache-media/inspect", { type: "video", quality: 1080, fileName: "第一讲" }],
+      ["/api/contents/c1/cache-media", { type: "video", quality: 1080, fileName: "第一讲" }],
+    ]);
+    expect(posts[1]?.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("starts an audio cache right away", async () => {
+    const audio = show({ [INSPECT]: { body: inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "第一讲.mp3" }) } });
+    fireEvent.click(within(audio.dialog).getByTestId("cache-type-audio"));
+    fireEvent.click(within(audio.dialog).getByTestId("cache-inspect"));
+    await waitFor(() => expect(audio.onStarted).toHaveBeenCalledWith("t1"));
+    expect(audio.calls.find((call) => call.path === "/api/contents/c1/cache-media")?.body).toEqual({ type: "audio", fileName: "第一讲" });
+  });
+
+  it("starts a video whose height is unknown until the download right away", async () => {
+    const { dialog, onStarted } = show({ [INSPECT]: { body: inspection({ expected: { type: "video", ext: "mp4" }, expectedFileName: "第一讲 [?P].mp4" }) } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t1"));
+    expect(within(dialog).queryByTestId("cache-confirm")).toBeNull();
+  });
+
+  it("stops on a cache it would replace, then starts the cache the user confirmed", async () => {
+    const { dialog, calls, onStarted, onOpenChange } = show({ [INSPECT]: { body: inspection({ replaces: [REPLACED] }) } });
     // Nothing is sent before the user asks.
     expect(calls.filter((call) => call.method === "POST")).toEqual([]);
     expect(within(dialog).queryByTestId("cache-confirm")).toBeNull();
@@ -103,6 +185,7 @@ describe("CacheMediaDialog", () => {
     expect(within(dialog).getByTestId("cache-replaces").textContent).toBe("将替换现有 1080P 缓存");
     expect(confirm.textContent).toBe("确认缓存");
     expect(confirm.disabled).toBe(false);
+    expect(calls.some((call) => call.path === "/api/contents/c1/cache-media")).toBe(false);
     fireEvent.click(confirm);
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t1"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -115,28 +198,48 @@ describe("CacheMediaDialog", () => {
     expect(posts[1]?.headers["idempotency-key"]).toBeTruthy();
   });
 
-  it("says while inspecting, and inspects again after the choice changes", async () => {
-    let answer: (value: unknown) => void = () => undefined;
-    const pending = new Promise((resolve) => {
-      answer = resolve;
-    });
-    const { dialog, calls } = show({ [INSPECT]: { body: inspection({ expected: { type: "video", ext: "mp4" }, expectedFileName: "第一讲 [?P].mp4" }) } });
-    // The inspection answers only when the test says so.
-    const answered = globalThis.fetch;
-    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-      if (String(input).endsWith("/inspect")) await pending;
-      return answered(input, init);
-    });
+  it("says while inspecting, and drops the answer when the choice changes meanwhile", async () => {
+    const { dialog, calls, onStarted } = show({ [INSPECT]: { body: inspection() } });
+    const release = holdRequests(isInspect);
     const button = within(dialog).getByTestId("cache-inspect") as HTMLButtonElement;
     fireEvent.click(button);
     await waitFor(() => expect(button.textContent).toBe("正在探测可用画质…"));
     expect(button.disabled).toBe(true);
-    answer(undefined);
-    expect((await within(dialog).findByTestId("cache-expected-name")).textContent).toBe("将保存为 第一讲 [?P].mp4，实际画质下载后确定");
+    // The choice stays editable while the server inspects.
     fireEvent.change(within(dialog).getByTestId("cache-file-name"), { target: { value: "第二讲" } });
-    expect(within(dialog).queryByTestId("cache-expected-name")).toBeNull();
+    release();
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/inspect")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("开始缓存");
+    expect(within(dialog).queryByTestId("cache-inspection")).toBeNull();
+    expect(onStarted).not.toHaveBeenCalled();
     expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/api/contents/c1/cache-media/inspect"]);
+  });
+
+  it("starts nothing when the dialog is closed during the inspection", async () => {
+    const { calls } = mockApi({ [INSPECT]: { body: inspection() }, [START]: { status: 202, body: { taskId: "t1" } } });
+    const release = holdRequests(isInspect);
+    const onStarted = vi.fn<(taskId: string) => void>();
+    renderApp(<Opened onStarted={onStarted} />);
+    const dialog = screen.getByRole("dialog", { name: "缓存本视频" });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await waitFor(() => expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("正在探测可用画质…"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "缓存本视频" })).toBeNull());
+    release();
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/inspect")).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.some((call) => call.path === "/api/contents/c1/cache-media")).toBe(false);
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("stops on an audio cache it would replace", async () => {
+    const { dialog, calls } = show({ [INSPECT]: { body: inspection({ expected: { type: "audio", ext: "mp3" }, expectedFileName: "第一讲.mp3", replaces: [{ assetId: "aud", fileName: "第一讲.mp3", sizeBytes: GB }] }) } });
+    fireEvent.click(within(dialog).getByTestId("cache-type-audio"));
+    const confirm = await inspect(dialog);
+    expect(within(dialog).getByTestId("cache-replaces").textContent).toBe("将替换现有音频缓存");
+    expect(confirm.disabled).toBe(false);
+    expect(calls.some((call) => call.path === "/api/contents/c1/cache-media")).toBe(false);
   });
 
   it("says when a picture-less source becomes an MP3", async () => {
@@ -182,10 +285,33 @@ describe("CacheMediaDialog", () => {
 
   it("shows a name conflict found at submit and inspects again on the next click", async () => {
     const conflict = { class: "conflict", code: "conflict.cache_name_taken", retryDisposition: "never", userMessage: "缓存目录中已有同名的缓存文件，请确认覆盖或改用其它文件名" };
-    const { dialog } = show({ [INSPECT]: { body: inspection() }, [START]: { status: 409, body: { error: conflict } } });
+    const { dialog } = show({ [INSPECT]: { body: inspection({ replaces: [REPLACED] }) }, [START]: { status: 409, body: { error: conflict } } });
     fireEvent.click(await inspect(dialog));
     expect(await within(dialog).findByText("缓存目录中已有同名的缓存文件，请确认覆盖或改用其它文件名")).toBeTruthy();
     expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("开始缓存");
+  });
+
+  it("shows a conflict refusing the automatic start, and inspects again on the next click", async () => {
+    const conflict = { class: "conflict", code: "conflict.mutation_lane", retryDisposition: "never", userMessage: "这条内容还有任务在进行" };
+    const { dialog, calls, onStarted } = show({ [INSPECT]: { body: inspection() }, [START]: { status: 409, body: { error: conflict } } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    expect(await within(dialog).findByText("这条内容还有任务在进行")).toBeTruthy();
+    expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("开始缓存");
+    expect(within(dialog).queryByTestId("cache-inspection")).toBeNull();
+    expect(onStarted).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/inspect")).toHaveLength(2));
+  });
+
+  it("keeps the answer on screen when the automatic start fails otherwise, so it can be retried", async () => {
+    const failure = { class: "internal", code: "internal", retryDisposition: "safe", userMessage: "内部错误" };
+    const { dialog, calls } = show({ [INSPECT]: { body: inspection() }, [START]: { status: 500, body: { error: failure } } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    const confirm = (await within(dialog).findByTestId("cache-confirm")) as HTMLButtonElement;
+    expect(within(dialog).getByTestId("cache-expected-name").textContent).toBe("将保存为 第一讲 [1080P].mp4（预估，以下载后的实际画质为准）");
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media")).toHaveLength(2));
   });
 
   it("lists the Content's caches and deletes one after confirmation", async () => {
@@ -210,6 +336,7 @@ describe("CacheMediaDialog", () => {
     const { dialog } = show({
       [INSPECT]: {
         body: inspection({
+          replaces: [{ assetId: "sd", fileName: "第一讲 [720P].mp4", height: 720, sizeBytes: GB }],
           caches: [
             { assetId: "sd", type: "video", height: 720, verified: true, fileName: "第一讲 [720P].mp4", sizeBytes: GB, createdAt: 2 },
             { assetId: "old", type: "video", verified: true, fileName: "第一讲.mp4", sizeBytes: GB, createdAt: 1 },

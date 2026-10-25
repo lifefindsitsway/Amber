@@ -160,6 +160,7 @@ export const contentView = {
     start: "开始缓存",
     inspecting: "正在探测可用画质…",
     confirm: "确认缓存",
+    starting: "正在开始缓存…",
     expected: "将保存为 {{name}}（预估，以下载后的实际画质为准）",
     expectedUnknown: "将保存为 {{name}}，实际画质下载后确定",
     expectedAudio: "将保存为 {{name}}",
