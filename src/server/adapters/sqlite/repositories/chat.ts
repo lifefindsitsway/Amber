@@ -1,7 +1,9 @@
+import type { AppError } from "../../../../shared/errors.ts";
 import type { Citation } from "../../../domain/artifact.ts";
 import type { ChatCompaction, ChatMessage, ChatThread } from "../../../domain/chat.ts";
 import type { ModelRefSnapshot, PromptRef } from "../../../domain/model-ref.ts";
-import type { ChatRepository } from "../../../ports/repository.ts";
+import type { ChatWebSearch } from "../../../domain/web-search.ts";
+import type { ChatRepository, ChatThreadSummary } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { jsonOrNull, notFound, nullable, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
 
@@ -9,6 +11,11 @@ interface ThreadRow {
   id: string;
   content_id: string;
   current_compaction_id: string | null;
+  custom_title: string | null;
+  pinned_at: number | null;
+  created_at: number;
+  first_question: string | null;
+  last_message_at: number | null;
 }
 
 interface MessageRow {
@@ -21,7 +28,11 @@ interface MessageRow {
   context_transcript_revision_id: string | null;
   citations_json: string;
   suggestions_json: string | null;
+  web_search_json: string | null;
+  replaces_message_id: string | null;
+  error_json: string | null;
   created_at: number;
+  finished_at: number | null;
 }
 
 interface CompactionRow {
@@ -35,8 +46,17 @@ interface CompactionRow {
   created_at: number;
 }
 
-function toThread(row: ThreadRow): ChatThread {
-  return withoutNulls<ChatThread>({ id: row.id, contentId: row.content_id, currentCompactionId: row.current_compaction_id });
+function toThread(row: ThreadRow): ChatThreadSummary {
+  return withoutNulls<ChatThreadSummary>({
+    id: row.id,
+    contentId: row.content_id,
+    currentCompactionId: row.current_compaction_id,
+    customTitle: row.custom_title,
+    pinnedAt: row.pinned_at,
+    createdAt: row.created_at,
+    firstQuestion: row.first_question,
+    lastMessageAt: row.last_message_at,
+  });
 }
 
 function toMessage(row: MessageRow): ChatMessage {
@@ -50,7 +70,11 @@ function toMessage(row: MessageRow): ChatMessage {
     contextTranscriptRevisionId: row.context_transcript_revision_id,
     citations: parseJson<Citation[]>(row.citations_json),
     suggestions: parseJsonOrNull<string[]>(row.suggestions_json),
+    webSearch: parseJsonOrNull<ChatWebSearch>(row.web_search_json),
+    replacesMessageId: row.replaces_message_id,
+    error: parseJsonOrNull<AppError>(row.error_json),
     createdAt: row.created_at,
+    finishedAt: row.finished_at,
   });
 }
 
@@ -67,17 +91,35 @@ function toCompaction(row: CompactionRow): ChatCompaction {
   };
 }
 
+/** A thread row with the title source and the latest message time derived from its messages. */
+const THREAD_SELECT = `
+  SELECT chat_thread.*,
+    (SELECT m.text FROM chat_message AS m WHERE m.thread_id = chat_thread.id AND m.role = 'user' ORDER BY m.created_at, m.id LIMIT 1) AS first_question,
+    (SELECT max(m.created_at) FROM chat_message AS m WHERE m.thread_id = chat_thread.id) AS last_message_at
+  FROM chat_thread JOIN content ON content.id = chat_thread.content_id`;
+
+/** Ids of the owner's threads (the second parameter of the statement using it). */
+const OWNED_THREADS = "SELECT chat_thread.id FROM chat_thread JOIN content ON content.id = chat_thread.content_id WHERE content.user_id = ?";
+
 /** Invariant: ownership of chat rows goes through the thread's Content, and every lookup checks its owner. */
 export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
   const ownedContent = db.prepare("SELECT 1 FROM content WHERE id = ? AND user_id = ?");
-  const threadByContent = db.prepare(
-    `SELECT chat_thread.* FROM chat_thread JOIN content ON content.id = chat_thread.content_id
-     WHERE chat_thread.content_id = ? AND content.user_id = ?`,
+  // Pinned first, the latest pin first; then the newest. NULLs sort first in SQLite, hence the explicit flag.
+  const threadsOf = db.prepare(
+    `${THREAD_SELECT} WHERE chat_thread.content_id = ? AND content.user_id = ?
+     ORDER BY chat_thread.pinned_at IS NULL, chat_thread.pinned_at DESC, chat_thread.created_at DESC, chat_thread.id DESC`,
   );
+  const updateThread = db.prepare(
+    `UPDATE chat_thread SET custom_title = @customTitle, pinned_at = @pinnedAt WHERE id = @id AND id IN (${OWNED_THREADS.replace("?", "@owner")})`,
+  );
+  const threadById = db.prepare(`${THREAD_SELECT} WHERE chat_thread.id = ? AND content.user_id = ?`);
+  const latestOf = db.prepare(`${THREAD_SELECT} WHERE chat_thread.content_id = ? AND content.user_id = ? ORDER BY chat_thread.created_at DESC, chat_thread.id DESC LIMIT 1`);
   const ownedThread = db.prepare(
     `SELECT 1 FROM chat_thread JOIN content ON content.id = chat_thread.content_id WHERE chat_thread.id = ? AND content.user_id = ?`,
   );
-  const insertThread = db.prepare("INSERT INTO chat_thread (id, content_id, current_compaction_id) VALUES (@id, @contentId, NULL)");
+  const insertThread = db.prepare("INSERT INTO chat_thread (id, content_id, current_compaction_id, created_at) VALUES (@id, @contentId, NULL, @createdAt)");
+  const deleteThread = db.prepare(`DELETE FROM chat_thread WHERE id = ? AND id IN (${OWNED_THREADS})`);
+  const deleteThreadsOf = db.prepare("DELETE FROM chat_thread WHERE content_id = ? AND content_id IN (SELECT id FROM content WHERE user_id = ?)");
   const messagesOf = db.prepare(
     `SELECT chat_message.* FROM chat_message
      JOIN chat_thread ON chat_thread.id = chat_message.thread_id JOIN content ON content.id = chat_thread.content_id
@@ -89,24 +131,35 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
      WHERE chat_message.id = ? AND content.user_id = ?`,
   );
   const insertMessage = db.prepare(
-    `INSERT INTO chat_message (id, thread_id, role, text, status, model_ref_json, context_transcript_revision_id, citations_json, suggestions_json, created_at)
-     VALUES (@id, @threadId, @role, @text, @status, @modelRef, @contextTranscriptRevisionId, @citations, @suggestions, @createdAt)`,
+    `INSERT INTO chat_message (id, thread_id, role, text, status, model_ref_json, context_transcript_revision_id, citations_json, suggestions_json,
+       web_search_json, replaces_message_id, error_json, created_at, finished_at)
+     VALUES (@id, @threadId, @role, @text, @status, @modelRef, @contextTranscriptRevisionId, @citations, @suggestions,
+       @webSearch, @replacesMessageId, @error, @createdAt, @finishedAt)`,
   );
   const finishMessage = db.prepare(
-    "UPDATE chat_message SET text = @text, status = @status, citations_json = @citations, suggestions_json = @suggestions WHERE id = @id",
+    `UPDATE chat_message SET text = @text, status = @status, citations_json = @citations, suggestions_json = @suggestions,
+       web_search_json = @webSearch, error_json = @error, finished_at = @finishedAt
+     WHERE id = @id`,
   );
+  const deleteMessages = db.prepare(`DELETE FROM chat_message WHERE id IN (SELECT value FROM json_each(?)) AND thread_id IN (${OWNED_THREADS})`);
   const compactionById = db.prepare(
     `SELECT chat_compaction.* FROM chat_compaction
      JOIN chat_thread ON chat_thread.id = chat_compaction.thread_id JOIN content ON content.id = chat_thread.content_id
      WHERE chat_compaction.id = ? AND content.user_id = ?`,
   );
+  const compactionsOf = db.prepare(
+    `SELECT chat_compaction.* FROM chat_compaction
+     JOIN chat_thread ON chat_thread.id = chat_compaction.thread_id JOIN content ON content.id = chat_thread.content_id
+     WHERE chat_compaction.thread_id = ? AND content.user_id = ? ORDER BY chat_compaction.created_at, chat_compaction.id`,
+  );
   const insertCompaction = db.prepare(
     `INSERT INTO chat_compaction (id, thread_id, through_message_id, body, model_ref_json, prompt_ref_json, prompt_snapshot, created_at)
      VALUES (@id, @threadId, @throughMessageId, @body, @modelRef, @promptRef, @promptSnapshot, @createdAt)`,
   );
+  const moveCompaction = db.prepare(`UPDATE chat_compaction SET through_message_id = ? WHERE id = ? AND thread_id IN (${OWNED_THREADS})`);
+  const deleteCompaction = db.prepare(`DELETE FROM chat_compaction WHERE id = ? AND thread_id IN (${OWNED_THREADS})`);
   const setCurrentCompaction = db.prepare("UPDATE chat_thread SET current_compaction_id = ? WHERE id = ?");
-  const deleteThread = db.prepare("DELETE FROM chat_thread WHERE content_id = ? AND content_id IN (SELECT id FROM content WHERE user_id = ?)");
-  const interrupt = db.prepare("UPDATE chat_message SET status = 'interrupted' WHERE status = 'streaming'");
+  const interrupt = db.prepare("UPDATE chat_message SET status = 'interrupted', finished_at = ? WHERE status = 'streaming'");
 
   const requireThread = (ownerUserId: string, threadId: string): void => {
     if (ownedThread.get(threadId, ownerUserId) === undefined) {
@@ -115,15 +168,31 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
   };
 
   return {
-    getThread(ownerUserId, contentId) {
-      const row = threadByContent.get(contentId, ownerUserId) as ThreadRow | undefined;
+    listThreads(ownerUserId, contentId) {
+      return (threadsOf.all(contentId, ownerUserId) as ThreadRow[]).map(toThread);
+    },
+    getThread(ownerUserId, threadId) {
+      const row = threadById.get(threadId, ownerUserId) as ThreadRow | undefined;
       return row === undefined ? undefined : toThread(row);
     },
-    insertThread(ownerUserId, thread) {
+    latestThread(ownerUserId, contentId) {
+      const row = latestOf.get(contentId, ownerUserId) as ThreadRow | undefined;
+      return row === undefined ? undefined : toThread(row);
+    },
+    insertThread(ownerUserId, thread: ChatThread) {
       if (ownedContent.get(thread.contentId, ownerUserId) === undefined) {
         throw notFound("content", thread.contentId);
       }
-      insertThread.run({ id: thread.id, contentId: thread.contentId });
+      insertThread.run({ id: thread.id, contentId: thread.contentId, createdAt: thread.createdAt });
+    },
+    deleteThread(ownerUserId, threadId) {
+      return deleteThread.run(threadId, ownerUserId).changes > 0;
+    },
+    deleteThreadsOf(ownerUserId, contentId) {
+      return deleteThreadsOf.run(contentId, ownerUserId).changes;
+    },
+    updateThread(ownerUserId, threadId, fields) {
+      return updateThread.run({ id: threadId, owner: ownerUserId, customTitle: nullable(fields.customTitle), pinnedAt: nullable(fields.pinnedAt) }).changes > 0;
     },
     listMessages(ownerUserId, threadId) {
       return (messagesOf.all(threadId, ownerUserId) as MessageRow[]).map(toMessage);
@@ -144,7 +213,11 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
         contextTranscriptRevisionId: nullable(message.contextTranscriptRevisionId),
         citations: JSON.stringify(message.citations),
         suggestions: jsonOrNull(message.suggestions),
+        webSearch: jsonOrNull(message.webSearch),
+        replacesMessageId: nullable(message.replacesMessageId),
+        error: jsonOrNull(message.error),
         createdAt: message.createdAt,
+        finishedAt: nullable(message.finishedAt),
       });
     },
     finishMessage(ownerUserId, message) {
@@ -157,11 +230,23 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
         status: message.status,
         citations: JSON.stringify(message.citations),
         suggestions: jsonOrNull(message.suggestions),
+        webSearch: jsonOrNull(message.webSearch),
+        error: jsonOrNull(message.error),
+        finishedAt: nullable(message.finishedAt),
       });
+    },
+    deleteMessages(ownerUserId, messageIds) {
+      if (messageIds.length === 0) {
+        return 0;
+      }
+      return deleteMessages.run(JSON.stringify(messageIds), ownerUserId).changes;
     },
     getCompaction(ownerUserId, compactionId) {
       const row = compactionById.get(compactionId, ownerUserId) as CompactionRow | undefined;
       return row === undefined ? undefined : toCompaction(row);
+    },
+    listCompactions(ownerUserId, threadId) {
+      return (compactionsOf.all(threadId, ownerUserId) as CompactionRow[]).map(toCompaction);
     },
     insertCompaction(ownerUserId, compaction) {
       requireThread(ownerUserId, compaction.threadId);
@@ -177,11 +262,20 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
       });
       setCurrentCompaction.run(compaction.id, compaction.threadId);
     },
-    deleteThread(ownerUserId, contentId) {
-      return deleteThread.run(contentId, ownerUserId).changes > 0;
+    moveCompaction(ownerUserId, compactionId, throughMessageId) {
+      if (moveCompaction.run(throughMessageId, compactionId, ownerUserId).changes === 0) {
+        throw notFound("chat compaction", compactionId);
+      }
     },
-    interruptStreaming() {
-      return interrupt.run().changes;
+    deleteCompaction(ownerUserId, compactionId) {
+      deleteCompaction.run(compactionId, ownerUserId);
+    },
+    setCurrentCompaction(ownerUserId, threadId, compactionId) {
+      requireThread(ownerUserId, threadId);
+      setCurrentCompaction.run(nullable(compactionId), threadId);
+    },
+    interruptStreaming(finishedAt) {
+      return interrupt.run(finishedAt).changes;
     },
   };
 }

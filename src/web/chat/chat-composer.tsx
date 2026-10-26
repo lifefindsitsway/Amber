@@ -38,6 +38,11 @@ export class ChatComposer {
     this.set({ ...this.state, quote: undefined });
   }
 
+  /** Puts back the quote a thread's draft had, without pre-filling the input again. */
+  restoreQuote(quote: QuoteDraft | undefined): void {
+    this.set({ ...this.state, quote });
+  }
+
   private set(next: ComposerState): void {
     this.state = next;
     for (const listener of this.listeners) {

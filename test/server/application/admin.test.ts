@@ -315,7 +315,9 @@ describe("resetting all credentials", () => {
     h.repository.withTransaction((scope) =>
       scope.platformAccounts.insert({ id: h.newId(), userId: BOB.userId, platform: "bilibili", credentialRef: cookieRef, status: "valid" }),
     );
-    expect(countRows(h.db, "secret")).toBe(3);
+    const searchRef = h.secrets.store(LOCAL.userId, "tvly-placeholder");
+    h.repository.withTransaction((scope) => scope.webSearchProfiles.put({ userId: LOCAL.userId, service: "tavily", credentialRef: searchRef, createdAt: 1, updatedAt: 1 }));
+    expect(countRows(h.db, "secret")).toBe(4);
 
     const { credentialsResetAt } = await admin.resetCredentials(LOCAL);
     expect(secretsAtRotation).toBe(0);
@@ -323,6 +325,7 @@ describe("resetting all credentials", () => {
     expect(countRows(h.db, "platform_account")).toBe(0);
     expect(countRows(h.db, "provider_profile", "credential_ref IS NULL AND id = ?", modelRef.providerProfileId)).toBe(1);
     expect(countRows(h.db, "asr_provider_profile", "credential_ref IS NOT NULL")).toBe(0);
+    expect(countRows(h.db, "web_search_profile", "credential_ref IS NULL")).toBe(1);
     expect(h.repository.withTransaction((scope) => scope.instanceSettings.get()?.credentialsResetAt)).toBe(credentialsResetAt);
     // Instance settings keep working with the audit field present.
     expect(h.settings.patch(LOCAL, { concurrencyPipeline: 3 }).concurrencyPipeline).toBe(3);

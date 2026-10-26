@@ -43,6 +43,7 @@ import type { TerminologyService } from "./application/terminology.ts";
 import type { TranscriptService } from "./application/transcripts.ts";
 import type { TrashService } from "./application/trash.ts";
 import type { UsageService } from "./application/usage.ts";
+import type { WebSearchService } from "./application/web-search.ts";
 import { installAuthentication } from "./api/auth.ts";
 import { ClientIpResolver } from "./api/client-ip.ts";
 import { LoginRateLimiter } from "./api/login-rate-limit.ts";
@@ -79,6 +80,7 @@ import { registerTranscriptRoutes } from "./api/routes/transcripts.ts";
 import { registerTrashRoutes } from "./api/routes/trash.ts";
 import { registerStorageRoutes } from "./api/routes/storage.ts";
 import { registerUsageRoutes } from "./api/routes/usage.ts";
+import { registerWebSearchRoutes } from "./api/routes/web-search.ts";
 import type { TaskEventBus } from "./pipeline/events.ts";
 import type { AuthAdapter } from "./ports/auth-adapter.ts";
 import type { Logger } from "./ports/logger.ts";
@@ -146,6 +148,8 @@ export interface AppDeps {
   collections?: CollectionService;
   search?: SearchService;
   chat?: ChatService;
+  /** The caller's web search service, `/api/web-search*`. */
+  webSearch?: WebSearchService;
   /** Notes on transcript text. */
   notes?: NoteService;
   /** "Proofread again", "regenerate chapters", "recompute highlights" and "translate". */
@@ -318,6 +322,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.chat !== undefined) {
     registerChatRoutes(app, { chat: deps.chat });
+  }
+  if (deps.webSearch !== undefined) {
+    registerWebSearchRoutes(app, { webSearch: deps.webSearch });
   }
   if (deps.notes !== undefined) {
     registerNoteRoutes(app, { notes: deps.notes });

@@ -526,7 +526,7 @@ export class LlmGateway implements LlmInvoker {
       profile,
       capability,
       provider,
-      snapshot: { ...modelRef, providerNameSnapshot: profile.name, modelDisplaySnapshot: modelRef.modelId },
+      snapshot: { ...modelRef, providerNameSnapshot: profile.name, modelDisplaySnapshot: modelRef.modelId, protocolSnapshot: profile.protocol },
     };
   }
 }

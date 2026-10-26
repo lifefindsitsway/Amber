@@ -110,7 +110,7 @@ export async function buildSourceLibrary(options: SourceOptions = {}): Promise<S
     citations: cited.map((segmentId) => ({ transcriptRevisionId: first.revisionId, segmentId: segmentId as never })),
   });
   const threadId = h.newId();
-  insertRow(h.db, "chat_thread", { id: threadId, content_id: first.contentId });
+  insertRow(h.db, "chat_thread", { id: threadId, content_id: first.contentId, created_at: 0 });
   insertRow(h.db, "chat_message", {
     id: h.newId(),
     thread_id: threadId,

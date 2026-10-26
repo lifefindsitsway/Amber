@@ -229,6 +229,31 @@ export const CITATION_REPAIR_CANDIDATES = 20;
 export const SEARCH_GROUP_LIMIT = 20;
 /** Floor of recent chat turns carried when compaction still overflows the budget. */
 export const CHAT_RECENT_TURNS_MIN = 2;
+/** Upper bound of one chat question; longer input is a client error. */
+export const CHAT_MESSAGE_MAX_CHARS = 8000;
+/** Characters of a chat thread's title, taken from the first line of its first question. */
+export const CHAT_THREAD_TITLE_MAX_CHARS = 40;
+/** Message ids one "delete turns" request may carry. */
+export const CHAT_DELETE_TURNS_MAX = 100;
+/** Recent user questions the web search planner sees besides the current one. */
+export const CHAT_SEARCH_PLAN_TURNS = 2;
+/** Web search queries sent for one answer at most. */
+export const WEB_SEARCH_QUERIES_MAX = 3;
+/** Characters of one web search query; longer ones are cut. */
+export const WEB_SEARCH_QUERY_MAX_CHARS = 200;
+/** Results requested per web search query. */
+export const WEB_SEARCH_RESULTS_PER_QUERY = 5;
+/** Web sources handed to the model for one answer at most, after de-duplication. */
+export const WEB_SEARCH_SOURCES_MAX = 8;
+/** Characters kept of a web source's title and excerpt. */
+export const WEB_SEARCH_TITLE_MAX_CHARS = 200;
+export const WEB_SEARCH_SNIPPET_MAX_CHARS = 600;
+/** Timeout of one web search request. */
+export const WEB_SEARCH_TIMEOUT_MS = 15000;
+/** Bytes read of one web search response at most; a larger one is abandoned. */
+export const WEB_SEARCH_RESPONSE_MAX_BYTES = 1000000;
+/** Estimated tokens of the web material at most; half of the remaining room bounds it too. */
+export const WEB_SEARCH_CONTEXT_MAX_TOKENS = 4000;
 /** Fallback for revisions without paragraph marks: a pause between sentences that starts a new reading paragraph. */
 export const PARAGRAPH_GAP_MS = 2000;
 /**

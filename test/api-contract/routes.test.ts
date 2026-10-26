@@ -34,7 +34,7 @@ describe("the route list", () => {
   it("names each method and path once", () => {
     const keys = API_ROUTES.map((route) => key(route.method, route.path));
     expect(keys.filter((entry, index) => keys.indexOf(entry) !== index)).toEqual([]);
-    expect(keys).toHaveLength(146);
+    expect(keys).toHaveLength(157);
   });
 
   it("gives every route at least one run mode", () => {

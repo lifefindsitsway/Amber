@@ -2,7 +2,7 @@ import { Copy, MessageCircleQuestion } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { CHAT_MESSAGE_MAX_CHARS } from "../../shared/dto/chat.ts";
+import { CHAT_MESSAGE_MAX_CHARS } from "../../shared/defaults.ts";
 import type { SegmentId } from "../../shared/ids.ts";
 import { copyText } from "../ui/clipboard.ts";
 import { coveredSentences, elementOf, selectionBounds, type SelectionBounds } from "../ui/dom-selection.ts";

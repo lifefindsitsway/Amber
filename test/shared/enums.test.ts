@@ -40,6 +40,7 @@ const EXPECTED: Readonly<Record<string, readonly (string | number)[]>> = {
     "highlight",
     "chat",
     "chat_compaction",
+    "chat_search_plan",
     "translate",
     "collection_summary",
     "citation_repair",
@@ -61,6 +62,11 @@ const EXPECTED: Readonly<Record<string, readonly (string | number)[]>> = {
   NOTE_MARKS: ["underline", "background"],
   NOTE_COLORS: ["yellow", "green", "blue", "pink", "purple"],
   PLAYER_END_BEHAVIORS: ["pause", "loop_one", "loop_list"],
+  WEB_SEARCH_MODES: ["off", "auto", "force"],
+  CHAT_WEB_SEARCH_SETTINGS: ["off", "auto"],
+  WEB_SEARCH_STATUSES: ["searched", "partial", "failed", "skipped", "dropped"],
+  WEB_SEARCH_REASONS: ["unconfigured", "not_needed", "planner_failed", "budget"],
+  WEB_SEARCH_SERVICES: ["tavily"],
 };
 
 describe("src/shared/enums.ts", () => {

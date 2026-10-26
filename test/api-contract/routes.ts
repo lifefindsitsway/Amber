@@ -89,8 +89,20 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "GET", path: "/search", modes: BOTH },
   // chat
   { method: "GET", path: "/contents/:id/chat", modes: BOTH },
+  { method: "GET", path: "/contents/:id/chat/threads", modes: BOTH },
+  { method: "POST", path: "/contents/:id/chat/threads", modes: BOTH },
+  { method: "PATCH", path: "/contents/:id/chat/threads/:tid", modes: BOTH },
+  { method: "DELETE", path: "/contents/:id/chat/threads/:tid", modes: BOTH },
   { method: "POST", path: "/contents/:id/chat/messages", modes: BOTH },
+  { method: "POST", path: "/contents/:id/chat/messages/:mid/retry", modes: BOTH },
+  { method: "POST", path: "/contents/:id/chat/turns/delete", modes: BOTH },
   { method: "DELETE", path: "/contents/:id/chat", modes: BOTH },
+  // web search
+  { method: "GET", path: "/web-search", modes: BOTH },
+  { method: "PUT", path: "/web-search", modes: BOTH },
+  { method: "DELETE", path: "/web-search", modes: BOTH },
+  { method: "PUT", path: "/web-search/credential", modes: BOTH },
+  { method: "POST", path: "/web-search/test", modes: BOTH },
   // notes
   { method: "GET", path: "/contents/:id/notes", modes: BOTH },
   { method: "POST", path: "/contents/:id/notes", modes: BOTH },

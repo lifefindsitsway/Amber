@@ -105,6 +105,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const asrProfile = nextId();
   row("asr_provider_profile", { id: asrProfile, user_id: userId, name: "ElevenLabs", provider: "elevenlabs", models_json: '[{"modelId":"scribe_v2"}]', credential_ref: secrets.asr.id, created_at: T0 });
   row("other_model_profile", { id: nextId(), user_id: userId, name: "百炼", models_json: '[{"modelId":"cosyvoice-v2","kind":"tts"}]', created_at: T0 });
+  row("web_search_profile", { user_id: userId, service: "tavily", created_at: T0, updated_at: T0 });
   const platformAccount = nextId();
   row("platform_account", { id: platformAccount, user_id: userId, platform: "bilibili", credential_ref: secrets.platform.id, status: "unknown" });
 
@@ -220,7 +221,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const thread = nextId();
   const message = nextId();
   const compaction = nextId();
-  row("chat_thread", { id: thread, content_id: content });
+  row("chat_thread", { id: thread, content_id: content, created_at: 0 });
   row("chat_message", { id: message, thread_id: thread, role: "user", text: "?", status: "complete", context_transcript_revision_id: primary, citations_json: json([]), created_at: T0 });
   row("chat_compaction", { id: compaction, thread_id: thread, through_message_id: message, body: "…", model_ref_json: modelRef, prompt_ref_json: promptRef, prompt_snapshot: "…", created_at: T0 });
   db.prepare("UPDATE chat_thread SET current_compaction_id = ? WHERE id = ?").run(compaction, thread);
@@ -482,9 +483,12 @@ describe("structural invariants", () => {
   });
 
   it("keeps committed transcripts, template versions and revisions immutable", () => {
-    for (const table of ["transcript_revision", "transcript_segment", "transcript_segment_source", "summary_revision", "chapter_revision", "highlight_revision", "collection_summary_revision", "rollup_partial", "chat_compaction", "summary_template_version"]) {
+    for (const table of ["transcript_revision", "transcript_segment", "transcript_segment_source", "summary_revision", "chapter_revision", "highlight_revision", "collection_summary_revision", "rollup_partial", "summary_template_version"]) {
       expect(() => db.prepare(`UPDATE ${table} SET rowid = rowid`).run(), table).toThrow(/immutable/);
     }
+    // A compaction's end may move to an earlier kept message; nothing else of it changes.
+    expect(() => db.prepare("UPDATE chat_compaction SET body = body").run()).toThrow(/immutable/);
+    expect(() => db.prepare("UPDATE chat_compaction SET through_message_id = through_message_id").run()).not.toThrow();
   });
 
   it("validates JSON columns", () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { CHAT_MESSAGE_STATUSES } from "../enums.ts";
+import { CHAT_DELETE_TURNS_MAX, CHAT_MESSAGE_MAX_CHARS, DISPLAY_NAME_MAX_CHARS } from "../defaults.ts";
+import { CHAT_MESSAGE_STATUSES, WEB_SEARCH_MODES, WEB_SEARCH_REASONS, WEB_SEARCH_STATUSES } from "../enums.ts";
 import { appErrorSchema } from "../errors.ts";
 import { segmentIdSchema } from "../ids.ts";
 import { citationDtoSchema } from "./citation.ts";
@@ -9,8 +10,6 @@ import { modelRefSnapshotDtoSchema } from "./usage.ts";
 const idSchema = z.string().min(1);
 const msSchema = z.number().int().nonnegative();
 
-/** Upper bound of one question; longer input is a client error. */
-export const CHAT_MESSAGE_MAX_CHARS = 8000;
 
 /** A sentence quoted from the transcript ("explain"); the server reads its text itself. */
 export const chatQuoteSchema = z
@@ -26,6 +25,10 @@ export const chatMessageRequestSchema = z
   .object({
     text: z.string().trim().min(1).max(CHAT_MESSAGE_MAX_CHARS),
     modelRef: modelRefSchema,
+    /** Absent: the Content's latest thread, created when there is none. */
+    threadId: idSchema.optional(),
+    /** Absent: `off`. */
+    webSearch: z.enum(WEB_SEARCH_MODES).optional(),
     quote: chatQuoteSchema.optional(),
     /** Player position when the player tracks time; names the current chapter. */
     positionMs: msSchema.optional(),
@@ -33,9 +36,33 @@ export const chatMessageRequestSchema = z
   .strict();
 export type ChatMessageRequest = z.infer<typeof chatMessageRequestSchema>;
 
-/** `GET /api/contents/:id/chat?providerProfileId=&modelId=`: both or neither. */
+/**
+ * `POST /api/contents/:id/chat/messages/:mid/retry`: answers the last turn again. `modelRef`
+ * absent = the model of the answer being replaced.
+ */
+export const chatRetryRequestSchema = z
+  .object({
+    modelRef: modelRefSchema.optional(),
+    webSearch: z.enum(WEB_SEARCH_MODES).optional(),
+    positionMs: msSchema.optional(),
+  })
+  .strict();
+export type ChatRetryRequest = z.infer<typeof chatRetryRequestSchema>;
+
+/** `POST /api/contents/:id/chat/turns/delete`: each id stands for the whole turn it belongs to. */
+export const chatTurnsDeleteRequestSchema = z
+  .object({ messageIds: z.array(idSchema).min(1).max(CHAT_DELETE_TURNS_MAX) })
+  .strict();
+export type ChatTurnsDeleteRequest = z.infer<typeof chatTurnsDeleteRequestSchema>;
+
+/** Every message that went, user questions and answers alike. */
+export const chatTurnsDeleteResultSchema = z.object({ deleted: z.array(idSchema) });
+export type ChatTurnsDeleteResult = z.infer<typeof chatTurnsDeleteResultSchema>;
+
+/** `GET /api/contents/:id/chat?threadId=&providerProfileId=&modelId=`: the model ids go both or neither. */
 export const chatQuerySchema = z
   .object({
+    threadId: idSchema.optional(),
     providerProfileId: idSchema.optional(),
     modelId: idSchema.optional(),
   })
@@ -61,10 +88,45 @@ export const chatContextDtoSchema = z.object({
 });
 export type ChatContextDto = z.infer<typeof chatContextDtoSchema>;
 
+/** One web page an answer was given, with the excerpt the model actually saw. */
+export const webSourceDtoSchema = z.object({
+  /** Referenced from the answer's text as `[[web:<id>]]`. */
+  id: idSchema,
+  /** 1-based position within this answer; shown as `[n]`. */
+  index: z.number().int().positive(),
+  url: z.string().min(1),
+  title: z.string(),
+  excerpt: z.string(),
+  publishedAt: msSchema.optional(),
+  fetchedAt: msSchema,
+});
+export type WebSourceDto = z.infer<typeof webSourceDtoSchema>;
+
+const countSchema = z.number().int().nonnegative();
+
+/**
+ * The web search of one answer: planned queries, requests actually sent, requests that
+ * succeeded, and the sources handed to the model. `reason` says why it was skipped or dropped.
+ */
+export const chatWebSearchDtoSchema = z.object({
+  mode: z.enum(["auto", "force"]),
+  status: z.enum(WEB_SEARCH_STATUSES),
+  reason: z.enum(WEB_SEARCH_REASONS).optional(),
+  planned: countSchema,
+  requested: countSchema,
+  succeeded: countSchema,
+  queries: z.array(z.string()),
+  sources: z.array(webSourceDtoSchema),
+  error: appErrorSchema.optional(),
+});
+export type ChatWebSearchDto = z.infer<typeof chatWebSearchDtoSchema>;
+
 /**
  * One message. Citations appear in `text` as canonical `[[seg:<segmentId>]]` markers and
- * are indexed in `citations`; a user message's `quote` is the sentence it asked about. An
- * assistant message without `contextTranscriptRevisionId` was answered without a transcript.
+ * are indexed in `citations`; web citations appear as `[[web:<sourceId>]]` and resolve only
+ * against this message's `webSearch.sources`. A user message's `quote` is the sentence it
+ * asked about. An assistant message without `contextTranscriptRevisionId` was answered
+ * without a transcript.
  */
 export const chatMessageDtoSchema = z.object({
   id: idSchema,
@@ -76,14 +138,54 @@ export const chatMessageDtoSchema = z.object({
   citations: z.array(citationDtoSchema),
   suggestions: z.array(z.string()).optional(),
   quote: chatQuoteSchema.optional(),
+  webSearch: chatWebSearchDtoSchema.optional(),
+  /** On a retry's answer: the answer it replaces (gone once the retry succeeded). */
+  replacesMessageId: idSchema.optional(),
+  /** Why a `failed` answer failed. */
+  error: appErrorSchema.optional(),
   createdAt: msSchema,
+  /** When an answer reached its final state; absent while streaming and on answers stored before it was recorded. */
+  finishedAt: msSchema.optional(),
 });
 export type ChatMessageDto = z.infer<typeof chatMessageDtoSchema>;
 
-export const chatThreadDtoSchema = z.object({ id: idSchema, currentCompactionId: idSchema.optional() });
+/**
+ * `title` is what the thread is called: the user's own `customTitle` when set, else the
+ * first line of its first question; absent while it has neither. A pinned thread lists first.
+ */
+export const chatThreadDtoSchema = z.object({
+  id: idSchema,
+  title: z.string().optional(),
+  customTitle: z.string().optional(),
+  pinnedAt: msSchema.optional(),
+  createdAt: msSchema,
+  lastMessageAt: msSchema.optional(),
+  currentCompactionId: idSchema.optional(),
+});
 export type ChatThreadDto = z.infer<typeof chatThreadDtoSchema>;
 
-/** `GET /api/contents/:id/chat`: the whole history, oldest first; `thread` is null before the first message. */
+/**
+ * `PATCH /api/contents/:id/chat/threads/:tid`: `title` renames (`null` or blank restores the
+ * title taken from the first question), `pinned` pins or unpins; answers `{ thread }`.
+ */
+export const chatThreadPatchRequestSchema = z
+  .object({ title: z.string().trim().max(DISPLAY_NAME_MAX_CHARS).nullable().optional(), pinned: z.boolean().optional() })
+  .strict()
+  .refine((body) => body.title !== undefined || body.pinned !== undefined, { message: "nothing to change" });
+export type ChatThreadPatchRequest = z.infer<typeof chatThreadPatchRequestSchema>;
+
+/** `GET /api/contents/:id/chat/threads`: pinned first (latest pin first), then newest first. */
+export const chatThreadsDtoSchema = z.object({ threads: z.array(chatThreadDtoSchema) });
+export type ChatThreadsDto = z.infer<typeof chatThreadsDtoSchema>;
+
+/** `POST /api/contents/:id/chat/threads`: the latest thread when it is still empty, else a new one. */
+export const chatThreadCreatedDtoSchema = z.object({ thread: chatThreadDtoSchema });
+export type ChatThreadCreatedDto = z.infer<typeof chatThreadCreatedDtoSchema>;
+
+/**
+ * `GET /api/contents/:id/chat`: one thread's whole history, oldest first, including every
+ * attempt of a turn; `thread` is null while the Content has none.
+ */
 export const chatDtoSchema = z.object({
   thread: chatThreadDtoSchema.nullable(),
   messages: z.array(chatMessageDtoSchema),
@@ -101,11 +203,21 @@ export type ChatReplayDto = z.infer<typeof chatReplayDtoSchema>;
  * section never reaches the client, only `suggestions`; `done` closes the stream.
  */
 export const chatStreamEventSchemas = {
+  "search.started": z.object({ planned: countSchema, queries: z.array(z.string()) }),
+  "search.done": z.object({
+    status: z.enum(WEB_SEARCH_STATUSES),
+    reason: z.enum(WEB_SEARCH_REASONS).optional(),
+    requested: countSchema,
+    succeeded: countSchema,
+    sources: z.array(webSourceDtoSchema),
+    error: appErrorSchema.optional(),
+  }),
   "answer.delta": z.object({ delta: z.string() }),
   citation: citationDtoSchema.extend({ startMs: msSchema }),
   suggestions: z.object({ items: z.array(z.string()) }),
   usage: z.object({ inputTokens: z.number().int().nonnegative().optional(), outputTokens: z.number().int().nonnegative().optional() }),
   done: z.object({
+    threadId: idSchema,
     userMessageId: idSchema,
     messageId: idSchema,
     status: z.enum(CHAT_MESSAGE_STATUSES),

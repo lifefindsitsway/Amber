@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer, ChatComposerProvider } from "../../../src/web/chat/chat-composer.tsx";
-import { CHAT_MESSAGE_MAX_CHARS } from "../../../src/shared/dto/chat.ts";
+import { CHAT_MESSAGE_MAX_CHARS } from "../../../src/shared/defaults.ts";
 import { explainSelectionQuestion, selectionForExplain, SelectionToolbar, type SelectionSnapshot } from "../../../src/web/chat/selection-toolbar.tsx";
 import { initI18n } from "../../../src/web/i18n.ts";
 

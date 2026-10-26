@@ -19,7 +19,7 @@ beforeEach(() => {
     insertRow(db, "task", { id: `t-${id}`, user_id: id, content_id: `c-${id}`, kind: "regenerate_summary", request_json: "{}", status_projection: "running", created_at: T0 });
     insertRow(db, "stage_run", { id: `s-${id}`, task_id: `t-${id}`, stage: "summary", attempt: 1, status: "running", progress: 0, dependencies_json: "[]" });
     insertRow(db, "work_unit", { id: `w-${id}`, stage_run_id: `s-${id}`, unit_key: "k", status: "running", attempt: 1, input_digest: "d" });
-    insertRow(db, "chat_thread", { id: `th-${id}`, content_id: `c-${id}` });
+    insertRow(db, "chat_thread", { id: `th-${id}`, content_id: `c-${id}`, created_at: 0 });
     insertRow(db, "chat_message", { id: `m-${id}`, thread_id: `th-${id}`, role: "assistant", text: "", status: "streaming", citations_json: "[]", created_at: T0 });
   }
 });

@@ -24,6 +24,7 @@ import { userSettingsDtoSchema, type UserSettingsDto, type UserSettingsPatch } f
 import { authMeDtoSchema, setupStatusDtoSchema, versionDtoSchema } from "../../shared/dto/system.ts";
 import { TASK_HISTORY_PAGE_SIZE } from "../../shared/defaults.ts";
 import { taskListDtoSchema } from "../../shared/dto/task.ts";
+import { webSearchProfileDtoSchema, webSearchTestResultSchema, type WebSearchProfilePut } from "../../shared/dto/web-search.ts";
 import { noteKeys } from "../notes/note-keys.ts";
 import { useApi } from "./context.tsx";
 
@@ -55,6 +56,7 @@ export const queryKeys = {
   instanceSettings: ["instance-settings"] as const,
   /** Every trash read (the list and its pages). */
   trash: ["trash"] as const,
+  webSearch: ["web-search"] as const,
 };
 
 export interface ContentFilters {
@@ -332,4 +334,41 @@ export function useInstanceSettings(enabled = true) {
     queryFn: () => client.get("/api/instance-settings", instanceSettingsDtoSchema),
     enabled,
   });
+}
+
+/** `GET /api/web-search`: the chat's search service and whether its key is stored, never the key. */
+export function useWebSearchProfile(enabled = true) {
+  const client = useApi();
+  return useQuery({ queryKey: queryKeys.webSearch, queryFn: () => client.get("/api/web-search", webSearchProfileDtoSchema), enabled });
+}
+
+/**
+ * Writes of the web search settings. The key is write-only: it goes out once and only the
+ * stored status is read back. "Test" sends one real search, which uses up a search credit.
+ */
+export function useWebSearchMutations() {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: queryKeys.webSearch });
+  return {
+    service: useMutation({
+      mutationFn: (body: WebSearchProfilePut) => client.put("/api/web-search", z.unknown(), { body }),
+      onSuccess: refresh,
+    }),
+    credential: useMutation({
+      mutationFn: async (input: { value: string; service: WebSearchProfilePut["service"] | undefined; fallback: WebSearchProfilePut["service"] }) => {
+        // The row is created by choosing a service; a key alone has nothing to attach to.
+        if (input.service === undefined) await client.put("/api/web-search", z.unknown(), { body: { service: input.fallback } });
+        await client.put("/api/web-search/credential", z.unknown(), { body: { value: input.value } });
+      },
+      onSettled: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: () => client.delete("/api/web-search", z.unknown()),
+      onSuccess: refresh,
+    }),
+    test: useMutation({
+      mutationFn: () => client.post("/api/web-search/test", webSearchTestResultSchema),
+    }),
+  };
 }

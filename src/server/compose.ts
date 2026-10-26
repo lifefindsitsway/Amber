@@ -13,6 +13,7 @@ import { LocalAuthAdapter } from "./adapters/auth/local/index.ts";
 import { DashscopeAsrProviderFactory } from "./adapters/asr/dashscope/index.ts";
 import { ElevenLabsAsrProviderFactory } from "./adapters/asr/elevenlabs/index.ts";
 import { AnthropicMessagesProvider } from "./adapters/llm/anthropic-messages/index.ts";
+import { TavilyWebSearchProvider } from "./adapters/web-search/tavily/index.ts";
 import { OpenAiCompatibleProvider } from "./adapters/llm/openai-compatible/index.ts";
 import { FfmpegVideoBurner } from "./adapters/media-ingest/ffmpeg-burner.ts";
 import { FfmpegSubtitleMuxer } from "./adapters/media-ingest/ffmpeg-subtitle-muxer.ts";
@@ -79,6 +80,7 @@ import { TerminologyService } from "./application/terminology.ts";
 import { TranscriptService } from "./application/transcripts.ts";
 import { TrashService } from "./application/trash.ts";
 import { UsageService } from "./application/usage.ts";
+import { WebSearchService } from "./application/web-search.ts";
 import { AssetJanitor } from "./pipeline/asset-janitor.ts";
 import { CacheDownloadLedger } from "./pipeline/cache-download-ledger.ts";
 import { CacheHoldRegistry } from "./pipeline/cache-holds.ts";
@@ -401,7 +403,15 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const summaryTemplates = new SummaryTemplateService({ repository });
   const summaries = new SummaryService({ repository, bus, control, disk: files, settings: instanceSettings });
   const collections = new CollectionService({ repository, bus, control, disk: files, settings: instanceSettings, importContent });
-  const chat = new ChatService({ repository, llm: llmGateway, logger: lateLogger(() => appLogger?.child({ component: "chat" })) });
+  // Searches go to each service's fixed official origin, through the same outbound policy as everything else.
+  const webSearch = new WebSearchService({
+    repository,
+    secrets,
+    providers: [new TavilyWebSearchProvider({ http })],
+    llm: llmGateway,
+    logger: lateLogger(() => appLogger?.child({ component: "web_search" })),
+  });
+  const chat = new ChatService({ repository, llm: llmGateway, webSearch, logger: lateLogger(() => appLogger?.child({ component: "chat" })) });
   // Before any request can start a new answer.
   chat.recoverInterrupted();
   const deleteContent = new DeleteContentService({ repository, gate, fileDeleter, chat });
@@ -543,6 +553,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     collections,
     search,
     chat,
+    webSearch,
     notes,
     localImport,
     media: mediaAssets,

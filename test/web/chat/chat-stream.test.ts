@@ -27,7 +27,7 @@ describe("readChatAnswer", () => {
       frame("answer.delta", { delta: `重排序 [[seg:${SEGMENT}]]` }) +
       frame("suggestions", { items: ["为什么？"] }) +
       frame("usage", { inputTokens: 10, outputTokens: 3 }) +
-      frame("done", { userMessageId: "m1", messageId: "m2", status: "complete" });
+      frame("done", { threadId: "th1", userMessageId: "m1", messageId: "m2", status: "complete" });
     const chunks = [whole.slice(0, 7), whole.slice(7, 61), whole.slice(61, 200), whole.slice(200)];
     const events: ChatStreamEvent[] = [];
     const outcome = await readChatAnswer(sse(chunks), (event) => events.push(event));
@@ -49,7 +49,7 @@ describe("readChatAnswer", () => {
   it("carries a failed answer's error on done", async () => {
     const events: ChatStreamEvent[] = [];
     await readChatAnswer(
-      sse([frame("done", { userMessageId: "m1", messageId: "m2", status: "failed", error: { class: "llm_failed", code: "llm_failed", retryDisposition: "never", userMessage: "上游出错" } })]),
+      sse([frame("done", { threadId: "th1", userMessageId: "m1", messageId: "m2", status: "failed", error: { class: "llm_failed", code: "llm_failed", retryDisposition: "never", userMessage: "上游出错" } })]),
       (event) => events.push(event),
     );
     expect(events[0]).toMatchObject({ type: "done", data: { status: "failed", error: { class: "llm_failed" } } });

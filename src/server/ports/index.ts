@@ -14,3 +14,4 @@ export type * from "./video-burner.ts";
 export type * from "./file-grant.ts";
 export type * from "./subtitle-muxer.ts";
 export type * from "./backup.ts";
+export type * from "./web-search.ts";

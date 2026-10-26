@@ -31,7 +31,7 @@ describe("httpStatusOf", () => {
     const mapped = new Set<string>(HTTP_STATUS.map(([name]) => name));
     // Status-only classes are never raised, so they have no HTTP status.
     const business = EXPECTED_ERROR_CLASSES.filter((entry) => entry.retryDisposition !== null && !mapped.has(entry.name));
-    expect(business).toHaveLength(26);
+    expect(business).toHaveLength(27);
     for (const { name } of business) {
       expect([name, httpStatusOf(appError(name))]).toEqual([name, 422]);
     }

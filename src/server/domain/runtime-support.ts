@@ -1,5 +1,5 @@
 import type { Theme } from "../../shared/dto/settings.ts";
-import type { UploadRetentionPolicy } from "../../shared/enums.ts";
+import type { ChatWebSearchSetting, UploadRetentionPolicy } from "../../shared/enums.ts";
 import type { ShortcutAction } from "../../shared/shortcuts.ts";
 import type { AsrModelRef, ModelRef } from "./model-ref.ts";
 
@@ -83,6 +83,8 @@ export interface UserSettings {
   defaultAsrModelRef?: AsrModelRef;
   defaultOutputLanguage?: string;
   platformCookieBrowser?: CookieBrowser;
+  /** The chat's remembered web search setting; absent = off. */
+  chatWebSearchMode?: ChatWebSearchSetting;
   updatedAt: number;
 }
 

@@ -5,6 +5,7 @@ export const settings = {
     models: "模型",
     transcription: "转录",
     "other-models": "其他模型",
+    "web-search": "联网搜索",
     "platform-accounts": "平台账号",
     templates: "总结模板",
     terminology: "全局术语库",
@@ -235,6 +236,29 @@ export const settings = {
     modelCount: "{{count}} 个模型",
     required: "必填",
   },
+  webSearch: {
+    intro: "对话开启联网搜索时，Amber 先让所选模型判断要搜什么，再用这里的搜索服务检索网页，把结果作为资料交给模型回答。",
+    service: "服务",
+    services: {
+      tavily: "Tavily",
+    },
+    keyLabel: "API Key",
+    remove: "移除",
+    removeConfirm: "移除联网搜索服务和已保存的 API Key？移除后对话不能联网搜索。",
+    test: "测试",
+    testing: "测试中…",
+    testHint: "发送一次真实搜索检查 Key 是否可用；按服务的计费口径，会消耗一次搜索额度。",
+    testOk: "测试成功，返回 {{count}} 条结果",
+    privacyTitle: "隐私",
+    privacy: {
+      model: "所选模型：规划搜索时收到当前问题和最近 {{turns}} 轮的提问（回答时模型本来就会收到它们）。",
+      service: "搜索服务：只收到模型生成的搜索查询，每条最多 {{chars}} 个字符，查询可能包含问题里的文字；Amber 不会把字幕原文、总结或对话历史发给搜索服务。",
+      logs: "日志不记录搜索查询、搜索结果和 API Key。",
+    },
+    billingTitle: "计费",
+    billing:
+      "Tavily 按 credit 计费：Amber 固定使用 basic 搜索深度，每次查询消耗 1 credit，一轮回答最多 {{queries}} 次查询，另外每轮还有一次规划用的模型调用；免费档每月 1,000 credit；失败的请求是否计费，官方未说明（2026-10-26 查阅 Tavily 官方文档）。",
+  },
   platformAccounts: {
     intro: "登录平台账号后，可以取得需要登录才能看到的字幕，取源也更不容易被平台限制。登录信息加密保存，页面只显示状态。",
     status: {
@@ -413,6 +437,7 @@ export const settings = {
       highlight: "AI 高光",
       chat: "对话",
       chat_compaction: "对话压缩",
+      chat_search_plan: "联网搜索规划",
       translate: "翻译",
       collection_summary: "合集归纳",
       citation_repair: "引用修复",

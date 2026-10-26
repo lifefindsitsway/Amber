@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChatStreamAssembler, type ChatAnswerEvent } from "../../../src/server/domain/chat-stream.ts";
 import { transcriptAliasTable } from "../../../src/server/domain/citations.ts";
 import type { TranscriptSegment } from "../../../src/server/domain/transcript.ts";
+import type { WebSource } from "../../../src/server/domain/web-search.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 
 const seg = (n: number) => `01J00000000000000000000${String(n).padStart(3, "0")}` as SegmentId;
@@ -17,8 +18,8 @@ const segments: TranscriptSegment[] = Array.from({ length: 15 }, (_, ordinal) =>
 const table = transcriptAliasTable("r1", segments);
 const startMs = (id: string) => segments.find((segment) => segment.id === id)?.startMs ?? -1;
 
-function run(deltas: readonly string[]) {
-  const assembler = new ChatStreamAssembler(table, startMs);
+function run(deltas: readonly string[], webSources: readonly WebSource[] = []) {
+  const assembler = new ChatStreamAssembler(table, startMs, webSources);
   const events: ChatAnswerEvent[] = [];
   for (const delta of deltas) {
     events.push(...assembler.push(delta));
@@ -101,5 +102,37 @@ describe("ChatStreamAssembler with one bracket missing", () => {
     const { streamed, answer } = run(["列表 [s4", "] 第四项"]);
     expect(streamed).toBe("列表 [s4] 第四项");
     expect(answer.citations).toEqual([]);
+  });
+});
+
+const source = (id: string, index: number): WebSource => ({ id, index, url: `https://s${index}.example.com/`, title: `S${index}`, excerpt: "e", fetchedAt: 1 });
+
+describe("ChatStreamAssembler web aliases", () => {
+  const first = [source("01JWEBFIRST0000000000000001", 1)];
+  const second = [source("01JWEBSECOND000000000000001", 1), source("01JWEBSECOND000000000000002", 2)];
+
+  it("resolves [[w<n>]] to this answer's own n-th source, whatever another answer's #1 was", () => {
+    expect(run(["版本是 2.11 [[w1]]。"], first).answer.text).toBe("版本是 2.11 [[web:01JWEBFIRST0000000000000001]]。");
+    const { streamed, answer } = run(["版本是 2.11 [[w1]]。"], second);
+    expect(streamed).toBe("版本是 2.11 [[web:01JWEBSECOND000000000000001]]。");
+    expect(answer.citations).toEqual([]);
+  });
+
+  it("passes a [[web:<id>]] the model copied from an earlier answer through unchanged", () => {
+    const { streamed } = run(["照抄 [[web:01JWEBFIRST0000000000000001]] 与 [[w2]]"], second);
+    expect(streamed).toBe("照抄 [[web:01JWEBFIRST0000000000000001]] 与 [[web:01JWEBSECOND000000000000002]]");
+  });
+
+  it("holds a web alias split across deltas, also next to sentence aliases", () => {
+    const { events, streamed, answer } = run(["见 [[", "w", "2", "]", "] 与 [[s", "3]][[w", "1]]"], second);
+    expect(streamed).toBe(`见 [[web:01JWEBSECOND000000000000002]] 与 [[seg:${seg(3)}]][[web:01JWEBSECOND000000000000001]]`);
+    expect(events.some((event) => event.type === "answer.delta" && /\[\[w\d|\[\[s\d/.test(event.delta))).toBe(false);
+    expect(answer.citations).toEqual([{ transcriptRevisionId: "r1", segmentId: seg(3) }]);
+  });
+
+  it("marks an alias past this answer's sources unresolved, as without any source", () => {
+    expect(run(["[[w3]] 和 [[w0]]"], second).streamed).toBe("[[unresolved:w3]] 和 [[unresolved:w0]]");
+    expect(run(["[[w1]]"]).streamed).toBe("[[unresolved:w1]]");
+    expect(run(["结尾 [[w2]"], second).streamed).toBe("结尾 [[web:01JWEBSECOND000000000000002]]");
   });
 });

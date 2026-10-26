@@ -5,8 +5,9 @@ import {
   CHAT_RETRIEVAL_HITS_MAX,
   CHAT_RETRIEVAL_NEIGHBOR_SEGMENTS,
   CONTEXT_SAFETY_RATIO,
+  WEB_SEARCH_CONTEXT_MAX_TOKENS,
 } from "../../shared/defaults.ts";
-import type { ContentSourceKind } from "../../shared/enums.ts";
+import type { ContentSourceKind, LlmProtocol } from "../../shared/enums.ts";
 import { AliasTable, type AliasEntry } from "./citations.ts";
 import { amberError } from "./errors.ts";
 import type { LlmRequest } from "./llm.ts";
@@ -17,17 +18,23 @@ import {
   CHAT_REFERENCE_HEADING,
   CHAT_SYSTEM_METADATA_PROMPT,
   CHAT_SYSTEM_PROMPT,
+  CHAT_WEB_HEADING,
+  CHAT_WEB_NONE,
+  chatModelSection,
   outputLanguageName,
   renderPrompt,
 } from "./prompts.ts";
 import { estimateTokens } from "./token-estimate.ts";
 import type { TranscriptSegment } from "./transcript.ts";
+import type { WebSource } from "./web-search.ts";
 
 /**
  * The chat context policy as pure functions: which mode a request runs in,
  * what it carries, and when older turns are due for compaction. Stored texts use canonical
  * `[[seg:<id>]]` markers; each request renumbers the sentences it shows as `[[s<n>]]`, and
  * a marker naming a sentence the request does not show is dropped rather than invented.
+ * Web citations (`[[web:<id>]]`) are valid only in the answer that produced them, so they
+ * are dropped from every stored text that goes back into a request.
  */
 
 /** Section headings of `{{context_section}}`; model input, not UI copy. */
@@ -54,6 +61,8 @@ const SOURCE_NAMES: Readonly<Record<ContentSourceKind, string>> = {
 
 const CANONICAL = /\[\[seg:([^\]\s]+)\]\]/g;
 const UNRESOLVED = /\[\[unresolved:[^\]]*\]\]/g;
+/** A stored web citation, and a web alias that slipped into stored text. */
+const WEB_MARKER = /\[\[(?:web:[^\]]*|w\d+)\]\]/g;
 
 /** `metadata`: the Content has no primary revision yet. */
 export type ChatMode = "full" | "retrieval" | "metadata";
@@ -89,6 +98,19 @@ export interface ChatChapter {
   title: string;
 }
 
+/** Who answers, as the model is told; taken from the answer's ModelRefSnapshot. */
+export interface ChatModelIdentity {
+  profileName: string;
+  modelId: string;
+  /** Absent on snapshots stored before the protocol was kept. */
+  protocol?: LlmProtocol;
+}
+
+/** This answer's web material: the sources it was given, possibly none after a search that found nothing usable. */
+export interface ChatWebMaterial {
+  sources: readonly WebSource[];
+}
+
 export interface ChatPlanInput {
   contextWindowTokens: number;
   /** BCP-47 tag of the answer language. */
@@ -109,6 +131,12 @@ export interface ChatPlanInput {
   question: string;
   quote?: ChatQuoteText;
   positionMs?: number;
+  /** The answering model, so it can say which model it is. */
+  model?: ChatModelIdentity;
+  /** Today in Beijing time, `YYYY-MM-DD`. */
+  today?: string;
+  /** Absent: no web search for this answer. */
+  web?: ChatWebMaterial;
 }
 
 export interface ChatRequestPlan {
@@ -121,6 +149,78 @@ export interface ChatRequestPlan {
   carriedTurns: number;
   /** All uncompacted turns did not fit: compaction is due. */
   overBudget: boolean;
+}
+
+/** A date as `YYYY-MM-DD` in Beijing time (UTC+8), whatever the host's time zone. */
+export function beijingDate(ms: number): string {
+  return new Date(ms + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * The web sources that fit this request, kept from the front (they come ranked best first)
+ * and numbered 1..k, and whether none did (the search's `dropped (budget)`). What is left
+ * for material is the budget minus the request's fixed part without web material (the
+ * system prompt with no transcript lines, or with the basic facts only, and the question)
+ * and the last `CHAT_RECENT_TURNS_MIN` turns; the web section may take half of it, at most
+ * `WEB_SEARCH_CONTEXT_MAX_TOKENS`. The request is planned afterwards with the kept sources,
+ * so its mode, retrieved sentences and history are chosen around them.
+ */
+export function fitWebSources(input: ChatPlanInput, sources: readonly WebSource[]): { sources: WebSource[]; dropped: boolean } {
+  if (sources.length === 0) {
+    return { sources: [], dropped: false };
+  }
+  const { web: _web, ...bare } = input;
+  const table = new AliasTable([]);
+  const system = bare.revisionId === undefined ? metadataSystem(bare, metadataFacts(bare.metadata), table) : systemText(bare, retrievalContext(bare, table, [], []), table);
+  const recent = bare.turns.slice(-CHAT_RECENT_TURNS_MIN).reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const avail = chatBudget(bare.contextWindowTokens) - estimateTokens(system) - estimateTokens(currentTurnText(bare, table)) - quoteAllowance(bare) - recent;
+  const webBudget = Math.min(WEB_SEARCH_CONTEXT_MAX_TOKENS, Math.floor(avail / 2));
+  for (let count = sources.length; count > 0; count -= 1) {
+    const kept = sources.slice(0, count).map((source, index) => ({ ...source, index: index + 1 }));
+    if (estimateTokens(webSection({ sources: kept })) <= webBudget) {
+      return { sources: kept, dropped: false };
+    }
+  }
+  return { sources: [], dropped: true };
+}
+
+/**
+ * The `{{web_section}}`: empty without a search; a fixed line when the search left nothing
+ * usable; else the heading and each source as `[[w<n>]] title — domain（date）` with its
+ * excerpt on the next line, `n` being its position, which is how the answer's aliases are
+ * resolved.
+ */
+function webSection(web: ChatWebMaterial | undefined): string {
+  if (web === undefined) {
+    return "";
+  }
+  if (web.sources.length === 0) {
+    return CHAT_WEB_NONE;
+  }
+  const entries = web.sources.map((source, index) => {
+    const date = source.publishedAt === undefined ? "" : `（${beijingDate(source.publishedAt)}）`;
+    return `[[w${index + 1}]] ${oneLine(source.title)} — ${domainOf(source.url)}${date}\n${oneLine(source.excerpt)}`;
+  });
+  return [CHAT_WEB_HEADING, ...entries].join("\n");
+}
+
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** The slots every chat system prompt shares besides its material. */
+function commonSlots(input: ChatPlanInput, table: AliasTable): Record<string, string> {
+  return {
+    today: input.today ?? beijingDate(Date.now()),
+    output_language: outputLanguageName(input.outputLanguage),
+    model_section: input.model === undefined ? "" : chatModelSection({ ...input.model, profileName: oneLine(input.model.profileName) }),
+    compaction_section: input.compaction === undefined || input.compaction === "" ? "" : `${CHAT_COMPACTION_HEADING}\n${aliased(input.compaction, table)}`,
+    web_section: webSection(input.web),
+  };
 }
 
 /** The chat budget: the safe share of the context window. */
@@ -252,11 +352,7 @@ function planMetadataRequest(input: ChatPlanInput, budget: number, allTurns: num
 }
 
 function metadataSystem(input: ChatPlanInput, section: readonly string[], table: AliasTable): string {
-  return renderPrompt(CHAT_SYSTEM_METADATA_PROMPT.text, {
-    output_language: outputLanguageName(input.outputLanguage),
-    compaction_section: input.compaction === undefined || input.compaction === "" ? "" : `${CHAT_COMPACTION_HEADING}\n${aliased(input.compaction, table)}`,
-    metadata_section: section.join("\n"),
-  });
+  return renderPrompt(CHAT_SYSTEM_METADATA_PROMPT.text, { ...commonSlots(input, table), metadata_section: section.join("\n") });
 }
 
 /** Title, source and channel, duration and publication date, each when known. */
@@ -342,14 +438,18 @@ export function citationAliasTable(sentences: ReadonlyArray<{ transcriptRevision
   );
 }
 
-/** Canonical markers → the request's aliases; markers of sentences not shown are dropped. */
+/**
+ * Canonical markers → the request's aliases; markers of sentences not shown are dropped,
+ * and so are web citations, which belong to the answer that made them.
+ */
 export function aliased(text: string, table: AliasTable): string {
   return text
     .replace(CANONICAL, (_marker, id: string) => {
       const alias = table.aliasOf(id);
       return alias === undefined ? "" : `[[s${alias}]]`;
     })
-    .replace(UNRESOLVED, "");
+    .replace(UNRESOLVED, "")
+    .replace(WEB_MARKER, "");
 }
 
 function finish(
@@ -400,11 +500,7 @@ function tableOf(revisionId: string, segments: readonly TranscriptSegment[]): Al
 }
 
 function systemText(input: ChatPlanInput, context: string, table: AliasTable): string {
-  return renderPrompt(CHAT_SYSTEM_PROMPT.text, {
-    output_language: outputLanguageName(input.outputLanguage),
-    compaction_section: input.compaction === undefined || input.compaction === "" ? "" : `${CHAT_COMPACTION_HEADING}\n${aliased(input.compaction, table)}`,
-    context_section: context,
-  });
+  return renderPrompt(CHAT_SYSTEM_PROMPT.text, { ...commonSlots(input, table), context_section: context });
 }
 
 function fullContext(input: ChatPlanInput, table: AliasTable): string {
@@ -517,7 +613,7 @@ function turnTokens(turn: ChatTurnText): number {
 }
 
 function stripMarkers(text: string): string {
-  return text.replace(CANONICAL, "").replace(UNRESOLVED, "");
+  return text.replace(CANONICAL, "").replace(UNRESOLVED, "").replace(WEB_MARKER, "");
 }
 
 function oneLine(text: string): string {

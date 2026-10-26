@@ -12,10 +12,10 @@ interface MdNode {
   data?: { hName?: string; hProperties?: Record<string, string> };
 }
 
-const MARKER = /\[\[(seg|unresolved):([^\]\s]+)\]\]/g;
+const MARKER = /\[\[(seg|unresolved|web):([^\]\s]+)\]\]/g;
 
 /**
- * Turns `[[seg:<id>]]` and `[[unresolved:<alias>]]` inside text into `cite` nodes before
+ * Turns `[[seg:<id>]]`, `[[web:<id>]]` and `[[unresolved:<alias>]]` inside text into `cite` nodes before
  * rendering, so markers become app-owned elements rather than link syntax.
  * Code spans and blocks keep their text. Raw HTML becomes literal text: it is shown
  * escaped, never parsed.
@@ -53,12 +53,9 @@ function splitText(text: string): MdNode[] {
     if (index > last) {
       nodes.push({ type: "text", value: text.slice(last, index) });
     }
-    const [, kind, value] = match as unknown as [string, "seg" | "unresolved", string];
-    nodes.push({
-      type: "citation",
-      children: [],
-      data: { hName: "cite", hProperties: kind === "seg" ? { dataSegment: value } : { dataUnresolved: value } },
-    });
+    const [, kind, value] = match as unknown as [string, "seg" | "unresolved" | "web", string];
+    const properties = kind === "seg" ? { dataSegment: value } : kind === "web" ? { dataWeb: value } : { dataUnresolved: value };
+    nodes.push({ type: "citation", children: [], data: { hName: "cite", hProperties: properties } });
     last = index + match[0].length;
   }
   if (last < text.length) {
@@ -78,7 +75,7 @@ export const SANITIZE_SCHEMA = {
   tagNames: [...(defaultSchema.tagNames ?? []), "cite"],
   attributes: {
     ...defaultSchema.attributes,
-    cite: ["dataSegment", "dataUnresolved"],
+    cite: ["dataSegment", "dataWeb", "dataUnresolved"],
   },
   protocols: { ...defaultSchema.protocols, href: ["https", "http", "mailto"] },
 };
@@ -88,6 +85,23 @@ export interface RichTextProps {
   /** Start time of a cited segment when known, for the timestamp label. */
   timeOf?: (segmentId: string) => number | undefined;
   onCitation?: (segmentId: string) => void;
+  /**
+   * The web source a `[[web:<id>]]` marker names, looked up only among the sources of the
+   * message being rendered; unknown ids show as an unresolved citation.
+   */
+  webSourceOf?: (sourceId: string) => { index: number; url: string; title: string } | undefined;
+}
+
+/** Source links open only for web addresses; anything else is shown as unresolved. */
+const WEB_URL = /^https?:\/\//i;
+
+function Unresolved() {
+  const { t } = useTranslation();
+  return (
+    <span className="mx-0.5 rounded bg-sunken px-1 text-xs text-muted not-italic" data-citation="unresolved">
+      {t("contentView.citation.unresolved")}
+    </span>
+  );
 }
 
 /** Markdown from platforms, AI or users, rendered through the sanitizer with clickable citations. */
@@ -98,12 +112,29 @@ export function RichText(props: RichTextProps) {
     cite: ({ node: _node, ...rest }) => {
       const attributes = rest as Record<string, unknown>;
       const segmentId = attributes["data-segment"];
-      if (typeof segmentId !== "string") {
+      const webId = attributes["data-web"];
+      if (typeof webId === "string") {
+        const source = props.webSourceOf?.(webId);
+        if (source === undefined || !WEB_URL.test(source.url)) return <Unresolved />;
+        // The href comes from the message's own source list, not from the markdown, so the
+        // scheme is checked here rather than by the sanitizer.
         return (
-          <span className="mx-0.5 rounded bg-sunken px-1 text-xs text-muted not-italic" data-citation="unresolved">
-            {t("contentView.citation.unresolved")}
-          </span>
+          <sup className="mx-0.5 not-italic">
+            <a
+              href={source.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={source.title}
+              className="text-xs text-accent hover:underline"
+              data-web-citation={webId}
+            >
+              [{source.index}]
+            </a>
+          </sup>
         );
+      }
+      if (typeof segmentId !== "string") {
+        return <Unresolved />;
       }
       const time = props.timeOf?.(segmentId);
       return (

@@ -28,3 +28,4 @@ export * from "./trash.ts";
 export * from "./model-pricing.ts";
 export * from "./other-model.ts";
 export * from "./backup.ts";
+export * from "./web-search.ts";

@@ -64,7 +64,8 @@ export function openDatabase(file: string, options: OpenDatabaseOptions): Opened
   try {
     const { from, to } = migrate(db, migrations);
     db.pragma("journal_mode = WAL");
-    // WAL keeps readers from blocking the single writer; SQLite leaves foreign keys off by default.
+    // WAL keeps readers from blocking the single writer. The bundled SQLite already enforces
+    // foreign keys on a new connection; the pragma states it rather than relying on the build.
     db.pragma("foreign_keys = ON");
     db.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     return { db, from, to, ...(backupPath === undefined ? {} : { backupPath }) };

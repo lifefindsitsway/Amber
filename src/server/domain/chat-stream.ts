@@ -1,5 +1,6 @@
 import type { Citation } from "./artifact.ts";
 import type { AliasTable } from "./citations.ts";
+import type { WebSource } from "./web-search.ts";
 
 /** Opening and closing lines of the control section the chat system prompts ask for. */
 const CONTROL_START = "<<<suggestions>>>";
@@ -7,13 +8,17 @@ const CONTROL_END = "<<<end>>>";
 /** Suggestions kept from the control section (the prompts ask for two or three). */
 const SUGGESTIONS_MAX = 3;
 
-/** An alias in the forms `citations.ts` accepts: `[[s12]]`, or `[s12]]` / `[[s12]` with one bracket missing. */
-const ALIAS_AT_START = /^(?:\[\[s(\d+)\]\]?|\[s(\d+)\]\])/;
+/**
+ * A sentence (`s`) or web (`w`) alias in the forms `citations.ts` accepts: `[[s12]]`, or
+ * `[s12]]` / `[[s12]` with one bracket missing.
+ */
+const ALIAS_AT_START = /^(?:\[\[([sw])(\d+)\]\]?|\[([sw])(\d+)\]\])/;
 /**
  * A possibly unfinished alias marker at the end of the buffer: `[`, `[[`, `[s`, `[[s`,
- * `[s12`, `[[s12`, `[s12]`, `[[s12]`. The last two wait for a possible closing `]`.
+ * `[s12`, `[[s12`, `[s12]`, `[[s12]`, and the same with `w`. The last two wait for a
+ * possible closing `]`.
  */
-const ALIAS_PREFIX = /^\[\[?(?:s(?:\d*(?:\])?)?)?$/;
+const ALIAS_PREFIX = /^\[\[?(?:[sw](?:\d*(?:\])?)?)?$/;
 
 /** What the client receives while an answer streams. */
 export type ChatAnswerEvent = { type: "answer.delta"; delta: string } | { type: "citation"; citation: Citation; startMs: number };
@@ -32,13 +37,16 @@ export interface ChatAnswer {
  * Turns the model's raw deltas into what the client may see: an `[[s<n>]]` alias split
  * across deltas is held until it closes, then becomes the canonical `[[seg:<id>]]` (or the
  * visible `[[unresolved:s<n>]]` when the request never showed that alias; chat does not
- * repair). The control section never streams: anything that may begin it is held, and once
+ * repair). A `[[w<n>]]` alias becomes `[[web:<id>]]` of this answer's n-th source, or
+ * `[[unresolved:w<n>]]` past them; a `[[web:<id>]]` the model wrote itself is passed on as
+ * it is, and only resolves where that id is one of the answer's own sources. The control section never streams: anything that may begin it is held, and once
  * it begins the rest of the output is kept back and parsed at the end. Trailing whitespace
  * is held too, so the answer never ends with the blank line before the control section.
  */
 export class ChatStreamAssembler {
   private readonly table: AliasTable;
   private readonly startMsOf: (segmentId: string) => number;
+  private readonly webSources: readonly WebSource[];
   private pending = "";
   private heldSpace = "";
   private control: string | undefined;
@@ -46,9 +54,11 @@ export class ChatStreamAssembler {
   private readonly citations: Citation[] = [];
   private readonly cited = new Set<string>();
 
-  constructor(table: AliasTable, startMsOf: (segmentId: string) => number) {
+  /** `webSources`: this answer's sources, whose `[[w<index>]]` aliases become `[[web:<id>]]`. */
+  constructor(table: AliasTable, startMsOf: (segmentId: string) => number, webSources: readonly WebSource[] = []) {
     this.table = table;
     this.startMsOf = startMsOf;
+    this.webSources = webSources;
   }
 
   push(delta: string): ChatAnswerEvent[] {
@@ -111,7 +121,9 @@ export class ChatStreamAssembler {
       }
       const alias = ALIAS_AT_START.exec(this.pending);
       if (alias !== null) {
-        out += this.resolve((alias[1] ?? alias[2]) as string, events);
+        const kind = (alias[1] ?? alias[3]) as string;
+        const digits = (alias[2] ?? alias[4]) as string;
+        out += kind === "w" ? this.resolveWeb(digits) : this.resolve(digits, events);
         this.pending = this.pending.slice(alias[0].length);
         continue;
       }
@@ -135,6 +147,12 @@ export class ChatStreamAssembler {
       events.push({ type: "answer.delta", delta: text });
     }
     return events;
+  }
+
+  /** The stored form of one web alias; the sources reach the client with the search result, not as events. */
+  private resolveWeb(digits: string): string {
+    const source = /^[1-9]\d*$/.test(digits) ? this.webSources[Number(digits) - 1] : undefined;
+    return source === undefined ? `[[unresolved:w${digits}]]` : `[[web:${source.id}]]`;
   }
 
   /** The canonical form of one alias; a newly cited sentence also yields a `citation` event. */

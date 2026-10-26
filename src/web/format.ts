@@ -14,23 +14,25 @@ export function formatDateTime(epochMs: number, language: string): string {
 }
 
 /**
- * Publish dates show in Beijing time (UTC+8) in a fixed `YYYY-MM-DD` / `YYYY-MM-DD HH:mm`
- * form, so a video's date reads the same whatever the machine's time zone or UI language.
+ * Publish dates, chat answer times and chat thread times show in Beijing time (UTC+8) in a
+ * fixed `YYYY-MM-DD` / `YYYY-MM-DD HH:mm` form, so a moment reads the same whatever the
+ * machine's time zone or UI language.
  */
-const PUBLISHED_TIME_ZONE = "Asia/Shanghai";
-const publishedParts = new Intl.DateTimeFormat("en-US", {
-  timeZone: PUBLISHED_TIME_ZONE,
+const BEIJING_TIME_ZONE = "Asia/Shanghai";
+const beijingParts = new Intl.DateTimeFormat("en-US", {
+  timeZone: BEIJING_TIME_ZONE,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
+  second: "2-digit",
   hourCycle: "h23",
 });
 
-function publishedFields(epochMs: number): Record<"year" | "month" | "day" | "hour" | "minute", string> {
-  const fields = { year: "", month: "", day: "", hour: "", minute: "" };
-  for (const part of publishedParts.formatToParts(epochMs)) {
+function beijingFields(epochMs: number): Record<"year" | "month" | "day" | "hour" | "minute" | "second", string> {
+  const fields = { year: "", month: "", day: "", hour: "", minute: "", second: "" };
+  for (const part of beijingParts.formatToParts(epochMs)) {
     if (part.type in fields) {
       fields[part.type as keyof typeof fields] = part.value;
     }
@@ -38,16 +40,32 @@ function publishedFields(epochMs: number): Record<"year" | "month" | "day" | "ho
   return fields;
 }
 
+/** `YYYY-MM-DD` of a moment in Beijing time. */
+export function formatBeijingDate(epochMs: number): string {
+  const { year, month, day } = beijingFields(epochMs);
+  return `${year}-${month}-${day}`;
+}
+
+/** `YYYY-MM-DD HH:mm` of a moment in Beijing time. */
+export function formatBeijingDateTime(epochMs: number): string {
+  const { hour, minute } = beijingFields(epochMs);
+  return `${formatBeijingDate(epochMs)} ${hour}:${minute}`;
+}
+
+/** `YYYY-MM-DD HH:mm:ss` of a moment in Beijing time. */
+export function formatBeijingDateTimeSeconds(epochMs: number): string {
+  const { second } = beijingFields(epochMs);
+  return `${formatBeijingDateTime(epochMs)}:${second}`;
+}
+
 /** `YYYY-MM-DD` of a publish moment in Beijing time. */
 export function formatPublishedDate(epochMs: number): string {
-  const { year, month, day } = publishedFields(epochMs);
-  return `${year}-${month}-${day}`;
+  return formatBeijingDate(epochMs);
 }
 
 /** `YYYY-MM-DD HH:mm` of a publish moment in Beijing time. */
 export function formatPublishedDateTime(epochMs: number): string {
-  const { hour, minute } = publishedFields(epochMs);
-  return `${formatPublishedDate(epochMs)} ${hour}:${minute}`;
+  return formatBeijingDateTime(epochMs);
 }
 
 /** Local time of day only, for a moment on the same date as one shown just before it. */

@@ -40,6 +40,18 @@ describe("/api/settings", () => {
     expect(userSettingsDtoSchema.parse(read.json())).toMatchObject({ theme: "parchment" });
   });
 
+  it("remembers the chat's web search setting until it is cleared; a one-off search is not a setting", async () => {
+    const { app } = await setup();
+    expect((await app.inject({ method: "GET", url: "/api/settings", headers: auth })).json()).not.toHaveProperty("chatWebSearchMode");
+    const patched = await app.inject({ method: "PATCH", url: "/api/settings", headers: auth, payload: { chatWebSearchMode: "auto" } });
+    expect(patched.json()).toMatchObject({ chatWebSearchMode: "auto" });
+    expect((await app.inject({ method: "GET", url: "/api/settings", headers: auth })).json()).toMatchObject({ chatWebSearchMode: "auto" });
+    expect((await app.inject({ method: "GET", url: "/api/settings", headers: bob })).json()).not.toHaveProperty("chatWebSearchMode");
+    expect((await app.inject({ method: "PATCH", url: "/api/settings", headers: auth, payload: { chatWebSearchMode: "force" } })).statusCode).toBe(400);
+    await app.inject({ method: "PATCH", url: "/api/settings", headers: auth, payload: { chatWebSearchMode: null } });
+    expect((await app.inject({ method: "GET", url: "/api/settings", headers: auth })).json()).not.toHaveProperty("chatWebSearchMode");
+  });
+
   it("rejects unknown fields, bad values and reserved shortcuts with 400", async () => {
     const { app } = await setup();
     for (const payload of [{ updatedAt: 1 }, { theme: "blue" }, { shortcuts: { paste: "Ctrl+V" } }, { shortcuts: { omnibox: "Ctrl+W" } }, { language: "!!" }]) {

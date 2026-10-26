@@ -40,7 +40,7 @@ describe("SettingsPage", () => {
   });
 
   it("lists the same feature sections in both run modes, without appearance, about, account or admin", async () => {
-    const expected = ["/settings/models", "/settings/transcription", "/settings/other-models", "/settings/platform-accounts", "/settings/templates", "/settings/terminology", "/settings/storage", "/settings/shortcuts"];
+    const expected = ["/settings/models", "/settings/transcription", "/settings/other-models", "/settings/web-search", "/settings/platform-accounts", "/settings/templates", "/settings/terminology", "/settings/storage", "/settings/shortcuts"];
     for (const mode of ["local", "server"] as const) {
       mockApi({
         "GET /api/version": { body: { ...VERSION, mode } },

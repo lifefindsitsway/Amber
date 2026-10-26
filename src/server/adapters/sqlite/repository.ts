@@ -8,6 +8,7 @@ import { sqliteCollectionRepository } from "./repositories/collections.ts";
 import { sqliteContentRepository } from "./repositories/contents.ts";
 import { sqliteHighlightRepository } from "./repositories/highlights.ts";
 import { sqliteIdempotencyRepository } from "./repositories/idempotency.ts";
+import { sqliteWebSearchProfileRepository } from "./repositories/web-search-profiles.ts";
 import { sqliteImportBatchRepository } from "./repositories/import-batches.ts";
 import { sqliteInstanceSettingsRepository } from "./repositories/instance-settings.ts";
 import { sqliteMediaAssetRepository } from "./repositories/media-assets.ts";
@@ -65,6 +66,7 @@ export class SqliteRepository implements Repository {
       providerProfiles: sqliteProviderProfileRepository(db),
       asrProfiles: sqliteAsrProfileRepository(db),
       otherModelProfiles: sqliteOtherModelProfileRepository(db),
+      webSearchProfiles: sqliteWebSearchProfileRepository(db),
       asrUsage: sqliteAsrUsageRepository(db),
       terminology: sqliteTerminologyRepository(db),
       tokenUsage: sqliteTokenUsageRepository(db),

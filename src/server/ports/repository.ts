@@ -28,6 +28,7 @@ import type { ModelRefSnapshot, PromptRef } from "../domain/model-ref.ts";
 import type { ReferenceText, RevisionReference, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { ChatCompaction, ChatMessage, ChatThread } from "../domain/chat.ts";
 import type { User, UserCredential } from "../domain/user.ts";
+import type { WebSearchProfile } from "../domain/web-search.ts";
 import type { SecretEnvelopeStore } from "./secret-store.ts";
 
 /**
@@ -405,6 +406,12 @@ export interface IdempotencyRepository {
    * so a replay of the key runs the request again instead of returning a deleted id.
    */
   deleteReferencingRevisions(ownerUserId: string, revisionIds: readonly string[]): number;
+  /**
+   * Repoints the owner's records that created or name any of `fromIds` to `toId` (a chat
+   * retry replaced those answers): a replay of the original key then returns the answer that
+   * is in effect now. Returns how many records changed.
+   */
+  rebindResourceRefs(ownerUserId: string, fromIds: readonly string[], toId: string): number;
 }
 
 /** The single instance-level settings row; not owned by any user. */
@@ -475,6 +482,17 @@ export interface AsrProfileRepository {
    * can no longer decrypt the stored Secrets): every profile loses its credential reference.
    */
   clearAllCredentialRefs(): number;
+}
+
+/** At most one web search service per user. */
+export interface WebSearchProfileRepository {
+  get(ownerUserId: string): WebSearchProfile | undefined;
+  /** Inserts or replaces the user's single profile. */
+  put(profile: WebSearchProfile): void;
+  /** Deletes it with its Secret; `false` when there was none. */
+  delete(ownerUserId: string): boolean;
+  /** Credential reset: every profile forgets its Secret reference (the Secrets go in the same transaction). */
+  clearCredentials(): void;
 }
 
 /** A user's register of models Amber does not call; in the user's order. */
@@ -733,23 +751,58 @@ export interface SearchIndexRepository {
   healthy(): boolean;
 }
 
-/** One chat thread per Content; messages and compactions are append-only except a message's final state. */
+/** A thread with what is derived from its messages when read. */
+export interface ChatThreadSummary extends ChatThread {
+  /** Text of its first user message (`createdAt`, then `id`); absent while it has none. */
+  firstQuestion?: string;
+  /** `createdAt` of its newest message; absent while it has none. */
+  lastMessageAt?: number;
+}
+
+/** The outcome of a streamed answer. */
+export type ChatMessageOutcome = Pick<ChatMessage, "id" | "text" | "status" | "citations" | "suggestions" | "webSearch" | "error" | "finishedAt">;
+
+/**
+ * Chat threads of a Content. A message changes only once, to its final state; a compaction
+ * only ever moves its end to an earlier message. Deleting a turn or a thread deletes rows.
+ */
 export interface ChatRepository {
-  getThread(ownerUserId: string, contentId: string): ChatThread | undefined;
+  /** The Content's threads, newest first (`createdAt`, then `id`, descending). */
+  listThreads(ownerUserId: string, contentId: string): ChatThreadSummary[];
+  getThread(ownerUserId: string, threadId: string): ChatThreadSummary | undefined;
+  /** The Content's newest thread. */
+  latestThread(ownerUserId: string, contentId: string): ChatThreadSummary | undefined;
   insertThread(ownerUserId: string, thread: ChatThread): void;
+  /** Deletes the thread with its messages and compactions; usage rows keep their snapshot. */
+  deleteThread(ownerUserId: string, threadId: string): boolean;
+  /** Deletes every thread of the Content; returns how many. */
+  deleteThreadsOf(ownerUserId: string, contentId: string): number;
+  /** Sets or clears (`undefined`) the thread's own title and its pin; `false` when it is not the owner's. */
+  updateThread(ownerUserId: string, threadId: string, fields: { customTitle: string | undefined; pinnedAt: number | undefined }): boolean;
   /** Oldest first (`createdAt`, then `id`). */
   listMessages(ownerUserId: string, threadId: string): ChatMessage[];
   getMessage(ownerUserId: string, messageId: string): ChatMessage | undefined;
   insertMessage(ownerUserId: string, message: ChatMessage): void;
-  /** Writes the outcome of a streamed answer: text, status, citations and suggestions. */
-  finishMessage(ownerUserId: string, message: Pick<ChatMessage, "id" | "text" | "status" | "citations" | "suggestions">): void;
+  /** Writes the outcome of a streamed answer. */
+  finishMessage(ownerUserId: string, message: ChatMessageOutcome): void;
+  /**
+   * Deletes the owner's messages among `messageIds`; usage rows that named them keep their
+   * snapshot. No compaction may still end on one of them. Returns how many went.
+   */
+  deleteMessages(ownerUserId: string, messageIds: readonly string[]): number;
   getCompaction(ownerUserId: string, compactionId: string): ChatCompaction | undefined;
+  /** Oldest first (`createdAt`, then `id`). */
+  listCompactions(ownerUserId: string, threadId: string): ChatCompaction[];
   /** Inserts the compaction and makes it the thread's current one. */
   insertCompaction(ownerUserId: string, compaction: ChatCompaction): void;
-  /** Deletes the thread with its messages and compactions; usage rows keep their snapshot. */
-  deleteThread(ownerUserId: string, contentId: string): boolean;
-  /** Start-up: answers left `streaming` by a previous process become `interrupted`; returns how many. */
-  interruptStreaming(): number;
+  /** Re-anchors a compaction on an earlier message of its thread; nothing else of it changes. */
+  moveCompaction(ownerUserId: string, compactionId: string, throughMessageId: string): void;
+  /** The thread's current compaction must not be this one any more. */
+  deleteCompaction(ownerUserId: string, compactionId: string): void;
+  /** `undefined` clears it. */
+  setCurrentCompaction(ownerUserId: string, threadId: string, compactionId: string | undefined): void;
+  /** Start-up: answers left `streaming` by a previous process become `interrupted` at `finishedAt`; returns how many. */
+  interruptStreaming(finishedAt: number): number;
 }
 
 export interface HighlightRepository {
@@ -865,6 +918,7 @@ export interface RepositoryScope {
   providerProfiles: ProviderProfileRepository;
   asrProfiles: AsrProfileRepository;
   otherModelProfiles: OtherModelProfileRepository;
+  webSearchProfiles: WebSearchProfileRepository;
   asrUsage: AsrUsageRepository;
   terminology: TerminologyRepository;
   tokenUsage: TokenUsageRepository;

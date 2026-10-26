@@ -12,6 +12,7 @@ export const ERROR_ACTIONS = [
   "retry_stage",
   "configure_llm",
   "configure_asr",
+  "configure_web_search",
   "login_platform",
   "confirm_resend",
   "none",
@@ -44,6 +45,7 @@ export const ERROR_CLASSES = [
   "asr_failed",
   "llm_unconfigured",
   "llm_capability",
+  "web_search_failed",
   "llm_rate_limited",
   "llm_outcome_unknown",
   "llm_failed",
@@ -96,6 +98,8 @@ export const ERROR_CLASS_DEFAULTS: Readonly<Record<ErrorClass, ErrorClassDefault
   asr_failed: { retryDisposition: "policy" },
   llm_unconfigured: { retryDisposition: "never", action: "configure_llm" },
   llm_capability: { retryDisposition: "never" },
+  // Recorded on the answer and shown beside it; only `.unconfigured` refuses a request.
+  web_search_failed: { retryDisposition: "never" },
   llm_rate_limited: { retryDisposition: "policy" },
   llm_outcome_unknown: { retryDisposition: "outcome_unknown" },
   llm_failed: { retryDisposition: "policy" },
@@ -171,6 +175,12 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.cache_unavailable": {},
   // Purging a Content while one of its chat answers is still streaming.
   "conflict.chat_inflight": {},
+  // A retry may only replace the effective answer of a thread's last turn.
+  "conflict.chat_retry_not_last": {},
+  // The quoted sentence of the retried question can no longer be read.
+  "conflict.chat_quote_unavailable": {},
+  // An idempotent replay whose answer the user has since deleted; nothing is sent again.
+  "not_found.chat_answer_deleted": {},
   // Restoring a Content whose trash retention has run out.
   "conflict.trash_expired": {},
   // Another backup export is running, or the cache gate is held by one.
@@ -198,6 +208,16 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "llm_capability.context_length": {},
   // The model has no effective context window, so no input bound can be planned.
   "llm_capability.context_window_unknown": { detailsKeys: ["providerProfileId", "modelId"] },
+  // A chat retry whose original model is no longer configured; the client asks before using another.
+  "llm_unconfigured.model_missing": { detailsKeys: ["providerProfileId", "modelId"] },
+  "web_search_failed.unconfigured": { action: "configure_web_search" },
+  "web_search_failed.auth": { action: "configure_web_search" },
+  "web_search_failed.quota": {},
+  "web_search_failed.rate_limited": { retryDisposition: "policy", detailsKeys: ["retryAfterMs"] },
+  "web_search_failed.unreachable": { retryDisposition: "safe" },
+  "web_search_failed.invalid_query": {},
+  // `reason`: too_large, bad_response or server_error.
+  "web_search_failed.unavailable": { retryDisposition: "policy", detailsKeys: ["reason"] },
   // A proofread answer whose lines do not match its sentences one to one; the details count
   // and name what went wrong but never carry text.
   "output_mismatch.proofread_lines": {

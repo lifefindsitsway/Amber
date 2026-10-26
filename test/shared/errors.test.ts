@@ -17,7 +17,7 @@ import { EXPECTED_CACHE_DIR_REASONS, EXPECTED_ERROR_CLASSES, EXPECTED_REFINED_CO
 
 describe("error classes", () => {
   it("declares exactly the catalogue classes in catalogue order", () => {
-    expect(EXPECTED_ERROR_CLASSES).toHaveLength(42);
+    expect(EXPECTED_ERROR_CLASSES).toHaveLength(43);
     expect([...ERROR_CLASSES]).toEqual(EXPECTED_ERROR_CLASSES.map((entry) => entry.name));
   });
 
@@ -26,9 +26,9 @@ describe("error classes", () => {
     expect({ retryDisposition: defaults.retryDisposition, action: defaults.action ?? null }).toEqual({ retryDisposition, action });
   });
 
-  it("keeps the four retry dispositions and the six actions", () => {
+  it("keeps the four retry dispositions and the seven actions", () => {
     expect([...RETRY_DISPOSITIONS]).toEqual(["safe", "policy", "outcome_unknown", "never"]);
-    expect([...ERROR_ACTIONS]).toEqual(["retry_stage", "configure_llm", "configure_asr", "login_platform", "confirm_resend", "none"]);
+    expect([...ERROR_ACTIONS]).toEqual(["retry_stage", "configure_llm", "configure_asr", "configure_web_search", "login_platform", "confirm_resend", "none"]);
   });
 });
 
@@ -62,7 +62,7 @@ describe("REFINED_ERROR_CODES", () => {
 
 describe("REFINED_ERROR_CODE_REGISTRY", () => {
   it("registers exactly the catalogue refined codes", () => {
-    expect(EXPECTED_REFINED_CODES).toHaveLength(75);
+    expect(EXPECTED_REFINED_CODES).toHaveLength(86);
     expect([...REFINED_ERROR_CODES].sort()).toEqual(EXPECTED_REFINED_CODES.map((entry) => entry.code).sort());
   });
 
@@ -75,9 +75,9 @@ describe("REFINED_ERROR_CODE_REGISTRY", () => {
     });
   });
 
-  it("overrides the class default for exactly 18 codes", () => {
+  it("overrides the class default for exactly 23 codes", () => {
     const overriding = EXPECTED_REFINED_CODES.filter((entry) => entry.retryDisposition !== null || entry.action !== null).map((entry) => entry.code);
-    expect(overriding).toHaveLength(18);
+    expect(overriding).toHaveLength(23);
     expect(REFINED_ERROR_CODES.filter((code) => "retryDisposition" in REFINED_ERROR_CODE_REGISTRY[code] || "action" in REFINED_ERROR_CODE_REGISTRY[code]).sort()).toEqual(
       [...overriding].sort(),
     );
@@ -89,7 +89,7 @@ describe("REFINED_ERROR_CODE_REGISTRY", () => {
         expect(["safe", "policy", "outcome_unknown", "never"]).toContain(spec.retryDisposition);
       }
       if ("action" in spec) {
-        expect(["retry_stage", "configure_llm", "configure_asr", "login_platform", "confirm_resend", "none"]).toContain(spec.action);
+        expect(["retry_stage", "configure_llm", "configure_asr", "configure_web_search", "login_platform", "confirm_resend", "none"]).toContain(spec.action);
       }
     }
     expect(REFINED_ERROR_CODE_REGISTRY["llm_failed.auth"]).toEqual({ retryDisposition: "never", action: "configure_llm" });

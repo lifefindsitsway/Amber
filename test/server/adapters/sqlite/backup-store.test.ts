@@ -93,6 +93,24 @@ describe("SqliteBackupStore", () => {
     expect(sha256Of(readFileSync(h.file))).toBe(liveBytes);
   });
 
+  it("strips the web search key: the profile stays, without its reference or its Secret", async () => {
+    const { h, store } = await seeded();
+    const credentialRef = h.secrets.store(LOCAL.userId, "tvly-placeholder-key");
+    h.repository.withTransaction((scope) => scope.webSearchProfiles.put({ userId: LOCAL.userId, service: "tavily", credentialRef, createdAt: 1, updatedAt: 1 }));
+    const snapshot = join(h.dir, "snapshot.sqlite");
+    store.snapshotTo(snapshot);
+    store.stripSnapshot(snapshot, { includedOriginals: new Set(), includedCaches: new Set() });
+    const copy = new Database(snapshot, { readonly: true });
+    try {
+      expect(copy.prepare("SELECT user_id, service, credential_ref FROM web_search_profile").all()).toEqual([{ user_id: LOCAL.userId, service: "tavily", credential_ref: null }]);
+      expect(copy.prepare("SELECT count(*) AS n FROM secret WHERE id = ?").get(credentialRef)).toEqual({ n: 0 });
+      expect(copy.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      copy.close();
+    }
+    expect(h.repository.withTransaction((scope) => scope.webSearchProfiles.get(LOCAL.userId))?.credentialRef).toBe(credentialRef);
+  });
+
   it("marks an excluded original missing and an uncached cache evicted", async () => {
     const { h, library, store } = await seeded();
     const snapshot = join(h.dir, "snapshot.sqlite");

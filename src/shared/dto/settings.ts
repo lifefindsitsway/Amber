@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CHAT_WEB_SEARCH_SETTINGS } from "../enums.ts";
 import { SHORTCUT_ACTIONS } from "../shortcuts.ts";
 import { asrModelRefSchema, modelRefSchema } from "./model-ref.ts";
 
@@ -24,6 +25,8 @@ export const userSettingsDtoSchema = z.object({
   defaultAsrModelRef: asrModelRefSchema.exactOptional(),
   defaultOutputLanguage: z.string().min(1).exactOptional(),
   platformCookieBrowser: z.enum(COOKIE_BROWSERS).exactOptional(),
+  /** The chat's remembered web search setting; absent = off. */
+  chatWebSearchMode: z.enum(CHAT_WEB_SEARCH_SETTINGS).exactOptional(),
   updatedAt: z.number().int().nonnegative(),
 });
 export type UserSettingsDto = z.infer<typeof userSettingsDtoSchema>;
@@ -43,6 +46,7 @@ export const userSettingsPatchSchema = z
     defaultAsrModelRef: asrModelRefSchema.nullable().exactOptional(),
     defaultOutputLanguage: z.string().min(1).nullable().exactOptional(),
     platformCookieBrowser: z.enum(COOKIE_BROWSERS).nullable().exactOptional(),
+    chatWebSearchMode: z.enum(CHAT_WEB_SEARCH_SETTINGS).nullable().exactOptional(),
   })
   .strict();
 export type UserSettingsPatch = z.infer<typeof userSettingsPatchSchema>;

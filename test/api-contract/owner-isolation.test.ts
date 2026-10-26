@@ -48,6 +48,8 @@ interface AliceIds {
   otherModelsId: string;
   templateId: string;
   bobCollectionId: string;
+  threadId: string;
+  chatAnswerId: string;
 }
 
 type Entry =
@@ -200,6 +202,14 @@ const MATRIX: Record<string, Entry> = {
   "POST /api/contents/:id/chat/messages": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/chat/messages`, payload: { text: "hi", modelRef: modelRef(ids) } },
   ]),
+  "GET /api/contents/:id/chat/threads": owned((ids) => [get(`/api/contents/${ids.contentId}/chat/threads`)]),
+  "POST /api/contents/:id/chat/threads": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/chat/threads` }]),
+  "PATCH /api/contents/:id/chat/threads/:tid": owned((ids) => [{ method: "PATCH", url: `/api/contents/${ids.contentId}/chat/threads/${ids.threadId}`, payload: { pinned: true } }]),
+  "DELETE /api/contents/:id/chat/threads/:tid": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/chat/threads/${ids.threadId}` }]),
+  "POST /api/contents/:id/chat/messages/:mid/retry": owned((ids) => [
+    { method: "POST", url: `/api/contents/${ids.contentId}/chat/messages/${ids.chatAnswerId}/retry`, headers: { "idempotency-key": "bob-retry-1" }, payload: {} },
+  ]),
+  "POST /api/contents/:id/chat/turns/delete": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/chat/turns/delete`, payload: { messageIds: [ids.chatAnswerId] } }]),
   "DELETE /api/contents/:id/chat": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/chat` }]),
   "GET /api/contents/:id/notes": owned((ids) => [
     get(`/api/contents/${ids.contentId}/notes`),
@@ -286,6 +296,19 @@ const MATRIX: Record<string, Entry> = {
     { method: "PUT", url: `/api/terminology?scope=content:${ids.contentId}`, payload: { entries: [{ term: "x" }] } },
     { method: "PUT", url: `/api/terminology?scope=collection:${ids.collectionId}`, payload: { entries: [{ term: "x" }] } },
   ]),
+  "GET /api/web-search": { kind: "self", reason: "the caller's own search service", requests: () => [get("/api/web-search")] },
+  "PUT /api/web-search": {
+    kind: "self",
+    reason: "chooses the caller's own search service",
+    requests: () => [{ method: "PUT", url: "/api/web-search", payload: { service: "tavily" } }],
+  },
+  "PUT /api/web-search/credential": {
+    kind: "self",
+    reason: "the caller's own search key",
+    requests: () => [{ method: "PUT", url: "/api/web-search/credential", payload: { value: "<placeholder>" } }],
+  },
+  "DELETE /api/web-search": { kind: "self", reason: "removes the caller's own search service", requests: () => [{ method: "DELETE", url: "/api/web-search" }] },
+  "POST /api/web-search/test": { kind: "self", reason: "a search with the caller's own key (not sent: it would go online)" },
   "GET /api/usage": { kind: "self", reason: "the caller's own usage", requests: () => [get("/api/usage")] },
   "GET /api/storage": { kind: "self", reason: "the caller's own stored bytes and limit", requests: () => [get("/api/storage")] },
   "GET /api/platform-accounts": { kind: "self", reason: "the caller's own accounts", requests: () => [get("/api/platform-accounts")] },
@@ -346,6 +369,8 @@ function seedAlice(userId: string, bobId: string): AliceIds {
   const assetId = newId();
   const bobCollectionId = newId();
   const noteId = newId();
+  const threadId = newId();
+  const chatAnswerId = newId();
   const storageRef = `assets/${userId}/${contentId}/${assetId}`;
   const assetFile = join(stack.dataDir, storageRef);
   mkdirSync(dirname(assetFile), { recursive: true });
@@ -408,7 +433,11 @@ function seedAlice(userId: string, bobId: string): AliceIds {
     );
     scope.terminology.put({ id: newId(), userId, scope: { kind: "content", contentId }, entries: [{ id: newId(), ordinal: 0, term: `${MARK}term`, normalizedKey: `${MARK}term` }] });
     scope.terminology.put({ id: newId(), userId, scope: { kind: "collection", collectionId }, entries: [{ id: newId(), ordinal: 0, term: `${MARK}term2`, normalizedKey: `${MARK}term2` }] });
-    scope.chat.insertThread(userId, { id: newId(), contentId });
+    scope.chat.insertThread(userId, { id: threadId, contentId, createdAt: now });
+    scope.chat.insertMessage(userId, { id: newId(), threadId, role: "user", text: `${MARK} question`, status: "complete", citations: [], createdAt: now });
+    scope.chat.insertMessage(userId, {
+      id: chatAnswerId, threadId, role: "assistant", text: `${MARK} answer`, status: "complete", modelRef: MODEL_SNAPSHOT, citations: [], createdAt: now + 1, finishedAt: now + 2,
+    });
     const noted = segments[0];
     scope.notes.insert({
       id: noteId, userId, contentId, transcriptRevisionId: transcripts.corrected.revision.id, startSegmentId: noted?.id as string, startOffset: 0,
@@ -435,6 +464,7 @@ function seedAlice(userId: string, bobId: string): AliceIds {
     userId, contentId, asrRevisionId: transcripts.asr.revision.id, correctedRevisionId: transcripts.corrected.revision.id, segmentId: transcripts.asr.segments[0]?.id as string,
     correctedSegmentId: segments[0]?.id as string, noteId,
     summaryArtifactId, summaryRevisionId, chapterRevisionId, collectionId, collectionItemId, taskId, workUnitId, assetId, assetFile, providerId, asrProfileId, otherModelsId, templateId, bobCollectionId,
+    threadId, chatAnswerId,
   };
 }
 

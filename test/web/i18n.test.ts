@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UI_LANGUAGE_DEFAULT } from "../../src/shared/defaults.ts";
+import { chatStreamEventSchemas } from "../../src/shared/dto/chat.ts";
 import { zhCN } from "../../src/shared/i18n/zh-CN/index.ts";
 import { initI18n, RESOURCES } from "../../src/web/i18n.ts";
 
@@ -11,6 +12,8 @@ const SOURCES = import.meta.glob<string>(["../../src/web/**/*.ts", "../../src/we
 });
 
 const NAMESPACES = Object.keys(zhCN);
+// Protocol names that happen to start like a namespace (`search.started`), not copy keys.
+const NOT_KEYS = new Set<string>(Object.keys(chatStreamEventSchemas));
 const KEY_LITERAL = new RegExp(`["'\`]((?:${NAMESPACES.join("|")})\\.[A-Za-z0-9_.]+?)(\\.?\\$\\{|["'\`])`, "g");
 
 function lookup(path: string): unknown {
@@ -54,6 +57,7 @@ describe("i18n resources", () => {
     for (const [file, text] of Object.entries(SOURCES)) {
       for (const match of text.matchAll(KEY_LITERAL)) {
         const key = match[1] as string;
+        if (NOT_KEYS.has(key)) continue;
         const dynamic = (match[2] as string).includes("${");
         const value = lookup(key);
         // `t(\`common.stage.${id}\`)` needs an object of strings; a static key needs a string.

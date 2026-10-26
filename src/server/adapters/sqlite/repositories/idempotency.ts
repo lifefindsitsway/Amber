@@ -32,6 +32,17 @@ export function sqliteIdempotencyRepository(db: SqliteConnection): IdempotencyRe
        )`,
   );
 
+  // Each created resource id among `ids` becomes `toId`, keeping the order of the list.
+  const rebind = db.prepare(
+    `UPDATE idempotency_record
+     SET resource_refs_json = (
+       SELECT json_group_array(CASE WHEN ref.value IN (SELECT value FROM json_each(@ids)) THEN @toId ELSE ref.value END)
+       FROM (SELECT value FROM json_each(idempotency_record.resource_refs_json) ORDER BY key) AS ref
+     )
+     WHERE user_id = @userId
+       AND EXISTS (SELECT 1 FROM json_each(resource_refs_json) AS ref WHERE ref.value IN (SELECT value FROM json_each(@ids)))`,
+  );
+
   return {
     get(ownerUserId, route, key): IdempotencyRecord | undefined {
       const row = select.get(ownerUserId, route, key) as IdempotencyRow | undefined;
@@ -50,6 +61,12 @@ export function sqliteIdempotencyRepository(db: SqliteConnection): IdempotencyRe
     },
     insert(record) {
       insert.run({ ...record });
+    },
+    rebindResourceRefs(ownerUserId, fromIds, toId) {
+      if (fromIds.length === 0) {
+        return 0;
+      }
+      return rebind.run({ userId: ownerUserId, ids: JSON.stringify(fromIds), toId }).changes;
     },
     deleteReferencingRevisions(ownerUserId, revisionIds) {
       if (revisionIds.length === 0) {

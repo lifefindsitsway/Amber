@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ASR_USAGE_FEATURES, TOKEN_USAGE_FEATURES } from "../enums.ts";
+import { ASR_USAGE_FEATURES, LLM_PROTOCOLS, TOKEN_USAGE_FEATURES } from "../enums.ts";
 
 const usageOutcomeSchema = z.enum(["succeeded", "failed", "outcome_unknown"]);
 const countSchema = z.number().int().nonnegative();
@@ -9,6 +9,8 @@ export const modelRefSnapshotDtoSchema = z.object({
   modelId: z.string().min(1),
   providerNameSnapshot: z.string(),
   modelDisplaySnapshot: z.string(),
+  /** The Profile's protocol at the time of the call; absent on records stored before it was kept. */
+  protocolSnapshot: z.enum(LLM_PROTOCOLS).exactOptional(),
 });
 
 /** One LLM request; token counts are absent when the upstream reported none. */

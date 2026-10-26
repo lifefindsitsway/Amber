@@ -135,7 +135,7 @@ describe("describe", () => {
     expect(described.capability.flags).toMatchObject({ audioInput: "supported", structuredOutput: "unknown" });
     expect(described.capability.limits).toEqual({ contextWindowTokens: 64_000 });
     expect(described.audioMimeTypes).toEqual(["audio/wav"]);
-    expect(described.snapshot).toEqual({ ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: modelRef.modelId });
+    expect(described.snapshot).toEqual({ ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: modelRef.modelId, protocolSnapshot: "openai_compatible" });
     expect(fake.calls).toHaveLength(0);
     expect(usageRows(h)).toEqual([]);
   });
@@ -159,7 +159,7 @@ describe("usage", () => {
       {
         id: completion.invocationId,
         userId: LOCAL.userId,
-        modelRef: { ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: "model-a" },
+        modelRef: { ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: "model-a", protocolSnapshot: "openai_compatible" },
         feature: "chat",
         outcome: "succeeded",
         inputTokens: 12,

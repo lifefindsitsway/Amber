@@ -127,6 +127,9 @@ export class SettingsService {
       if (body.platformCookieBrowser !== undefined) {
         assign(next, "platformCookieBrowser", body.platformCookieBrowser ?? undefined);
       }
+      if (body.chatWebSearchMode !== undefined) {
+        assign(next, "chatWebSearchMode", body.chatWebSearchMode ?? undefined);
+      }
       if (body.shortcuts !== undefined) {
         next.shortcuts = mergeShortcuts(next.shortcuts, body.shortcuts);
       }

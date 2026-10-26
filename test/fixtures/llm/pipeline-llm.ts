@@ -15,7 +15,8 @@ export type PipelinePromptKind =
   | "final_collection"
   | "repair"
   | "chat"
-  | "chat_compaction";
+  | "chat_compaction"
+  | "chat_search_plan";
 
 export function promptText(request: LlmRequest): string {
   return request.messages
@@ -28,6 +29,7 @@ export function pipelinePromptKind(request: LlmRequest): PipelinePromptKind {
   if (request.system.startsWith("你是这段课程内容的学习助手")) return "chat";
   const text = promptText(request);
   if (text.startsWith("把「已有压缩摘要」与「新增对话」")) return "chat_compaction";
+  if (text.startsWith("你负责判断回答用户的当前问题是否需要联网搜索")) return "chat_search_plan";
   if (text.startsWith("你是字幕校对员") || text.startsWith("我会同时提供这段字幕对应的音频")) return "proofread";
   if (text.startsWith("下面是一段课程逐字稿") && text.includes("最值得回看")) return "highlight";
   if (text.startsWith("下面是一段课程逐字稿")) return "chapter";
@@ -126,6 +128,9 @@ export function pipelineAnswer(request: LlmRequest): string {
       ].join("\n");
     case "chat_compaction":
       return `此前对话的压缩摘要 ${cite(aliasesIn(text, "【新增对话】"))}`;
+    case "chat_search_plan":
+      // No search unless asked: a forced search then falls back to the question's first line.
+      return '{"search":false,"queries":[]}';
   }
 }
 

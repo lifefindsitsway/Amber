@@ -25,6 +25,7 @@ interface MediaRow {
 const STRIP_STATEMENTS = [
   "UPDATE provider_profile SET credential_ref = NULL",
   "UPDATE asr_provider_profile SET credential_ref = NULL",
+  "UPDATE web_search_profile SET credential_ref = NULL",
   "DELETE FROM platform_account",
   "DELETE FROM secret",
   "DELETE FROM session",

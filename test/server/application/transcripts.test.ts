@@ -187,7 +187,7 @@ function insertChat(h: Harness, contentId: string, text: string, extra: Record<s
   let thread = h.db.prepare("SELECT id FROM chat_thread WHERE content_id = ?").get(contentId) as { id: string } | undefined;
   if (thread === undefined) {
     thread = { id: h.newId() };
-    insertRow(h.db, "chat_thread", { id: thread.id, content_id: contentId });
+    insertRow(h.db, "chat_thread", { id: thread.id, content_id: contentId, created_at: 0 });
   }
   const id = h.newId();
   insertRow(h.db, "chat_message", { id, thread_id: thread.id, role: "assistant", text, status: "complete", citations_json: "[]", created_at: 10, ...extra });

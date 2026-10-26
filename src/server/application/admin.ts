@@ -306,6 +306,7 @@ export class AdminService {
       scope.platformAccounts.deleteAll();
       scope.providerProfiles.clearAllCredentialRefs();
       scope.asrProfiles.clearAllCredentialRefs();
+      scope.webSearchProfiles.clearCredentials();
       scope.secretEnvelopes.deleteAll();
       const settings = scope.instanceSettings.get() ?? defaultInstanceSettings(credentialsResetAt);
       scope.instanceSettings.put({ ...settings, credentialsResetAt });

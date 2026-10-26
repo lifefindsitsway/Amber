@@ -27,6 +27,7 @@ const full: UserSettings = {
   defaultAsrModelRef: { asrProfileId: "asr", modelId: "scribe_v2" },
   defaultOutputLanguage: "ja",
   platformCookieBrowser: "edge",
+  chatWebSearchMode: "auto",
   updatedAt: T0,
 };
 
@@ -34,7 +35,9 @@ const get = (owner: string) => repository.withTransaction((scope) => scope.userS
 
 describe("user settings repository", () => {
   it("reads values outside the known sets as unset, as a restored backup may hold them", () => {
-    insertRow(db, "user_settings", { user_id: "alice", theme: "blue", language: "zh-CN", shortcuts_json: "{}", platform_cookie_browser: "chrome:/tmp/elsewhere", updated_at: T0 });
+    insertRow(db, "user_settings", {
+      user_id: "alice", theme: "blue", language: "zh-CN", shortcuts_json: "{}", platform_cookie_browser: "chrome:/tmp/elsewhere", chat_web_search_mode: "force", updated_at: T0,
+    });
     expect(get("alice")).toEqual({ userId: "alice", theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: T0 });
   });
 

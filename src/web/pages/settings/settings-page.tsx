@@ -13,12 +13,13 @@ import { StorageSection } from "./storage-section.tsx";
 import { TemplatesSection } from "./templates-section.tsx";
 import { TerminologySection } from "./terminology-section.tsx";
 import { TranscriptionSection } from "./transcription-section.tsx";
+import { WebSearchSection } from "./web-search-section.tsx";
 
 /**
  * Feature settings sections, in the order the settings page lists them. Appearance, password
  * and administration live in the account menu; 「备份与恢复」 is listed in the desktop client only.
  */
-export const SETTINGS_SECTIONS = ["models", "transcription", "other-models", "platform-accounts", "templates", "terminology", "storage", "backup", "shortcuts"] as const;
+export const SETTINGS_SECTIONS = ["models", "transcription", "other-models", "web-search", "platform-accounts", "templates", "terminology", "storage", "backup", "shortcuts"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** Sections that exist only in the desktop client. */
@@ -27,6 +28,7 @@ const SECTION_VIEWS: Record<SettingsSection, ComponentType> = {
   models: ModelsSection,
   transcription: TranscriptionSection,
   "other-models": OtherModelsSection,
+  "web-search": WebSearchSection,
   "platform-accounts": PlatformAccountsSection,
   templates: TemplatesSection,
   terminology: TerminologySection,

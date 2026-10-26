@@ -137,6 +137,7 @@ export const TOKEN_USAGE_FEATURES = [
   "highlight",
   "chat",
   "chat_compaction",
+  "chat_search_plan",
   "translate",
   "collection_summary",
   "citation_repair",
@@ -150,6 +151,22 @@ export type AsrUsageFeature = (typeof ASR_USAGE_FEATURES)[number];
 
 export const CHAT_MESSAGE_STATUSES = ["streaming", "complete", "interrupted", "failed"] as const;
 export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
+
+/** Web search of one chat message: none, when the model judges it useful, or this time for sure. */
+export const WEB_SEARCH_MODES = ["off", "auto", "force"] as const;
+export type WebSearchMode = (typeof WEB_SEARCH_MODES)[number];
+/** The remembered setting; `force` applies to one message only and is never stored. */
+export const CHAT_WEB_SEARCH_SETTINGS = ["off", "auto"] as const;
+export type ChatWebSearchSetting = (typeof CHAT_WEB_SEARCH_SETTINGS)[number];
+/** Outcome of one answer's web search. */
+export const WEB_SEARCH_STATUSES = ["searched", "partial", "failed", "skipped", "dropped"] as const;
+export type WebSearchStatus = (typeof WEB_SEARCH_STATUSES)[number];
+/** Why a search was `skipped` or `dropped`. */
+export const WEB_SEARCH_REASONS = ["unconfigured", "not_needed", "planner_failed", "budget"] as const;
+export type WebSearchReason = (typeof WEB_SEARCH_REASONS)[number];
+/** Search services; adding one = an adapter + a member here. */
+export const WEB_SEARCH_SERVICES = ["tavily"] as const;
+export type WebSearchService = (typeof WEB_SEARCH_SERVICES)[number];
 
 export const TRI_STATES = ["supported", "unsupported", "unknown"] as const;
 export type Tri = (typeof TRI_STATES)[number];
