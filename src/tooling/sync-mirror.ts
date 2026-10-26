@@ -14,8 +14,9 @@ import { RUNTIME_LICENSES_ASSET } from "./third-party-notices.ts";
  * `LICENSE`, `README.md`) and the Runtime Assets the Windows sidecar needs. Other documents,
  * tests, scratch files and review notes never reach the mirror.
  *
- * `--version X.Y.Z` rewrites `version` in the mirror's package.json only; the repository
- * keeps its own version, and package.json stays the single version source.
+ * The mirror is never given a version of its own: package.json is the single version
+ * source, so a candidate's version is raised and committed in the repository before the
+ * mirror is taken, and a server built from the repository reports the same number.
  *
  * The mirror root gets `mirror-source.json`: the source commit, whether the working tree
  * was clean, the lockfile digest and the mirror's version, so the build report can name
@@ -46,7 +47,6 @@ export const ASSET_INPUTS = [
   ...FONT_ASSETS,
   RUNTIME_LICENSES_ASSET,
 ] as const;
-const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 function git(root: string, args: readonly string[], input?: string): string {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8", input });
@@ -77,11 +77,12 @@ export interface MirrorSource {
   version: string;
 }
 
-/** What the mirror was taken from; `version` is the mirror's own, after any `--version`. */
-export function mirrorSource(root: string, version: string): MirrorSource {
+/** What the mirror was taken from; `version` is the repository's package.json version, which the mirror copies unchanged. */
+export function mirrorSource(root: string): MirrorSource {
   const sourceCommit = git(root, ["rev-parse", "HEAD"]).trim();
   const dirty = git(root, ["status", "--porcelain"]).trim() !== "";
   const lockfileSha256 = createHash("sha256").update(readFileSync(join(root, "pnpm-lock.yaml"))).digest("hex");
+  const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
   return { sourceCommit, dirty, lockfileSha256, version };
 }
 
@@ -132,27 +133,26 @@ function removeStale(root: string, dest: string, inputs: ReadonlySet<string>): s
   return stale;
 }
 
-export function setMirrorVersion(packageJsonText: string, version: string): string {
-  if (!SEMVER.test(version)) {
-    throw new Error(`not a semver version: ${version}`);
-  }
-  const parsed = JSON.parse(packageJsonText) as Record<string, unknown>;
-  parsed["version"] = version;
-  return `${JSON.stringify(parsed, null, 2)}\n`;
-}
+const USAGE = "usage: pnpm sync:mirror -- --dest <mirror directory>";
 
-function argument(name: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  return index > 0 ? process.argv[index + 1] : undefined;
+/**
+ * The mirror directory from the command line. Anything else is refused, `--version` in
+ * particular: a version set only in the mirror would differ from the repository's.
+ */
+export function mirrorArguments(args: readonly string[]): { dest: string } {
+  const rest = args[0] === "--" ? args.slice(1) : args;
+  if (rest.includes("--version")) {
+    throw new Error("--version is not supported: raise the version in the repository's package.json and commit it before mirroring");
+  }
+  if (rest.length !== 2 || rest[0] !== "--dest" || rest[1] === undefined || rest[1].startsWith("--")) {
+    throw new Error(USAGE);
+  }
+  return { dest: rest[1] };
 }
 
 function main(): void {
   const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-  const destArg = argument("--dest");
-  if (destArg === undefined) {
-    throw new Error("usage: pnpm sync:mirror -- --dest <mirror directory> [--version X.Y.Z]");
-  }
-  const dest = resolve(destArg);
+  const dest = resolve(mirrorArguments(process.argv.slice(2)).dest);
   if (dest === root || dest.startsWith(`${root}${sep}`)) {
     throw new Error("the mirror must live outside the repository");
   }
@@ -164,22 +164,13 @@ function main(): void {
     }
   }
   const stale = removeStale(root, dest, new Set(inputs));
-  const version = argument("--version");
-  const packageJson = join(dest, "package.json");
-  if (version !== undefined) {
-    writeFileSync(packageJson, setMirrorVersion(readFileSync(packageJson, "utf8"), version));
-  }
-  const mirrorVersion = (JSON.parse(readFileSync(packageJson, "utf8")) as { version: string }).version;
-  const source = mirrorSource(root, mirrorVersion);
+  const source = mirrorSource(root);
   writeFileSync(join(dest, MIRROR_SOURCE_FILE), `${JSON.stringify(source, null, 2)}\n`);
   console.log(`mirror ${dest}: ${inputs.length} inputs, ${copied} copied, ${stale.length} stale removed`);
   for (const path of stale) {
     console.log(`  removed ${path}`);
   }
-  if (version !== undefined) {
-    console.log(`  mirror package.json version = ${version}`);
-  }
-  console.log(`  ${MIRROR_SOURCE_FILE}: ${source.sourceCommit}${source.dirty ? " (dirty)" : ""}`);
+  console.log(`  ${MIRROR_SOURCE_FILE}: ${source.sourceCommit}${source.dirty ? " (dirty)" : ""}, version ${source.version}`);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

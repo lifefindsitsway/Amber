@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ASSETS_DIR } from "../../src/tooling/runtime-assets.ts";
 import { SHIPPED_ASSETS } from "../../src/tooling/pack-sidecar.ts";
-import { ASSET_INPUTS, DOC_INPUTS, ROOT_INPUTS, buildInputs, mirrorSource, setMirrorVersion } from "../../src/tooling/sync-mirror.ts";
+import { ASSET_INPUTS, DOC_INPUTS, ROOT_INPUTS, buildInputs, mirrorArguments, mirrorSource } from "../../src/tooling/sync-mirror.ts";
 
 const REPO_ROOT = join(import.meta.dirname, "../..");
 
@@ -48,11 +48,22 @@ describe("ASSET_INPUTS", () => {
   });
 });
 
-describe("setMirrorVersion", () => {
-  it("replaces only the version and rejects non-semver input", () => {
-    const text = `${JSON.stringify({ name: "amber", version: "0.0.0", private: true }, null, 2)}\n`;
-    expect(JSON.parse(setMirrorVersion(text, "0.0.2"))).toEqual({ name: "amber", version: "0.0.2", private: true });
-    expect(() => setMirrorVersion(text, "latest")).toThrow(/semver/);
+describe("mirrorArguments", () => {
+  it("takes only the mirror directory, with or without the pnpm separator", () => {
+    expect(mirrorArguments(["--dest", "/mnt/g/mirror"])).toEqual({ dest: "/mnt/g/mirror" });
+    expect(mirrorArguments(["--", "--dest", "/mnt/g/mirror"])).toEqual({ dest: "/mnt/g/mirror" });
+  });
+
+  it("refuses a mirror-only version, so the repository's package.json stays the version source", () => {
+    expect(() => mirrorArguments(["--dest", "/mnt/g/mirror", "--version", "0.2.0-rc.7"])).toThrow(/--version is not supported/);
+    expect(() => mirrorArguments(["--", "--version", "0.2.0-rc.7", "--dest", "/mnt/g/mirror"])).toThrow(/--version is not supported/);
+  });
+
+  it("refuses a missing directory and unknown arguments", () => {
+    expect(() => mirrorArguments([])).toThrow(/usage/);
+    expect(() => mirrorArguments(["--dest"])).toThrow(/usage/);
+    expect(() => mirrorArguments(["--dest", "--force"])).toThrow(/usage/);
+    expect(() => mirrorArguments(["--dest", "/mnt/g/mirror", "--force"])).toThrow(/usage/);
   });
 });
 
@@ -68,25 +79,32 @@ function repository(): string {
   git(root, "config", "user.email", "test@example.invalid");
   git(root, "config", "user.name", "test");
   writeFileSync(join(root, ".gitignore"), "ignored/\n");
+  writeFileSync(join(root, "package.json"), '{"name":"amber","version":"0.2.0-rc.6"}\n');
   writeFileSync(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src/a.ts"), "export {};\n");
-  git(root, "add", ".gitignore", "pnpm-lock.yaml", "src/a.ts");
+  git(root, "add", ".gitignore", "package.json", "pnpm-lock.yaml", "src/a.ts");
   git(root, "commit", "-q", "-m", "init");
   return root;
 }
 
 describe("mirrorSource", () => {
-  it("records the commit, the lockfile digest and the version, and whether the tree was clean", () => {
+  it("records the commit, the lockfile digest, the repository's version, and whether the tree was clean", () => {
     const root = repository();
     const head = git(root, "rev-parse", "HEAD");
     const digest = createHash("sha256").update("lockfileVersion: '9.0'\n").digest("hex");
-    expect(mirrorSource(root, "0.1.0-rc.1")).toEqual({ sourceCommit: head, dirty: false, lockfileSha256: digest, version: "0.1.0-rc.1" });
+    expect(mirrorSource(root)).toEqual({ sourceCommit: head, dirty: false, lockfileSha256: digest, version: "0.2.0-rc.6" });
     mkdirSync(join(root, "ignored"));
     writeFileSync(join(root, "ignored/x"), "x");
-    expect(mirrorSource(root, "0.1.0").dirty).toBe(false);
+    expect(mirrorSource(root).dirty).toBe(false);
     writeFileSync(join(root, "src/a.ts"), "export const changed = 1;\n");
-    expect(mirrorSource(root, "0.1.0").dirty).toBe(true);
+    expect(mirrorSource(root).dirty).toBe(true);
+  });
+
+  it("takes the version from the repository's package.json, so a raised but uncommitted version shows as dirty", () => {
+    const root = repository();
+    writeFileSync(join(root, "package.json"), '{"name":"amber","version":"0.2.0-rc.7"}\n');
+    expect(mirrorSource(root)).toMatchObject({ version: "0.2.0-rc.7", dirty: true });
   });
 
   it("copies the shipped documents that git tracks or would track, and nothing else from the root", () => {
