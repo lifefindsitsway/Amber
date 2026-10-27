@@ -1,6 +1,6 @@
 {
   "name": "amber",
-  "version": "0.2.0-rc.final",
+  "version": "0.2.0",
   "private": true,
   "description": "Amber: An open-source AI toolkit for processing, understanding, and transforming audio and video content.",
   "license": "AGPL-3.0-only",
