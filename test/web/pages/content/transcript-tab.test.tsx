@@ -152,7 +152,7 @@ describe("TranscriptTab reading view", () => {
       },
     });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" });
-    expect((await screen.findByTestId("transcript-chapters-stale")).textContent).toBe("原文已更新，内容可能已过期，可按需重新生成");
+    expect((await screen.findByTestId("transcript-chapters-stale")).textContent).toBe("章节基于旧版原文生成，可能已过期，可按需重新生成");
     expect((await screen.findAllByTestId("transcript-chapter")).length).toBe(2);
   });
 });
@@ -599,7 +599,7 @@ describe("TranscriptTab version list: history, archive, delete, missing links an
   // r1 (asr) ← m1 ← m2 (primary); r1 ← m0 ; archived platform p1
   const asr = revision("r1", { kind: "asr", createdAt: 1 });
   const m0 = revision("m0", { kind: "manual", parentRevisionId: "r1", createdAt: 2, deletable: true });
-  const m1 = revision("m1", { kind: "manual", parentRevisionId: "r1", createdAt: 3, descendantIds: ["m2"], blockers: { children: 1, draft: 0, notes: 2, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 } });
+  const m1 = revision("m1", { kind: "manual", parentRevisionId: "r1", createdAt: 3, descendantIds: ["m2"], blockers: { children: 1, draft: 0, notes: 2, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0 } });
   const m2 = revision("m2", { kind: "manual", parentRevisionId: "m1", createdAt: 4 });
   const p1 = revision("p1", { kind: "platform", createdAt: 5, archived: true, archivedAt: 6 });
 

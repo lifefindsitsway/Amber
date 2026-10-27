@@ -2,7 +2,7 @@ import type { ChapterRevisionDto, ChaptersDto } from "../../shared/dto/chapter.t
 import type { ChapterRevision } from "../domain/artifact.ts";
 import type { Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
-import { deriveFreshness } from "../domain/freshness.ts";
+import { deriveFreshness, transcriptAncestors } from "../domain/freshness.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { laneKeys } from "../pipeline/lane.ts";
@@ -12,11 +12,15 @@ export interface ChapterServiceOptions {
   repository: Repository;
 }
 
-/** A chapter revision as the UI sees it, with freshness derived against the current primary. */
-export function chapterRevisionDto(revision: ChapterRevision, content: Content): ChapterRevisionDto {
+/**
+ * A chapter revision as the UI sees it, with freshness derived against the current primary
+ * and its ancestors (`primaryAncestors`, nearest first).
+ */
+export function chapterRevisionDto(revision: ChapterRevision, content: Content, primaryAncestors: readonly string[]): ChapterRevisionDto {
   const { provenance } = revision;
   const freshness = deriveFreshness(provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
+    primaryAncestors,
   });
   return {
     id: revision.id,
@@ -73,13 +77,14 @@ export class ChapterService {
     const artifact = scope.chapters.getArtifact(owner, content.id);
     const revisions = scope.chapters.listRevisions(owner, content.id);
     const current = revisions.find((revision) => revision.id === artifact?.currentRevisionId);
+    const ancestors = transcriptAncestors(content.primaryTranscriptRevisionId, scope.transcripts.listRevisions(owner, content.id));
     const active = scope.tasks
       .listByContent(owner, content.id)
       .find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
     return {
       ...(artifact === undefined ? {} : { artifactId: artifact.id }),
-      ...(current === undefined ? {} : { current: chapterRevisionDto(current, content) }),
-      revisions: revisions.map((revision) => chapterRevisionDto(revision, content)),
+      ...(current === undefined ? {} : { current: chapterRevisionDto(current, content, ancestors) }),
+      revisions: revisions.map((revision) => chapterRevisionDto(revision, content, ancestors)),
       ...(active === undefined ? {} : { activeTaskId: active.id }),
     };
   }

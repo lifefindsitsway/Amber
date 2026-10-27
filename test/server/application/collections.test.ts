@@ -4,6 +4,7 @@ import type { AppError } from "../../../src/shared/errors.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { BOB, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../fixtures/pipeline/summary-data.ts";
+import type { TranscriptFixture } from "../../fixtures/transcripts/lecture.ts";
 
 const WATCH = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 const open: Harness[] = [];
@@ -36,13 +37,13 @@ async function codeOf(work: () => unknown): Promise<string | undefined> {
 /** A collection of `n` local Contents, each with transcripts and, unless `bare`, a current core summary. */
 async function collectionOf(h: Harness, n: number, bare: readonly number[] = []) {
   const collection = h.collections.create(LOCAL, { name: "Course" });
-  const members: Array<{ contentId: string; transcriptRevisionId: string; summaryRevisionId?: string }> = [];
+  const members: Array<{ contentId: string; transcriptRevisionId: string; summaryRevisionId?: string; fixture: TranscriptFixture }> = [];
   for (let index = 0; index < n; index += 1) {
     const contentId = createLocalContent(h);
     const fixture = seedTranscripts(h, contentId);
     const summary = bare.includes(index) ? undefined : insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id });
     await h.collections.addItem(LOCAL, collection.id, { contentId });
-    members.push({ contentId, transcriptRevisionId: fixture.asr.revision.id, ...(summary === undefined ? {} : { summaryRevisionId: summary.revisionId }) });
+    members.push({ contentId, transcriptRevisionId: fixture.asr.revision.id, ...(summary === undefined ? {} : { summaryRevisionId: summary.revisionId }), fixture });
   }
   return { collectionId: collection.id, members };
 }
@@ -266,6 +267,17 @@ describe("collection summary", () => {
     h.collections.reorder(LOCAL, collectionId, [items[1]?.id as string, items[0]?.id as string]);
     expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: true, staleReason: "order_changed" });
     h.collections.reorder(LOCAL, collectionId, [items[0]?.id as string, items[1]?.id as string]);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: false });
+
+    // A member's primary proofread from its frozen transcript is still that member's text; another lineage is not.
+    const first = members[0] as (typeof members)[number];
+    const setPrimary = (revisionId: string, updatedAt: number) =>
+      h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, first.contentId, revisionId, updatedAt));
+    setPrimary(first.fixture.corrected.revision.id, 10);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: false });
+    setPrimary(first.fixture.platform.revision.id, 11);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: true, staleReason: "member_changed" });
+    setPrimary(first.fixture.asr.revision.id, 12);
     expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: false });
 
     insertSummary(h, { contentId: members[1]?.contentId as string, transcriptRevisionId: members[1]?.transcriptRevisionId as string });

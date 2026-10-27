@@ -25,7 +25,7 @@ import type { AsrUsage, TokenUsage } from "../domain/usage.ts";
 import type { IdempotencyRecord, InstanceSettings, NetworkAllowlistEntry, PendingFileDelete, Session, UserSettings } from "../domain/runtime-support.ts";
 import type { StageRun, Task, WorkUnit, WorkUnitResult } from "../domain/task.ts";
 import type { ModelRefSnapshot, PromptRef } from "../domain/model-ref.ts";
-import type { ReferenceText, RevisionReference, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
+import type { HistoryArtifactRef, ReferenceText, RevisionReference, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { ChatCompaction, ChatMessage, ChatThread } from "../domain/chat.ts";
 import type { User, UserCredential } from "../domain/user.ts";
 import type { WebSearchProfile } from "../domain/web-search.ts";
@@ -327,9 +327,23 @@ export interface RevisionReferenceRepository {
    * summaries, rollup partials, chapters, the owner's collection summaries and the owner's
    * unfinished Tasks that reach a revision of the Content. An unfinished Task of the Content
    * itself reaches all of its revisions, since its stages may read the primary as their base
-   * at run time. Rows that reach none of its revisions may or may not be included.
+   * at run time. Rows that reach none of its revisions may or may not be included. A
+   * summary's rolling partials count as part of that summary; a summary, chapter or highlight
+   * revision that only history holds comes as a `history` reference naming it.
    */
   listReferences(ownerUserId: string, contentId: string): RevisionReference[];
+  /**
+   * Deletes an artifact revision of the owner's that only history holds (its rolling partials
+   * go with a summary). Refuses, with an `internal` error, one that is current or that
+   * something builds on: callers only pass what `listReferences` named as history.
+   */
+  deleteHistoryArtifact(ownerUserId: string, artifact: HistoryArtifactRef): void;
+  /**
+   * The owner's artifact revision as a history reference when only history holds it: not
+   * current and nothing built on it. `undefined` for one that is current, that something
+   * builds on, or that is not the owner's.
+   */
+  historyArtifact(ownerUserId: string, kind: HistoryArtifactRef["kind"], revisionId: string): HistoryArtifactRef | undefined;
 }
 
 export interface ImportBatchRepository {

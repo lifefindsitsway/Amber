@@ -17,6 +17,7 @@ import {
   descendantsOf,
   emptyRevisionBlockers,
   hasRevisionBlockers,
+  historyArtifactsOf,
   inheritedParagraphStarts,
   manualMergeChain,
   PROTECTED_REVISION_KINDS,
@@ -35,6 +36,8 @@ import { revisionListItems } from "./revision-references.ts";
 
 /** The draft being committed is the one that disappears with the commit, so it never blocks merging its base. */
 const MERGE_IGNORES: ReadonlySet<RevisionBlockerCategory> = new Set(["draft"]);
+/** What a delete with `withHistory` removes instead of being blocked by. */
+const HISTORY_ONLY: ReadonlySet<RevisionBlockerCategory> = new Set(["history"]);
 
 export interface TranscriptServiceOptions {
   repository: Repository;
@@ -324,9 +327,11 @@ export class TranscriptService {
    * switched first, and any row that would be left pointing into the set blocks the delete.
    * A deleted translation that is its language's current one hands over to the latest
    * remaining translation of that language; idempotency records naming the set go too, so a
-   * replayed request runs again instead of answering with a deleted id.
+   * replayed request runs again instead of answering with a deleted id. With `withHistory`,
+   * earlier summary, chapter and highlight revisions that only history holds and that cite
+   * the set go first, in the same transaction; the current ones still block.
    */
-  deleteRevision(principal: RequestPrincipal, revisionId: string, options: { withDescendants: boolean }): void {
+  deleteRevision(principal: RequestPrincipal, revisionId: string, options: { withDescendants: boolean; withHistory?: boolean }): void {
     const owner = principal.userId;
     this.options.repository.withTransaction((scope) => {
       const { revision, content } = ownedRevision(scope, owner, revisionId);
@@ -339,9 +344,13 @@ export class TranscriptService {
       if (content.primaryTranscriptRevisionId !== undefined && ids.has(content.primaryTranscriptRevisionId)) {
         throw amberError("conflict", "the primary transcript cannot be deleted", { code: "conflict.revision_is_primary" });
       }
-      const blockers = revisionBlockers(scope.revisionReferences.listReferences(owner, content.id), ids);
-      if (hasRevisionBlockers(blockers)) {
+      const references = scope.revisionReferences.listReferences(owner, content.id);
+      const blockers = revisionBlockers(references, ids);
+      if (hasRevisionBlockers(blockers, options.withHistory === true ? HISTORY_ONLY : undefined)) {
         throw amberError("conflict", "the revision is still referenced", { code: "conflict.revision_referenced", details: { ...blockers } });
+      }
+      for (const history of options.withHistory === true ? historyArtifactsOf(references, ids) : []) {
+        scope.revisionReferences.deleteHistoryArtifact(owner, history);
       }
       for (const artifact of scope.translations.listArtifacts(owner, content.id)) {
         if (artifact.currentRevisionId === undefined || !ids.has(artifact.currentRevisionId)) {

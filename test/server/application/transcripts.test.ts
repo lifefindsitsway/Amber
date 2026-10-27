@@ -220,6 +220,57 @@ function insertSummary(h: Harness, contentId: string, fields: { inputs?: unknown
   return id;
 }
 
+/**
+ * A history-only summary (with a rolling partial), chapter and highlight revision citing
+ * sentences of a revision, next to current ones that cite nothing of it; returns their ids.
+ */
+function insertHistory(h: Harness, contentId: string, segments: readonly TranscriptSegment[]): { summary: string; chapter: string; highlight: string; currentSummary: string } {
+  const summary = insertSummary(h, contentId, { body: `旧总结 [[seg:${segments[0]?.id}]]` });
+  insertRow(h.db, "rollup_partial", {
+    id: h.newId(),
+    summary_revision_id: summary,
+    partial_index: 0,
+    inputs_json: "[]",
+    body: `分段 [[seg:${segments[1]?.id}]]`,
+    citations_json: "[]",
+    model_ref_json: "{}",
+    prompt_ref_json: "{}",
+    prompt_snapshot: "",
+    created_at: 10,
+  });
+  const currentSummary = insertSummary(h, contentId, { body: "当前总结" });
+  h.db.prepare("UPDATE summary_artifact SET current_revision_id = ? WHERE id = (SELECT artifact_id FROM summary_revision WHERE id = ?)").run(currentSummary, currentSummary);
+  const chapterArtifact = h.newId();
+  insertRow(h.db, "chapter_artifact", { id: chapterArtifact, content_id: contentId });
+  const chapter = h.newId();
+  const currentChapter = h.newId();
+  for (const [id, segment] of [[chapter, segments[0]?.id], [currentChapter, undefined]] as const) {
+    insertRow(h.db, "chapter_revision", {
+      id,
+      artifact_id: chapterArtifact,
+      inputs_json: "[]",
+      quality: "normal",
+      origin_json: JSON.stringify({ kind: "ai", transcriptRevisionId: "elsewhere" }),
+      chapters_json: JSON.stringify([{ startMs: 0, endMs: 1, title: "t", ...(segment === undefined ? {} : { startSegmentId: segment }) }]),
+      created_at: 10,
+    });
+  }
+  h.db.prepare("UPDATE chapter_artifact SET current_revision_id = ? WHERE id = ?").run(currentChapter, chapterArtifact);
+  const highlightArtifact = h.newId();
+  insertRow(h.db, "highlight_artifact", { id: highlightArtifact, content_id: contentId });
+  const highlight = h.newId();
+  insertRow(h.db, "highlight_revision", {
+    id: highlight,
+    artifact_id: highlightArtifact,
+    inputs_json: "[]",
+    quality: "normal",
+    transcript_revision_id: segments[0]?.revisionId,
+    items_json: JSON.stringify([{ segmentId: segments[2]?.id, score: 90, text: "x" }]),
+    created_at: 11,
+  });
+  return { summary, chapter, highlight, currentSummary };
+}
+
 async function codeOf(work: () => unknown): Promise<{ code: string; details?: unknown } | undefined> {
   try {
     await work();
@@ -431,6 +482,7 @@ describe("TranscriptService permanent delete", () => {
             items_json: JSON.stringify([{ segmentId: mSegments[2]?.id, score: 90, text: "x" }]),
             created_at: 10,
           });
+          h.db.prepare("UPDATE highlight_artifact SET current_revision_id = 'hr' WHERE id = 'ha'").run();
         },
       },
       {
@@ -456,15 +508,20 @@ describe("TranscriptService permanent delete", () => {
         },
       },
       {
+        // Kept from going with history: frozen by a collection summary, or current.
         category: "artifacts",
         count: 6,
         add: ({ h, contentId, m, mSegments }) => {
-          insertSummary(h, contentId, { inputs: [{ kind: "transcriptRevision", id: m.id }] });
-          insertSummary(h, contentId, { body: `总结 [[seg:${mSegments[0]?.id}]]` });
-          insertSummary(h, contentId, { citations: [{ transcriptRevisionId: m.id, segmentId: mSegments[0]?.id }] });
+          const frozen = [
+            insertSummary(h, contentId, { inputs: [{ kind: "transcriptRevision", id: m.id }] }),
+            insertSummary(h, contentId, { body: `总结 [[seg:${mSegments[0]?.id}]]` }),
+            insertSummary(h, contentId, { citations: [{ transcriptRevisionId: m.id, segmentId: mSegments[0]?.id }] }),
+            insertSummary(h, contentId, {}),
+          ];
           insertRow(h.db, "rollup_partial", {
             id: "rp",
-            summary_revision_id: insertSummary(h, contentId, {}),
+            // A rolling partial is part of its summary: one reference, not two.
+            summary_revision_id: frozen[3],
             partial_index: 0,
             inputs_json: "[]",
             body: `分段 [[seg:${mSegments[2]?.id}]]`,
@@ -484,6 +541,7 @@ describe("TranscriptService permanent delete", () => {
             chapters_json: JSON.stringify([{ startMs: 0, endMs: 1, title: "t", startSegmentId: mSegments[0]?.id }]),
             created_at: 10,
           });
+          h.db.prepare("UPDATE chapter_artifact SET current_revision_id = 'cr' WHERE id = 'ca'").run();
           // A collection summary of another Content's collection still counts: it is the same user's.
           insertRow(h.db, "collection", { id: "col", user_id: LOCAL.userId, name: "合集", created_at: 1 });
           insertRow(h.db, "collection_summary_artifact", { id: "csa", collection_id: "col" });
@@ -492,13 +550,22 @@ describe("TranscriptService permanent delete", () => {
             artifact_id: "csa",
             inputs_json: "[]",
             quality: "normal",
-            input_items_json: JSON.stringify([{ collectionItemId: "i", contentId, transcriptRevisionId: m.id, position: 0 }]),
+            input_items_json: JSON.stringify([
+              { collectionItemId: "i", contentId, transcriptRevisionId: m.id, position: 0 },
+              ...frozen.map((summaryRevisionId, index) => ({ collectionItemId: `f${index}`, contentId, summaryRevisionId, position: index + 1 })),
+            ]),
             partial_ids_json: "[]",
             body: "",
             citations_json: "[]",
             created_at: 10,
           });
         },
+      },
+      {
+        // Earlier revisions that only history holds: removable along with the revision.
+        category: "history",
+        count: 3,
+        add: ({ h, contentId, mSegments }) => insertHistory(h, contentId, mSegments),
       },
       {
         category: "activeTasks",
@@ -545,13 +612,13 @@ describe("TranscriptService permanent delete", () => {
       const setup = withManual();
       add(setup);
       const listed = setup.h.contents.revisions(LOCAL, setup.contentId).revisions.find((item) => item.id === setup.m.id);
-      expect({ category, blockers: listed?.blockers[category as "notes"], deletable: listed?.deletable }).toEqual({ category, blockers: count, deletable: false });
+      expect({ category, blockers: listed?.blockers[category as "notes"], deletable: listed?.deletable }).toEqual({ category, blockers: count, deletable: category === "history" });
       const refused = await codeOf(() => setup.h.transcripts.deleteRevision(LOCAL, setup.m.id, { withDescendants: false }));
       expect({ category, refused }).toEqual({
         category,
         refused: {
           code: "conflict.revision_referenced",
-          details: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, [category]: count },
+          details: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0, [category]: count },
         },
       });
       expect(revisionOf(setup.h, setup.m.id)).toBeDefined();
@@ -674,13 +741,13 @@ describe("TranscriptService permanent delete", () => {
 
     expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, m.id, { withDescendants: true }))).toEqual({
       code: "conflict.revision_referenced",
-      details: { children: 0, draft: 0, notes: 1, highlights: 0, chatMessages: 0, artifacts: 1, activeTasks: 0 },
+      details: { children: 0, draft: 0, notes: 1, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 1 },
     });
     expect(snapshot()).toEqual(before);
     // Alone, the children block as well; still nothing goes.
     expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, m.id, { withDescendants: false }))).toMatchObject({
       code: "conflict.revision_referenced",
-      details: { children: 2, artifacts: 1 },
+      details: { children: 2, history: 1 },
     });
     expect(snapshot()).toEqual(before);
     expect(primaryOf(h, contentId)).toBe(fixture.corrected.revision.id);
@@ -730,5 +797,97 @@ describe("TranscriptService permanent delete", () => {
     expect(projected.some((row) => row.revision_id === m1.id)).toBe(false);
     h.search.rebuild();
     expect(projectionSnapshot(h)).toEqual(projected);
+  });
+});
+
+describe("TranscriptService delete together with history artifact revisions", () => {
+  function withHistory() {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = lecture(h);
+    const m = insertManual(h, contentId, fixture.corrected.revision.id, 3);
+    const history = insertHistory(h, contentId, segmentsOf(h, m.id));
+    insertRow(h.db, "token_usage", {
+      id: "usage",
+      user_id: LOCAL.userId,
+      model_ref_json: "{}",
+      feature: "summary",
+      artifact_revision_id: history.summary,
+      content_id: contentId,
+      outcome: "succeeded",
+      created_at: 10,
+    });
+    return { h, contentId, fixture, m, history };
+  }
+
+  it("lists them on the revision, refuses without the option and deletes them with it, leaving the current ones", async () => {
+    const { h, contentId, m, history } = withHistory();
+    const listed = h.contents.revisions(LOCAL, contentId).revisions.find((item) => item.id === m.id);
+    expect(listed).toMatchObject({ deletable: true, blockers: { history: 3, artifacts: 0, highlights: 0 } });
+    expect(listed?.historyArtifacts.map((artifact) => [artifact.kind, artifact.revisionId])).toEqual([
+      ["summary", history.summary],
+      ["chapter", history.chapter],
+      ["highlight", history.highlight],
+    ]);
+    expect(listed?.historyArtifacts[0]?.templateId).toBeDefined();
+
+    expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, m.id, { withDescendants: false }))).toMatchObject({
+      code: "conflict.revision_referenced",
+      details: { history: 3 },
+    });
+    expect(revisionOf(h, m.id)).toBeDefined();
+
+    h.transcripts.deleteRevision(LOCAL, m.id, { withDescendants: false, withHistory: true });
+    expect(revisionOf(h, m.id)).toBeUndefined();
+    expect(countRows(h.db, "summary_revision", "id = ?", history.summary)).toBe(0);
+    expect(countRows(h.db, "rollup_partial", "summary_revision_id = ?", history.summary)).toBe(0);
+    expect(countRows(h.db, "chapter_revision", "id = ?", history.chapter)).toBe(0);
+    expect(countRows(h.db, "highlight_revision", "id = ?", history.highlight)).toBe(0);
+    expect(countRows(h.db, "summary_revision", "id = ?", history.currentSummary)).toBe(1);
+    // Usage is kept; only its link to the deleted revision is cleared.
+    expect(h.db.prepare("SELECT artifact_revision_id FROM token_usage WHERE id = 'usage'").get()).toEqual({ artifact_revision_id: null });
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("still refuses, deleting nothing, when anything else holds the revision", async () => {
+    const { h, contentId, m, history } = withHistory();
+    insertNote(h, contentId, m.id);
+    expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, m.id, { withDescendants: false, withHistory: true }))).toMatchObject({
+      code: "conflict.revision_referenced",
+      details: { notes: 1, history: 3 },
+    });
+    expect(revisionOf(h, m.id)).toBeDefined();
+    expect(countRows(h.db, "summary_revision", "id = ?", history.summary)).toBe(1);
+    expect(countRows(h.db, "chapter_revision", "id = ?", history.chapter)).toBe(1);
+  });
+
+  it("keeps a chapter revision a summary was written over among the blocking artifacts", async () => {
+    const { h, contentId, m, history } = withHistory();
+    // Another template's current summary, written over the earlier chapter revision.
+    const template = h.db.prepare("SELECT id FROM summary_template WHERE builtin = 1 ORDER BY id DESC LIMIT 1").get() as { id: string };
+    insertRow(h.db, "summary_artifact", { id: "other", content_id: contentId, template_id: template.id });
+    insertRow(h.db, "summary_revision", {
+      id: "written-over",
+      artifact_id: "other",
+      inputs_json: "[]",
+      quality: "normal",
+      body: "",
+      citations_json: "[]",
+      chapter_revision_id: history.chapter,
+      created_at: 12,
+    });
+    h.db.prepare("UPDATE summary_artifact SET current_revision_id = 'written-over' WHERE id = 'other'").run();
+    const listed = h.contents.revisions(LOCAL, contentId).revisions.find((item) => item.id === m.id);
+    expect(listed).toMatchObject({ deletable: false, blockers: { history: 2, artifacts: 1 } });
+    expect(listed?.historyArtifacts.map((artifact) => artifact.kind)).toEqual(["summary", "highlight"]);
+  });
+
+  it("does not fold a manual revision held by history into the next edit", () => {
+    const { h, contentId, m, history } = withHistory();
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, m.id, 20));
+    const next = commitEdit(h, contentId, m.id);
+    expect(next.parentRevisionId).toBe(m.id);
+    expect(revisionOf(h, m.id)).toBeDefined();
+    expect(countRows(h.db, "summary_revision", "id = ?", history.summary)).toBe(1);
   });
 });

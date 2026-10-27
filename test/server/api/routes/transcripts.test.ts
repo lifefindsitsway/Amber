@@ -394,17 +394,26 @@ describe("revision archive, delete and draft discard routes", () => {
     });
     const before = tableCounts(h);
 
-    for (const query of ["", "?withDescendants=true"]) {
+    for (const query of ["", "?withDescendants=true", "?withHistory=true"]) {
       const refused = await app.inject({ method: "DELETE", url: `/api/transcript/revisions/${manual.revision.id}${query}`, headers: auth });
       expect(refused.statusCode, query).toBe(409);
       expect(refused.json().error).toMatchObject({
         class: "conflict",
         code: "conflict.revision_referenced",
-        details: { children: 0, draft: 0, notes: 1, highlights: 0, chatMessages: 0, artifacts: 1, activeTasks: 0 },
+        // The summary has no current revision, so it is history only: removable with `withHistory`, but the note still holds.
+        details: { children: 0, draft: 0, notes: 1, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 1 },
       });
       expect(tableCounts(h), query).toEqual(before);
     }
     expect(countRows(h.db, "transcript_segment", "revision_id = ?", manual.revision.id)).toBe(manual.segments.length);
+
+    // Without the note, only history holds it: refused alone, deleted together with `withHistory=true`.
+    h.db.prepare("DELETE FROM note WHERE transcript_revision_id = ?").run(manual.revision.id);
+    const url = `/api/transcript/revisions/${manual.revision.id}`;
+    expect((await app.inject({ method: "DELETE", url, headers: auth })).statusCode).toBe(409);
+    expect((await app.inject({ method: "DELETE", url: `${url}?withHistory=true`, headers: auth })).statusCode).toBe(204);
+    expect(countRows(h.db, "summary_revision", "id = 'sr'")).toBe(0);
+    expect(countRows(h.db, "transcript_revision", "id = ?", manual.revision.id)).toBe(0);
   });
 
   it("deletes a revision refused for the draft based on it once that draft is discarded", async () => {

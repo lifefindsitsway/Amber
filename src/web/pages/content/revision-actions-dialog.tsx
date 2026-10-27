@@ -1,11 +1,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
+import type { TFunction } from "i18next";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import {
   transcriptRevisionListItemDtoSchema,
+  type HistoryArtifactDto,
   type RevisionBlockersDto,
   type TranscriptRevisionListItemDto,
 } from "../../../shared/dto/content.ts";
@@ -16,31 +18,58 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { revisionLabel } from "./labels.ts";
+import type { ContentSummariesDto } from "../../../shared/dto/summary.ts";
+import { useSummaries } from "./content-data.ts";
+import { revisionLabel, revisionTimeLabel, templateName } from "./labels.ts";
 
 /** Kinds kept as evidence: they can be archived but never permanently deleted. */
 const PROTECTED_KINDS: ReadonlySet<string> = new Set(["platform", "asr"]);
 
-export const BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks"] as const satisfies ReadonlyArray<keyof RevisionBlockersDto>;
+export const BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks", "history"] as const satisfies ReadonlyArray<keyof RevisionBlockersDto>;
+
+/**
+ * The history artifact revisions that cite any revision in `ids`, oldest first. One artifact
+ * revision can cite several revisions of the set, so they are kept once each.
+ */
+export function setHistoryArtifacts(ids: readonly string[], revisions: readonly TranscriptRevisionListItemDto[]): HistoryArtifactDto[] {
+  const inSet = new Set(ids);
+  const byId = new Map<string, HistoryArtifactDto>();
+  for (const item of revisions) {
+    if (!inSet.has(item.id)) continue;
+    for (const artifact of item.historyArtifacts) {
+      if (!byId.has(artifact.revisionId)) byId.set(artifact.revisionId, artifact);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
+}
 
 /**
  * A preview of what blocks deleting `ids`, from the list items' own blockers: children inside
- * the set do not count, other references are summed. The server judges the set as a whole and
- * its refusal, when it comes, replaces this preview.
+ * the set do not count, history artifacts are counted once however many members they cite, other
+ * references are summed. The server judges the set as a whole and its refusal, when it comes,
+ * replaces this preview.
  */
 export function setBlockers(ids: readonly string[], revisions: readonly TranscriptRevisionListItemDto[]): RevisionBlockersDto {
   const inSet = new Set(ids);
-  const blockers: RevisionBlockersDto = { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 };
+  const blockers: RevisionBlockersDto = { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0 };
   for (const item of revisions) {
     if (inSet.has(item.id)) {
       for (const category of BLOCKER_CATEGORIES) {
-        if (category !== "children") blockers[category] += item.blockers[category];
+        if (category !== "children" && category !== "history") blockers[category] += item.blockers[category];
       }
     } else if (item.parentRevisionId !== undefined && inSet.has(item.parentRevisionId)) {
       blockers.children += 1;
     }
   }
+  blockers.history = setHistoryArtifacts(ids, revisions).length;
   return blockers;
+}
+
+/** "周报模板 · 10-04 11:50 · 历史版本": a summary named by its template, when the Content still lists it. */
+function historyArtifactLabel(artifact: HistoryArtifactDto, summaries: ContentSummariesDto | undefined, t: TFunction): string {
+  const template = artifact.kind === "summary" ? summaries?.templates.find((entry) => entry.template.id === artifact.templateId)?.template : undefined;
+  const label = template === undefined ? t(`contentView.revisions.historyKind.${artifact.kind}`) : templateName(template, t);
+  return t("contentView.revisions.historyItem", { label, time: revisionTimeLabel(artifact.createdAt) });
 }
 
 /** Blockers as the server reported them in a `conflict.revision_referenced` refusal. */
@@ -140,7 +169,8 @@ export function RevisionActions(props: {
 
 /**
  * Permanent deletion: lists every revision the delete would remove (with descendants only
- * when asked) and each category of reference that blocks it. A blocked delete offers
+ * when asked) and each category of reference that blocks it. History artifact revisions that
+ * cite the set block it unless the user opts to delete them along. A blocked delete offers
  * 「改为归档」, and a blocking draft 「放弃草稿」 behind a second confirmation.
  */
 export function RevisionDeleteDialog(props: {
@@ -156,14 +186,20 @@ export function RevisionDeleteDialog(props: {
   const refresh = useRefreshContent(props.contentId);
   const queryClient = useQueryClient();
   const [withDescendants, setWithDescendants] = useState(false);
+  const [withHistory, setWithHistory] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const summaries = useSummaries(props.contentId);
   const { revision } = props;
   const ids = [revision.id, ...(withDescendants ? revision.descendantIds : [])];
   const members = ids.flatMap((id) => props.revisions.filter((item) => item.id === id));
+  const history = setHistoryArtifacts(ids, props.revisions);
 
   const remove = useMutation({
     mutationFn: () =>
-      client.delete(`/api/transcript/revisions/${encodeURIComponent(revision.id)}?withDescendants=${withDescendants ? "true" : "false"}`, z.undefined()),
+      client.delete(
+        `/api/transcript/revisions/${encodeURIComponent(revision.id)}?withDescendants=${withDescendants ? "true" : "false"}${deleteHistory ? "&withHistory=true" : ""}`,
+        z.undefined(),
+      ),
     onSuccess: async () => {
       await refresh();
       await queryClient.invalidateQueries({ queryKey: searchKeys.all });
@@ -188,7 +224,12 @@ export function RevisionDeleteDialog(props: {
   });
 
   const blockers = refusedBlockers(remove.error) ?? setBlockers(ids, props.revisions);
-  const blocked = BLOCKER_CATEGORIES.some((category) => blockers[category] > 0);
+  // The server may know of history the list did not show yet; its count still gets the opt-in.
+  const historyCount = Math.max(history.length, blockers.history);
+  // The opt-in only counts while the set has history to delete; it never rides along on a set without any.
+  const deleteHistory = withHistory && historyCount > 0;
+  const blocking = BLOCKER_CATEGORIES.filter((category) => blockers[category] > 0 && !(category === "history" && deleteHistory));
+  const blocked = blocking.length > 0;
   const isPrimary = ids.includes(props.primaryId ?? "");
   const busy = remove.isPending || archive.isPending || discard.isPending;
   const otherError = remove.error instanceof ApiError && refusedBlockers(remove.error) === undefined ? remove.error : undefined;
@@ -219,12 +260,37 @@ export function RevisionDeleteDialog(props: {
             {t("contentView.revisions.withDescendants", { count: revision.descendantIds.length })}
           </label>
         ) : null}
+        {historyCount > 0 ? (
+          <div className="flex flex-col gap-1" data-testid="revision-history-artifacts">
+            <p className="text-xs text-muted">{t("contentView.revisions.historyTitle")}</p>
+            <ul className="flex flex-col gap-1">
+              {history.map((artifact) => (
+                <li key={artifact.revisionId} className="rounded bg-sunken px-2 py-1 text-xs" data-artifact-revision-id={artifact.revisionId}>
+                  {historyArtifactLabel(artifact, summaries.data, t)}
+                </li>
+              ))}
+            </ul>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={withHistory}
+                onChange={(event) => {
+                  setWithHistory(event.target.checked);
+                  remove.reset();
+                }}
+                data-testid="revision-delete-history"
+              />
+              {t("contentView.revisions.withHistory", { count: historyCount })}
+            </label>
+            <p className="text-xs text-muted">{t("contentView.revisions.withHistoryHint")}</p>
+          </div>
+        ) : null}
         {isPrimary ? <p className="text-xs text-muted">{t("contentView.revisions.primaryHint")}</p> : null}
         {blocked ? (
           <div className="flex flex-col gap-1" data-testid="revision-blockers">
             <p className="text-xs text-muted">{t("contentView.revisions.blockersTitle")}</p>
             <ul className="flex flex-col gap-0.5 text-xs">
-              {BLOCKER_CATEGORIES.filter((category) => blockers[category] > 0).map((category) => (
+              {blocking.map((category) => (
                 <li key={category} data-testid={`revision-blocker-${category}`}>
                   {t(`contentView.revisions.blocker.${category}`, { count: blockers[category] })}
                 </li>

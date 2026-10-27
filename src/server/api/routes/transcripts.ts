@@ -28,7 +28,10 @@ const pageQuerySchema = z
   .strict();
 const mapQuerySchema = z.object({ targetRevision: z.string().min(1) }).strict();
 const deleteRevisionQuerySchema = z
-  .object({ withDescendants: z.enum(["true", "false"]).default("false").transform((value) => value === "true") })
+  .object({
+    withDescendants: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+    withHistory: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  })
   .strict();
 
 export interface TranscriptRouteDeps {
@@ -72,8 +75,8 @@ export function registerTranscriptRoutes(app: FastifyInstance, deps: TranscriptR
 
     app.delete("/api/transcript/revisions/:rid", async (request, reply) => {
       const { rid } = parseInput(revisionParamsSchema, request.params, "params");
-      const { withDescendants } = parseInput(deleteRevisionQuerySchema, request.query, "query");
-      transcripts.deleteRevision(principalOf(request), rid, { withDescendants });
+      const { withDescendants, withHistory } = parseInput(deleteRevisionQuerySchema, request.query, "query");
+      transcripts.deleteRevision(principalOf(request), rid, { withDescendants, withHistory });
       return reply.code(204).send();
     });
 

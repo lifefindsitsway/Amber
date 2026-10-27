@@ -11,7 +11,7 @@ import type { ArtifactRevisionBase, SummaryArtifact, SummaryRevision, SummaryTem
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Content } from "../domain/content.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
-import { deriveFreshness, type Freshness } from "../domain/freshness.ts";
+import { deriveFreshness, transcriptAncestors, type Freshness } from "../domain/freshness.ts";
 import { regenerateSummaryRequestSchema } from "../domain/task-request.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -45,11 +45,12 @@ export function qualityReasonsOf(quality: ArtifactRevisionBase["quality"]): Qual
   return quality === "degraded" ? ["citation_degraded"] : [];
 }
 
-/** Freshness of a summary against the Content's primary and current chapters. */
+/** Freshness of a summary against the Content's primary (and its ancestors) and current chapters. */
 function summaryFreshness(scope: RepositoryScope, content: Content, revision: SummaryRevision): Freshness {
   const chapterRevisionId = scope.chapters.getArtifact(content.userId, content.id)?.currentRevisionId;
   return deriveFreshness(revision.provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
+    primaryAncestors: transcriptAncestors(content.primaryTranscriptRevisionId, scope.transcripts.listRevisions(content.userId, content.id)),
     ...(chapterRevisionId === undefined ? {} : { chapterRevisionId }),
   });
 }
@@ -215,12 +216,49 @@ export class SummaryService {
     });
   }
 
+  /**
+   * Deletes one earlier revision of a summary, with its rolling partials; usage rows stay with
+   * their link cleared. The current revision, and one a collection summary was built from,
+   * stay: the page and the collection still show them. Only the current revision is indexed
+   * for search, so the projection is unchanged.
+   */
+  deleteRevision(principal: RequestPrincipal, artifactId: string, revisionId: string): SummaryRevisionListDto {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => {
+      const artifact = ownedArtifact(scope, owner, artifactId);
+      ownedContent(scope, owner, artifact.contentId);
+      const revision = scope.summaries.getRevision(owner, revisionId);
+      if (revision === undefined || revision.artifactId !== artifact.id) {
+        throw amberError("not_found", "summary revision not found");
+      }
+      if (artifact.currentRevisionId === revisionId) {
+        throw amberError("conflict", "the current summary revision cannot be deleted", {
+          code: "conflict.summary_revision_in_use",
+          details: { reason: "current" },
+        });
+      }
+      const history = scope.revisionReferences.historyArtifact(owner, "summary", revisionId);
+      if (history === undefined) {
+        throw amberError("conflict", "a collection summary was built from this revision", {
+          code: "conflict.summary_revision_in_use",
+          details: { reason: "collection_summary" },
+        });
+      }
+      scope.revisionReferences.deleteHistoryArtifact(owner, history);
+      return this.revisionList(scope, owner, artifact);
+    });
+  }
+
   private revisionList(scope: RepositoryScope, owner: string, artifact: SummaryArtifact): SummaryRevisionListDto {
     const content = ownedContent(scope, owner, artifact.contentId);
+    const revisions = scope.summaries.listRevisions(owner, artifact.id);
     return {
       artifactId: artifact.id,
       ...(artifact.currentRevisionId === undefined ? {} : { currentRevisionId: artifact.currentRevisionId }),
-      items: scope.summaries.listRevisions(owner, artifact.id).map((revision) => summaryRevisionDto(revision, summaryFreshness(scope, content, revision))),
+      items: revisions.map((revision) => summaryRevisionDto(revision, summaryFreshness(scope, content, revision))),
+      frozenRevisionIds: revisions
+        .filter((revision) => revision.id !== artifact.currentRevisionId && scope.revisionReferences.historyArtifact(owner, "summary", revision.id) === undefined)
+        .map((revision) => revision.id),
     };
   }
 }

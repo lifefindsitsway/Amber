@@ -103,20 +103,42 @@ export const revisionBlockersDtoSchema = z
     chatMessages: z.number().int().nonnegative(),
     artifacts: z.number().int().nonnegative(),
     activeTasks: z.number().int().nonnegative(),
+    /** Earlier summary, chapter or highlight revisions that only history holds; removable with the delete. */
+    history: z.number().int().nonnegative(),
   })
   .strict();
 export type RevisionBlockersDto = z.infer<typeof revisionBlockersDtoSchema>;
 
+export const HISTORY_ARTIFACT_KINDS = ["summary", "chapter", "highlight"] as const;
+export type HistoryArtifactKind = (typeof HISTORY_ARTIFACT_KINDS)[number];
+
+/**
+ * An artifact revision that is no longer current and that nothing else builds on (no
+ * collection summary froze it, no summary was written over it), but that still cites the
+ * transcript revision. A delete with `withHistory=true` removes it together with the revision.
+ */
+export const historyArtifactDtoSchema = z
+  .object({
+    kind: z.enum(HISTORY_ARTIFACT_KINDS),
+    revisionId: idSchema,
+    templateId: idSchema.exactOptional(),
+    createdAt: epochMsSchema,
+  })
+  .strict();
+export type HistoryArtifactDto = z.infer<typeof historyArtifactDtoSchema>;
+
 /**
  * A revision as the revision list returns it. `blockers` and `deletable` describe deleting
- * the revision alone; `descendantIds` are the revisions a delete with descendants would also
- * remove (their own blockers are in their own list items).
+ * the revision alone, `deletable` allowing for its `historyArtifacts` to go with it;
+ * `descendantIds` are the revisions a delete with descendants would also remove (their own
+ * blockers are in their own list items).
  */
 export const transcriptRevisionListItemDtoSchema = transcriptRevisionDtoSchema.extend({
   archived: z.boolean(),
   archivedAt: epochMsSchema.exactOptional(),
   deletable: z.boolean(),
   blockers: revisionBlockersDtoSchema,
+  historyArtifacts: z.array(historyArtifactDtoSchema),
   descendantIds: z.array(idSchema),
 });
 export type TranscriptRevisionListItemDto = z.infer<typeof transcriptRevisionListItemDtoSchema>;

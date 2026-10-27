@@ -180,6 +180,7 @@ const MATRIX: Record<string, Entry> = {
   ]),
   "GET /api/summaries/:aid/revisions": owned((ids) => [get(`/api/summaries/${ids.summaryArtifactId}/revisions`)]),
   "PUT /api/summaries/:aid/current": owned((ids) => [{ method: "PUT", url: `/api/summaries/${ids.summaryArtifactId}/current`, payload: { revisionId: ids.summaryRevisionId } }]),
+  "DELETE /api/summaries/:aid/revisions/:rid": owned((ids) => [{ method: "DELETE", url: `/api/summaries/${ids.summaryArtifactId}/revisions/${ids.summaryRevisionId}` }]),
   "GET /api/collections": { kind: "self", reason: "lists the caller's collections", requests: () => [get("/api/collections")] },
   "POST /api/collections": { kind: "self", reason: "creates the caller's own collection", requests: () => [{ method: "POST", url: "/api/collections", payload: { name: "bob collection 2" } }] },
   "GET /api/collections/:id": owned((ids) => [get(`/api/collections/${ids.collectionId}`)]),

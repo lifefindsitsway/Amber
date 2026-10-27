@@ -58,10 +58,13 @@ describe("content DTOs", () => {
       ...revision,
       archived: false,
       deletable: true,
-      blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+      blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 1 },
+      historyArtifacts: [{ kind: "summary", revisionId: "s1", templateId: "summary.core", createdAt: 2 }],
       descendantIds: [],
     };
     expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [item] }).success).toBe(true);
+    // History artifacts are only summaries, chapters and highlights.
+    expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [{ ...item, historyArtifacts: [{ kind: "translation", revisionId: "t1", createdAt: 2 }] }] }).success).toBe(false);
     // A list item carries its archive mark and blockers; a bare revision is not one.
     expect(transcriptRevisionListDtoSchema.safeParse({ revisions: [revision] }).success).toBe(false);
     expect(transcriptRevisionListDtoSchema.safeParse({ primaryTranscriptRevisionId: "r1", revisions: [{ ...item, kind: "draft" }] }).success).toBe(false);

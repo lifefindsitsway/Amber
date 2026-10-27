@@ -2,7 +2,7 @@ import type { HighlightRevisionDto, HighlightsDto } from "../../shared/dto/highl
 import type { HighlightRevision } from "../domain/artifact.ts";
 import type { Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
-import { deriveFreshness } from "../domain/freshness.ts";
+import { deriveFreshness, transcriptAncestors } from "../domain/freshness.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { laneKeys } from "../pipeline/lane.ts";
@@ -14,12 +14,13 @@ export interface HighlightServiceOptions {
 
 /**
  * A highlight revision as the UI sees it: each item with the sentence it points at, in time
- * order, and freshness derived against the current primary.
+ * order, and freshness derived against the current primary and its ancestors.
  */
 export function highlightRevisionDto(scope: RepositoryScope, owner: string, revision: HighlightRevision, content: Content): HighlightRevisionDto {
   const { provenance } = revision;
   const freshness = deriveFreshness(provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
+    primaryAncestors: transcriptAncestors(content.primaryTranscriptRevisionId, scope.transcripts.listRevisions(owner, content.id)),
   });
   const items = revision.items
     .map((item) => {

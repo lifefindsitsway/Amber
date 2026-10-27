@@ -33,7 +33,8 @@ export function revision(id: string, overrides: Partial<TranscriptRevisionListIt
     createdAt: 1,
     archived: false,
     deletable: false,
-    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0 },
+    historyArtifacts: [],
     descendantIds: [],
     ...overrides,
   };

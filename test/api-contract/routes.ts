@@ -60,6 +60,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/contents/:id/summaries", modes: BOTH },
   { method: "GET", path: "/summaries/:aid/revisions", modes: BOTH },
   { method: "PUT", path: "/summaries/:aid/current", modes: BOTH },
+  { method: "DELETE", path: "/summaries/:aid/revisions/:rid", modes: BOTH },
   // chapters and highlights
   { method: "GET", path: "/contents/:id/chapters", modes: BOTH },
   { method: "POST", path: "/contents/:id/chapters/regenerate", modes: BOTH },

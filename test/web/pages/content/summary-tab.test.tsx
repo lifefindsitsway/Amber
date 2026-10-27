@@ -9,6 +9,8 @@ import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, SEGMENTS, seg
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, task, taskDetail } from "../../../fixtures/web/shell-data.ts";
 
+const PROVIDERS = { body: { items: [{ id: "p1", name: "P", protocol: "openai_compatible", baseURL: "https://x", credentialStatus: "configured", hasCredential: true, models: [], createdAt: 1 }] } };
+
 beforeEach(() => {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: BREAKPOINT_DRAWER_PX + 300 });
   localStorage.clear();
@@ -70,6 +72,80 @@ describe("ChapterSection", () => {
     fireEvent.click(heading);
     expect(screen.queryByTestId("chapter-text")).toBeNull();
     expect(heading.getAttribute("aria-expanded")).toBe("false");
+  });
+  it("regenerates chapters with the default model next to the section title", async () => {
+    const model = { providerProfileId: "p1", modelId: "m1" };
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, defaultModelRef: model, updatedAt: 1 } },
+      "GET /api/providers": PROVIDERS,
+      "POST /api/contents/c1/chapters/regenerate": { status: 202, body: { taskId: "t9" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const button = await within(section).findByTestId("chapters-regenerate");
+    expect(button.textContent).toBe("重新生成");
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/settings")).toBe(true));
+    await act(async () => undefined);
+    fireEvent.click(button);
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.path).toBe("/api/contents/c1/chapters/regenerate"));
+    const post = calls.find((call) => call.method === "POST");
+    expect(post?.body).toEqual({ modelRef: model });
+    expect(post?.headers["idempotency-key"]).toBeTruthy();
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.path === "/api/contents/c1/chapters")).toHaveLength(2));
+  });
+  it("shows the server's refusal to regenerate chapters", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "POST /api/contents/c1/chapters/regenerate": {
+        status: 409,
+        body: { error: { class: "conflict", code: "conflict.mutation_lane", retryDisposition: "never", userMessage: "另一个任务正在处理" } },
+      },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    fireEvent.click(await within(section).findByTestId("chapters-regenerate"));
+    expect((await within(section).findByRole("alert")).textContent).toContain("另一个任务正在处理");
+  });
+  it("disables regeneration while a Task works on chapters", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...chapters, activeTaskId: "t5" } },
+      "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "chapter", "running")], { kind: "regenerate_chapters", contentId: "c1" }) },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const button = (await within(section).findByTestId("chapters-regenerate")) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("正在重新生成…");
+    // The Task's progress shows under the title, so waiting is never silent.
+    expect(await within(section).findByTestId("task-flow")).toBeTruthy();
+  });
+  it("points to model configuration instead of regenerating without a model", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/providers": { body: { items: [] } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    expect((await within(section).findByTestId("chapters-configure")).getAttribute("href")).toBe("/settings/models");
+    expect(within(section).queryByTestId("chapters-regenerate")).toBeNull();
+  });
+  it("offers no regeneration without chapters", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/contents/c1/chapters": { body: { revisions: [] } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    await screen.findByTestId("summary-body");
+    expect(screen.queryByTestId("chapter-section")).toBeNull();
+    expect(screen.queryByTestId("chapters-regenerate")).toBeNull();
+  });
+  it("words stale chapters as built on an older transcript", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as { current: Record<string, unknown> };
+    const current = { ...chapters.current, origin: { kind: "ai", transcriptRevisionId: "r0" }, stale: true, staleReason: "transcript_changed" };
+    mockApi({ ...routes, "GET /api/contents/c1/chapters": { body: { ...chapters, current } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    expect(await within(await screen.findByTestId("chapter-section")).findByText("章节基于旧版原文生成，可能已过期，可按需重新生成")).toBeTruthy();
   });
 });
 
@@ -301,5 +377,99 @@ describe("citations of a summary written on a former primary", () => {
     const frame = screen.getByTestId("player-bilibili");
     await waitFor(() => expect(new URL(frame.getAttribute("src") ?? "").searchParams.get("t")).toBe("75"));
     expect(calls.some((call) => call.path.startsWith("/api/transcript/revisions/r1/segments"))).toBe(true);
+  });
+});
+
+describe("summary history", () => {
+  const summaryRevision = (id: string, createdAt: number) => ({
+    id,
+    artifactId: "a1",
+    body: `版本 ${id}`,
+    citations: [],
+    transcriptRevisionId: "r1",
+    quality: "normal",
+    qualityReasons: [],
+    stale: false,
+    createdAt,
+  });
+  const LIST = {
+    artifactId: "a1",
+    currentRevisionId: "sr1",
+    items: [summaryRevision("sr-frozen", 1), summaryRevision("sr-old", 2), summaryRevision("sr1", 3)],
+    frozenRevisionIds: ["sr-frozen"],
+  };
+
+  async function openHistory(): Promise<HTMLElement[]> {
+    fireEvent.click(await screen.findByRole("button", { name: "历史版本" }));
+    return waitFor(() => {
+      const rows = screen.getAllByTestId("summary-history-item");
+      expect(rows).toHaveLength(3);
+      return rows;
+    });
+  }
+  const row = (id: string): HTMLElement => screen.getAllByTestId("summary-history-item").find((item) => item.dataset.revisionId === id) as HTMLElement;
+
+  it("offers delete only on earlier revisions, disabled on one a collection summary was built from", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/summaries/a1/revisions": { body: LIST } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    await openHistory();
+    expect(within(row("sr1")).queryByTestId("summary-history-delete")).toBeNull();
+    const old = within(row("sr-old")).getByTestId("summary-history-delete") as HTMLButtonElement;
+    expect(old.disabled).toBe(false);
+    expect(old.getAttribute("aria-label")).toBe("删除这个历史版本");
+    const frozen = within(row("sr-frozen")).getByTestId("summary-history-delete") as HTMLButtonElement;
+    expect(frozen.disabled).toBe(true);
+    expect(frozen.title).toBe("已被合集归纳引用，不能删除");
+  });
+
+  it("deletes after a second click and shows the list the server answers", async () => {
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "GET /api/summaries/a1/revisions": { body: LIST },
+      "DELETE /api/summaries/a1/revisions/sr-old": { body: { ...LIST, items: LIST.items.filter((item) => item.id !== "sr-old") } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    await openHistory();
+    const reads = (path: string): number => calls.filter((call) => call.method === "GET" && call.path === path).length;
+    const summaries = reads("/api/contents/c1/summaries");
+    const transcripts = reads("/api/contents/c1/transcript/revisions");
+    fireEvent.click(within(row("sr-old")).getByTestId("summary-history-delete"));
+    expect(within(row("sr-old")).getByText("删除后无法恢复")).toBeTruthy();
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    fireEvent.click(within(row("sr-old")).getByRole("button", { name: "取消" }));
+    expect(within(row("sr-old")).queryByTestId("summary-history-delete-confirm")).toBeNull();
+    fireEvent.click(within(row("sr-old")).getByTestId("summary-history-delete"));
+    fireEvent.click(within(row("sr-old")).getByTestId("summary-history-delete-confirm"));
+    await waitFor(() => expect(screen.getAllByTestId("summary-history-item").map((item) => item.dataset.revisionId)).toEqual(["sr1", "sr-frozen"]));
+    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/summaries/a1/revisions/sr-old"]);
+    // The list came from the answer, not another read.
+    expect(reads("/api/summaries/a1/revisions")).toBe(1);
+    await waitFor(() => expect(reads("/api/contents/c1/summaries")).toBeGreaterThan(summaries));
+    await waitFor(() => expect(reads("/api/contents/c1/transcript/revisions")).toBeGreaterThan(transcripts));
+  });
+
+  it("shows the server's refusal to delete", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/summaries/a1/revisions": { body: LIST },
+      "DELETE /api/summaries/a1/revisions/sr-old": {
+        status: 409,
+        body: {
+          error: {
+            class: "conflict",
+            code: "conflict.summary_revision_in_use",
+            retryDisposition: "never",
+            userMessage: "这个总结版本正在使用（是当前版本，或已被合集归纳引用），不能删除",
+            details: { reason: "collection_summary" },
+          },
+        },
+      },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    await openHistory();
+    fireEvent.click(within(row("sr-old")).getByTestId("summary-history-delete"));
+    fireEvent.click(within(row("sr-old")).getByTestId("summary-history-delete-confirm"));
+    expect(await screen.findByText("这个总结版本正在使用（是当前版本，或已被合集归纳引用），不能删除")).toBeTruthy();
+    expect(row("sr-old")).toBeTruthy();
   });
 });

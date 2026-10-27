@@ -250,8 +250,12 @@ export function revisionTakesPrimary(
 /** The kinds the pipeline keeps as evidence: they can be archived but never permanently deleted. */
 export const PROTECTED_REVISION_KINDS: ReadonlySet<TranscriptKind> = new Set(["platform", "asr"]);
 
-/** What can keep a transcript revision from being deleted, by category. */
-export const REVISION_BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks"] as const;
+/**
+ * What can keep a transcript revision from being deleted, by category. `history` is an
+ * earlier summary, chapter or highlight revision that is no longer current and that nothing
+ * builds on: it blocks like the others unless the user chooses to delete it along.
+ */
+export const REVISION_BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks", "history"] as const;
 export type RevisionBlockerCategory = (typeof REVISION_BLOCKER_CATEGORIES)[number];
 export type RevisionBlockers = Record<RevisionBlockerCategory, number>;
 
@@ -260,18 +264,29 @@ export type RevisionBlockers = Record<RevisionBlockerCategory, number>;
  * of their sentences. `revisionIds` are the revisions it reaches (sentence references are
  * already resolved to their revision). `holderRevisionId` is set when the row is itself a
  * revision of the Content, i.e. a child: deleting it together with its parent removes the
- * reference instead of breaking it.
+ * reference instead of breaking it. `history` names the artifact revision of a `history`
+ * reference, which a delete may remove along with the transcript revisions.
  */
 export interface RevisionReference {
   category: RevisionBlockerCategory;
   revisionIds: readonly string[];
   holderRevisionId?: string;
+  history?: HistoryArtifactRef;
+}
+
+/** An artifact revision only history holds (see `REVISION_BLOCKER_CATEGORIES`). */
+export interface HistoryArtifactRef {
+  kind: "summary" | "chapter" | "highlight";
+  revisionId: string;
+  /** The summary template, for summaries. */
+  templateId?: string;
+  createdAt: number;
 }
 
 type Lineage = Pick<TranscriptRevision, "id" | "parentRevisionId">;
 
 export function emptyRevisionBlockers(): RevisionBlockers {
-  return { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 };
+  return { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0 };
 }
 
 export function hasRevisionBlockers(blockers: RevisionBlockers, ignore: ReadonlySet<RevisionBlockerCategory> = new Set()): boolean {
@@ -294,6 +309,17 @@ export function revisionBlockers(references: readonly RevisionReference[], ids: 
     }
   }
   return blockers;
+}
+
+/** The history artifact revisions that reach any of `ids`, each once, oldest first. */
+export function historyArtifactsOf(references: readonly RevisionReference[], ids: ReadonlySet<string>): HistoryArtifactRef[] {
+  const found = new Map<string, HistoryArtifactRef>();
+  for (const reference of references) {
+    if (reference.history !== undefined && reference.revisionIds.some((id) => ids.has(id))) {
+      found.set(reference.history.revisionId, reference.history);
+    }
+  }
+  return [...found.values()].sort((a, b) => a.createdAt - b.createdAt || a.revisionId.localeCompare(b.revisionId));
 }
 
 /** Every revision derived from `rootId`, nearest first; the root itself is not included. */

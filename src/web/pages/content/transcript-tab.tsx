@@ -378,7 +378,7 @@ function TranscriptReader(props: {
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
       {currentChapters?.stale === true ? (
         <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-chapters-stale">
-          {t("contentView.stale.transcript_changed")}
+          {t("contentView.chapters.stale")}
         </p>
       ) : null}
       {proofread.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={proofread.error.error} /></div> : null}

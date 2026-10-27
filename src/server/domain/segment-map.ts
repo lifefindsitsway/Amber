@@ -60,7 +60,7 @@ export function mapSegment(input: SegmentMapInput): SegmentMapping {
 }
 
 /** The revision and its ancestors, nearest first; stops at a missing parent or a cycle. */
-function ancestry(revisionId: string, revisions: ReadonlyMap<string, MapRevision>): string[] {
+export function ancestry(revisionId: string, revisions: ReadonlyMap<string, MapRevision>): string[] {
   const chain: string[] = [];
   for (let id: string | undefined = revisionId; id !== undefined && !chain.includes(id); id = revisions.get(id)?.parentRevisionId) {
     if (!revisions.has(id)) {

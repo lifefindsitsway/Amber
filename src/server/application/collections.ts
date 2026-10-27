@@ -17,7 +17,7 @@ import type { CollectionSummaryRevision } from "../domain/artifact.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Collection, CollectionItem } from "../domain/collection.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
-import { deriveCollectionFreshness, type CollectionMemberState, type Freshness } from "../domain/freshness.ts";
+import { deriveCollectionFreshness, transcriptAncestors, type CollectionMemberState, type Freshness } from "../domain/freshness.ts";
 import { DEFAULT_SUMMARY_TEMPLATE_ID } from "../domain/prompts.ts";
 import { summarizeCollectionRequestSchema, type SummarizeCollectionRequest } from "../domain/task-request.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
@@ -358,14 +358,15 @@ function itemDto(scope: RepositoryScope, owner: string, item: CollectionItem): C
   };
 }
 
-/** A member's `summary.core` current revision and primary transcript as they are now. */
+/** A member's `summary.core` current revision and primary transcript (with its ancestors) as they are now. */
 function memberState(scope: RepositoryScope, owner: string, contentId: string): CollectionMemberState {
   const content = scope.contents.get(owner, contentId);
   const artifact = scope.summaries.findArtifact(owner, contentId, DEFAULT_SUMMARY_TEMPLATE_ID);
+  const primaryId = content?.primaryTranscriptRevisionId;
   return {
     contentId,
     ...(artifact?.currentRevisionId === undefined ? {} : { summaryRevisionId: artifact.currentRevisionId }),
-    ...(content?.primaryTranscriptRevisionId === undefined ? {} : { transcriptRevisionId: content.primaryTranscriptRevisionId }),
+    ...(primaryId === undefined ? {} : { transcriptRevisionId: primaryId, transcriptAncestors: transcriptAncestors(primaryId, scope.transcripts.listRevisions(owner, contentId)) }),
   };
 }
 

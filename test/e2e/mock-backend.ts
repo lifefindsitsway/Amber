@@ -173,7 +173,8 @@ export function revisionListItem<T extends object>(revision: T) {
     ...revision,
     archived: false,
     deletable: false,
-    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0 },
+    blockers: { children: 0, draft: 0, notes: 0, highlights: 0, chatMessages: 0, artifacts: 0, activeTasks: 0, history: 0 },
+    historyArtifacts: [] as unknown[],
     descendantIds: [] as string[],
   };
 }

@@ -3,7 +3,8 @@ import { UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { BOB, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
-import { insertSummary, seedTranscripts } from "../../fixtures/pipeline/summary-data.ts";
+import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../fixtures/pipeline/summary-data.ts";
+import { countRows, insertRow } from "../../tools/sqlite.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -83,8 +84,19 @@ describe("listing a Content's summaries", () => {
     aiChapters(h, contentId, fixture.asr.revision.id, fixture.asr.segments[1]?.id as SegmentId);
     expect(h.summaries.list(LOCAL, contentId).templates[0]).toMatchObject({ stale: true, staleReason: "chapters_changed", current: { stale: true } });
 
+    // A primary proofread from the summary's transcript is the same lineage: only the chapters still differ.
     h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.corrected.revision.id, 5));
+    expect(h.summaries.list(LOCAL, contentId).templates[0]).toMatchObject({ stale: true, staleReason: "chapters_changed" });
+
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.platform.revision.id, 6));
     expect(h.summaries.list(LOCAL, contentId).templates[0]).toMatchObject({ stale: true, staleReason: "transcript_changed" });
+  });
+
+  it("stays fresh when the primary is edited from the summary's transcript", () => {
+    const { h, contentId, fixture } = setup();
+    insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id });
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.corrected.revision.id, 5));
+    expect(h.summaries.list(LOCAL, contentId).templates[0]).toMatchObject({ stale: false, current: { stale: false } });
   });
 
   it("keeps showing a deleted template that already produced a summary of this Content", () => {
@@ -179,5 +191,91 @@ describe("revisions and current", () => {
     const other = insertSummary(h, { contentId, templateId: "summary.terms", transcriptRevisionId: fixture.asr.revision.id });
     expect(await codeOf(() => h.summaries.setCurrent(LOCAL, older.artifactId, other.revisionId))).toBe("not_found");
     expect(await codeOf(() => h.summaries.setCurrent(BOB, older.artifactId, older.revisionId))).toBe("not_found");
+  });
+});
+
+describe("deleting one earlier summary revision", () => {
+  async function errorOf(work: () => unknown): Promise<{ code: string; details?: unknown } | undefined> {
+    try {
+      await work();
+    } catch (error) {
+      return isAmberError(error) ? { code: error.appError.code, ...(error.appError.details === undefined ? {} : { details: error.appError.details }) } : { code: String(error) };
+    }
+    return undefined;
+  }
+
+  it("deletes it with its partials, keeps usage with the link cleared, and frees the transcript it alone cited", async () => {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    const fixture = seedTranscripts(h, contentId);
+    const segment = fixture.corrected.segments[0];
+    // The earlier revision is the only thing citing the proofread transcript.
+    const older = insertSummary(h, { contentId, transcriptRevisionId: fixture.corrected.revision.id, citations: [{ transcriptRevisionId: fixture.corrected.revision.id, segmentId: segment?.id as SegmentId }], createdAt: 10 });
+    const current = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id, createdAt: 20 });
+    expect(current.artifactId).toBe(older.artifactId);
+    insertRow(h.db, "rollup_partial", {
+      id: "rp",
+      summary_revision_id: older.revisionId,
+      partial_index: 0,
+      inputs_json: "[]",
+      body: "分段",
+      citations_json: "[]",
+      model_ref_json: "{}",
+      prompt_ref_json: "{}",
+      prompt_snapshot: "",
+      created_at: 10,
+    });
+    insertRow(h.db, "token_usage", {
+      id: "usage",
+      user_id: LOCAL.userId,
+      model_ref_json: "{}",
+      feature: "summary",
+      artifact_revision_id: older.revisionId,
+      content_id: contentId,
+      outcome: "succeeded",
+      created_at: 10,
+    });
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.asr.revision.id, 30));
+    const corrected = () => h.contents.revisions(LOCAL, contentId).revisions.find((item) => item.id === fixture.corrected.revision.id);
+    expect(corrected()?.blockers.history).toBe(1);
+
+    const listed = h.summaries.revisions(LOCAL, older.artifactId);
+    expect(listed.frozenRevisionIds).toEqual([]);
+    const after = h.summaries.deleteRevision(LOCAL, older.artifactId, older.revisionId);
+    expect(after.items.map((item) => item.id)).toEqual([current.revisionId]);
+    expect(after.currentRevisionId).toBe(current.revisionId);
+    expect(countRows(h.db, "rollup_partial", "id = 'rp'")).toBe(0);
+    expect(h.db.prepare("SELECT artifact_revision_id FROM token_usage WHERE id = 'usage'").get()).toEqual({ artifact_revision_id: null });
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+    expect(corrected()).toMatchObject({ blockers: { history: 0 }, historyArtifacts: [] });
+  });
+
+  it("refuses the current revision, one a collection summary was built from, and another owner's, deleting nothing", async () => {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    const fixture = seedTranscripts(h, contentId);
+    const frozen = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id, createdAt: 10 });
+    const current = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id, createdAt: 20 });
+    const collection = h.collections.create(LOCAL, { name: "Course" });
+    await h.collections.addItem(LOCAL, collection.id, { contentId });
+    const item = h.collections.get(LOCAL, collection.id).items[0];
+    insertCollectionSummary(h, collection.id, [
+      { collectionItemId: item?.id as string, contentId, summaryRevisionId: frozen.revisionId, transcriptRevisionId: fixture.asr.revision.id, position: 0 },
+    ]);
+    expect(h.summaries.revisions(LOCAL, frozen.artifactId).frozenRevisionIds).toEqual([frozen.revisionId]);
+
+    expect(await errorOf(() => h.summaries.deleteRevision(LOCAL, current.artifactId, current.revisionId))).toEqual({
+      code: "conflict.summary_revision_in_use",
+      details: { reason: "current" },
+    });
+    expect(await errorOf(() => h.summaries.deleteRevision(LOCAL, frozen.artifactId, frozen.revisionId))).toEqual({
+      code: "conflict.summary_revision_in_use",
+      details: { reason: "collection_summary" },
+    });
+    expect((await errorOf(() => h.summaries.deleteRevision(BOB, frozen.artifactId, frozen.revisionId)))?.code).toBe("not_found");
+    expect((await errorOf(() => h.summaries.deleteRevision(LOCAL, frozen.artifactId, "missing")))?.code).toBe("not_found");
+    expect(countRows(h.db, "summary_revision")).toBe(2);
   });
 });

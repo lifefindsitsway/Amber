@@ -1,6 +1,7 @@
 import { markedSegmentIds } from "../../../domain/citations.ts";
-import type { RevisionBlockerCategory, RevisionReference } from "../../../domain/transcript.ts";
+import type { HistoryArtifactRef, RevisionBlockerCategory, RevisionReference } from "../../../domain/transcript.ts";
 import type { RevisionReferenceRepository } from "../../../ports/repository.ts";
+import { amberError } from "../../../domain/errors.ts";
 import type { SqliteConnection } from "../database.ts";
 
 /**
@@ -13,19 +14,22 @@ const INPUT_REVISION = `CASE json_extract(input.value, '$.kind')
   ELSE json_extract(input.value, '$.transcriptRevisionId')
 END`;
 
-/** Citations arrays hold `{ transcriptRevisionId, segmentId }`; both ends are references. */
-function citationTargets(table: string, alias: string, where: string): string {
+/**
+ * Citations arrays hold `{ transcriptRevisionId, segmentId }`; both ends are references.
+ * `ref` is the column naming the referencing row (the row itself unless it is part of another).
+ */
+function citationTargets(table: string, alias: string, where: string, ref = `${alias}.id`): string {
   return `
-    SELECT ${alias}.id AS ref, json_extract(citation.value, '$.transcriptRevisionId') AS target
+    SELECT ${ref} AS ref, json_extract(citation.value, '$.transcriptRevisionId') AS target
     FROM ${table}, json_each(${alias}.citations_json) AS citation ${where}
     UNION ALL
-    SELECT ${alias}.id AS ref, segment.revision_id AS target
+    SELECT ${ref} AS ref, segment.revision_id AS target
     FROM ${table}, json_each(${alias}.citations_json) AS citation
     JOIN transcript_segment AS segment ON segment.id = json_extract(citation.value, '$.segmentId') ${where}`;
 }
 
-function inputTargets(table: string, alias: string, where: string): string {
-  return `SELECT ${alias}.id AS ref, ${INPUT_REVISION} AS target FROM ${table}, json_each(${alias}.inputs_json) AS input ${where}`;
+function inputTargets(table: string, alias: string, where: string, ref = `${alias}.id`): string {
+  return `SELECT ${ref} AS ref, ${INPUT_REVISION} AS target FROM ${table}, json_each(${alias}.inputs_json) AS input ${where}`;
 }
 
 const SUMMARY_OF_CONTENT = "summary_revision AS summary JOIN summary_artifact AS artifact ON artifact.id = summary.artifact_id";
@@ -98,13 +102,17 @@ const STRUCTURED: ReadonlyArray<{ category: RevisionBlockerCategory; prefix: str
       ${citationTargets(SUMMARY_OF_CONTENT, "summary", BY_CONTENT)}`,
   },
   {
+    // A summary's rolling partials are part of it: kept and deleted with their summary.
+    category: "artifacts",
+    prefix: "summary",
+    sql: `${inputTargets(PARTIAL_OF_CONTENT, "partial", BY_CONTENT, "owner.id")}
+      UNION ALL
+      ${citationTargets(PARTIAL_OF_CONTENT, "partial", BY_CONTENT, "owner.id")}`,
+  },
+  {
     category: "artifacts",
     prefix: "partial",
-    sql: `${inputTargets(PARTIAL_OF_CONTENT, "partial", BY_CONTENT)}
-      UNION ALL
-      ${citationTargets(PARTIAL_OF_CONTENT, "partial", BY_CONTENT)}
-      UNION ALL
-      ${inputTargets(PARTIAL_OF_USER_COLLECTIONS, "partial", BY_USER_COLLECTIONS)}
+    sql: `${inputTargets(PARTIAL_OF_USER_COLLECTIONS, "partial", BY_USER_COLLECTIONS)}
       UNION ALL
       ${citationTargets(PARTIAL_OF_USER_COLLECTIONS, "partial", BY_USER_COLLECTIONS)}`,
   },
@@ -178,10 +186,13 @@ const MARKED: ReadonlyArray<{ category: RevisionBlockerCategory; prefix: string;
   },
   {
     category: "artifacts",
+    prefix: "summary",
+    sql: `SELECT owner.id AS ref, partial.body AS body FROM ${PARTIAL_OF_CONTENT} ${BY_CONTENT} AND instr(partial.body, '[[seg:') > 0`,
+  },
+  {
+    category: "artifacts",
     prefix: "partial",
-    sql: `SELECT partial.id AS ref, partial.body AS body FROM ${PARTIAL_OF_CONTENT} ${BY_CONTENT} AND instr(partial.body, '[[seg:') > 0
-      UNION ALL
-      SELECT partial.id, partial.body FROM ${PARTIAL_OF_USER_COLLECTIONS} ${BY_USER_COLLECTIONS} AND instr(partial.body, '[[seg:') > 0`,
+    sql: `SELECT partial.id AS ref, partial.body AS body FROM ${PARTIAL_OF_USER_COLLECTIONS} ${BY_USER_COLLECTIONS} AND instr(partial.body, '[[seg:') > 0`,
   },
   {
     category: "artifacts",
@@ -203,14 +214,99 @@ const CHILDREN_SQL = `
   JOIN transcript_segment AS child ON child.id = source.child_segment_id
   WHERE revision.content_id = @content`;
 
+/**
+ * Whether a summary, chapter or highlight revision is history only: not its artifact's
+ * current revision and nothing built on it. A collection summary that froze a summary, or a
+ * summary written over a chapter revision, keeps it from going.
+ */
+const HISTORY_SQL: Record<HistoryArtifactRef["kind"], string> = {
+  summary: `
+    SELECT summary.id AS id, summary.created_at AS createdAt, artifact.template_id AS templateId
+    FROM summary_revision AS summary JOIN summary_artifact AS artifact ON artifact.id = summary.artifact_id
+    WHERE summary.id = @id AND artifact.current_revision_id IS NOT summary.id
+      AND NOT EXISTS (
+        SELECT 1 FROM collection_summary_revision AS collected, json_each(collected.input_items_json) AS item
+        WHERE json_extract(item.value, '$.summaryRevisionId') = summary.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM collection_summary_revision AS collected, json_each(collected.inputs_json) AS input
+        WHERE json_extract(input.value, '$.summaryRevisionId') = summary.id
+           OR (json_extract(input.value, '$.kind') = 'summaryRevision' AND json_extract(input.value, '$.id') = summary.id))
+      AND NOT EXISTS (
+        SELECT 1 FROM rollup_partial AS partial, json_each(partial.inputs_json) AS input
+        WHERE json_extract(input.value, '$.summaryRevisionId') = summary.id
+           OR (json_extract(input.value, '$.kind') = 'summaryRevision' AND json_extract(input.value, '$.id') = summary.id))`,
+  chapter: `
+    SELECT chapter.id AS id, chapter.created_at AS createdAt
+    FROM chapter_revision AS chapter JOIN chapter_artifact AS artifact ON artifact.id = chapter.artifact_id
+    WHERE chapter.id = @id AND artifact.current_revision_id IS NOT chapter.id
+      AND NOT EXISTS (SELECT 1 FROM summary_revision AS summary WHERE summary.chapter_revision_id = chapter.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM summary_revision AS summary, json_each(summary.inputs_json) AS input
+        WHERE json_extract(input.value, '$.kind') = 'chapterRevision' AND json_extract(input.value, '$.id') = chapter.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM rollup_partial AS partial, json_each(partial.inputs_json) AS input
+        WHERE json_extract(input.value, '$.kind') = 'chapterRevision' AND json_extract(input.value, '$.id') = chapter.id)`,
+  highlight: `
+    SELECT highlight.id AS id, highlight.created_at AS createdAt
+    FROM highlight_revision AS highlight JOIN highlight_artifact AS artifact ON artifact.id = highlight.artifact_id
+    WHERE highlight.id = @id AND artifact.current_revision_id IS NOT highlight.id`,
+};
+
+/** Reference prefixes whose rows are artifact revisions that may be history only. */
+const HISTORY_PREFIXES: Readonly<Record<string, HistoryArtifactRef["kind"]>> = { summary: "summary", chapter: "chapter", highlight: "highlight" };
+
+const HISTORY_TABLES: Record<HistoryArtifactRef["kind"], { table: string; artifact: string }> = {
+  summary: { table: "summary_revision", artifact: "summary_artifact" },
+  chapter: { table: "chapter_revision", artifact: "chapter_artifact" },
+  highlight: { table: "highlight_revision", artifact: "highlight_artifact" },
+};
+
 export function sqliteRevisionReferenceRepository(db: SqliteConnection): RevisionReferenceRepository {
   const ownedContent = db.prepare("SELECT 1 FROM content WHERE id = ? AND user_id = ?");
   const children = db.prepare(CHILDREN_SQL);
   const structured = STRUCTURED.map((query) => ({ ...query, statement: db.prepare(query.sql) }));
   const marked = MARKED.map((query) => ({ ...query, statement: db.prepare(query.sql) }));
   const segmentRevision = db.prepare("SELECT revision_id FROM transcript_segment WHERE id = ?");
+  const history = Object.fromEntries(Object.entries(HISTORY_SQL).map(([kind, sql]) => [kind, db.prepare(sql)])) as Record<
+    HistoryArtifactRef["kind"],
+    ReturnType<SqliteConnection["prepare"]>
+  >;
+  const historyOf = (key: string): HistoryArtifactRef | undefined => {
+    const separator = key.indexOf(":");
+    const kind = HISTORY_PREFIXES[key.slice(0, separator)];
+    if (kind === undefined) {
+      return undefined;
+    }
+    const row = history[kind].get({ id: key.slice(separator + 1) }) as { id: string; createdAt: number; templateId?: string | null } | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    return { kind, revisionId: row.id, ...(typeof row.templateId === "string" ? { templateId: row.templateId } : {}), createdAt: row.createdAt };
+  };
+
+  const ownedHistory = Object.fromEntries(
+    Object.entries(HISTORY_TABLES).map(([kind, { table, artifact }]) => [
+      kind,
+      db.prepare(`SELECT 1 FROM ${table} AS revision JOIN ${artifact} AS artifact ON artifact.id = revision.artifact_id
+        JOIN content ON content.id = artifact.content_id WHERE revision.id = ? AND content.user_id = ?`),
+    ]),
+  ) as Record<HistoryArtifactRef["kind"], ReturnType<SqliteConnection["prepare"]>>;
+  const deleteHistory = Object.fromEntries(
+    Object.entries(HISTORY_TABLES).map(([kind, { table }]) => [kind, db.prepare(`DELETE FROM ${table} WHERE id = ?`)]),
+  ) as Record<HistoryArtifactRef["kind"], ReturnType<SqliteConnection["prepare"]>>;
 
   return {
+    deleteHistoryArtifact(ownerUserId, artifact) {
+      // Re-checked here so that a current revision, or one something builds on, never goes.
+      if (this.historyArtifact(ownerUserId, artifact.kind, artifact.revisionId) === undefined) {
+        throw amberError("internal", "not a history-only artifact revision of the owner");
+      }
+      // Rolling partials cascade with their summary; token usage keeps its rows (triggers clear the link).
+      deleteHistory[artifact.kind].run(artifact.revisionId);
+    },
+    historyArtifact(ownerUserId, kind, revisionId) {
+      return ownedHistory[kind].get(revisionId, ownerUserId) === undefined ? undefined : historyOf(`${kind}:${revisionId}`);
+    },
     listReferences(ownerUserId, contentId) {
       if (ownedContent.get(contentId, ownerUserId) === undefined) {
         return [];
@@ -253,10 +349,16 @@ export function sqliteRevisionReferenceRepository(db: SqliteConnection): Revisio
           }
         }
       }
-      for (const entry of grouped.values()) {
-        if (entry.revisionIds.size > 0) {
-          references.push({ category: entry.category, revisionIds: [...entry.revisionIds] });
+      for (const [key, entry] of grouped) {
+        if (entry.revisionIds.size === 0) {
+          continue;
         }
+        const historyRef = historyOf(key);
+        references.push(
+          historyRef === undefined
+            ? { category: entry.category, revisionIds: [...entry.revisionIds] }
+            : { category: "history", revisionIds: [...entry.revisionIds], history: historyRef },
+        );
       }
       return references;
     },

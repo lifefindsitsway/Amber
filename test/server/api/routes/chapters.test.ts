@@ -60,8 +60,8 @@ async function setup() {
   return { h, llm, app, contentId, fixture, artifactId, platformRevisionId, aiRevisionId };
 }
 
-describe("switching the primary makes dependent chapters stale without calling a model", () => {
-  it("derives transcript_changed for AI chapters, keeps platform chapters fresh and makes no LLM call", async () => {
+describe("switching the primary to another lineage makes dependent chapters stale without calling a model", () => {
+  it("keeps AI chapters fresh on an edited primary, derives transcript_changed on another lineage, keeps platform chapters fresh and makes no LLM call", async () => {
     const { llm, app, contentId, fixture, artifactId, platformRevisionId, aiRevisionId } = await setup();
     const url = `/api/contents/${contentId}/chapters`;
     const before = await app.inject({ method: "GET", url, headers: auth });
@@ -74,8 +74,12 @@ describe("switching the primary makes dependent chapters stale without calling a
     expect(before.json().current).toMatchObject({ modelRef: { providerNameSnapshot: "relay" }, promptRef: { id: "chapter.ai", version: 1 } });
     expect(before.json().current).not.toHaveProperty("staleReason");
 
-    const switched = await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.corrected.revision.id } });
-    expect(switched.statusCode).toBe(200);
+    const setPrimary = (revisionId: string) => app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId } });
+    // Proofread from the chapters' transcript: same sentences and timing, so they stand.
+    expect((await setPrimary(fixture.corrected.revision.id)).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url, headers: auth })).json().current).toMatchObject({ id: aiRevisionId, stale: false });
+
+    expect((await setPrimary(fixture.platform.revision.id)).statusCode).toBe(200);
     const after = (await app.inject({ method: "GET", url, headers: auth })).json();
     expect(after.current).toMatchObject({ id: aiRevisionId, stale: true, staleReason: "transcript_changed" });
     const byId = Object.fromEntries((after.revisions as Array<{ id: string; stale: boolean }>).map((revision) => [revision.id, revision]));

@@ -97,6 +97,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "conflict.cache_recovery_pending": "这个文件有一次未完成的替换等待处理，请先到「存储」页处理",
   "conflict.revision_is_primary": "这是当前稿，请先把其它版本设为当前",
   "conflict.revision_referenced": "这个版本仍被引用，不能删除",
+  "conflict.summary_revision_in_use": "这个总结版本正在使用（是当前版本，或已被合集归纳引用），不能删除",
   "conflict.cache_unavailable": "视频缓存位置不可用，请重新接入磁盘或更改位置",
   "conflict.chat_inflight": "这个对话还有正在生成的回答，请等它结束或先停止生成",
   "conflict.chat_retry_not_last": "只能重试最后一轮的回答",

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -272,13 +272,20 @@ function SummaryEmpty(props: { latestTaskId: string | undefined; summaryTemplate
   );
 }
 
+/**
+ * Every revision of one template's summary, newest first: switch the current one, or delete an
+ * earlier one behind a second click. The current revision and those a collection summary was
+ * built from stay, so they offer no delete.
+ */
 function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: string; timeOf: (id: string) => number | undefined }) {
   const { t, i18n } = useTranslation();
   const client = useApi();
   const queryClient = useQueryClient();
   const page = useContentPage();
+  const [confirming, setConfirming] = useState<string | undefined>(undefined);
+  const revisionsKey = ["summary-revisions", props.artifactId];
   const revisions = useQuery({
-    queryKey: ["summary-revisions", props.artifactId],
+    queryKey: revisionsKey,
     queryFn: () => client.get(`/api/summaries/${encodeURIComponent(props.artifactId)}/revisions`, summaryRevisionListDtoSchema),
     enabled: props.open,
   });
@@ -287,27 +294,77 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
       client.put(`/api/summaries/${encodeURIComponent(props.artifactId)}/current`, z.unknown(), { body: { revisionId: revision.id } }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: contentKeys.summaries(page.content.id) });
-      void queryClient.invalidateQueries({ queryKey: ["summary-revisions", props.artifactId] });
+      void queryClient.invalidateQueries({ queryKey: revisionsKey });
     },
   });
+  const remove = useMutation({
+    mutationFn: (revisionId: string) =>
+      client.delete(`/api/summaries/${encodeURIComponent(props.artifactId)}/revisions/${encodeURIComponent(revisionId)}`, summaryRevisionListDtoSchema),
+    onSuccess: (list) => {
+      setConfirming(undefined);
+      queryClient.setQueryData(revisionsKey, list);
+      void queryClient.invalidateQueries({ queryKey: contentKeys.summaries(page.content.id) });
+      // A deleted summary revision no longer holds the transcript revisions it cited.
+      void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(page.content.id) });
+    },
+    onError: () => {
+      setConfirming(undefined);
+      // A refusal means the list is out of date (switched or frozen elsewhere); read it again.
+      void queryClient.invalidateQueries({ queryKey: revisionsKey });
+    },
+  });
+  const frozen = new Set(revisions.data?.frozenRevisionIds ?? []);
   return (
     <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.summary.history")} wide>
+      {remove.error instanceof ApiError ? <ErrorView error={remove.error.error} /> : null}
       {revisions.data === undefined ? (
         <Loading />
       ) : (
         <ul className="flex flex-col gap-3">
           {[...revisions.data.items].reverse().map((revision) => {
             const isCurrent = revision.id === revisions.data.currentRevisionId;
+            const isFrozen = frozen.has(revision.id);
+            const deleting = remove.isPending && remove.variables === revision.id;
             return (
-              <li key={revision.id} className="rounded-md border border-line p-3">
-                <div className="mb-2 flex items-center justify-between text-xs text-muted">
+              <li key={revision.id} className="rounded-md border border-line p-3" data-testid="summary-history-item" data-revision-id={revision.id}>
+                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted">
                   <span>{new Intl.DateTimeFormat(i18n.language, { dateStyle: "medium", timeStyle: "short" }).format(revision.createdAt)}</span>
                   {isCurrent ? (
                     <span>{t("contentView.summary.currentVersion")}</span>
                   ) : (
-                    <Button size="sm" onClick={() => makeCurrent.mutate(revision)}>
-                      {t("contentView.summary.useVersion")}
-                    </Button>
+                    <span className="flex items-center gap-1">
+                      {confirming === revision.id ? (
+                        <>
+                          <span>{t("contentView.summary.deleteVersionHint")}</span>
+                          <Button size="sm" variant="ghost" disabled={deleting} onClick={() => setConfirming(undefined)}>
+                            {t("common.action.cancel")}
+                          </Button>
+                          <Button size="sm" variant="danger" disabled={deleting} onClick={() => remove.mutate(revision.id)} data-testid="summary-history-delete-confirm">
+                            {t("contentView.summary.deleteVersionConfirm")}
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button size="sm" disabled={deleting} onClick={() => makeCurrent.mutate(revision)}>
+                            {t("contentView.summary.useVersion")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isFrozen || deleting}
+                            title={isFrozen ? t("contentView.summary.deleteVersionFrozen") : t("contentView.summary.deleteVersion")}
+                            aria-label={t("contentView.summary.deleteVersion")}
+                            onClick={() => {
+                              remove.reset();
+                              setConfirming(revision.id);
+                            }}
+                            data-testid="summary-history-delete"
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                          </Button>
+                        </>
+                      )}
+                    </span>
                   )}
                 </div>
                 <div className="max-h-48 overflow-auto">
@@ -322,14 +379,38 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
   );
 }
 
-/** Chapters in timeline order under the summary: title, one-line gist, timestamp, original text. */
+/**
+ * Chapters in timeline order under the summary: title, one-line gist, timestamp, original text.
+ * Regenerating writes AI chapters from the current primary transcript, also over platform chapters.
+ */
 function ChapterSection(props: { onSeek: (ms: number) => void }) {
   const { t } = useTranslation();
+  const client = useApi();
+  const queryClient = useQueryClient();
   const page = useContentPage();
-  const chapters = useChapters(page.content.id);
+  const settings = useSettings();
+  const providers = useProviders();
+  const contentId = page.content.id;
+  const chapters = useChapters(contentId);
   const primary = useSegments(page.primaryRevisionId);
   const list = chapters.data?.current?.chapters ?? [];
   const explainEntries = useExplainEntries();
+  const regenerate = useMutation({
+    mutationFn: () =>
+      client.post(`/api/contents/${encodeURIComponent(contentId)}/chapters/regenerate`, taskAcceptedDtoSchema, {
+        body: settings.data?.defaultModelRef === undefined ? {} : { modelRef: settings.data.defaultModelRef },
+        idempotent: true,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: contentKeys.chapters(contentId) });
+    },
+  });
+  const activeTaskId = chapters.data?.activeTaskId;
+  const running = activeTaskId !== undefined;
+  // Without a model the Task would only wait for configuration, so offer the way there instead.
+  const configured = (providers.data?.items.length ?? 0) > 0;
+  // The server freezes the primary transcript into the Task, so there is nothing to regenerate from without one.
+  const hasTranscript = page.primaryRevisionId !== undefined;
   // Only a selection in the expanded chapter text has something to offer; elsewhere the
   // browser keeps its own menu.
   const menuTarget = useContextMenuTarget<HTMLElement>((hit) => {
@@ -339,8 +420,36 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
   if (list.length === 0) return null;
   return (
     <section ref={menuTarget} className="mt-2 border-t border-line pt-3" data-testid="chapter-section" data-explainable>
-      <h2 className="mb-2 text-sm font-semibold">{t("contentView.chapters.title")}</h2>
-      {chapters.data?.current?.stale === true ? <p className="mb-2 text-xs text-muted">{t("contentView.stale.transcript_changed")}</p> : null}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">{t("contentView.chapters.title")}</h2>
+        {configured ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={running || !hasTranscript || regenerate.isPending}
+            onClick={() => regenerate.mutate()}
+            data-testid="chapters-regenerate"
+          >
+            <RefreshCw size={14} />
+            {running ? t("contentView.chapters.regenerating") : t("contentView.chapters.regenerate")}
+          </Button>
+        ) : (
+          <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="chapters-configure">
+            {t("common.action.goConfigure")}
+          </Link>
+        )}
+      </div>
+      {activeTaskId === undefined ? null : (
+        <div className="mb-2">
+          <TaskFlow taskId={activeTaskId} />
+        </div>
+      )}
+      {regenerate.error instanceof ApiError ? (
+        <div className="mb-2">
+          <ErrorView error={regenerate.error.error} />
+        </div>
+      ) : null}
+      {chapters.data?.current?.stale === true ? <p className="mb-2 text-xs text-muted">{t("contentView.chapters.stale")}</p> : null}
       <ol className="flex flex-col gap-1">
         {list.map((chapter, index) => (
           <ChapterItem key={`${chapter.startMs}-${index}`} chapter={chapter} segments={primary.data ?? []} onSeek={props.onSeek} />

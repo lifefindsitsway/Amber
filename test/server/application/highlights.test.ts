@@ -19,7 +19,7 @@ function setup() {
   const artifactId = h.newId();
   const [first, , third] = fixture.asr.segments;
   h.repository.withTransaction((scope) => {
-    for (const { revision, segments } of [fixture.asr, fixture.corrected]) {
+    for (const { revision, segments } of [fixture.platform, fixture.asr, fixture.corrected]) {
       scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
     }
     scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.asr.revision.id, 2);
@@ -68,14 +68,18 @@ describe("HighlightService", () => {
     });
   });
 
-  it("after the primary is switched the highlights read stale with transcript_changed", async () => {
+  it("stays fresh when the primary is edited from its transcript, and reads stale with transcript_changed on another lineage", async () => {
     const { h, contentId, fixture, revisionId } = setup();
     const { app } = await h.app();
     const url = `/api/contents/${contentId}/highlights`;
+    const setPrimary = (id: string) => app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: id } });
     expect((await app.inject({ method: "GET", url, headers: auth })).json().current).toMatchObject({ id: revisionId, stale: false });
 
-    const switched = await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.corrected.revision.id } });
-    expect(switched.statusCode).toBe(200);
+    // The proofread child shares the sentences and timing of the transcript they were built from.
+    expect((await setPrimary(fixture.corrected.revision.id)).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url, headers: auth })).json().current).toMatchObject({ id: revisionId, stale: false });
+
+    expect((await setPrimary(fixture.platform.revision.id)).statusCode).toBe(200);
     const after = (await app.inject({ method: "GET", url, headers: auth })).json();
     // Kept, not recomputed: still the same revision, on the sentences it was built from.
     expect(after.current).toMatchObject({ id: revisionId, transcriptRevisionId: fixture.asr.revision.id, stale: true, staleReason: "transcript_changed" });

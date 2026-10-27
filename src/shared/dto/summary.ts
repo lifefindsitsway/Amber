@@ -99,10 +99,16 @@ export const summaryCreateRequestSchema = z
 export type SummaryCreateRequest = z.infer<typeof summaryCreateRequestSchema>;
 
 /** `GET /api/summaries/:aid/revisions`, oldest first. */
+/**
+ * `GET /api/summaries/:aid/revisions` (also the answer of switching or deleting one).
+ * `frozenRevisionIds` are earlier revisions a collection summary was built from: like the
+ * current one, they cannot be deleted.
+ */
 export const summaryRevisionListDtoSchema = z.object({
   artifactId: idSchema,
   currentRevisionId: idSchema.exactOptional(),
   items: z.array(summaryRevisionDtoSchema),
+  frozenRevisionIds: z.array(idSchema),
 });
 export type SummaryRevisionListDto = z.infer<typeof summaryRevisionListDtoSchema>;
 

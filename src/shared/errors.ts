@@ -170,7 +170,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.cache_file_foreign": {},
   "conflict.cache_recovery_pending": {},
   "conflict.revision_is_primary": {},
-  "conflict.revision_referenced": { detailsKeys: ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks"] },
+  "conflict.summary_revision_in_use": { detailsKeys: ["reason"] },
+  "conflict.revision_referenced": { detailsKeys: ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks", "history"] },
   // The custom cache directory is not reachable: drive unplugged or directory removed.
   "conflict.cache_unavailable": {},
   // Purging a Content while one of its chat answers is still streaming.
