@@ -34,6 +34,7 @@ import { recoverInterrupted } from "./recovery.ts";
 import { unmetRequirement, type CredentialStatusSource } from "./requirements.ts";
 import { FairSemaphore, taskGroup, type SlotOrder } from "./fair-semaphore.ts";
 import { backoffMs, mayRetry, retriesAutomatically, sleep, toAppError } from "./retry.ts";
+import { resolvePrompt } from "./prompts.ts";
 import { failStage, loadTaskState, refreshProjection, saveStageRun, saveWorkUnit, type TaskState } from "./task-state.ts";
 import { toWorkUnitDto } from "./task-dto.ts";
 
@@ -511,6 +512,7 @@ export class Scheduler {
     const requestView = taskRequestView(task.requestJson);
     const modelRef = stageInput.modelRef ?? requestView.modelRef;
     const asrModelRef = stageInput.asrModelRef ?? requestView.asrModelRef;
+    const frozenPrompts = { ...requestView.promptRefs, ...stageInput.promptRefs };
     const runUnit = (unit: DbUnitSpec<unknown> | FileUnitSpec): Promise<unknown> => this.runUnit(task, run, unit, signal);
     const gateway = (): LlmInvoker => {
       if (this.options.llm === undefined) {
@@ -525,6 +527,12 @@ export class Scheduler {
       request,
       modelRef,
       asrModelRef,
+      prompt: (id) =>
+        this.options.repository.withTransaction((scope) =>
+          resolvePrompt(scope, task.userId, id, frozenPrompts[id], (ref) =>
+            this.options.logger.warn("prompt_version_unresolved", { taskId: task.id, stage: run.stage, promptId: id, ref: `${ref.id}@${ref.version}` }),
+          ),
+        ),
       signal,
       runUnit: runUnit as StageExecutionContext["runUnit"],
       llm: {

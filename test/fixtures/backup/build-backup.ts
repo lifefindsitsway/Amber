@@ -17,6 +17,7 @@ import { configureAsr, configureLlm, createHarness, createTaskOfKind, LOCAL, typ
 import { seedChatContent } from "../pipeline/chat-data.ts";
 import { insertSummary } from "../pipeline/summary-data.ts";
 import { insertRow, tempDataDir } from "../../tools/sqlite.ts";
+import { CHAPTER_AI_PROMPT, SUMMARY_ENVELOPE_PROMPT } from "../../../src/server/domain/prompts.ts";
 
 /**
  * Client backups for restore tests, built without the export service: a source library
@@ -138,6 +139,12 @@ export async function buildSourceLibrary(options: SourceOptions = {}): Promise<S
   });
   const collectionId = h.newId();
   insertRow(h.db, "collection", { id: collectionId, user_id: LOCAL.userId, name: "课程", created_at: 4 });
+  // Custom system prompts: one in effect at its second version, one restored to the builtin text.
+  const chapter = CHAPTER_AI_PROMPT.text;
+  h.prompts.update(LOCAL, "chapter.ai", { text: `${chapter}\n标题尽量短。` });
+  h.prompts.update(LOCAL, "chapter.ai", { text: `${chapter}\n标题不超过 10 字。` });
+  h.prompts.update(LOCAL, "summary.envelope", { text: `${SUMMARY_ENVELOPE_PROMPT.text}\n多用列表。` });
+  h.prompts.restore(LOCAL, "summary.envelope");
   insertRow(h.db, "collection_item", { id: h.newId(), collection_id: collectionId, content_id: first.contentId, position: 0, added_at: 4 });
   insertRow(h.db, "collection_item", { id: h.newId(), collection_id: collectionId, content_id: second.contentId, position: 1, added_at: 4 });
   insertRow(h.db, "terminology_set", { id: h.newId(), user_id: LOCAL.userId, scope_kind: "global" });

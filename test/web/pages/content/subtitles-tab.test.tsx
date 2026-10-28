@@ -157,7 +157,7 @@ describe("exporting a subtitled video in the desktop client", () => {
     const { calls } = mockApi(routes());
     renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
     await exportBilingual();
-    expect((await screen.findByTestId("burn-save-state")).textContent).toContain("未保存。导出结果保留在「功能配置 › 存储」中，可稍后另存或删除。");
+    expect((await screen.findByTestId("burn-save-state")).textContent).toContain("未保存。导出结果保留在「功能设置 › 存储」中，可稍后另存或删除。");
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 

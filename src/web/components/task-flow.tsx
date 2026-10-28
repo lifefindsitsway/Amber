@@ -304,6 +304,8 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
         <div className="mt-2">
           <ErrorView error={run.error} stage={run.stage} {...(run.engine === undefined ? {} : { engine: run.engine })}>
             <RerunControls run={run} pending={retry.isPending} onRerun={(choice) => retry.mutate(choice ?? {})} />
+            {/* A re-run reads the prompts in effect now, so an edit or a restore made since the failure applies. */}
+            {LLM_STAGES.has(run.stage) ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunPromptHint")}</span> : null}
             {run.error.class === "auth_required" ? (
               <Link className="self-center text-sm text-accent underline" to="/settings/platform-accounts">
                 {t("shell.flow.platformAccounts")}

@@ -23,6 +23,7 @@ import { migration0020 } from "./migrations/0020-transcript-revision-archive.ts"
 import { migration0021 } from "./migrations/0021-cache-quality-and-trash-identity.ts";
 import { migration0022 } from "./migrations/0022-chat-threads-and-web-search.ts";
 import { migration0023 } from "./migrations/0023-chat-thread-title-and-pin.ts";
+import { migration0024 } from "./migrations/0024-prompt-override.ts";
 
 export interface Migration {
   /** Becomes `PRAGMA user_version` once applied; versions are consecutive from 1. */
@@ -42,7 +43,7 @@ export interface Migration {
 }
 
 /** Append-only: an applied migration is never edited, later changes get a new file. */
-export const MIGRATIONS: readonly Migration[] = [migration0001, migration0002, migration0003, migration0004, migration0005, migration0006, migration0007, migration0008, migration0009, migration0010, migration0011, migration0012, migration0013, migration0014, migration0015, migration0016, migration0017, migration0018, migration0019, migration0020, migration0021, migration0022, migration0023];
+export const MIGRATIONS: readonly Migration[] = [migration0001, migration0002, migration0003, migration0004, migration0005, migration0006, migration0007, migration0008, migration0009, migration0010, migration0011, migration0012, migration0013, migration0014, migration0015, migration0016, migration0017, migration0018, migration0019, migration0020, migration0021, migration0022, migration0023, migration0024];
 
 export function latestSchemaVersion(migrations: readonly Migration[] = MIGRATIONS): number {
   return migrations.at(-1)?.version ?? 0;

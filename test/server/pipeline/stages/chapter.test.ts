@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
-import { CHAPTER_AI_PROMPT, chapterWindowNote, renderPrompt } from "../../../../src/server/domain/prompts.ts";
+import { CHAPTER_AI_PROMPT, chapterWindowNote, customPromptRef, renderPrompt } from "../../../../src/server/domain/prompts.ts";
 import { estimateTokens } from "../../../../src/server/domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
@@ -11,6 +11,7 @@ import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/sour
 import { createTask } from "../../../../src/server/pipeline/task-state.ts";
 import { CONTEXT_SAFETY_RATIO } from "../../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../../src/shared/ids.ts";
+import type { Logger } from "../../../../src/server/ports/logger.ts";
 import { FakeLlmProvider, reply } from "../../../fixtures/llm/fake-llm.ts";
 import {
   configureLlm,
@@ -20,6 +21,7 @@ import {
   createTaskOfKind,
   LOCAL,
   platformPipelineExecutors,
+  silentLogger,
   stageRunsOf,
   stageStatuses,
   waitFor,
@@ -40,9 +42,9 @@ interface Setup {
   modelRef: ModelRef;
 }
 
-function setup(options: { contextWindowTokens?: number; structured?: boolean } = {}): Setup {
+function setup(options: { contextWindowTokens?: number; structured?: boolean; logger?: Logger } = {}): Setup {
   const fake = new FakeLlmProvider();
-  const h = createHarness({ llmProviders: [fake] });
+  const h = createHarness({ llmProviders: [fake], ...(options.logger === undefined ? {} : { logger: options.logger }) });
   open.push(h);
   h.executors.chapter = new ChapterStageExecutor({ repository: h.repository, newId: h.newId });
   const modelRef = configureLlm(h);
@@ -150,7 +152,7 @@ describe("chapter stage", () => {
     expect(current?.provenance).toMatchObject({
       inputs: [{ kind: "transcriptRevision", id: job.revision.id }],
       modelRef: { ...s.modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: s.modelRef.modelId },
-      promptRef: { id: "chapter.ai", version: 1 },
+      promptRef: { id: "chapter.ai", version: 2 },
       promptSnapshot: renderPrompt(CHAPTER_AI_PROMPT.text, { output_language: "简体中文" }),
     });
     expect(current?.provenance.promptSnapshot).toContain("{{transcript_with_aliases}}");
@@ -333,5 +335,96 @@ describe("chapter stage", () => {
     const outcome = await new ChapterStageExecutor({ repository: s.h.repository }).run(context);
     expect(outcome.publish).toBeUndefined();
     expect(s.fake.calls).toHaveLength(0);
+  });
+
+  describe("custom prompts", () => {
+    const CUSTOM_V1 = `${CHAPTER_AI_PROMPT.text}\n自定义标记一：章节标题用名词短语。`;
+    const CUSTOM_V2 = `${CHAPTER_AI_PROMPT.text}\n自定义标记二：标题不超过 8 字。`;
+
+    /** A Content with a primary transcript and a chapter Task created through the service, which freezes the prompts in effect. */
+    async function submitted(s: Setup, texts: readonly string[]) {
+      const contentId = createLocalContent(s.h);
+      const base = transcript(s.h, contentId, texts);
+      const accepted = await s.h.derivedTasks.regenerateChapters(LOCAL, contentId, { modelRef: s.modelRef });
+      return { contentId, taskId: accepted.body.taskId, ...base };
+    }
+
+    it("a custom chapter.ai prompt is sent, its JSON answer parsed, and recorded as the provenance", async () => {
+      const s = setup({ contextWindowTokens: 128_000 });
+      s.h.prompts.update(LOCAL, "chapter.ai", { text: CUSTOM_V1 });
+      const job = await submitted(s, ["开场白", "第一部分", "第二部分"]);
+      s.fake.script({ events: json({ chapters: [{ startAlias: "s1", title: "开场", summary: "引入" }, { startAlias: "s2", title: "主体", summary: "" }] }) });
+      s.h.scheduler.start();
+      expect(await settled(s.h, job.taskId)).toBe("succeeded");
+
+      const sent = promptOf(s.fake.calls[0]?.request as LlmRequest);
+      expect(sent).toBe(renderPrompt(CUSTOM_V1, { output_language: "简体中文", window_note: "", transcript_with_aliases: "[[s1]] 开场白\n[[s2]] 第一部分\n[[s3]] 第二部分" }));
+      const current = currentOf(s.h, job.contentId);
+      expect(current?.chapters.map((chapter) => chapter.title)).toEqual(["开场", "主体"]);
+      const ref = customPromptRef("chapter.ai", 1);
+      expect(current?.provenance.promptRef).toEqual(ref);
+      expect(current?.provenance.promptRefs).toEqual([ref]);
+      expect(current?.provenance.promptSnapshot).toBe(renderPrompt(CUSTOM_V1, { output_language: "简体中文" }));
+    });
+
+    it("a queued Task runs with the version frozen at submission, not one saved afterwards", async () => {
+      const s = setup({ contextWindowTokens: 128_000 });
+      s.h.prompts.update(LOCAL, "chapter.ai", { text: CUSTOM_V1 });
+      const customJob = await submitted(s, ["一", "二"]);
+      s.h.prompts.restore(LOCAL, "chapter.ai");
+      const builtinJob = await submitted(s, ["三", "四"]);
+      s.h.prompts.update(LOCAL, "chapter.ai", { text: CUSTOM_V2 });
+      oneChapterPerWindow(s.fake, 2);
+      s.h.scheduler.start();
+      expect(await settled(s.h, customJob.taskId)).toBe("succeeded");
+      expect(await settled(s.h, builtinJob.taskId)).toBe("succeeded");
+
+      const sentFor = (first: string) => promptOf(s.fake.calls.find((call) => promptOf(call.request).includes(`[[s1]] ${first}`))?.request as LlmRequest);
+      expect(sentFor("一")).toContain("自定义标记一");
+      expect(sentFor("三")).not.toContain("自定义标记");
+      expect(s.fake.calls.some((call) => promptOf(call.request).includes("自定义标记二"))).toBe(false);
+      expect(currentOf(s.h, customJob.contentId)?.provenance.promptRefs).toEqual([customPromptRef("chapter.ai", 1)]);
+      expect(currentOf(s.h, builtinJob.contentId)?.provenance.promptRefs).toEqual([CHAPTER_AI_PROMPT.ref]);
+    });
+
+    it("a Task without frozen prompts runs with the version in effect when it executes", async () => {
+      const s = setup({ contextWindowTokens: 128_000 });
+      const job = regenerate(s, ["一", "二"]);
+      s.h.prompts.update(LOCAL, "chapter.ai", { text: CUSTOM_V1 });
+      oneChapterPerWindow(s.fake, 1);
+      s.h.scheduler.start();
+      expect(await settled(s.h, job.taskId)).toBe("succeeded");
+      expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toContain("自定义标记一");
+      expect(currentOf(s.h, job.contentId)?.provenance.promptRef).toEqual(customPromptRef("chapter.ai", 1));
+    });
+
+    it.each([
+      ["a builtin version that never existed", { id: "chapter.ai", version: 99 }],
+      ["a custom version the user does not have", { id: "custom:chapter.ai", version: 7 }],
+    ])("a frozen ref to %s falls back to the current builtin text and still succeeds", async (_case, frozen) => {
+      const warnings: Array<{ message: string; fields?: unknown }> = [];
+      const logger: Logger = { ...silentLogger, warn: (message, fields) => void warnings.push({ message, fields }), child: () => logger };
+      const s = setup({ contextWindowTokens: 128_000, logger });
+      s.h.prompts.update(LOCAL, "chapter.ai", { text: CUSTOM_V1 });
+      const contentId = createLocalContent(s.h);
+      const base = transcript(s.h, contentId, ["一", "二"]);
+      const taskId = createTaskOfKind(
+        s.h,
+        "regenerate_chapters",
+        { modelRef: s.modelRef, baseRevisionId: base.revision.id, outputLanguage: "zh-CN", promptRefs: { "chapter.ai": frozen } },
+        { contentId },
+      );
+      oneChapterPerWindow(s.fake, 1);
+      s.h.scheduler.start();
+      expect(await settled(s.h, taskId)).toBe("succeeded");
+
+      const sent = promptOf(s.fake.calls[0]?.request as LlmRequest);
+      expect(sent).toBe(renderPrompt(CHAPTER_AI_PROMPT.text, { output_language: "简体中文", window_note: "", transcript_with_aliases: "[[s1]] 一\n[[s2]] 二" }));
+      expect(currentOf(s.h, contentId)?.provenance.promptRef).toEqual(CHAPTER_AI_PROMPT.ref);
+      expect(warnings).toContainEqual({
+        message: "prompt_version_unresolved",
+        fields: expect.objectContaining({ taskId, stage: "chapter", promptId: "chapter.ai", ref: `${frozen.id}@${frozen.version}` }),
+      });
+    });
   });
 });

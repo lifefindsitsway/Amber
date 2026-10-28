@@ -2,19 +2,11 @@ import { monotonicFactory } from "ulid";
 import { UI_LANGUAGE_DEFAULT } from "../../../shared/defaults.ts";
 import type { ArtifactInputRef, ChapterRevision, RollupPartial } from "../../domain/artifact.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
-import { finalizeCitations, transcriptAliasTable } from "../../domain/citations.ts";
+import { cappedCitations, finalizeCitations, transcriptAliasTable, type AliasTable } from "../../domain/citations.ts";
 import type { Content } from "../../domain/content.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { PromptRef } from "../../domain/model-ref.ts";
-import {
-  CITATION_RULES_FRAGMENT,
-  DEFAULT_SUMMARY_TEMPLATE_ID,
-  ROLLUP_FINAL_PROMPT,
-  ROLLUP_PARTIAL_PROMPT,
-  SUMMARY_ENVELOPE_PROMPT,
-  outputLanguageName,
-  renderPrompt,
-} from "../../domain/prompts.ts";
+import { CITATION_RULES_FRAGMENT, DEFAULT_SUMMARY_TEMPLATE_ID, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
 import { carryAllowance, planSummary, type SentenceGroup } from "../../domain/rollup.ts";
 import { processContentRequestSchema, regenerateSummaryRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
@@ -43,7 +35,8 @@ interface SummaryBase {
  * one call under the `summary.envelope` prompt writes the summary (`summary:generate`);
  * otherwise it is summarized rolling (the `rollup.*` prompts), by the current chapters when
  * there are any. Aliases become canonical `[[seg:]]` markers, with one citation repair per
- * output over the limit. The new revision becomes its template's
+ * output over the limit, and each run of adjacent markers is cut to `CITATION_RUN_MAX`
+ * before the revision and its partials are published. The new revision becomes its template's
  * current; partials are persisted with it, and usage is attributed in the same transaction.
  */
 export class SummaryStageExecutor implements StageExecutor {
@@ -78,14 +71,20 @@ export class SummaryStageExecutor implements StageExecutor {
     }
     const description = context.llm.describe(modelRef);
     const limits = description.capability.limits;
+    const prompts = {
+      envelope: context.prompt("summary.envelope"),
+      partial: context.prompt("rollup.partial"),
+      carry: context.prompt("rollup.carry"),
+      final: context.prompt("rollup.final"),
+    };
     const table = transcriptAliasTable(revision.id, segments);
     const lines = table.entries.map((entry) => table.line(entry.alias));
     const envelope = { output_language: outputLanguage, terms_section: terms, template_body: templateBody };
     const plan = planSummary({
       sentences: lines.map((line, index) => ({ line, startMs: (segments[index] as { startMs: number }).startMs })),
       ...(chapters === undefined ? {} : { chapterStarts: chapters.chapters.map((chapter) => chapter.startMs) }),
-      singleFixed: renderPrompt(SUMMARY_ENVELOPE_PROMPT.text, { ...envelope, transcript_with_aliases: "" }),
-      partialFixed: renderPrompt(ROLLUP_PARTIAL_PROMPT.text, {
+      singleFixed: renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: "" }),
+      partialFixed: renderPrompt(prompts.partial.text, {
         ...envelope,
         citation_rules: CITATION_RULES_FRAGMENT.text,
         carry: carryAllowance(),
@@ -103,11 +102,11 @@ export class SummaryStageExecutor implements StageExecutor {
     if (plan.mode === "single") {
       const generated = await generateWithRepair(context, table, modelRef, {
         key: "summary:generate",
-        inputDigest: digestOf(canonicalJson({ ...digestBase, promptRef: SUMMARY_ENVELOPE_PROMPT.ref, aliases: digestOf(table.fingerprint()) })),
-        prompt: renderPrompt(SUMMARY_ENVELOPE_PROMPT.text, { ...envelope, transcript_with_aliases: lines.join("\n") }),
+        inputDigest: digestOf(canonicalJson({ ...digestBase, promptRef: prompts.envelope.ref, aliases: digestOf(table.fingerprint()) })),
+        prompt: renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: lines.join("\n") }),
         feature: "summary",
       });
-      const { body, citations } = finalizeCitations(generated.text, table);
+      const { body, citations } = published(generated.text, table);
       return {
         resultJson: { revisionId, mode: "single", reasons: generated.degraded ? ["citation_degraded"] : [] },
         publish: (scope) => {
@@ -122,7 +121,8 @@ export class SummaryStageExecutor implements StageExecutor {
                 inputs: [transcriptInput],
                 modelRef: description.snapshot,
                 promptRef: templateRef,
-                promptSnapshot: renderPrompt(SUMMARY_ENVELOPE_PROMPT.text, envelope),
+                promptRefs: [templateRef, prompts.envelope.ref],
+                promptSnapshot: renderPrompt(prompts.envelope.text, envelope),
                 createdAt,
               },
               quality: generated.degraded ? "degraded" : "normal",
@@ -146,7 +146,7 @@ export class SummaryStageExecutor implements StageExecutor {
       inputs,
     }));
     const outcome = await runRollup(context, {
-      table,
+      citations: { rules: CITATION_RULES_FRAGMENT, table },
       modelRef,
       limits,
       feature: "summary",
@@ -154,12 +154,14 @@ export class SummaryStageExecutor implements StageExecutor {
       outputLanguage,
       terms,
       groups,
-      final: { prompt: ROLLUP_FINAL_PROMPT, values: { template_body: templateBody } },
+      partial: prompts.partial,
+      carry: prompts.carry,
+      final: { prompt: prompts.final, values: { template_body: templateBody } },
       digestBase,
     });
-    const { body, citations } = finalizeCitations(outcome.final.text, table);
+    const { body, citations } = published(outcome.final.text, table);
     const partials: RollupPartial[] = outcome.partials.map((partial) => {
-      const finalized = finalizeCitations(partial.text, table);
+      const finalized = published(partial.text, table);
       return {
         id: this.newId(),
         ownerRevisionId: revisionId,
@@ -168,7 +170,8 @@ export class SummaryStageExecutor implements StageExecutor {
         body: finalized.body,
         citations: finalized.citations,
         modelRef: description.snapshot,
-        promptRef: ROLLUP_PARTIAL_PROMPT.ref,
+        promptRef: outcome.partialRef,
+        promptRefs: [outcome.partialRef],
         promptSnapshot: outcome.partialSnapshot,
         createdAt,
       };
@@ -183,7 +186,14 @@ export class SummaryStageExecutor implements StageExecutor {
           artifactId,
           revision: {
             id: revisionId,
-            provenance: { inputs, modelRef: description.snapshot, promptRef: templateRef, promptSnapshot: outcome.finalSnapshot, createdAt },
+            provenance: {
+              inputs,
+              modelRef: description.snapshot,
+              promptRef: templateRef,
+              promptRefs: [templateRef, prompts.partial.ref, prompts.carry.ref, prompts.final.ref],
+              promptSnapshot: outcome.finalSnapshot,
+              createdAt,
+            },
             quality: outcome.degraded ? "degraded" : "normal",
             body,
             citations,
@@ -245,6 +255,16 @@ export class SummaryStageExecutor implements StageExecutor {
       return { revision, templateRef: ref, templateBody: version.prompt, outputLanguage: language ?? UI_LANGUAGE_DEFAULT };
     });
   }
+}
+
+/**
+ * A model output in its stored form: canonical markers, each run cut to the cap, and the
+ * citations index of what is left. The cap does not touch the quality, which reflects the
+ * output as the model wrote it.
+ */
+function published(text: string, table: AliasTable): ReturnType<typeof finalizeCitations> {
+  const { body, citations } = finalizeCitations(text, table);
+  return cappedCitations(body, citations);
 }
 
 /** A group's lines, headed by its chapter's title when it was cut by chapter. */

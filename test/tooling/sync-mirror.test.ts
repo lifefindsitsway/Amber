@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ASSETS_DIR } from "../../src/tooling/runtime-assets.ts";
 import { SHIPPED_ASSETS } from "../../src/tooling/pack-sidecar.ts";
-import { ASSET_INPUTS, DOC_INPUTS, ROOT_INPUTS, buildInputs, mirrorArguments, mirrorSource } from "../../src/tooling/sync-mirror.ts";
+import { ASSET_INPUTS, DOC_INPUTS, MIRROR_INPUTS_FILE, ROOT_INPUTS, buildInputs, mirrorArguments, mirrorSource, syncMirror } from "../../src/tooling/sync-mirror.ts";
+import { asset, mirrorRepository, put, sha } from "../fixtures/tooling/mirror-repository.ts";
 
 const REPO_ROOT = join(import.meta.dirname, "../..");
 
@@ -117,5 +118,41 @@ describe("mirrorSource", () => {
     const inputs = buildInputs(root);
     expect(inputs).toEqual(expect.arrayContaining(["LICENSE", "README.md", "CHANGELOG.md", "src/a.ts"]));
     expect(inputs).not.toContain("NOTES.md");
+  });
+});
+
+describe("syncMirror", () => {
+  it("records every input's digest from the mirror, tracked and ignored ones apart", () => {
+    const { root, dest, files } = mirrorRepository();
+    // Not yet committed but not ignored: git would track it, so a commit can carry it.
+    put(root, "src/new.ts", "export const fresh = 3;\n");
+    files.set("src/new.ts", "export const fresh = 3;\n");
+    const result = syncMirror(root, dest);
+    const recorded = JSON.parse(readFileSync(join(dest, MIRROR_INPUTS_FILE), "utf8")) as unknown;
+    expect(recorded).toEqual(result.digests);
+    const digestsOf = (paths: readonly string[]): Record<string, string> => Object.fromEntries(paths.map((path) => [path, sha(files.get(path) ?? "")]));
+    expect(result.digests).toEqual({
+      tracked: digestsOf([...ROOT_INPUTS, "src/a.ts", "src/nested/b.ts", "src/new.ts", "README.md", "LICENSE"].sort()),
+      local: digestsOf(ASSET_INPUTS.map(asset).sort()),
+      assetsManifest: sha(files.get(asset("manifest.json")) ?? ""),
+    });
+    // The ignored changelog is no build input, so it is neither copied nor listed.
+    expect(Object.keys({ ...result.digests.tracked, ...result.digests.local })).not.toContain("CHANGELOG.md");
+    expect(result.source.dirty).toBe(true);
+  });
+
+  it("hashes what lies in the mirror, including a file the copy skipped because its size and time matched", () => {
+    const { root, dest } = mirrorRepository();
+    expect(syncMirror(root, dest).copied).toBeGreaterThan(0);
+    // Same length and the source's modification time, other bytes: the copy cannot tell.
+    const target = join(dest, "src/a.ts");
+    writeFileSync(target, "export const z = 9;\n");
+    const { atime, mtime } = statSync(join(root, "src/a.ts"));
+    utimesSync(target, atime, mtime);
+    const again = syncMirror(root, dest);
+    expect(again.copied).toBe(0);
+    expect(readFileSync(target, "utf8")).toBe("export const z = 9;\n");
+    expect(again.digests.tracked["src/a.ts"]).toBe(sha("export const z = 9;\n"));
+    expect(again.digests.tracked["src/a.ts"]).not.toBe(sha("export const a = 1;\n"));
   });
 });

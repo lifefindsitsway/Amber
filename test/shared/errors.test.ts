@@ -62,7 +62,7 @@ describe("REFINED_ERROR_CODES", () => {
 
 describe("REFINED_ERROR_CODE_REGISTRY", () => {
   it("registers exactly the catalogue refined codes", () => {
-    expect(EXPECTED_REFINED_CODES).toHaveLength(87);
+    expect(EXPECTED_REFINED_CODES).toHaveLength(88);
     expect([...REFINED_ERROR_CODES].sort()).toEqual(EXPECTED_REFINED_CODES.map((entry) => entry.code).sort());
   });
 

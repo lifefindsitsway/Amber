@@ -5,7 +5,7 @@ import { UPDATE_MANIFEST_URL } from "../shared/app-identity.ts";
 import { findSignedInstaller, LATEST_JSON } from "./release-manifest.ts";
 import { LEGAL_DIR, NOTICES_INCOMPLETE_MARKER, SIDECAR_DIR } from "./pack-sidecar.ts";
 import { DEFAULT_ASSETS_DIR, RUNTIME_ASSETS_SUMS_SHA256, RUNTIME_ASSETS_VERSION, RUNTIME_MANIFEST_FILE, sha256, SHA256SUMS_FILE } from "./runtime-assets.ts";
-import { MIRROR_SOURCE_FILE, type MirrorSource } from "./sync-mirror.ts";
+import { MIRROR_INPUTS_FILE, MIRROR_SOURCE_FILE, type MirrorSource } from "./sync-mirror.ts";
 import { CARGO_LOCK_ONLY_NOTE, NOTICES_FILE } from "./third-party-notices.ts";
 import { UPDATER_CONFIG_FILE } from "./updater-config.ts";
 
@@ -15,7 +15,9 @@ import { UPDATER_CONFIG_FILE } from "./updater-config.ts";
  *   pnpm build:report -- --dir <artifact directory> --variant candidate|release
  *
  * It ties an installer to what it was built from: the mirror's source commit and whether the
- * tree was clean, the build variant, the version, the lockfile and Runtime Assets digests, the
+ * tree was clean, the digest of the mirror's input list (`inputsDigest`, which names the exact
+ * sources of a build from an uncommitted tree and which `pnpm verify:mirror` checks against a
+ * commit), the build variant, the version, the lockfile and Runtime Assets digests, the
  * installer and signature digests, the updater public key id and the updater endpoint. The
  * report is a whitelist assembled field by field; it holds file names only, never absolute
  * paths, user names or environment variables. A variant whose updater configuration does not
@@ -35,6 +37,8 @@ export interface BuildReport {
   variant: BuildVariant;
   version: string;
   source: { commit: string; dirty: boolean };
+  /** SHA256 of the mirror's `mirror-inputs.json`. */
+  inputsDigest: string;
   lockfileSha256: string;
   runtimeAssets: { version: string; manifestSha256: string; sha256SumsSha256: string; pinned: boolean };
   sidecar: { noticesComplete: boolean };
@@ -106,6 +110,10 @@ export function buildReport(input: BuildReportInput): BuildReport {
     throw new Error(`${MIRROR_SOURCE_FILE} is missing; build from a mirror made by \`pnpm sync:mirror\``);
   }
   const source = JSON.parse(readFileSync(sourcePath, "utf8")) as MirrorSource;
+  const inputsPath = join(root, MIRROR_INPUTS_FILE);
+  if (!existsSync(inputsPath)) {
+    throw new Error(`${MIRROR_INPUTS_FILE} is missing; build from a mirror made by \`pnpm sync:mirror\``);
+  }
   const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
   if (source.version !== version) {
     throw new Error(`package.json version ${version} differs from ${MIRROR_SOURCE_FILE} version ${source.version}`);
@@ -145,6 +153,7 @@ export function buildReport(input: BuildReportInput): BuildReport {
     variant,
     version,
     source: { commit: source.sourceCommit, dirty: source.dirty },
+    inputsDigest: digestOf(inputsPath),
     lockfileSha256: digestOf(join(root, "pnpm-lock.yaml")),
     runtimeAssets: { version: runtime.version, manifestSha256: digestOf(join(assetsDir, RUNTIME_MANIFEST_FILE)), sha256SumsSha256: sumsSha256, pinned: runtimePinned },
     sidecar: { noticesComplete },

@@ -3,6 +3,7 @@ import type { Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import type { LlmCallAttribution, LlmCompletion, LlmRequest } from "../domain/llm.ts";
 import type { AsrModelRef, ModelRef, ModelRefSnapshot } from "../domain/model-ref.ts";
+import type { CustomizablePromptId, ResolvedPrompt } from "../domain/prompts.ts";
 import type { EffectiveCapability } from "../domain/provider-profile.ts";
 import type { StageRun, Task, WorkUnitBilling } from "../domain/task.ts";
 import type { RepositoryScope } from "../ports/repository.ts";
@@ -135,6 +136,14 @@ export interface StageExecutionContext {
   readonly modelRef: ModelRef | undefined;
   /** The ASR model the stage is bound to: frozen stage input first, then the Task request. */
   readonly asrModelRef: AsrModelRef | undefined;
+  /**
+   * A customizable prompt as this stage uses it: the version frozen on the stage input
+   * (a re-run failed stage), else on the Task request, else the one in effect now (Tasks
+   * submitted before prompts were frozen). A frozen version that no longer resolves falls
+   * back to the current builtin text with a warning. Opens its own read; never call it
+   * inside a repository transaction.
+   */
+  prompt(id: CustomizablePromptId): ResolvedPrompt;
   /** Aborts on cancellation and shutdown; pass it to every ProcessRunner and HTTP call. */
   readonly signal: AbortSignal;
   /**

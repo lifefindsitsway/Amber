@@ -27,6 +27,7 @@ export const contentKeys = {
   highlights: (contentId: string) => ["content", contentId, "highlights"] as const,
   translations: (contentId: string) => ["content", contentId, "translations"] as const,
   latestTask: (contentId: string) => ["content", contentId, "latest-task"] as const,
+  latestTranslateTask: (contentId: string) => ["content", contentId, "latest-translate-task"] as const,
   latestRedos: (contentId: string, stages: readonly RedoStage[]) => ["content", contentId, "latest-redos", ...stages] as const,
   cacheTask: (contentId: string) => ["content", contentId, "cache-task"] as const,
   segments: (revisionId: string) => ["segments", revisionId] as const,
@@ -90,6 +91,19 @@ export function useLatestTask(contentId: string) {
     queryKey: contentKeys.latestTask(contentId),
     queryFn: async () =>
       (await client.get(`/api/tasks${queryString({ contentId, kind: "process_content", limit: 1 })}`, taskListDtoSchema)).items[0] ?? null,
+  });
+}
+
+/**
+ * The most recent `translate` Task of the Content, or null; the translation tab offers its
+ * stage flow when it failed. Under the Content's keys, so a re-run reads it again.
+ */
+export function useLatestTranslateTask(contentId: string) {
+  const client = useApi();
+  return useQuery({
+    queryKey: contentKeys.latestTranslateTask(contentId),
+    queryFn: async () =>
+      (await client.get(`/api/tasks${queryString({ contentId, kind: "translate", limit: 1 })}`, taskListDtoSchema)).items[0] ?? null,
   });
 }
 

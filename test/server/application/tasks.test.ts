@@ -7,6 +7,7 @@ import { latestAttempts } from "../../../src/server/pipeline/projection.ts";
 import type { Repository } from "../../../src/server/ports/repository.ts";
 import type { TaskEvent } from "../../../src/shared/sse/events.ts";
 import {
+  builtinPromptRefs,
   BOB,
   configureAsr,
   configureLlm,
@@ -253,8 +254,9 @@ describe("the chosen model serves the rest of the task, and bound stages recover
     await h.scheduler.whenIdle();
     const latest = latestAttempts(stageRunsOf(h, taskId));
     expect(latest.filter((run) => run.stage === "chapter" || run.stage === "summary")).toMatchObject([
-      { stage: "chapter", attempt: 2, status: "succeeded", inputJson: frozen(modelRef) },
-      { stage: "summary", attempt: 2, status: "succeeded", inputJson: frozen(modelRef) },
+      // A re-run also takes the prompt versions in effect now.
+      { stage: "chapter", attempt: 2, status: "succeeded", inputJson: JSON.stringify({ modelRef, promptRefs: builtinPromptRefs("process_content") }) },
+      { stage: "summary", attempt: 2, status: "succeeded", inputJson: JSON.stringify({ modelRef, promptRefs: builtinPromptRefs("process_content") }) },
     ]);
     expect(taskOf(h, taskId).statusProjection).toBe("succeeded");
   });
@@ -417,9 +419,9 @@ describe("retry-stage on a failed stage", () => {
       ["source", 1, undefined],
       ["subtitle", 1, undefined],
       ["asr", 1, undefined],
-      ["proofread", 2, JSON.stringify({ modelRef: b })],
-      ["chapter", 2, JSON.stringify({ modelRef: b })],
-      ["summary", 2, JSON.stringify({ modelRef: b })],
+      ["proofread", 2, JSON.stringify({ modelRef: b, promptRefs: builtinPromptRefs("process_content") })],
+      ["chapter", 2, JSON.stringify({ modelRef: b, promptRefs: builtinPromptRefs("process_content") })],
+      ["summary", 2, JSON.stringify({ modelRef: b, promptRefs: builtinPromptRefs("process_content") })],
     ]);
     expect(latest.filter((run) => run.stage === "source" || run.stage === "subtitle" || run.stage === "asr")).toEqual(before);
     expect(taskOf(h, taskId).requestJson).toBe(requestJson);

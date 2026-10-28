@@ -67,6 +67,27 @@ describe("collection summary repository", () => {
     expect(repository.withTransaction((scope) => scope.collectionSummaries.getCurrent("bob", "course"))).toBeUndefined();
   });
 
+  it("deletes the artifact with every revision and partial, for its owner only", () => {
+    insert("alice", "course", "a1", revision("r1", T0));
+    insert("alice", "course", "a1", revision("r2", T0 + 1));
+    insert("alice", "second", "a2", revision("r3", T0));
+    repository.withTransaction((scope) => {
+      scope.collectionSummaries.setCurrent("alice", "course", "r2");
+      scope.rollupPartials.insertMany("alice", "collection_summary", [
+        { id: "p0", ownerRevisionId: "r2", index: 0, inputs: [], body: "b", citations: [], modelRef, promptRef: { id: "rollup.partial", version: 1 }, promptSnapshot: "s", createdAt: T0 },
+      ]);
+    });
+    expect(repository.withTransaction((scope) => scope.collectionSummaries.deleteArtifact("bob", "course"))).toBe(false);
+    expect(countRows(db, "collection_summary_revision")).toBe(3);
+    expect(repository.withTransaction((scope) => scope.collectionSummaries.deleteArtifact("alice", "course"))).toBe(true);
+    expect(repository.withTransaction((scope) => scope.collectionSummaries.getArtifact("alice", "course"))).toBeUndefined();
+    expect(countRows(db, "collection_summary_revision")).toBe(1);
+    expect(countRows(db, "rollup_partial")).toBe(0);
+    expect(countRows(db, "collection")).toBe(2);
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(repository.withTransaction((scope) => scope.collectionSummaries.deleteArtifact("alice", "course"))).toBe(false);
+  });
+
   it("goes with its collection, partials included, while member Contents stay", () => {
     insert("alice", "course", "a1", revision("r1", T0));
     repository.withTransaction((scope) => {

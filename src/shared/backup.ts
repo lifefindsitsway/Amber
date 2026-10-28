@@ -208,6 +208,7 @@ export const LIBRARY_CATEGORIES = [
   "secret",
   "terminology_set",
   "summary_template",
+  "prompt_override_version",
   "token_usage",
   "asr_usage",
   "network_allowlist",

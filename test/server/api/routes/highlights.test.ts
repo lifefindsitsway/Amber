@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { UI_LANGUAGE_DEFAULT } from "../../../../src/shared/defaults.ts";
 import { highlightsDtoSchema } from "../../../../src/shared/dto/highlight.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
-import { BOB_TOKEN, configureLlm, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB_TOKEN, configureLlm, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -47,6 +47,7 @@ describe("POST /api/contents/:id/highlights/recompute", () => {
       requestSchemaVersion: 1,
       kind: "recompute_highlights",
       baseRevisionId: fixture.asr.revision.id,
+      promptRefs: builtinPromptRefs("recompute_highlights"),
       outputLanguage: UI_LANGUAGE_DEFAULT,
     });
     const replay = await app.inject({ method: "POST", url, headers: { ...auth, "idempotency-key": "h-1" } });

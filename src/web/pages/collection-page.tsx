@@ -4,16 +4,17 @@ import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router";
+import { z } from "zod";
 import {
   collectionDetailDtoSchema,
   collectionSummaryDtoSchema,
   type CollectionDetailDto,
   type CollectionItemDto,
 } from "../../shared/dto/collection.ts";
-import { taskAcceptedDtoSchema } from "../../shared/dto/task.ts";
+import { taskAcceptedDtoSchema, taskListDtoSchema } from "../../shared/dto/task.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { useApi, useTaskHub } from "../api/context.tsx";
-import { queryKeys, useSettings } from "../api/queries.ts";
+import { queryKeys, queryString, useSettings } from "../api/queries.ts";
 import { CollectionEditForm } from "../components/collection/edit-collection-dialog.tsx";
 import { useCollectionActions, type CollectionAction } from "../components/collection/use-collection-actions.tsx";
 import { ErrorView } from "../components/error-view.tsx";
@@ -32,6 +33,8 @@ import { SummaryCard } from "./collection/summary-card.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 
 const summaryKey = (id: string) => [...queryKeys.collection(id), "summary"] as const;
+// Under the collection's key, so the task events that refresh the card read it again.
+const latestSummaryTaskKey = (id: string) => [...queryKeys.collection(id), "latest-summary-task"] as const;
 
 /**
  * One collection: header actions, rollup summary card and the ordered
@@ -50,6 +53,12 @@ export function CollectionPage() {
 
   const detail = useQuery({ queryKey: queryKeys.collection(id), queryFn: () => client.get(path, collectionDetailDtoSchema) });
   const summary = useQuery({ queryKey: summaryKey(id), queryFn: () => client.get(`${path}/summary`, collectionSummaryDtoSchema) });
+  // The latest summary Task, offered for a re-run on the card when it failed.
+  const latestSummaryTask = useQuery({
+    queryKey: latestSummaryTaskKey(id),
+    queryFn: async () =>
+      (await client.get(`/api/tasks${queryString({ collectionId: id, kind: "summarize_collection", limit: 1 })}`, taskListDtoSchema)).items[0] ?? null,
+  });
   useDocumentTitle(detail.data?.name);
 
   const [query, setQuery] = useState("");
@@ -106,6 +115,14 @@ export function CollectionPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: summaryKey(id) }),
   });
   const summarizing = summary.data?.activeTaskId !== undefined || summarize.isPending;
+  // Deleting the summary unfreezes the member summary revisions it was built from, so every
+  // summary history list is read again; the card waits for its own data before closing.
+  const deleteSummary = async (): Promise<void> => {
+    await client.delete(`${path}/summary`, z.undefined());
+    summarize.reset();
+    void queryClient.invalidateQueries({ queryKey: ["summary-revisions"] });
+    await queryClient.invalidateQueries({ queryKey: summaryKey(id) });
+  };
   const actions = useCollectionActions(
     { id, name: detail.data?.name ?? "" },
     { ownPage: true, inlineEdit: () => setEditing("name"), summarize: () => summarize.mutate(), summarizeDisabled: summarizing },
@@ -189,7 +206,7 @@ export function CollectionPage() {
         }
       />
       <div className="min-h-0 flex-1 overflow-auto p-6">
-        <div className="mx-auto flex max-w-4xl flex-col gap-6">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6">
           {editing === undefined ? (
             <CollectionDescription description={collection.description} onEdit={() => setEditing("description")} />
           ) : (
@@ -204,7 +221,14 @@ export function CollectionPage() {
           ) : summary.isError ? (
             <ErrorView error={appErrorOf(summary.error)} />
           ) : (
-            <SummaryCard summary={summary.data} onGenerate={() => summarize.mutate()} generating={summarize.isPending} />
+            <SummaryCard
+              collectionId={id}
+              summary={summary.data}
+              latestTask={latestSummaryTask.data}
+              onGenerate={() => summarize.mutate()}
+              generating={summarize.isPending}
+              onDelete={deleteSummary}
+            />
           )}
           <section ref={lecturesRef} className="scroll-mt-6">
             <div className="mb-2 flex items-center justify-between gap-3">

@@ -19,7 +19,7 @@ export function collection(id: string, name: string, itemCount = 0): CollectionD
 export function collectionDetail(id: string, name: string, contentIds: readonly string[]): CollectionDetailDto {
   return {
     ...collection(id, name, contentIds.length),
-    items: contentIds.map((contentId, position) => ({ id: `item-${contentId}`, contentId, position, addedAt: 1, title: `第 ${position + 1} 讲`, processingStatus: "succeeded" })),
+    items: contentIds.map((contentId, position) => ({ id: `item-${contentId}`, contentId, position, addedAt: 1, title: `第 ${position + 1} 讲`, processingStatus: "succeeded", source: { kind: "youtube" }, updatedAt: 1 })),
   };
 }
 

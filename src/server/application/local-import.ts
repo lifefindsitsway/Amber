@@ -27,6 +27,7 @@ import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { assetRef, isOriginalMedia } from "../pipeline/stages/source-media.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, multipartRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { QuotaReservation, StorageQuota } from "./storage-quota.ts";
 import { asrModelRefForSubmission } from "./settings.ts";
@@ -501,6 +502,7 @@ export class LocalImportService {
     const request: ProcessContentRequest = {
       requestSchemaVersion: 1,
       kind: "process_content",
+      promptRefs: freezePromptRefs(scope, owner, "process_content"),
       ...(settings.modelRef === undefined ? {} : { modelRef: settings.modelRef }),
       ...(asrModelRef === undefined ? {} : { asrModelRef }),
       ...(settings.outputLanguage === undefined ? {} : { outputLanguage: settings.outputLanguage }),

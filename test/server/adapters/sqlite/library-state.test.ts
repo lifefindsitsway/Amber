@@ -34,4 +34,13 @@ describe("nonEmptyCategories", () => {
     expect(LIBRARY_CATEGORIES.indexOf("collection")).toBeLessThan(LIBRARY_CATEGORIES.indexOf("cache_root"));
     db.close();
   });
+
+  it("counts a saved system prompt version even after the builtin text was restored", () => {
+    const db = firstStart();
+    insertRow(db, "prompt_override", { user_id: "local", prompt_id: "chapter.ai", updated_at: 1 });
+    insertRow(db, "prompt_override_version", { user_id: "local", prompt_id: "chapter.ai", version: 1, text: "mine", created_at: 1 });
+    expect(nonEmptyCategories(db)).toEqual(["prompt_override_version"]);
+    expect(LIBRARY_CATEGORIES.indexOf("summary_template")).toBeLessThan(LIBRARY_CATEGORIES.indexOf("prompt_override_version"));
+    db.close();
+  });
 });

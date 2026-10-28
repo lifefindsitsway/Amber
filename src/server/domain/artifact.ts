@@ -35,6 +35,11 @@ export interface Provenance {
   /** Absent for non-AI artifacts such as platform chapters. */
   modelRef?: ModelRefSnapshot;
   promptRef?: PromptRef;
+  /**
+   * Every prompt version that produced the stored result (`promptRef` keeps its own meaning);
+   * absent on artifacts stored before it was recorded.
+   */
+  promptRefs?: PromptRef[];
   /** Effective prompt: envelope + template + parameters + terminology, not just the template text. */
   promptSnapshot?: string;
   createdAt: number;
@@ -60,6 +65,26 @@ export interface SummaryTemplate {
   currentVersion: number;
   /** Custom templates are soft-deleted so every PromptRef stays resolvable. */
   deletedAt?: number;
+}
+
+/**
+ * A user's own text for a customizable system prompt, one row per user and prompt. Without
+ * `currentVersion` the builtin text is in effect; restoring it keeps every version.
+ */
+export interface PromptOverride {
+  userId: string;
+  promptId: string;
+  currentVersion?: number;
+  updatedAt: number;
+}
+
+/** Append-only (`version` ≥ 1), so a frozen `custom:<promptId>` ref stays resolvable. */
+export interface PromptOverrideVersion {
+  userId: string;
+  promptId: string;
+  version: number;
+  text: string;
+  createdAt: number;
 }
 
 /** Append-only so every PromptRef stays resolvable. */
@@ -158,6 +183,8 @@ export interface RollupPartial {
   citations: Citation[];
   modelRef: ModelRefSnapshot;
   promptRef: PromptRef;
+  /** The prompt versions that produced this partial; absent on partials stored before it was recorded. */
+  promptRefs?: PromptRef[];
   promptSnapshot: string;
   createdAt: number;
 }

@@ -83,6 +83,7 @@ export const backup = {
       secret: "已保存的密钥",
       terminology_set: "术语库",
       summary_template: "自定义总结模板",
+      prompt_override_version: "自定义提示词",
       token_usage: "模型用量记录",
       asr_usage: "转录用量记录",
       network_allowlist: "出网白名单",

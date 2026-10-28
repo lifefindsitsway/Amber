@@ -4,7 +4,7 @@ import {
   AliasTable,
   applyRepair,
   checkCitations,
-  collectionAliasTable,
+  cappedCitations,
   finalizeCitations,
   markUnresolved,
   needsRepair,
@@ -12,9 +12,10 @@ import {
   renderCandidates,
   repairCandidates,
   transcriptAliasTable,
+  withoutCitations,
 } from "../../../src/server/domain/citations.ts";
 import type { TranscriptSegment } from "../../../src/server/domain/transcript.ts";
-import { CITATION_INVALID_RATIO_MAX, CITATION_REPAIR_CANDIDATES } from "../../../src/shared/defaults.ts";
+import { CITATION_INVALID_RATIO_MAX, CITATION_REPAIR_CANDIDATES, CITATION_RUN_MAX } from "../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 
 const seg = (n: number) => `01J00000000000000000000${String(n).padStart(3, "0")}` as SegmentId;
@@ -38,23 +39,25 @@ describe("alias tables", () => {
     expect(table.fingerprint()).toBe(`1:r1:${seg(1)},2:r1:${seg(2)}`);
     expect(() => new AliasTable([{ alias: 2, citation: { transcriptRevisionId: "r", segmentId: seg(1) }, text: "" }])).toThrow();
   });
+});
 
-  it("renumbers members' canonical markers across lectures by first appearance, sharing one alias per sentence", () => {
-    const sentences = new Map([
-      [seg(1), { transcriptRevisionId: "ra", text: "甲" }],
-      [seg(2), { transcriptRevisionId: "ra", text: "乙" }],
-      [seg(9), { transcriptRevisionId: "rb", text: "丙" }],
-    ]);
-    const { table, bodies } = collectionAliasTable(
-      [`A [[seg:${seg(2)}]] B [[seg:${seg(1)}]] [[seg:${seg(2)}]]`, `C [[seg:${seg(9)}]] [[seg:gone]] [[unresolved:s4]]`],
-      (id) => sentences.get(id as SegmentId),
-    );
-    expect(bodies).toEqual(["A [[s1]] B [[s2]] [[s1]]", "C [[s3]] [[unresolved:seg:gone]] [[unresolved:s4]]"]);
-    expect(table.entries.map((entry) => [entry.alias, entry.citation])).toEqual([
-      [1, { transcriptRevisionId: "ra", segmentId: seg(2) }],
-      [2, { transcriptRevisionId: "ra", segmentId: seg(1) }],
-      [3, { transcriptRevisionId: "rb", segmentId: seg(9) }],
-    ]);
+describe("citations kept out or cut short", () => {
+  it("strips every marker from text that must not cite, the one-bracket-short alias forms included", () => {
+    const text = `结论甲 [[s3]]，结论乙[s4]] [[s5]、[[seg:${seg(1)}]] [[unresolved:s9]] [[unresolved:seg:gone]]。\n第二段 [[s1]]\n[s2] 不是别名`;
+    expect(withoutCitations(text)).toBe("结论甲，结论乙。\n第二段\n[s2] 不是别名");
+    expect(withoutCitations("没有引用")).toBe("没有引用");
+  });
+
+  it("cuts each run of a stored body to the cap and keeps only the citations still marked, in order", () => {
+    const ids = [1, 2, 3, 4, 5].map(seg);
+    const citations = ids.map((segmentId) => ({ transcriptRevisionId: "r1", segmentId }));
+    const run = ids.map((id) => `[[seg:${id}]]`);
+    const body = `甲${run.join("")}。乙${run[3]}、${run[4]}，丙 ${run[0]} ${run[1]} ${run[2]}\n丁${run[4]}`;
+    expect(CITATION_RUN_MAX).toBe(2);
+    const capped = cappedCitations(body, citations);
+    expect(capped.body).toBe(`甲${run[0]}${run[1]}。乙${run[3]}、${run[4]}，丙 ${run[0]}${run[1]}\n丁${run[4]}`);
+    expect(capped.citations).toEqual([0, 1, 3, 4].map((i) => citations[i]));
+    expect(cappedCitations(`甲${run[2]}`, citations)).toEqual({ body: `甲${run[2]}`, citations });
   });
 });
 

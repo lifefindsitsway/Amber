@@ -1,9 +1,39 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TemplatesSection } from "../../../../src/web/pages/settings/templates-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
 describe("TemplatesSection", () => {
+  it("shows the defaults, the summary templates and the system prompts as three blocks, in that order", async () => {
+    mockApi({
+      "GET /api/summary-templates": { body: { items: [{ id: "summary.core", builtin: true, name: "summaryTemplate.core", currentVersion: 1, deleted: false }] } },
+      "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } },
+      "GET /api/prompts": {
+        body: {
+          items: [
+            {
+              id: "proofread.text",
+              nameKey: "settings.systemPrompts.items.proofreadText.name",
+              descriptionKey: "settings.systemPrompts.items.proofreadText.description",
+              slots: [],
+              protocol: ["[s<n>]"],
+              builtin: { version: 1, text: "[s<n>]" },
+              customized: false,
+            },
+          ],
+        },
+      },
+    });
+    const { container } = renderApp(<TemplatesSection />);
+    expect(await screen.findByText("字幕校对")).toBeTruthy();
+    const blocks = [...container.querySelectorAll("section")];
+    expect(blocks.map((block) => block.querySelector("h2")?.textContent)).toEqual(["默认值", "总结模板", "系统提示词"]);
+    expect(within(blocks[0] as HTMLElement).getByLabelText("默认模板")).toBeTruthy();
+    expect(within(blocks[0] as HTMLElement).getByLabelText("默认输出语言")).toBeTruthy();
+    expect(blocks[1]?.querySelector('[data-template="summary.core"]')).toBeTruthy();
+    expect(blocks[2]?.querySelector('[data-prompt="proofread.text"]')).toBeTruthy();
+  });
+
   it("shows builtin templates by their i18n name, read-only, without delete", async () => {
     mockApi({
       "GET /api/summary-templates": {

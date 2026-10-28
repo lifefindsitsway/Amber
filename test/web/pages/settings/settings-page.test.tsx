@@ -50,7 +50,8 @@ describe("SettingsPage", () => {
       const { unmount } = renderApp(<SettingsPage />, { route: "/settings/shortcuts", path: "/settings/:section", mode });
       const nav = screen.getByRole("navigation");
       expect([...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(expected);
-      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("功能配置");
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("功能设置");
+      expect(screen.getByRole("link", { name: "提示词模板" }).getAttribute("href")).toBe("/settings/templates");
       unmount();
     }
   });

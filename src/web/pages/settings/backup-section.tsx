@@ -259,7 +259,7 @@ function ExportJobView(props: { job: BackupExportJobDto; dropped: readonly Dropp
 
 const CATEGORY_GROUPS: ReadonlyArray<readonly ["library" | "models" | "accounts" | "usage" | "other", readonly LibraryCategory[]]> = [
   ["library", ["content", "collection", "import_batch", "task", "media_asset", "transcript_revision", "transcript_draft", "note", "chat_thread"]],
-  ["models", ["provider_profile", "asr_provider_profile", "other_model_profile", "terminology_set", "summary_template"]],
+  ["models", ["provider_profile", "asr_provider_profile", "other_model_profile", "terminology_set", "summary_template", "prompt_override_version"]],
   ["accounts", ["platform_account", "secret"]],
   ["usage", ["token_usage", "asr_usage"]],
   ["other", ["network_allowlist", "pending_file_delete", "cache_root"]],

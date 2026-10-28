@@ -17,7 +17,7 @@ import { amberError, isAmberError } from "../../domain/errors.ts";
 import type { LlmCompletion, LlmContentPart, LlmRequest, LlmStopReason } from "../../domain/llm.ts";
 import type { MediaAsset } from "../../domain/media-asset.ts";
 import type { ModelRef, PromptRef } from "../../domain/model-ref.ts";
-import { PROOFREAD_AUDIO_PROMPT, PROOFREAD_TEXT_PROMPT, renderPrompt, type BuiltinPrompt } from "../../domain/prompts.ts";
+import { composeProofreadAudioPrompt, renderPrompt, type ResolvedPrompt } from "../../domain/prompts.ts";
 import { reproofreadRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import { revisionTakesPrimary, type TranscriptRevision, type TranscriptSegment } from "../../domain/transcript.ts";
@@ -144,6 +144,16 @@ interface RangeInput {
   termsSection: string;
   modelRef: ModelRef;
   audio: AudioPlan | undefined;
+  prompts: RangePrompts;
+}
+
+/**
+ * The prompts a range may be sent with: the text proofreading prompt, and the audio variant
+ * made of the audio preamble around it, both in effect for this stage.
+ */
+interface RangePrompts {
+  text: ResolvedPrompt;
+  audio: ResolvedPrompt;
 }
 
 /**
@@ -201,14 +211,20 @@ export class ProofreadStageExecutor implements StageExecutor {
     const wantsAudio = model.capability.flags.audioInput === "supported";
     const mimeType = model.audioMimeTypes[0];
     const audio = wantsAudio && mimeType !== undefined ? await this.audioPlan(context, content, mimeType) : undefined;
-    const input: RangeInput = { baseRevisionId: base.id, termsSection: terms, modelRef, audio };
+    const textPrompt = context.prompt("proofread.text");
+    const audioPrompt = context.prompt("proofread.audio");
+    const prompts: RangePrompts = {
+      text: textPrompt,
+      audio: { ref: audioPrompt.ref, text: composeProofreadAudioPrompt(audioPrompt.text, textPrompt.text) },
+    };
+    const input: RangeInput = { baseRevisionId: base.id, termsSection: terms, modelRef, audio, prompts };
 
     const roots = rootsOf(segments);
     const tree = await this.proofreadTree(context, roots, segments, input);
     const accepted = tree.accepted;
 
     const reasons: string[] = [];
-    const chunks = roots.map((root) => rootSummary(root, accepted.filter((leaf) => leaf.range.rootIndex === root.rootIndex)));
+    const chunks = roots.map((root) => rootSummary(root, accepted.filter((leaf) => leaf.range.rootIndex === root.rootIndex), prompts));
     if (wantsAudio) {
       chunks.forEach((chunk) => {
         if (chunk.audioMode !== "audio") {
@@ -236,7 +252,11 @@ export class ProofreadStageExecutor implements StageExecutor {
       }
     }
 
-    const prompt = accepted.some((leaf) => leaf.payload.audio) ? PROOFREAD_AUDIO_PROMPT : PROOFREAD_TEXT_PROMPT;
+    // Only the prompts that produced accepted text are recorded: audio ranges were sent the
+    // audio preamble around the text prompt, text ranges the text prompt alone.
+    const withAudio = accepted.some((leaf) => leaf.payload.audio);
+    const prompt = withAudio ? prompts.audio : prompts.text;
+    const promptRefs = withAudio ? [prompts.audio.ref, prompts.text.ref] : [prompts.text.ref];
     const revisionId = this.newId();
     const texts = accepted.flatMap((leaf) => leaf.payload.texts);
     const corrected: TranscriptSegment[] = segments.map((parent, position) => ({
@@ -258,7 +278,7 @@ export class ProofreadStageExecutor implements StageExecutor {
       parentRevisionId: base.id,
       language: base.language,
       timingFidelity: "inherited_segment",
-      generation: { kind: "llm", modelRef: model.snapshot, promptRef: prompt.ref, promptSnapshot: renderPrompt(prompt.text, { terms_section: terms }) },
+      generation: { kind: "llm", modelRef: model.snapshot, promptRef: prompt.ref, promptRefs, promptSnapshot: renderPrompt(prompt.text, { terms_section: terms }) },
       segmentCount: corrected.length,
       createdAt: this.now(),
     };
@@ -373,7 +393,7 @@ export class ProofreadStageExecutor implements StageExecutor {
     const { audio } = input;
     const clip = clipRange(range);
     const audioDigest = audio === undefined ? undefined : digestOf(canonicalJson({ source: audio.source, range: clip, mimeType: audio.mimeType }));
-    const prompt = audio === undefined ? PROOFREAD_TEXT_PROMPT : PROOFREAD_AUDIO_PROMPT;
+    const { prompts } = input;
     const lastAlias = lastAliasOf(range);
     const inputDigest = digestOf(
       canonicalJson({
@@ -385,7 +405,9 @@ export class ProofreadStageExecutor implements StageExecutor {
         targetTexts: range.targets.map((segment) => segment.text),
         contextIds: [...range.before, ...range.after].map((segment) => segment.id),
         termsSection: input.termsSection,
-        promptRef: prompt.ref,
+        // A range with audio may still fall back to text, so both prompts it may be sent with count.
+        promptRef: audio === undefined ? prompts.text.ref : prompts.audio.ref,
+        ...(audio === undefined ? {} : { textPromptRef: prompts.text.ref }),
         modelRef: input.modelRef,
         ...(audioDigest === undefined ? {} : { audioChunkDigest: audioDigest }),
       }),
@@ -396,12 +418,12 @@ export class ProofreadStageExecutor implements StageExecutor {
       billing: "llm",
       run: async (signal: AbortSignal, unit: UnitIdentity): Promise<RangePayload> => {
         if (audio !== undefined) {
-          const withAudio = await this.proofreadWithAudio(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, audio }, clip, unit, signal);
+          const withAudio = await this.proofreadWithAudio(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, audio, prompts }, clip, unit, signal);
           if (withAudio !== undefined) {
             return withAudio.kind === "accepted" && withAudio.audio ? { ...withAudio, audioDigest: audioDigest as string } : withAudio;
           }
         }
-        return this.proofread(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, prompt: PROOFREAD_TEXT_PROMPT }, unit);
+        return this.proofread(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, prompt: prompts.text }, unit);
       },
     });
     const parsed = rangePayloadSchema.safeParse(value);
@@ -481,7 +503,7 @@ export class ProofreadStageExecutor implements StageExecutor {
    */
   private async proofreadWithAudio(
     context: StageExecutionContext,
-    input: { range: Range; termsSection: string; modelRef: ModelRef; audio: AudioPlan },
+    input: { range: Range; termsSection: string; modelRef: ModelRef; audio: AudioPlan; prompts: RangePrompts },
     range: { startMs: number; endMs: number },
     unit: UnitIdentity,
     signal: AbortSignal,
@@ -498,18 +520,18 @@ export class ProofreadStageExecutor implements StageExecutor {
         );
         if (sizeBytes <= PROOFREAD_AUDIO_MAX_MB * BYTES_PER_MB) {
           clipped = true;
-          return rangeRequest({ ...base, prompt: PROOFREAD_AUDIO_PROMPT, clip: { mimeType: audio.mimeType, dataRef: clipRef } });
+          return rangeRequest({ ...base, prompt: input.prompts.audio, clip: { mimeType: audio.mimeType, dataRef: clipRef } });
         }
       } catch (error) {
         if (callSignal.aborted) {
           throw error;
         }
       }
-      return rangeRequest({ ...base, prompt: PROOFREAD_TEXT_PROMPT });
+      return rangeRequest({ ...base, prompt: input.prompts.text });
     };
     try {
       const completion = await context.llm.complete({ modelRef: input.modelRef, prepare }, { feature: "proofread", workUnitId: unit.id });
-      return rangePayload(completion, input.range, clipped ? PROOFREAD_AUDIO_PROMPT : PROOFREAD_TEXT_PROMPT, clipped);
+      return rangePayload(completion, input.range, clipped ? input.prompts.audio : input.prompts.text, clipped);
     } catch (error) {
       if (clipped && !signal.aborted && isAmberError(error) && error.appError.class === "llm_capability") {
         return undefined;
@@ -538,7 +560,7 @@ export class ProofreadStageExecutor implements StageExecutor {
   /** One text call for one range and the check of its answer against the range's aliases. */
   private async proofread(
     context: StageExecutionContext,
-    input: { range: Range; termsSection: string; modelRef: ModelRef; prompt: BuiltinPrompt },
+    input: { range: Range; termsSection: string; modelRef: ModelRef; prompt: ResolvedPrompt },
     unit: UnitIdentity,
   ): Promise<RangePayload> {
     const completion = await context.llm.complete(rangeRequest(input), { feature: "proofread", workUnitId: unit.id });
@@ -551,7 +573,7 @@ function rangeRequest(input: {
   range: Range;
   termsSection: string;
   modelRef: ModelRef;
-  prompt: BuiltinPrompt;
+  prompt: ResolvedPrompt;
   clip?: { mimeType: string; dataRef: string };
 }): LlmRequest {
   const { range } = input;
@@ -583,7 +605,7 @@ interface RangeRecord {
 }
 
 /** A range's answer checked against its aliases, with what was sent. */
-function rangePayload(completion: LlmCompletion, range: Range, prompt: BuiltinPrompt, audio: boolean): RangePayload {
+function rangePayload(completion: LlmCompletion, range: Range, prompt: ResolvedPrompt, audio: boolean): RangePayload {
   const answer = parseAnswer(completion, range);
   const sent = { promptRef: prompt.ref, audio, invocationId: completion.invocationId };
   return answer.kind === "split" ? { kind: "split", diagnostic: answer.diagnostic, ...sent } : { kind: "accepted", ...answer.lines, ...sent };
@@ -644,6 +666,7 @@ type AudioMode = "text" | "audio" | "mixed";
 function rootSummary(
   root: Range,
   leaves: ReadonlyArray<{ payload: AcceptedPayload }>,
+  prompts: RangePrompts,
 ): { i: number; firstAlias: number; lastAlias: number; split: boolean; acceptedLeafCount: number; promptRef: PromptRef; audio: boolean; audioMode: AudioMode } {
   const withAudio = leaves.filter((leaf) => leaf.payload.audio).length;
   const audioMode: AudioMode = withAudio === leaves.length ? "audio" : withAudio === 0 ? "text" : "mixed";
@@ -653,7 +676,7 @@ function rootSummary(
     lastAlias: lastAliasOf(root),
     split: leaves.length > 1,
     acceptedLeafCount: leaves.length,
-    promptRef: audioMode === "text" ? PROOFREAD_TEXT_PROMPT.ref : PROOFREAD_AUDIO_PROMPT.ref,
+    promptRef: audioMode === "text" ? prompts.text.ref : prompts.audio.ref,
     audio: audioMode === "audio",
     audioMode,
   };

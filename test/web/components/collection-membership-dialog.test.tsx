@@ -28,7 +28,7 @@ function membershipServer(initial: ContentDto["collections"], collections = [col
     const name = all.find((item) => item.id === collectionId)?.name ?? "";
     const itemId = collectionId === "k3" ? `i-new-${nextItem++}` : `i-${collectionId}`;
     memberships.push({ id: collectionId, name, itemId });
-    return { body: { id: itemId, contentId: "c1", position: 0, addedAt: 1, processingStatus: "succeeded" } };
+    return { body: { id: itemId, contentId: "c1", position: 0, addedAt: 1, processingStatus: "succeeded", source: { kind: "youtube" }, updatedAt: 1 } };
   }
   function leave(itemId: string) {
     memberships = memberships.filter((membership) => membership.itemId !== itemId);

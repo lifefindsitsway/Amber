@@ -64,4 +64,13 @@ describe("rollup partial repository", () => {
     expect(repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision("bob", "sr"))).toEqual([]);
     expect(repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision("alice", "missing"))).toEqual([]);
   });
+
+  it("keeps the prompt versions a partial was written with, and reads none for a partial stored without them", () => {
+    const withRefs: RollupPartial = { ...partial("s0", "sr", 0), promptRefs: [{ id: "custom:rollup.partial", version: 2 }] };
+    repository.withTransaction((scope) => scope.rollupPartials.insertMany("alice", "summary", [withRefs, partial("s1", "sr", 1)]));
+    const [first, second] = repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision("alice", "sr"));
+    expect(first).toEqual(withRefs);
+    expect(second).not.toHaveProperty("promptRefs");
+    expect(db.prepare("SELECT prompt_refs_json FROM rollup_partial WHERE id = 's1'").get()).toEqual({ prompt_refs_json: null });
+  });
 });

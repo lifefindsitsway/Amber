@@ -1,13 +1,13 @@
 /** UI copy of the feature settings pages; keys are dot paths under `settings`. */
 export const settings = {
-  title: "功能配置",
+  title: "功能设置",
   section: {
     models: "模型",
     transcription: "转录",
     "other-models": "其他模型",
     "web-search": "联网搜索",
     "platform-accounts": "平台账号",
-    templates: "总结模板",
+    templates: "提示词模板",
     terminology: "全局术语库",
     storage: "存储",
     backup: "备份与恢复",
@@ -329,6 +329,92 @@ export const settings = {
     outputLanguage: "默认输出语言",
     outputLanguageHint: "新建总结与合集归纳的默认输出语言；未设置时跟随界面语言",
     nameTooLong: "名称最多 {{max}} 个字符",
+  },
+  systemPrompts: {
+    blocks: {
+      defaults: "默认值",
+      summaryTemplates: "总结模板",
+      systemPrompts: "系统提示词",
+    },
+    intro: "Amber 在校对、翻译、切章、总结、高光、归纳与对话时发给模型的说明。可以改写全文，但须保留列出的插值槽与格式片段。",
+    status: {
+      builtin: "内置",
+      customized: "已自定义",
+    },
+    editTitle: "编辑系统提示词 · {{name}}",
+    text: "提示词全文",
+    count: "{{count}} / {{max}} 字",
+    tooLong: "超过 {{max}} 字上限，请删减后再保存",
+    empty: "提示词不能为空",
+    required: "必须保留",
+    requiredHint: "以下插值槽与格式片段须原样出现在正文中",
+    noRequired: "这条提示词没有必须保留的内容",
+    missing: "缺失",
+    unknown: "多余：{{slot}}",
+    unknownHint: "正文中有不认识的插值槽，请删除后再保存",
+    scope: "检查只保证模型能收到必要的格式说明，不保证结果质量；改坏的提示词会让任务失败或结果变差并照常计费。恢复内置只影响之后新建的任务、重跑的步骤与新的回答，已生成的内容需要主动重新生成；失败的任务可在恢复后从失败的步骤重跑。",
+    restore: "恢复内置",
+    restoreConfirm: "将「{{name}}」恢复为内置提示词？",
+    versions: "历史版本",
+    version: "版本 {{version}}",
+    current: "当前",
+    noVersions: "还没有自定义版本",
+    loadFailed: "无法读取系统提示词",
+    versionsLoadFailed: "无法读取历史版本",
+    items: {
+      proofreadText: {
+        name: "字幕校对",
+        description: "校对语音识别字幕时发给模型的说明；音频辅助校对也会在前置段之后附上它",
+      },
+      proofreadAudio: {
+        name: "字幕校对 · 音频说明",
+        description: "模型能听音频时加在字幕校对提示词之前的说明，{{proofread_text}} 处填入字幕校对提示词",
+      },
+      translateSubtitles: {
+        name: "字幕翻译",
+        description: "把字幕逐句翻译成目标语言时发给模型的说明",
+      },
+      summaryEnvelope: {
+        name: "总结信封（包裹总结模板）",
+        description: "单次生成总结时包裹总结模板的外层说明",
+      },
+      chapterAi: {
+        name: "AI 切章",
+        description: "按字幕内容划分章节并起标题时发给模型的说明",
+      },
+      highlightDefault: {
+        name: "AI 高光",
+        description: "从字幕中挑出值得回看的片段并打分时发给模型的说明",
+      },
+      rollupPartial: {
+        name: "长内容归纳 · 分组",
+        description: "字幕过长、无法一次生成总结时，先逐组归纳要点的说明",
+      },
+      rollupCarry: {
+        name: "长内容归纳 · 压缩",
+        description: "分组归纳时把已有摘要与新一组的归纳合并压缩、带入后续分组的说明",
+      },
+      rollupFinal: {
+        name: "长内容归纳 · 总归纳",
+        description: "把各组归纳汇总成最终总结的说明",
+      },
+      rollupFinalCollection: {
+        name: "合集归纳 · 总归纳",
+        description: "把合集内各条内容的归纳汇总成合集归纳的说明",
+      },
+      rollupGoalCollection: {
+        name: "合集归纳 · 目标",
+        description: "合集归纳要写出的几部分，分组、压缩与总归纳都按它来",
+      },
+      chatSystem: {
+        name: "对话（有字幕）",
+        description: "内容已有字幕时，AI 对话发给模型的系统说明",
+      },
+      chatSystemMetadata: {
+        name: "对话（字幕未就绪）",
+        description: "字幕还没准备好时，AI 对话只凭内容的基本信息回答所用的系统说明",
+      },
+    },
   },
   terminology: {
     intro: "术语表会提示模型保持专有名词的写法与译法，全局术语对所有视频生效。",

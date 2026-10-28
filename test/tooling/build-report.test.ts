@@ -19,17 +19,19 @@ function put(root: string, path: string, content: string): void {
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 const MANIFEST = `{"version":"${RUNTIME_ASSETS_VERSION}","assets":[]}`;
+const INPUTS = `${JSON.stringify({ tracked: { "src/a.ts": "0".repeat(64) }, local: {}, assetsManifest: "1".repeat(64) }, null, 2)}\n`;
 /** The fixture's stand-in for the compiled-in pin. */
 const PINNED = { version: RUNTIME_ASSETS_VERSION, sumsSha256: sha("sums\n") };
 
 function mirror(
-  options: { version?: string; endpoint?: string; insecure?: boolean; latest?: string; notices?: string; incompleteMarker?: boolean } = {},
+  options: { version?: string; endpoint?: string; insecure?: boolean; latest?: string; notices?: string; incompleteMarker?: boolean; inputs?: boolean } = {},
 ): { root: string; dir: string; pinned: typeof PINNED } {
   const version = options.version ?? "0.1.0";
   const root = mkdtempSync(join(tmpdir(), "amber-report-"));
   put(root, "package.json", JSON.stringify({ version }));
   put(root, "pnpm-lock.yaml", "lock\n");
   put(root, "mirror-source.json", JSON.stringify({ sourceCommit: "a".repeat(40), dirty: false, lockfileSha256: sha("lock\n"), version }));
+  if (options.inputs !== false) put(root, "mirror-inputs.json", INPUTS);
   put(root, "src/desktop/tauri.conf.json", JSON.stringify({ plugins: { updater: { pubkey: PUBKEY } } }));
   put(
     root,
@@ -56,6 +58,7 @@ describe("buildReport", () => {
       variant: "release",
       version: "0.1.0",
       source: { commit: "a".repeat(40), dirty: false },
+      inputsDigest: sha(INPUTS),
       lockfileSha256: sha("lock\n"),
       runtimeAssets: {
         version: RUNTIME_ASSETS_VERSION,
@@ -117,6 +120,11 @@ describe("buildReport", () => {
     expect(() => buildReport({ ...unmarked, variant: "release", now: new Date(0) })).toThrow(/complete third-party notices/u);
     const candidate = mirror({ version: "0.1.0-rc.2", endpoint: "http://127.0.0.1:8787/latest.json", insecure: true, incompleteMarker: true });
     expect(buildReport({ ...candidate, variant: "candidate", now: new Date(0) }).sidecar).toEqual({ noticesComplete: false });
+  });
+
+  it("refuses a mirror without its input list, so every build names the exact sources it was built from", () => {
+    const fx = mirror({ version: "0.1.0-rc.2", endpoint: "http://127.0.0.1:8787/latest.json", insecure: true, inputs: false });
+    expect(() => buildReport({ ...fx, variant: "candidate", now: new Date(0) })).toThrow(/mirror-inputs\.json is missing/u);
   });
 
   it("refuses a build without the packed sidecar notices", () => {

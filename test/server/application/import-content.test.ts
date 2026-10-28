@@ -7,7 +7,7 @@ import { platformTranscript } from "../../../src/server/domain/platform-subtitle
 import { TRASH_RETENTION_MS } from "../../../src/server/domain/content.ts";
 import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
 import type { AppError } from "../../../src/shared/errors.ts";
-import { BOB, configureLlm, createHarness, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB, configureLlm, createHarness, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { countRows } from "../../tools/sqlite.ts";
 
 const BVID = "BV1xx411c7mD";
@@ -102,6 +102,7 @@ describe("importing a link", () => {
     expect(JSON.parse(taskOf(h, body.taskIds[0] as string).requestJson)).toEqual({
       autoProofread: true,
       kind: "process_content",
+      promptRefs: builtinPromptRefs("process_content"),
       modelRef,
       outputLanguage: "zh-CN",
       requestSchemaVersion: 1,
@@ -117,7 +118,7 @@ describe("importing a link", () => {
     const h = harness();
     h.userSettings.patch(LOCAL, { defaultSummaryTemplateId: "summary.detailed" });
     const { body } = await h.importContent.import(LOCAL, request({}));
-    expect(JSON.parse(taskOf(h, body.taskIds[0] as string).requestJson)).toMatchObject({ templateRef: { id: "summary.detailed", version: 1 } });
+    expect(JSON.parse(taskOf(h, body.taskIds[0] as string).requestJson)).toMatchObject({ templateRef: { id: "summary.detailed", version: 2 } });
   });
 
   it("freezes only the requested ASR model, never the user's default, and refuses another user's or an unlisted one", async () => {
@@ -532,6 +533,7 @@ describe("re-importing the same link", () => {
     expect(JSON.parse(summary.requestJson)).toEqual({
       requestSchemaVersion: 1,
       kind: "regenerate_summary",
+      promptRefs: builtinPromptRefs("regenerate_summary"),
       modelRef: otherModel,
       outputLanguage: "en",
       templateRef: { id: "summary.core", version: 1 },

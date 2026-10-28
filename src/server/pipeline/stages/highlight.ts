@@ -8,8 +8,8 @@ import { canonicalJson } from "../../domain/canonical-json.ts";
 import type { Content } from "../../domain/content.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { LlmRequest } from "../../domain/llm.ts";
-import type { ModelRef } from "../../domain/model-ref.ts";
-import { chapterWindowNote, HIGHLIGHT_DEFAULT_PROMPT, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
+import type { ModelRef, PromptRef } from "../../domain/model-ref.ts";
+import { chapterWindowNote, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
 import { recomputeHighlightsRequestSchema } from "../../domain/task-request.ts";
 import { estimateTokens } from "../../domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
@@ -95,7 +95,8 @@ export class HighlightStageExecutor implements StageExecutor {
     }
     const description = context.llm.describe(modelRef);
     const structured = description.capability.flags.structuredOutput === "supported";
-    const template = renderPrompt(HIGHLIGHT_DEFAULT_PROMPT.text, { output_language: outputLanguageName(outputLanguage) });
+    const prompt = context.prompt("highlight.default");
+    const template = renderPrompt(prompt.text, { output_language: outputLanguageName(outputLanguage) });
     const fixedTokens =
       estimateTokens(renderPrompt(template, { window_note: chapterWindowNote(segments.length, segments.length), transcript_with_aliases: "" })) +
       (structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0);
@@ -104,7 +105,7 @@ export class HighlightStageExecutor implements StageExecutor {
     let finished = 0;
     const settled = await Promise.allSettled(
       windows.map(async (window, index) => {
-        const payload = await this.runWindow(context, { modelRef, revision, template, structured, outputLanguage, window, index, count: windows.length });
+        const payload = await this.runWindow(context, { modelRef, promptRef: prompt.ref, revision, template, structured, outputLanguage, window, index, count: windows.length });
         finished += 1;
         context.reportProgress(finished / windows.length);
         return payload;
@@ -131,7 +132,8 @@ export class HighlightStageExecutor implements StageExecutor {
           transcriptRevisionId: revision.id,
           items,
           modelRef: description.snapshot,
-          promptRef: HIGHLIGHT_DEFAULT_PROMPT.ref,
+          promptRef: prompt.ref,
+          promptRefs: [prompt.ref],
           promptSnapshot: template,
           quality: "normal",
           createdAt,
@@ -155,6 +157,7 @@ export class HighlightStageExecutor implements StageExecutor {
     context: StageExecutionContext,
     input: {
       modelRef: ModelRef;
+      promptRef: PromptRef;
       revision: TranscriptRevision;
       template: string;
       structured: boolean;
@@ -164,7 +167,7 @@ export class HighlightStageExecutor implements StageExecutor {
       count: number;
     },
   ): Promise<WindowPayload> {
-    const { modelRef, revision, template, structured, outputLanguage, window, index, count } = input;
+    const { modelRef, promptRef, revision, template, structured, outputLanguage, window, index, count } = input;
     const prompt = renderPrompt(template, {
       window_note: chapterWindowNote(index + 1, count),
       transcript_with_aliases: window.lines.join("\n"),
@@ -181,7 +184,7 @@ export class HighlightStageExecutor implements StageExecutor {
         i: index,
         n: count,
         segmentIds: window.segments.map((segment) => segment.id),
-        promptRef: HIGHLIGHT_DEFAULT_PROMPT.ref,
+        promptRef,
         modelRef,
         outputLanguage,
         structured,

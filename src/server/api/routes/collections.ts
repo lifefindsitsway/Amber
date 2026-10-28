@@ -82,4 +82,10 @@ export function registerCollectionRoutes(app: FastifyInstance, deps: { collectio
     const { id } = parseInput(idParamsSchema, request.params, "params");
     return sendValidated(reply, 200, collectionSummaryDtoSchema, collections.getSummary(principalOf(request), id));
   });
+
+  app.delete("/api/collections/:id/summary", async (request, reply) => {
+    const { id } = parseInput(idParamsSchema, request.params, "params");
+    collections.deleteSummary(principalOf(request), id);
+    return reply.code(204).send();
+  });
 }

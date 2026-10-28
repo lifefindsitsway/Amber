@@ -609,7 +609,14 @@ describe("chat threads", () => {
     expect(sessionStorage.getItem("amber.chat.thread:c1")).toBe("th2");
   });
 
-  it("starts a new thread, shows untitled threads as 「新对话」 and asks before deleting one", async () => {
+  it("names the menu 「历史对话」 while there is no thread yet", async () => {
+    api();
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("chat-thread-title").textContent).toBe("历史对话"));
+    expect(screen.getByTestId("chat-thread-menu").getAttribute("title")).toBe("历史对话");
+  });
+
+  it("starts a new thread, names the menu 「历史对话」 while it has no title, lists it as 「新对话」 and asks before deleting one", async () => {
     let threads = THREADS;
     const fresh = threadOf("th3");
     const calls = api({
@@ -629,12 +636,14 @@ describe("chat threads", () => {
     renderPanel();
     await screen.findByText("第二个回答");
     fireEvent.click(screen.getByTestId("chat-new-thread"));
-    await waitFor(() => expect(screen.getByTestId("chat-thread-title").textContent).toBe("新对话"));
+    await waitFor(() => expect(screen.getByTestId("chat-thread-title").textContent).toBe("历史对话"));
+    expect(screen.getByTestId("chat-thread-menu").getAttribute("title")).toBe("历史对话");
     expect(screen.getByText("就视频内容提问，回答会附带可点的原文出处。")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("chat-thread-menu"));
     const items = await screen.findAllByTestId("chat-thread-item");
     expect(items[0]?.getAttribute("data-thread-id")).toBe("th3");
+    expect(within(items[0]!).getByText("新对话")).toBeTruthy();
     fireEvent.click(within(items[0]!).getByTestId("chat-thread-delete"));
     expect(await screen.findByText("删除会话「新对话」？其中的全部对话将被删除，无法恢复。")).toBeTruthy();
     fireEvent.click(screen.getByTestId("confirm-dialog-ok"));

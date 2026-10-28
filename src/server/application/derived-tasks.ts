@@ -23,6 +23,7 @@ import { transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import { outputLanguageFor } from "./settings.ts";
 import type { TaskControl } from "./tasks.ts";
@@ -61,11 +62,12 @@ export class DerivedTaskService {
   }
 
   proofread(principal: RequestPrincipal, contentId: string, body: DerivedTaskRequest, idempotencyKey?: string): Promise<IdempotentResult<TaskAcceptedDto>> {
-    return this.create(principal, contentId, body, idempotencyKey, PROOFREAD_ROUTE, "reproofread", (content) =>
+    return this.create(principal, contentId, body, idempotencyKey, PROOFREAD_ROUTE, "reproofread", (content, scope) =>
       canonicalJson(
         reproofreadRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "reproofread",
+          promptRefs: freezePromptRefs(scope, principal.userId, "reproofread"),
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
           baseRevisionId: primaryOf(content),
         }),
@@ -83,6 +85,7 @@ export class DerivedTaskService {
         regenerateChaptersRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "regenerate_chapters",
+          promptRefs: freezePromptRefs(scope, principal.userId, "regenerate_chapters"),
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
           baseRevisionId: primaryOf(content),
           outputLanguage: outputLanguageFor(scope, principal.userId, undefined),
@@ -98,6 +101,7 @@ export class DerivedTaskService {
         recomputeHighlightsRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "recompute_highlights",
+          promptRefs: freezePromptRefs(scope, principal.userId, "recompute_highlights"),
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
           baseRevisionId: primaryOf(content),
           outputLanguage: outputLanguageFor(scope, principal.userId, undefined),
@@ -131,6 +135,7 @@ export class DerivedTaskService {
         translateRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "translate",
+          promptRefs: freezePromptRefs(scope, principal.userId, "translate"),
           targetLanguages: normalized.languages,
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
           baseRevisionId: source.id,

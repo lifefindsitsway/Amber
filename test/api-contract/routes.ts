@@ -81,6 +81,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "DELETE", path: "/collections/:id/items/:iid", modes: BOTH },
   { method: "POST", path: "/collections/:id/summary", modes: BOTH },
   { method: "GET", path: "/collections/:id/summary", modes: BOTH },
+  { method: "DELETE", path: "/collections/:id/summary", modes: BOTH },
   // trash
   { method: "GET", path: "/trash", modes: BOTH },
   { method: "POST", path: "/trash/:id/restore", modes: BOTH },
@@ -134,6 +135,10 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "PATCH", path: "/summary-templates/:id", modes: BOTH },
   { method: "DELETE", path: "/summary-templates/:id", modes: BOTH },
   { method: "GET", path: "/summary-templates/:id/versions", modes: BOTH },
+  { method: "GET", path: "/prompts", modes: BOTH },
+  { method: "PUT", path: "/prompts/:id", modes: BOTH },
+  { method: "DELETE", path: "/prompts/:id", modes: BOTH },
+  { method: "GET", path: "/prompts/:id/versions", modes: BOTH },
   // terminology
   { method: "GET", path: "/terminology", modes: BOTH },
   { method: "PUT", path: "/terminology", modes: BOTH },

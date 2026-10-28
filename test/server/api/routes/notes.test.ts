@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { API_PAGE_SIZE_MAX } from "../../../../src/shared/defaults.ts";
 import { noteDtoSchema, noteGroupsDtoSchema, noteListDtoSchema } from "../../../../src/shared/dto/note.ts";
+import type { SegmentId } from "../../../../src/shared/ids.ts";
+import { jsonRequestDigest } from "../../../../src/server/application/idempotency.ts";
+import { NOTE_CREATE_ROUTE } from "../../../../src/server/application/notes.ts";
+import type { TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
 import { BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
@@ -44,6 +48,49 @@ describe("POST /api/contents/:id/notes", () => {
     expect([conflict.statusCode, conflict.json().error.class]).toEqual([409, "idempotency_conflict"]);
     const listed = noteListDtoSchema.parse((await app.inject({ method: "GET", url, headers: auth })).json());
     expect(listed.items.map((item) => item.id)).toEqual([note.id]);
+  });
+
+  it("replays a recorded response with the quote as it reads now, and the recorded body once the note is gone", async () => {
+    const { h, app, contentId } = await setup();
+    // A punctuation-restored revision without closing punctuation, where an earlier reading
+    // rule put a space between sentences, and a create recorded under that rule.
+    const revisionId = h.newId();
+    const segments: TranscriptSegment[] = ["第一句没有标点", "第二句。"].map((text, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 1000, text, sourceSegmentIds: [], paragraphStart: ordinal === 0,
+    }));
+    const payload = {
+      transcriptRevisionId: revisionId, startSegmentId: segments[0]?.id as string, startOffset: 2, endSegmentId: segments[1]?.id as string, endOffset: 3,
+      mark: "background" as const, color: "yellow" as const,
+    };
+    const noteId = h.newId();
+    const recorded = { id: noteId, contentId, contentTitle: "", ...payload, startMs: 0, quote: "句没有标点 第二句", createdAt: 10, updatedAt: 10 };
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id: revisionId, contentId, kind: "imported", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "imported", format: "srt" }, segmentCount: 2, createdAt: 9 },
+        segments,
+      );
+      scope.notes.insert({ ...payload, id: noteId, userId: LOCAL.userId, contentId, quote: recorded.quote, createdAt: 10, updatedAt: 10 });
+      scope.idempotency.insert({
+        userId: LOCAL.userId, route: NOTE_CREATE_ROUTE, key: "legacy-key", requestDigest: jsonRequestDigest({ contentId, body: payload }),
+        responseStatus: 201, responseBodyJson: JSON.stringify(recorded), resourceRefsJson: JSON.stringify([noteId]), createdAt: 10,
+      });
+    });
+    const url = `/api/contents/${contentId}/notes`;
+    const replay = await app.inject({ method: "POST", url, headers: { ...auth, "idempotency-key": "legacy-key" }, payload });
+    expect(replay.statusCode).toBe(201);
+    expect(noteDtoSchema.parse(replay.json())).toEqual({ ...recorded, quote: "句没有标点第二句" });
+    expect((h.db.prepare("SELECT count(*) AS n FROM note").get() as { n: number }).n).toBe(1);
+    for (const read of [url, `${url}?revision=${revisionId}`]) {
+      expect(noteListDtoSchema.parse((await app.inject({ method: "GET", url: read, headers: auth })).json()).items[0]?.quote).toBe("句没有标点第二句");
+    }
+    expect((await app.inject({ method: "PATCH", url: `/api/notes/${noteId}`, headers: auth, payload: { color: "blue" } })).json().quote).toBe("句没有标点第二句");
+    expect(h.db.prepare("SELECT quote FROM note WHERE id = ?").get(noteId)).toEqual({ quote: "句没有标点 第二句" });
+
+    expect((await app.inject({ method: "DELETE", url: `/api/notes/${noteId}`, headers: auth })).statusCode).toBe(204);
+    const gone = await app.inject({ method: "POST", url, headers: { ...auth, "idempotency-key": "legacy-key" }, payload });
+    expect([gone.statusCode, gone.json()]).toEqual([201, recorded]);
+    expect((h.db.prepare("SELECT count(*) AS n FROM note").get() as { n: number }).n).toBe(0);
   });
 
   it("validates the body and reports refined anchor errors", async () => {

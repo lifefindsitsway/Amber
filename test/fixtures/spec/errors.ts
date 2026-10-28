@@ -105,6 +105,7 @@ export const EXPECTED_REFINED_CODES = [
   { code: "invalid_request.note_anchor", detailsKeys: [], retryDisposition: null, action: null },
   { code: "invalid_request.note_span", detailsKeys: ["limit"], retryDisposition: null, action: null },
   { code: "invalid_request.note_limit", detailsKeys: ["limit"], retryDisposition: null, action: null },
+  { code: "invalid_request.prompt_protocol", detailsKeys: ["missing", "unknown"], retryDisposition: null, action: null },
   { code: "invalid_request.cache_dir", detailsKeys: ["reason"], retryDisposition: null, action: null },
   { code: "conflict.mutation_lane", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.setting_env_overridden", detailsKeys: [], retryDisposition: null, action: null },

@@ -41,6 +41,7 @@ export const chat = {
   threads: {
     menu: "会话列表",
     untitled: "新对话",
+    currentUntitled: "历史对话",
     newThread: "新对话",
     empty: "还没有会话",
     delete: "删除会话",

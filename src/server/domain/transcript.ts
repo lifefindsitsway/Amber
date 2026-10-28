@@ -7,8 +7,12 @@ export type TranscriptGeneration =
   | { kind: "platform"; acquisition: "guest" | "authenticated" }
   | { kind: "imported"; format: "srt" | "vtt" }
   | { kind: "asr"; asrProfileId: string; modelId: string }
-  /** A snapshot, so a proofread or translated revision stays explainable after its Profile is gone. */
-  | { kind: "llm"; modelRef: ModelRefSnapshot; promptRef: PromptRef; promptSnapshot: string }
+  /**
+   * A snapshot, so a proofread or translated revision stays explainable after its Profile is
+   * gone. `promptRefs` lists every prompt version that produced the accepted text; absent on
+   * revisions stored before it was recorded.
+   */
+  | { kind: "llm"; modelRef: ModelRefSnapshot; promptRef: PromptRef; promptRefs?: PromptRef[]; promptSnapshot: string }
   | { kind: "manual" };
 
 /**

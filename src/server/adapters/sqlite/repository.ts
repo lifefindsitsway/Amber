@@ -27,6 +27,7 @@ import { sqliteSessionRepository } from "./repositories/sessions.ts";
 import { sqliteStageRunRepository } from "./repositories/stage-runs.ts";
 import { sqliteSummaryRepository } from "./repositories/summaries.ts";
 import { sqliteSummaryTemplateRepository } from "./repositories/summary-templates.ts";
+import { sqlitePromptOverrideRepository } from "./repositories/prompt-overrides.ts";
 import { sqliteTerminologyRepository } from "./repositories/terminology.ts";
 import { sqliteTaskRepository } from "./repositories/tasks.ts";
 import { sqliteTokenUsageRepository } from "./repositories/token-usage.ts";
@@ -74,6 +75,7 @@ export class SqliteRepository implements Repository {
       highlights: sqliteHighlightRepository(db),
       translations: sqliteTranslationRepository(db),
       summaryTemplates: sqliteSummaryTemplateRepository(db),
+      promptOverrides: sqlitePromptOverrideRepository(db),
       summaries: sqliteSummaryRepository(db),
       collectionSummaries: sqliteCollectionSummaryRepository(db),
       rollupPartials: sqliteRollupPartialRepository(db),

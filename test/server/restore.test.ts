@@ -143,6 +143,14 @@ describe("fresh target", () => {
     ],
     ["only a terminology set", (db) => insertRow(db, "terminology_set", { id: "t1", user_id: "local", scope_kind: "global" }), "terminology_set"],
     ["only a custom template", (db) => insertRow(db, "summary_template", { id: "u1", user_id: "local", builtin: 0, name: "mine", current_version: 1 }), "summary_template"],
+    [
+      "only a restored system prompt's history",
+      (db) => {
+        insertRow(db, "prompt_override", { user_id: "local", prompt_id: "chapter.ai", updated_at: 1 });
+        insertRow(db, "prompt_override_version", { user_id: "local", prompt_id: "chapter.ai", version: 1, text: "mine", created_at: 1 });
+      },
+      "prompt_override_version",
+    ],
     ["only a relocated cache", (db) => db.prepare("UPDATE instance_settings SET cache_root = '/elsewhere'").run(), "cache_root"],
     [
       "a stored secret",
@@ -222,6 +230,17 @@ describe("restore correctness", () => {
     for (const table of ["content", "collection", "collection_item", "note", "transcript_segment", "summary_revision", "chat_message", "task", "token_usage", "asr_usage", "provider_profile", "asr_provider_profile"]) {
       expect(count(restored, `SELECT count(*) AS n FROM ${table}`), table).toBe(count(sourceDb, `SELECT count(*) AS n FROM ${table}`));
     }
+    // Custom system prompts come back with their current version and their whole history.
+    const prompts = (db: Database.Database) => ({
+      overrides: db.prepare("SELECT prompt_id, current_version FROM prompt_override ORDER BY prompt_id").all(),
+      versions: db.prepare("SELECT prompt_id, version, text, created_at FROM prompt_override_version ORDER BY prompt_id, version").all(),
+    });
+    expect(prompts(restored)).toEqual(prompts(sourceDb));
+    expect(prompts(restored).overrides).toEqual([
+      { prompt_id: "chapter.ai", current_version: 2 },
+      { prompt_id: "summary.envelope", current_version: null },
+    ]);
+    expect(prompts(restored).versions).toHaveLength(3);
     sourceDb.close();
     for (const table of ["secret", "platform_account", "session", "pending_file_delete"]) {
       expect(count(restored, `SELECT count(*) AS n FROM ${table}`), table).toBe(0);

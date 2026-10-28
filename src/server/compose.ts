@@ -75,6 +75,7 @@ import { StorageQuota } from "./application/storage-quota.ts";
 import { SettingsService } from "./application/settings.ts";
 import { SummaryService } from "./application/summaries.ts";
 import { ensureBuiltinSummaryTemplates, SummaryTemplateService } from "./application/summary-templates.ts";
+import { PromptService } from "./application/prompts.ts";
 import { TaskService, type TaskControl } from "./application/tasks.ts";
 import { TerminologyService } from "./application/terminology.ts";
 import { TranscriptService } from "./application/transcripts.ts";
@@ -401,6 +402,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       : undefined;
   const relink = grants === undefined ? undefined : new RelinkService({ repository, ingest, grants, heavy });
   const summaryTemplates = new SummaryTemplateService({ repository });
+  const prompts = new PromptService({ repository });
   const summaries = new SummaryService({ repository, bus, control, disk: files, settings: instanceSettings });
   const collections = new CollectionService({ repository, bus, control, disk: files, settings: instanceSettings, importContent });
   // Searches go to each service's fixed official origin, through the same outbound policy as everything else.
@@ -446,7 +448,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
           logger: lateLogger(() => appLogger?.child({ component: "cache_root" })),
         });
   const search = new SearchService({ repository });
-  const notes = new NoteService({ repository });
+  const notes = new NoteService({ repository, logger: lateLogger(() => appLogger?.child({ component: "notes" })) });
   // Local mode only: the client backup and the maintenance state before an update install.
   let backgroundReady = false;
   const backupStore = grants === undefined ? undefined : new SqliteBackupStore({ db, file: layout.database });
@@ -549,6 +551,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     exports,
     subtitleFont,
     summaryTemplates,
+    prompts,
     summaries,
     collections,
     search,

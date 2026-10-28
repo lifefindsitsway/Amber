@@ -9,6 +9,7 @@ import type {
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { ArtifactRevisionBase, SummaryArtifact, SummaryRevision, SummaryTemplate } from "../domain/artifact.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
+import { cappedCitations } from "../domain/citations.ts";
 import type { Content } from "../domain/content.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { deriveFreshness, transcriptAncestors, type Freshness } from "../domain/freshness.ts";
@@ -23,6 +24,7 @@ import { transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import { outputLanguageFor } from "./settings.ts";
 import { resolveTemplateRef, summaryTemplateDto } from "./summary-templates.ts";
@@ -55,17 +57,22 @@ function summaryFreshness(scope: RepositoryScope, content: Content, revision: Su
   });
 }
 
+/**
+ * A summary revision as shown. Each run of citations is cut to `CITATION_RUN_MAX` on the way
+ * out, so a revision stored before new ones were cut reads like them; storage is untouched.
+ */
 export function summaryRevisionDto(revision: SummaryRevision, freshness: Freshness): SummaryRevisionDto {
   const { provenance } = revision;
   const transcript = provenance.inputs.find((input) => input.kind === "transcriptRevision");
   if (transcript === undefined) {
     throw amberError("internal", "a summary revision without a transcript input");
   }
+  const { body, citations } = cappedCitations(revision.body, revision.citations);
   return {
     id: revision.id,
     artifactId: revision.artifactId,
-    body: revision.body,
-    citations: revision.citations.map((citation) => ({ ...citation })),
+    body,
+    citations: citations.map((citation) => ({ ...citation })),
     ...(revision.chapterRevisionId === undefined ? {} : { chapterRevisionId: revision.chapterRevisionId }),
     ...(revision.partialIds === undefined ? {} : { partialIds: [...revision.partialIds] }),
     transcriptRevisionId: transcript.id,
@@ -167,6 +174,7 @@ export class SummaryService {
           regenerateSummaryRequestSchema.parse({
             requestSchemaVersion: 1,
             kind: "regenerate_summary",
+            promptRefs: freezePromptRefs(scope, owner, "regenerate_summary"),
             ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
             outputLanguage: outputLanguageFor(scope, owner, body.outputLanguage),
             templateRef,

@@ -12,9 +12,9 @@ export function useThreadTitle(): (thread: ChatThreadDto | undefined) => string 
 }
 
 /**
- * The thread menu of the dialogue's top row: the open thread's title, and a list of every
- * thread of the Content (title · time of its last message · rename · pin · delete), in the
- * server's order. Threads with an answer still streaming in this page are marked; switching to
+ * The thread menu of the dialogue's top row: the open thread's title (a label for the history
+ * when there is no thread or it has no title), and a list of every thread of the Content
+ * (title · time of its last message · rename · pin · delete), in the server's order. Threads with an answer still streaming in this page are marked; switching to
  * another thread never stops it, and such a thread can be renamed or pinned but not deleted.
  */
 export function ChatThreadMenu(props: {
@@ -29,6 +29,8 @@ export function ChatThreadMenu(props: {
   const { t } = useTranslation();
   const titleOf = useThreadTitle();
   const [open, setOpen] = useState(false);
+  // Without a title the trigger names what it opens (the history) instead of claiming a new thread.
+  const currentTitle = props.current?.title === undefined || props.current.title === "" ? t("chat.threads.currentUntitled") : props.current.title;
   return (
     <Popover.Root open={open} onOpenChange={setOpen} modal={false}>
       <Popover.Trigger asChild>
@@ -36,14 +38,14 @@ export function ChatThreadMenu(props: {
           type="button"
           className="flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-sm font-medium hover:bg-sunken"
           aria-label={t("chat.threads.menu")}
-          title={titleOf(props.current)}
+          title={currentTitle}
           data-testid="chat-thread-menu"
         >
           {props.current?.pinnedAt === undefined ? null : (
             <Pin size={12} className="shrink-0 text-accent" aria-label={t("chat.threads.pinned")} data-testid="chat-thread-title-pinned" />
           )}
           <span className="min-w-0 truncate" data-testid="chat-thread-title">
-            {titleOf(props.current)}
+            {currentTitle}
           </span>
           <ChevronDown size={14} className="shrink-0 text-muted" aria-hidden="true" />
         </button>

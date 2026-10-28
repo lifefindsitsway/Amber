@@ -45,6 +45,7 @@ import { effectiveCapability } from "../domain/provider-profile.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { ChatWebSearch } from "../domain/web-search.ts";
 import type { LlmModelDescription } from "../pipeline/executor.ts";
+import { resolvePrompt } from "../pipeline/prompts.ts";
 import { toAppError } from "../pipeline/retry.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { ChatThreadSummary, Repository, RepositoryScope } from "../ports/repository.ts";
@@ -844,6 +845,11 @@ export class ChatService {
         chapters,
         ...(compaction === undefined ? {} : { compaction: compaction.body }),
         turns: [],
+        // Answers are not Tasks: each question reads the prompts in effect now, nothing is frozen.
+        prompts: {
+          system: resolvePrompt(scope, owner, "chat.system", undefined).text,
+          metadata: resolvePrompt(scope, owner, "chat.system.metadata", undefined).text,
+        },
       },
       thread,
       turns: turnsOf(messages.slice(Math.min(after, messages.length)), (segmentId) => scope.transcripts.getSegment(owner, segmentId)?.text),

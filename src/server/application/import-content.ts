@@ -5,7 +5,8 @@ import { BYTES_PER_MB } from "../../shared/units.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Collection } from "../domain/collection.ts";
 import { platformContentKey, trashPurgeAt, type Content, type ContentSource } from "../domain/content.ts";
-import type { AsrModelRef } from "../domain/model-ref.ts";
+import type { AsrModelRef, PromptRef } from "../domain/model-ref.ts";
+import { promptIdsOf } from "../domain/prompts.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { canonicalLanguageTag, importedTranscript, parseTimedSubtitle, type ParsedSubtitle } from "../domain/subtitle-file.ts";
 import type { Task } from "../domain/task.ts";
@@ -28,6 +29,7 @@ import { type Outbox, transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { PlatformRegistry } from "./platforms.ts";
 import { asrModelRefForSubmission } from "./settings.ts";
@@ -38,7 +40,37 @@ import { restoreTrashed } from "./trash.ts";
 export const IMPORT_ROUTE = "POST /api/contents/import";
 
 /** Settings fields whose change alone is served by a new summary rather than a new pass. */
-const SUMMARY_ONLY_FIELDS: ReadonlySet<string> = new Set(["templateRef", "outputLanguage", "modelRef"]);
+const SUMMARY_ONLY_FIELDS: ReadonlySet<string> = new Set([
+  "templateRef",
+  "outputLanguage",
+  "modelRef",
+  ...promptIdsOf("regenerate_summary").map((id) => `promptRefs.${id}`),
+]);
+
+/** Prompts frozen by `process_content` that none of its stages sends. */
+const UNUSED_PROMPT_FIELDS: readonly string[] = ["promptRefs.highlight.default"];
+
+/** Prompts whose change, like `autoProofread`'s, changes nothing a pass does to a Content that already has a primary. */
+const PROOFREAD_PROMPT_FIELDS: readonly string[] = ["promptRefs.proofread.text", "promptRefs.proofread.audio"];
+
+/**
+ * Like `intentDifferences`, with frozen prompt versions compared prompt by prompt
+ * (`promptRefs.<id>`). A request stored before prompts were frozen ran with whatever was in
+ * effect then, so against it prompt versions are not compared at all.
+ */
+function requestDifferences(requestJson: string, otherJson: string, ignore: readonly string[]): string[] {
+  const differences = intentDifferences(requestJson, otherJson, [...ignore, "promptRefs"]);
+  const a = (JSON.parse(requestJson) as { promptRefs?: Record<string, PromptRef> }).promptRefs;
+  const b = (JSON.parse(otherJson) as { promptRefs?: Record<string, PromptRef> }).promptRefs;
+  if (a === undefined || b === undefined) {
+    return differences;
+  }
+  const prompts = [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .filter((id) => canonicalJson(a[id] ?? null) !== canonicalJson(b[id] ?? null))
+    .map((id) => `promptRefs.${id}`)
+    .filter((field) => !ignore.includes(field));
+  return [...differences, ...prompts].sort();
+}
 
 export interface ImportContentServiceOptions {
   repository: Repository;
@@ -122,6 +154,9 @@ function summaryRequestJson(requestJson: string, baseRevisionId: string): string
     ...(request.modelRef === undefined ? {} : { modelRef: request.modelRef }),
     ...(request.outputLanguage === undefined ? {} : { outputLanguage: request.outputLanguage }),
     ...(request.templateRef === undefined ? {} : { templateRef: request.templateRef }),
+    ...(request.promptRefs === undefined
+      ? {}
+      : { promptRefs: Object.fromEntries(promptIdsOf("regenerate_summary").flatMap((id) => (request.promptRefs?.[id] === undefined ? [] : [[id, request.promptRefs[id]]]))) }),
     baseRevisionId,
   };
   return canonicalJson(summary);
@@ -456,6 +491,7 @@ export class ImportContentService {
     const request: ProcessContentRequest = {
       requestSchemaVersion: 1,
       kind: "process_content",
+      promptRefs: freezePromptRefs(scope, owner, "process_content"),
       ...(settings.modelRef === undefined ? {} : { modelRef: settings.modelRef }),
       ...(settings.asrModelRef === undefined ? {} : { asrModelRef: settings.asrModelRef }),
       ...(settings.outputLanguage === undefined ? {} : { outputLanguage: settings.outputLanguage }),
@@ -535,8 +571,8 @@ export class ImportContentService {
 
     const latest = tasks.filter((task) => task.kind === "process_content").at(-1);
     // With a primary, neither choice changes what the Task would do to the Content now.
-    const ignore = primary === undefined ? [] : ["autoProofread", "asrModelRef"];
-    const differences = latest === undefined ? undefined : intentDifferences(requestJson, latest.requestJson, ignore);
+    const ignore = primary === undefined ? UNUSED_PROMPT_FIELDS : ["autoProofread", "asrModelRef", ...PROOFREAD_PROMPT_FIELDS, ...UNUSED_PROMPT_FIELDS];
+    const differences = latest === undefined ? undefined : requestDifferences(requestJson, latest.requestJson, ignore);
     if (latest !== undefined && latest.statusProjection === "succeeded" && differences?.length === 0) {
       return { task: latest, created: false };
     }

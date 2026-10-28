@@ -119,7 +119,7 @@ test("chat threads: each thread keeps its history, an answer in flight survives 
   const input = panel.getByTestId("chat-input");
   const answers = panel.locator('[data-testid="chat-message"][data-role="assistant"]');
   await expect(panel.getByTestId("chat-mode")).toHaveAttribute("data-mode", "full");
-  await expect(panel.getByTestId("chat-thread-title")).toHaveText("新对话");
+  await expect(panel.getByTestId("chat-thread-title")).toHaveText("历史对话");
 
   await input.fill("第一个会话的问题");
   await input.press("Enter");
@@ -128,7 +128,7 @@ test("chat threads: each thread keeps its history, an answer in flight survives 
   await expect(panel.getByTestId("chat-thread-title")).toHaveText("第一个会话的问题");
 
   await panel.getByTestId("chat-new-thread").click();
-  await expect(panel.getByTestId("chat-thread-title")).toHaveText("新对话");
+  await expect(panel.getByTestId("chat-thread-title")).toHaveText("历史对话");
   await expect(answers).toHaveCount(0);
 
   // The second thread's answer is held back long enough to leave and come back meanwhile.
@@ -256,7 +256,7 @@ test.describe("chat turns, read in another time zone", () => {
     await panel.getByTestId("chat-clear").click();
     await page.getByTestId("confirm-dialog-ok").click();
     await expect(turns).toHaveCount(0);
-    await expect(panel.getByTestId("chat-thread-title")).toHaveText("新对话");
+    await expect(panel.getByTestId("chat-thread-title")).toHaveText("历史对话");
     expect(backend.mutations.some((mutation) => mutation.method === "DELETE" && mutation.path === `/api/contents/${BILIBILI_CONTENT}/chat`)).toBe(true);
   });
 });

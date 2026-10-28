@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ASSETS_DIR, FONT_ASSETS, RUNTIME_MANIFEST_FILE, SHA256SUMS_FILE } from "./runtime-assets.ts";
@@ -20,7 +20,12 @@ import { RUNTIME_LICENSES_ASSET } from "./third-party-notices.ts";
  *
  * The mirror root gets `mirror-source.json`: the source commit, whether the working tree
  * was clean, the lockfile digest and the mirror's version, so the build report can name
- * what an installer was built from.
+ * what an installer was built from. A candidate may be built from an uncommitted tree, so
+ * the commit alone does not say which sources went in: `mirror-inputs.json` lists the
+ * SHA256 of every input as it lies in the mirror after the copy, split into the inputs git
+ * can vouch for (`tracked`, checked later against a commit with `pnpm verify:mirror`) and
+ * the ignored local ones (`local`, such as the Runtime Assets) that only the mirror itself
+ * and the pinned checksums can vouch for.
  */
 
 export const ROOT_INPUTS = [
@@ -36,6 +41,7 @@ export const ROOT_INPUTS = [
 /** Documents shipped beside the build; each is copied when git tracks it or would track it. */
 export const DOC_INPUTS = ["CHANGELOG.md", "LICENSE", "README.md"] as const;
 export const MIRROR_SOURCE_FILE = "mirror-source.json";
+export const MIRROR_INPUTS_FILE = "mirror-inputs.json";
 /** The pinned list and manifest, the Windows binaries and fonts, and the runtime license texts the notices embed. */
 export const ASSET_INPUTS = [
   SHA256SUMS_FILE,
@@ -66,6 +72,59 @@ export function buildInputs(root: string): string[] {
     .filter((path) => path !== "" && existsSync(join(root, path)));
   const assets = ASSET_INPUTS.map((file) => `${DEFAULT_ASSETS_DIR}/${file}`);
   return [...ROOT_INPUTS, ...sources, ...docs, ...assets].sort();
+}
+
+/**
+ * The inputs git ignores, i.e. those no commit can carry. A tracked file counts as not
+ * ignored even where an ignore pattern matches it, as git itself treats it.
+ */
+export function ignoredInputs(root: string, inputs: readonly string[]): Set<string> {
+  if (inputs.length === 0) {
+    return new Set();
+  }
+  return new Set(git(root, ["check-ignore", "--stdin"], inputs.join("\n")).split("\n").filter((path) => path !== ""));
+}
+
+/** Hex SHA256 of a file, read in chunks so the large Runtime Assets are never held whole in memory. */
+export function fileSha256(path: string): string {
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(1 << 20);
+  const fd = openSync(path, "r");
+  try {
+    for (let read = readSync(fd, buffer); read > 0; read = readSync(fd, buffer)) {
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+/** Repository-relative path → hex SHA256. */
+export type InputDigests = Record<string, string>;
+
+export interface MirrorInputs {
+  /** Inputs git tracks or would track: a commit can reproduce each of them. */
+  tracked: InputDigests;
+  /** Inputs git ignores (the Runtime Assets, an ignored changelog): only the mirror holds them. */
+  local: InputDigests;
+  /** SHA256 of the mirrored Runtime Assets `manifest.json`. */
+  assetsManifest: string;
+}
+
+/**
+ * Digests of the inputs as they lie in `dest`. They are taken from the mirror after copying,
+ * never from the repository: a file the copy skipped because its size and second-rounded
+ * time matched may still differ in content, and what matters is what the build will read.
+ */
+export function mirrorInputs(root: string, dest: string, inputs: readonly string[]): MirrorInputs {
+  const ignored = ignoredInputs(root, inputs);
+  const tracked: InputDigests = {};
+  const local: InputDigests = {};
+  for (const path of [...inputs].sort()) {
+    (ignored.has(path) ? local : tracked)[path] = fileSha256(join(dest, path));
+  }
+  return { tracked, local, assetsManifest: fileSha256(join(dest, DEFAULT_ASSETS_DIR, RUNTIME_MANIFEST_FILE)) };
 }
 
 export interface MirrorSource {
@@ -150,12 +209,16 @@ export function mirrorArguments(args: readonly string[]): { dest: string } {
   return { dest: rest[1] };
 }
 
-function main(): void {
-  const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-  const dest = resolve(mirrorArguments(process.argv.slice(2)).dest);
-  if (dest === root || dest.startsWith(`${root}${sep}`)) {
-    throw new Error("the mirror must live outside the repository");
-  }
+export interface SyncResult {
+  inputs: number;
+  copied: number;
+  stale: string[];
+  source: MirrorSource;
+  digests: MirrorInputs;
+}
+
+/** Copies the inputs of `root` into `dest`, drops stale sources and writes both mirror records. */
+export function syncMirror(root: string, dest: string): SyncResult {
   const inputs = buildInputs(root);
   let copied = 0;
   for (const path of inputs) {
@@ -166,11 +229,24 @@ function main(): void {
   const stale = removeStale(root, dest, new Set(inputs));
   const source = mirrorSource(root);
   writeFileSync(join(dest, MIRROR_SOURCE_FILE), `${JSON.stringify(source, null, 2)}\n`);
-  console.log(`mirror ${dest}: ${inputs.length} inputs, ${copied} copied, ${stale.length} stale removed`);
+  const digests = mirrorInputs(root, dest, inputs);
+  writeFileSync(join(dest, MIRROR_INPUTS_FILE), `${JSON.stringify(digests, null, 2)}\n`);
+  return { inputs: inputs.length, copied, stale, source, digests };
+}
+
+function main(): void {
+  const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+  const dest = resolve(mirrorArguments(process.argv.slice(2)).dest);
+  if (dest === root || dest.startsWith(`${root}${sep}`)) {
+    throw new Error("the mirror must live outside the repository");
+  }
+  const { inputs, copied, stale, source, digests } = syncMirror(root, dest);
+  console.log(`mirror ${dest}: ${inputs} inputs, ${copied} copied, ${stale.length} stale removed`);
   for (const path of stale) {
     console.log(`  removed ${path}`);
   }
   console.log(`  ${MIRROR_SOURCE_FILE}: ${source.sourceCommit}${source.dirty ? " (dirty)" : ""}, version ${source.version}`);
+  console.log(`  ${MIRROR_INPUTS_FILE}: ${Object.keys(digests.tracked).length} tracked, ${Object.keys(digests.local).length} local`);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

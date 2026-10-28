@@ -40,8 +40,12 @@ export function registerNoteRoutes(app: FastifyInstance, deps: { notes: NoteServ
     const { id } = parseInput(idParamsSchema, request.params, "params");
     const key = idempotencyKeyOf(request);
     const body = parseInput(noteCreateRequestSchema, request.body, "body");
-    const result = notes.create(principalOf(request), id, body, key);
-    return sendValidated(reply, result.status, noteDtoSchema, result.body);
+    const principal = principalOf(request);
+    const result = notes.create(principal, id, body, key);
+    // A replay answers with the note as it reads now (its quote is recut on every read); once
+    // the note is gone, the recorded response is all there is to replay.
+    const answer = result.replayed ? (notes.find(principal, result.body.id) ?? result.body) : result.body;
+    return sendValidated(reply, result.status, noteDtoSchema, answer);
   });
 
   app.patch("/api/notes/:id", async (request, reply) => {

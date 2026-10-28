@@ -94,6 +94,8 @@ describe("TaskFlow", () => {
     expect(model.value).toBe(JSON.stringify(["p1", "m1"]));
     expect(summary.textContent).not.toContain("换模型将重新处理本阶段全部内容");
 
+    expect(summary.textContent).toContain("重跑会采用当前的提示词设置");
+
     fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
     await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/tasks/t1/retry-stage")).toBe(true));
     const post = calls.find((call) => call.path === "/api/tasks/t1/retry-stage");
@@ -290,6 +292,8 @@ describe("TaskFlow ASR stage", () => {
     expect(select.value).toBe(key("a1", "fun-asr"));
     fireEvent.change(select, { target: { value: key("a1", "qwen-audio-3.1-asr-flash-filetrans") } });
     expect(stage.textContent).toContain("换用其它转录模型会重新提交音频");
+    // Transcription sends no prompt, so its re-run says nothing about prompt settings.
+    expect(stage.textContent).not.toContain("重跑会采用当前的提示词设置");
     fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
     await waitFor(() =>
       expect(calls.find((call) => call.path === "/api/tasks/t4/retry-stage")?.body).toEqual({

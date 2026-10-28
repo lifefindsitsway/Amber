@@ -4,10 +4,18 @@ import { CACHE_MEDIA_TYPES } from "../../shared/cache-file-name.ts";
 import { BURN_MODES, CACHE_MEDIA_QUALITIES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_CONTAINERS, type TaskKind } from "../../shared/enums.ts";
 import { subtitleStyleSchema } from "../../shared/subtitle-style.ts";
 import { canonicalJson } from "./canonical-json.ts";
-import type { AsrModelRef, ModelRef } from "./model-ref.ts";
+import type { AsrModelRef, ModelRef, PromptRef } from "./model-ref.ts";
 
 /** A summary template version, resolved and frozen when a Task is submitted, so later template edits never reach it. */
 export const templateRefSchema = z.object({ id: z.string().min(1), version: z.number().int().positive() }).strict();
+
+/**
+ * The version of every customizable prompt a Task uses, by prompt id: resolved when it is
+ * submitted (the user's own version or the builtin one), so later edits of a prompt reach
+ * only new Tasks and re-run stages. Requests stored before prompts were frozen lack it, and
+ * their stages resolve the prompt in effect when they run.
+ */
+export const promptRefsSchema = z.record(z.string().min(1), z.object({ id: z.string().min(1), version: z.number().int().positive() }).strict());
 
 /**
  * `Task.requestJson` of a `process_content` Task, schema version 1. Frozen at submission;
@@ -22,6 +30,7 @@ export const processContentRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("process_content"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     asrModelRef: asrModelRefSchema.exactOptional(),
     outputLanguage: z.string().min(1).exactOptional(),
@@ -41,6 +50,7 @@ export const regenerateSummaryRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("regenerate_summary"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     outputLanguage: z.string().min(1).exactOptional(),
     templateRef: templateRefSchema.exactOptional(),
@@ -58,6 +68,7 @@ export const summarizeCollectionRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("summarize_collection"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     outputLanguage: z.string().min(1),
     inputItems: z
@@ -99,6 +110,7 @@ export const reproofreadRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("reproofread"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
   })
@@ -113,6 +125,7 @@ export const regenerateChaptersRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("regenerate_chapters"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
     outputLanguage: z.string().min(1),
@@ -128,6 +141,7 @@ export const recomputeHighlightsRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("recompute_highlights"),
+    promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
     outputLanguage: z.string().min(1),
@@ -144,6 +158,7 @@ export const translateRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("translate"),
+    promptRefs: promptRefsSchema.exactOptional(),
     targetLanguages: z.array(z.string().min(1)).min(1),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
@@ -262,6 +277,7 @@ export interface TaskRequestView {
   autoProofread?: boolean;
   templateRef?: { id: string; version: number };
   targetLanguages?: string[];
+  promptRefs?: Record<string, PromptRef>;
 }
 
 const requestViewSchema = z.object({
@@ -270,6 +286,7 @@ const requestViewSchema = z.object({
   autoProofread: z.boolean().exactOptional(),
   templateRef: templateRefSchema.exactOptional(),
   targetLanguages: z.array(z.string().min(1)).exactOptional(),
+  promptRefs: promptRefsSchema.exactOptional(),
 });
 
 export function taskRequestView(requestJson: string): TaskRequestView {
@@ -283,10 +300,11 @@ export function taskRequestView(requestJson: string): TaskRequestView {
 /**
  * Input supplied through retry-stage and frozen on the StageRun (`StageRun.inputJson`).
  * It may only fill fields that the Task request lacks, or carry the model (or ASR model)
- * explicitly chosen when re-running a failed LLM (or ASR) stage.
+ * explicitly chosen when re-running a failed LLM (or ASR) stage, and the prompt versions in
+ * effect when a failed stage is re-run, which take precedence over the request's.
  */
 export const stageInputSchema = z
-  .object({ modelRef: modelRefSchema.exactOptional(), asrModelRef: asrModelRefSchema.exactOptional() })
+  .object({ modelRef: modelRefSchema.exactOptional(), asrModelRef: asrModelRefSchema.exactOptional(), promptRefs: promptRefsSchema.exactOptional() })
   .strict();
 export type StageInput = z.infer<typeof stageInputSchema>;
 

@@ -1,5 +1,5 @@
-import { CITATION_INVALID_RATIO_MAX, CITATION_REPAIR_CANDIDATES } from "../../shared/defaults.ts";
-import type { SegmentId } from "../../shared/ids.ts";
+import { capCitationRuns, stripCitations } from "../../shared/citation-runs.ts";
+import { CITATION_INVALID_RATIO_MAX, CITATION_REPAIR_CANDIDATES, CITATION_RUN_MAX } from "../../shared/defaults.ts";
 import type { Citation } from "./artifact.ts";
 import type { TranscriptSegment } from "./transcript.ts";
 
@@ -74,36 +74,6 @@ const CANONICAL = /\[\[seg:([^\]\s]+)\]\]/g;
  */
 export function markedSegmentIds(body: string): string[] {
   return [...body.matchAll(CANONICAL)].map((match) => match[1] as string);
-}
-
-/**
- * A collection's table: the canonical markers of the members' summaries, in
- * member order and first appearance, are renumbered `s1..sN` across lectures; a sentence
- * cited twice keeps one alias. Returns each body rewritten with aliases. A marker whose
- * sentence cannot be found becomes `[[unresolved:seg:<id>]]` rather than vanishing.
- */
-export function collectionAliasTable(
-  bodies: readonly string[],
-  sentenceOf: (segmentId: string) => { transcriptRevisionId: string; text: string } | undefined,
-): { table: AliasTable; bodies: string[] } {
-  const entries: AliasEntry[] = [];
-  const known = new Map<string, number>();
-  const rewritten = bodies.map((body) =>
-    body.replace(CANONICAL, (_marker, segmentId: string) => {
-      let alias = known.get(segmentId);
-      if (alias === undefined) {
-        const sentence = sentenceOf(segmentId);
-        if (sentence === undefined) {
-          return `[[unresolved:seg:${segmentId}]]`;
-        }
-        alias = entries.length + 1;
-        entries.push({ alias, citation: { transcriptRevisionId: sentence.transcriptRevisionId, segmentId: segmentId as SegmentId }, text: sentence.text });
-        known.set(segmentId, alias);
-      }
-      return `[[s${alias}]]`;
-    }),
-  );
-  return { table: new AliasTable(entries), bodies: rewritten };
 }
 
 /**
@@ -278,6 +248,30 @@ export function finalizeCitations(text: string, table: AliasTable): { body: stri
     return `[[seg:${citation.segmentId}]]`;
   });
   return { body, citations };
+}
+
+/**
+ * Text that must not cite (a collection summary and its partials): every citation marker
+ * removed, aliases in the one-bracket-short forms models write included, so none can show
+ * up as a stray bracket.
+ */
+export function withoutCitations(text: string): string {
+  return stripCitations(text.replace(ALIAS, (_marker, first?: string, second?: string) => `[[${aliasName(aliasDigits(first, second))}]]`));
+}
+
+/**
+ * A stored summary body with each run of adjacent citations cut to `CITATION_RUN_MAX`
+ * markers, and its `citations` index narrowed to the sentences still cited, in their order.
+ * Applied before publishing and again when reading, so summaries written before the cap
+ * read the same way.
+ */
+export function cappedCitations(body: string, citations: readonly Citation[]): { body: string; citations: Citation[] } {
+  const capped = capCitationRuns(body, CITATION_RUN_MAX);
+  if (capped === body) {
+    return { body, citations: [...citations] };
+  }
+  const kept = new Set(markedSegmentIds(capped));
+  return { body: capped, citations: citations.filter((citation) => kept.has(citation.segmentId)) };
 }
 
 function oneLine(text: string): string {

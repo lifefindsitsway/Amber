@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
+import { customPromptRef, renderPrompt, TRANSLATE_SUBTITLES_PROMPT } from "../../../../src/server/domain/prompts.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { TranslateStageExecutor } from "../../../../src/server/pipeline/stages/translate.ts";
 import type { LlmLanes } from "../../../../src/server/application/llm-lanes.ts";
@@ -307,5 +308,31 @@ describe("translate stage", () => {
     const unbound = createTaskOfKind(s.h, "translate", { targetLanguages: ["fr"], baseRevisionId: base.revision.id }, { contentId });
     s.h.scheduler.kick();
     await waitFor(() => stageStatuses(s.h, unbound).translate === "waiting_configuration");
+  });
+
+  describe("custom prompts", () => {
+    const CUSTOM = `${TRANSLATE_SUBTITLES_PROMPT.text}\n自定义标记：译文口语化。`;
+
+    it("a custom translate.subtitles prompt is sent, its numbered answer parsed, and recorded on the generation", async () => {
+      const s = setup();
+      s.h.prompts.update(LOCAL, "translate.subtitles", { text: CUSTOM });
+      const contentId = createLocalContent(s.h);
+      transcript(s.h, contentId, ["第一句", "第二句"]);
+      s.fake.script({ events: reply("1. first\n2. second") });
+      const accepted = await s.h.derivedTasks.translate(LOCAL, contentId, { modelRef: s.modelRef, targetLanguages: ["en"] });
+      expect(await settled(s.h, accepted.body.taskId)).toBe("succeeded");
+
+      const current = s.h.translations.get(LOCAL, contentId).translations[0]?.current;
+      const generation = current?.generation as { promptRef: unknown; promptRefs: unknown; promptSnapshot: string };
+      const ref = customPromptRef("translate.subtitles", 1);
+      expect(generation.promptRef).toEqual(ref);
+      expect(generation.promptRefs).toEqual([ref]);
+      expect(generation.promptSnapshot).toContain("自定义标记：译文口语化。");
+      expect(generation.promptSnapshot.startsWith("请将以下字幕翻译成 英语。")).toBe(true);
+      const sent = promptText(s.fake.calls[0]?.request as LlmRequest);
+      expect(sent).toBe(renderPrompt(generation.promptSnapshot, { count: "2", subtitles: "1. 第一句\n2. 第二句" }));
+      expect(sent).toContain("自定义标记：译文口语化。");
+      expect(translatedSegments(s.h, current?.id as string).map((segment) => segment.text)).toEqual(["first", "second"]);
+    });
   });
 });

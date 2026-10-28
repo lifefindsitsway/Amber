@@ -31,10 +31,12 @@ import { PlatformRegistry } from "../../../src/server/application/platforms.ts";
 import { SearchService } from "../../../src/server/application/search.ts";
 import { SummaryService } from "../../../src/server/application/summaries.ts";
 import { ensureBuiltinSummaryTemplates, SummaryTemplateService } from "../../../src/server/application/summary-templates.ts";
+import { PromptService } from "../../../src/server/application/prompts.ts";
+import { customizablePrompt, promptIdsOf } from "../../../src/server/domain/prompts.ts";
 import { TaskService, type TaskControl } from "../../../src/server/application/tasks.ts";
 import { TranscriptService } from "../../../src/server/application/transcripts.ts";
 import { canonicalJson } from "../../../src/server/domain/canonical-json.ts";
-import type { AsrModelRef, ModelRef } from "../../../src/server/domain/model-ref.ts";
+import type { AsrModelRef, ModelRef, PromptRef } from "../../../src/server/domain/model-ref.ts";
 import type { StageRun, Task, WorkUnit } from "../../../src/server/domain/task.ts";
 import type { RequestPrincipal } from "../../../src/server/domain/user.ts";
 import { CacheGate } from "../../../src/server/pipeline/cache-gate.ts";
@@ -160,6 +162,7 @@ export interface Harness {
   exports: ExportService;
   derivedTasks: DerivedTaskService;
   summaryTemplates: SummaryTemplateService;
+  prompts: PromptService;
   summaries: SummaryService;
   collections: CollectionService;
   search: SearchService;
@@ -297,6 +300,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const exports = new ExportService({ repository, version: "0.0.0-test" });
   const derivedTasks = new DerivedTaskService({ repository, bus, control, disk, settings, newId });
   const summaryTemplates = new SummaryTemplateService({ repository, newId });
+  const prompts = new PromptService({ repository, now });
   const userSettings = new SettingsService({ repository });
   const summaries = new SummaryService({ repository, bus, control, disk, settings, newId });
   const collections = new CollectionService({ repository, bus, control, disk, settings, importContent, newId });
@@ -349,6 +353,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     exports,
     derivedTasks,
     summaryTemplates,
+    prompts,
     summaries,
     collections,
     search,
@@ -392,6 +397,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
               exports,
               derivedTasks,
               summaryTemplates,
+              prompts,
               summaries,
               collections,
               search,
@@ -574,4 +580,9 @@ export function taskOf(harness: Harness, taskId: string, userId = LOCAL.userId):
 /** Latest attempt's status per stage. */
 export function stageStatuses(harness: Harness, taskId: string): Record<string, string> {
   return Object.fromEntries(latestAttempts(stageRunsOf(harness, taskId)).map((run) => [run.stage, run.status]));
+}
+
+/** The prompt versions a Task of `kind` freezes while every prompt is builtin. */
+export function builtinPromptRefs(kind: TaskKind): Record<string, PromptRef> {
+  return Object.fromEntries(promptIdsOf(kind).map((id) => [id, customizablePrompt(id)?.builtin.ref as PromptRef]));
 }

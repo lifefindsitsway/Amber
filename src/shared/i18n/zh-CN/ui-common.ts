@@ -17,7 +17,7 @@ export const common = {
     search: "搜索",
     collapse: "折叠侧栏",
     expand: "展开侧栏",
-    settings: "功能配置",
+    settings: "功能设置",
   },
   action: {
     cancel: "取消",

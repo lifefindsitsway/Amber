@@ -7,6 +7,8 @@ import type {
   CollectionSummaryRevision,
   HighlightArtifact,
   HighlightRevision,
+  PromptOverride,
+  PromptOverrideVersion,
   RollupPartial,
   SummaryArtifact,
   SummaryRevision,
@@ -603,6 +605,26 @@ export interface SummaryTemplateRepository {
   ): void;
 }
 
+/**
+ * The owner's own versions of the customizable system prompts. Versions are append-only;
+ * clearing the current version restores the builtin text and keeps them all.
+ */
+export interface PromptOverrideRepository {
+  /** Every prompt the owner has ever saved a version of, current version or not. */
+  list(ownerUserId: string): PromptOverride[];
+  get(ownerUserId: string, promptId: string): PromptOverride | undefined;
+  getVersion(ownerUserId: string, promptId: string, version: number): PromptOverrideVersion | undefined;
+  /** Oldest first. */
+  listVersions(ownerUserId: string, promptId: string): PromptOverrideVersion[];
+  /**
+   * Appends `version`, which must be one more than the highest stored version (1 for the
+   * first), then makes it current; the version row is written before it is pointed at.
+   */
+  addVersion(version: PromptOverrideVersion): void;
+  /** Back to the builtin text; versions stay. `false` when the owner has no row for the prompt. */
+  clearCurrent(ownerUserId: string, promptId: string, updatedAt: number): boolean;
+}
+
 export interface SummaryRepository {
   getArtifact(ownerUserId: string, artifactId: string): SummaryArtifact | undefined;
   findArtifact(ownerUserId: string, contentId: string, templateId: string): SummaryArtifact | undefined;
@@ -635,6 +657,11 @@ export interface CollectionSummaryRepository {
   listRevisions(ownerUserId: string, collectionId: string): CollectionSummaryRevision[];
   getCurrent(ownerUserId: string, collectionId: string): CollectionSummaryRevision | undefined;
   setCurrent(ownerUserId: string, collectionId: string, revisionId: string): void;
+  /**
+   * Removes the collection's artifact with every revision and their partials; usage rows stay,
+   * unlinked. `false` when the owner's collection has no artifact.
+   */
+  deleteArtifact(ownerUserId: string, collectionId: string): boolean;
 }
 
 /**
@@ -677,6 +704,7 @@ export interface ChapterRepository {
       chapters: ChapterRevision["chapters"];
       modelRef: ModelRefSnapshot;
       promptRef: PromptRef;
+      promptRefs?: PromptRef[];
       promptSnapshot: string;
       quality: ChapterRevision["quality"];
       createdAt: number;
@@ -835,6 +863,7 @@ export interface HighlightRepository {
       items: HighlightRevision["items"];
       modelRef: ModelRefSnapshot;
       promptRef: PromptRef;
+      promptRefs?: PromptRef[];
       promptSnapshot: string;
       quality: HighlightRevision["quality"];
       createdAt: number;
@@ -940,6 +969,7 @@ export interface RepositoryScope {
   highlights: HighlightRepository;
   translations: TranslationRepository;
   summaryTemplates: SummaryTemplateRepository;
+  promptOverrides: PromptOverrideRepository;
   summaries: SummaryRepository;
   collectionSummaries: CollectionSummaryRepository;
   rollupPartials: RollupPartialRepository;

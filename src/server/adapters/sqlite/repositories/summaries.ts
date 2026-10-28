@@ -16,6 +16,7 @@ interface RevisionRow {
   inputs_json: string;
   model_ref_json: string | null;
   prompt_ref_json: string | null;
+  prompt_refs_json: string | null;
   prompt_snapshot: string | null;
   quality: SummaryRevision["quality"];
   body: string;
@@ -42,6 +43,7 @@ function toRevision(row: RevisionRow): SummaryRevision {
       inputs: parseJson(row.inputs_json),
       modelRef: parseJsonOrNull(row.model_ref_json),
       promptRef: parseJsonOrNull(row.prompt_ref_json),
+      promptRefs: parseJsonOrNull(row.prompt_refs_json),
       promptSnapshot: row.prompt_snapshot,
       createdAt: row.created_at,
     }),
@@ -76,10 +78,10 @@ export function sqliteSummaryRepository(db: SqliteConnection): SummaryRepository
   const insertArtifact = db.prepare("INSERT INTO summary_artifact (id, content_id, template_id) VALUES (?, ?, ?)");
   const insertRevision = db.prepare(
     `INSERT INTO summary_revision (
-       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_snapshot, quality, body, citations_json,
+       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, quality, body, citations_json,
        chapter_revision_id, partial_ids_json, created_at
      ) VALUES (
-       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptSnapshot, @quality, @body, @citationsJson,
+       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @quality, @body, @citationsJson,
        @chapterRevisionId, @partialIdsJson, @createdAt
      )`,
   );
@@ -125,6 +127,7 @@ export function sqliteSummaryRepository(db: SqliteConnection): SummaryRepository
         inputsJson: JSON.stringify(provenance.inputs),
         modelRefJson: jsonOrNull(provenance.modelRef),
         promptRefJson: jsonOrNull(provenance.promptRef),
+        promptRefsJson: jsonOrNull(provenance.promptRefs),
         promptSnapshot: nullable(provenance.promptSnapshot),
         quality: revision.quality,
         body: revision.body,

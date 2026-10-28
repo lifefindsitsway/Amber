@@ -5,8 +5,9 @@ import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import { mapNoteRange, RevisionSentences, type NoteView } from "../domain/note-map.ts";
 import { noteAnchorProblem, noteQuote, type Note } from "../domain/note.ts";
-import type { TranscriptRevision } from "../domain/transcript.ts";
+import type { TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
+import type { Logger } from "../ports/logger.ts";
 import type { NoteGroup, NoteGroupCursor, Repository, RepositoryScope, TimedNote } from "../ports/repository.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 
@@ -16,9 +17,66 @@ export interface NoteServiceOptions {
   repository: Repository;
   now?: () => number;
   newId?: () => string;
+  logger?: Logger;
 }
 
-function noteDto(note: TimedNote, content: Content, view?: NoteView | null): NoteDto {
+/** One anchored revision's sentences, loaded at most once per request. */
+interface LoadedRevision {
+  segments: readonly TranscriptSegment[];
+  sentences: RevisionSentences;
+}
+
+type RevisionCache = (revisionId: string) => LoadedRevision;
+
+/** Loads each revision's sentences on first use and keeps them for the rest of the transaction. */
+function revisionCache(scope: RepositoryScope, owner: string): RevisionCache {
+  const loaded = new Map<string, LoadedRevision>();
+  return (revisionId) => {
+    let revision = loaded.get(revisionId);
+    if (revision === undefined) {
+      const segments = scope.transcripts.listSegments(owner, revisionId);
+      revision = { segments, sentences: new RevisionSentences(segments) };
+      loaded.set(revisionId, revision);
+    }
+    return revision;
+  };
+}
+
+/**
+ * The note's quote cut afresh from its anchored sentences with today's reading separator.
+ * The stored quote is a snapshot taken at creation and may not be rewritten, so a change to
+ * how sentences are joined would otherwise leave old notes disagreeing with the transcript
+ * they point at. An anchor that no longer checks out (missing or reordered sentences, an
+ * over-long span, offsets past a sentence's end) falls back to the snapshot.
+ */
+function quoteOf(note: TimedNote, revisionOf: RevisionCache, logger: Logger | undefined): string {
+  const { segments, sentences } = revisionOf(note.transcriptRevisionId);
+  const startAt = sentences.position(note.startSegmentId);
+  const endAt = sentences.position(note.endSegmentId);
+  const start = startAt === undefined ? undefined : segments[startAt];
+  const end = endAt === undefined ? undefined : segments[endAt];
+  const valid =
+    startAt !== undefined &&
+    endAt !== undefined &&
+    start !== undefined &&
+    end !== undefined &&
+    start.ordinal <= end.ordinal &&
+    endAt - startAt + 1 <= NOTE_SPAN_MAX_SEGMENTS &&
+    Number.isInteger(note.startOffset) &&
+    Number.isInteger(note.endOffset) &&
+    note.startOffset >= 0 &&
+    note.startOffset < start.text.length &&
+    note.endOffset > 0 &&
+    note.endOffset <= end.text.length &&
+    (start.id !== end.id || note.startOffset < note.endOffset);
+  if (!valid) {
+    logger?.warn("note_quote_fallback", { noteId: note.id, revisionId: note.transcriptRevisionId });
+    return note.quote;
+  }
+  return noteQuote(segments.slice(startAt, endAt + 1), note.startOffset, note.endOffset);
+}
+
+function noteDto(note: TimedNote, content: Content, quote: string, view?: NoteView | null): NoteDto {
   return {
     id: note.id,
     contentId: note.contentId,
@@ -29,7 +87,7 @@ function noteDto(note: TimedNote, content: Content, view?: NoteView | null): Not
     endSegmentId: note.endSegmentId,
     endOffset: note.endOffset,
     startMs: note.startMs,
-    quote: note.quote,
+    quote,
     mark: note.mark,
     color: note.color,
     ...(note.comment === undefined ? {} : { comment: note.comment }),
@@ -95,22 +153,18 @@ export class NoteService {
         }
       }
       const notes = scope.notes.listByContent(owner, contentId);
+      // Quotes and views share one load per revision.
+      const revisionOf = revisionCache(scope, owner);
       if (target === undefined) {
-        return { items: notes.map((note) => noteDto(note, content)) };
+        return { items: notes.map((note) => noteDto(note, content, quoteOf(note, revisionOf, this.options.logger))) };
       }
       const targetRevisionId = target.id;
       const revisions = new Map(scope.transcripts.listRevisions(owner, contentId).map((revision) => [revision.id, revision]));
-      const loaded = new Map<string, RevisionSentences>();
-      const sentencesOf = (id: string): RevisionSentences => {
-        let sentences = loaded.get(id);
-        if (sentences === undefined) {
-          sentences = new RevisionSentences(scope.transcripts.listSegments(owner, id));
-          loaded.set(id, sentences);
-        }
-        return sentences;
-      };
+      const sentencesOf = (id: string): RevisionSentences => revisionOf(id).sentences;
       return {
-        items: notes.map((note) => noteDto(note, content, mapNoteRange({ anchor: note, targetRevisionId, revisions, sentencesOf }))),
+        items: notes.map((note) =>
+          noteDto(note, content, quoteOf(note, revisionOf, this.options.logger), mapNoteRange({ anchor: note, targetRevisionId, revisions, sentencesOf })),
+        ),
       };
     });
   }
@@ -173,7 +227,8 @@ export class NoteService {
           updatedAt: now,
         };
         scope.notes.insert(note);
-        return { status: 201, body: noteDto({ ...note, startMs: start.startMs }, content), resourceRefs: [note.id] };
+        // The quote was just cut with today's separator, so it needs no second pass.
+        return { status: 201, body: noteDto({ ...note, startMs: start.startMs }, content, note.quote), resourceRefs: [note.id] };
       });
     });
   }
@@ -192,6 +247,20 @@ export class NoteService {
         throw amberError("not_found", "note not found");
       }
       return this.dtoOf(scope, owner, noteId);
+    });
+  }
+
+  /**
+   * The owner's note as the API shows it, or `undefined` when it is gone or its Content is in
+   * the trash. An idempotent replay of a create uses it so the replayed body carries today's
+   * quote rather than the one recorded with the original response.
+   */
+  find(principal: RequestPrincipal, noteId: string): NoteDto | undefined {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => {
+      const note = scope.notes.get(owner, noteId);
+      const content = note === undefined ? undefined : scope.contents.get(owner, note.contentId);
+      return note === undefined || content === undefined ? undefined : noteDto(note, content, quoteOf(note, revisionCache(scope, owner), this.options.logger));
     });
   }
 
@@ -247,7 +316,7 @@ export class NoteService {
     if (note === undefined) {
       throw amberError("not_found", "note not found");
     }
-    return noteDto(note, ownedContent(scope, owner, note.contentId));
+    return noteDto(note, ownedContent(scope, owner, note.contentId), quoteOf(note, revisionCache(scope, owner), this.options.logger));
   }
 }
 

@@ -33,6 +33,7 @@ import {
 } from "../pipeline/task-state.ts";
 import { frozenMemberIds } from "./collections.ts";
 import { jsonRequestDigest, runIdempotent } from "./idempotency.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { displayTitleOf } from "../domain/content.ts";
 
 /** What the task services need from the scheduler. */
@@ -214,7 +215,9 @@ export class TaskService {
    * this stage and into the Task's other pending LLM stages. A failed stage gets a new
    * attempt, and the stages skipped because of it are reopened with it; each new attempt
    * inherits its previous input unless a failed LLM stage is re-run with an explicitly
-   * chosen model, which then binds the re-run stage and the LLM stages reopened with it.
+   * chosen model, which then binds the re-run stage and the LLM stages reopened with it. The
+   * LLM stages of a re-run also take the prompt versions in effect now, so a prompt restored
+   * after a failure applies to the re-run; resuming a waiting stage keeps what was frozen.
    */
   retryStage(principal: RequestPrincipal, taskId: string, body: RetryStageRequest, idempotencyKey?: string): TaskAcceptedDto {
     const owner = principal.userId;
@@ -378,6 +381,7 @@ export class TaskService {
     }
     const latest = latestAttempts(state.runs);
     const reopened = new Set(downstreamStages(state.graph, run.stage));
+    const promptRefs = freezePromptRefs(scope, owner, state.task.kind);
     for (const previous of latest) {
       const blockedByFailure =
         reopened.has(previous.stage) && previous.status === "skipped" && hasDependencyReason(previous.resultJson);
@@ -386,12 +390,15 @@ export class TaskService {
         // replaces the binding of every LLM stage reopened here, while `requestJson`, user
         // settings and stages that already succeeded stay as they are.
         const requirement = stageSpec(state.graph, previous.stage)?.requirement;
-        const inputJson =
+        let inputJson =
           modelRef !== undefined && requirement === "llm_configured"
             ? JSON.stringify({ ...parseStageInput(previous.inputJson), modelRef } satisfies StageInput)
             : asrModelRef !== undefined && previous.id === run.id
               ? JSON.stringify({ ...parseStageInput(previous.inputJson), asrModelRef } satisfies StageInput)
               : previous.inputJson;
+        if (requirement === "llm_configured" && Object.keys(promptRefs).length > 0) {
+          inputJson = JSON.stringify({ ...parseStageInput(inputJson), promptRefs } satisfies StageInput);
+        }
         insertStageRun(scope, outbox, owner, {
           id: this.newId(),
           taskId: state.task.id,

@@ -23,15 +23,16 @@ import { collectionChoiceOf, filtersFromSearch, UNCOLLECTED_CHOICE, withCollecti
 
 const SELECT_CLASS = "h-8 rounded-md border border-line bg-surface px-2 text-sm";
 /** `w-px` with no wrapping shrinks a column to its content. */
-const NARROW = "w-px whitespace-nowrap py-2 font-medium";
-const COLUMN = "px-2 py-2 font-medium";
+export const NARROW = "w-px whitespace-nowrap py-2 font-medium";
+export const COLUMN = "px-2 py-2 font-medium";
 /**
  * Columns by the width of the list area (a container query, in rem so it follows the font
  * size and the sidebar): from 64rem every column shows; below that source, duration and
  * update time fold into a line under the title; below 48rem cover and collections go too.
+ * The collection page's member table folds at the same widths.
  */
-const WIDE_ONLY = "hidden @5xl:table-cell";
-const COMPACT_UP = "hidden @3xl:table-cell";
+export const WIDE_ONLY = "hidden @5xl:table-cell";
+export const COMPACT_UP = "hidden @3xl:table-cell";
 /** The outermost columns keep the rows off the page edges, more so on wide lists. */
 const EDGE_START = "pl-6 @5xl:pl-10";
 const EDGE_END = "pr-6 @5xl:pr-10";

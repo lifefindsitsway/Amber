@@ -13,6 +13,7 @@ import {
   type ChatPlanInput,
   type ChatTurnText,
 } from "../../../src/server/domain/chat-context.ts";
+import { CHAT_SYSTEM_METADATA_PROMPT, CHAT_SYSTEM_PROMPT } from "../../../src/server/domain/prompts.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { estimateTokens } from "../../../src/server/domain/token-estimate.ts";
 import type { TranscriptSegment } from "../../../src/server/domain/transcript.ts";
@@ -52,6 +53,7 @@ function input(overrides: Partial<ChatPlanInput> = {}): ChatPlanInput {
     chapters: [],
     turns: [],
     question: "这节课讲了什么？",
+    prompts: { system: CHAT_SYSTEM_PROMPT.text, metadata: CHAT_SYSTEM_METADATA_PROMPT.text },
     ...overrides,
   };
 }
@@ -236,7 +238,7 @@ function webPart(system: string): string {
 describe("system prompt v2 slots", () => {
   it("states today's date and who answers: profile name, protocol display name and model id", () => {
     const plan = planChatRequest(input({ today: TODAY, model: { profileName: "我的\n中转", modelId: "gpt-5.5", protocol: "openai_compatible" } }));
-    expect(plan.system.startsWith("你是这段课程内容的学习助手，帮助用户理解这段视频，也回答与它相关的问题。今天是 2026-10-26（北京时间）。回答使用 简体中文。\n")).toBe(true);
+    expect(plan.system.startsWith("你是这段音视频内容的学习助手，帮助用户理解这段视频，也回答与它相关的问题。今天是 2026-10-26（北京时间）。回答使用 简体中文。\n")).toBe(true);
     expect(plan.system).toContain(
       "\n【模型】你在 Amber 中通过 Provider 档案「我的 中转」（协议：OpenAI 兼容接口）调用模型 gpt-5.5。用户问你是什么模型时，如实说明以上配置；经中转站等服务调用时，Amber 无法核实实际路由到的底层模型，不要声称知道。\n",
     );
@@ -269,7 +271,7 @@ describe("system prompt v2 slots", () => {
     });
     const plan = planChatRequest(rest);
     expect(plan.mode).toBe("metadata");
-    expect(plan.system.startsWith("你是这段课程内容的学习助手。这段内容的字幕尚未就绪，下面只有它的基本信息。今天是 2026-10-26（北京时间）。回答使用 简体中文。\n【模型】")).toBe(true);
+    expect(plan.system.startsWith("你是这段音视频内容的学习助手。这段内容的字幕尚未就绪，下面只有它的基本信息。今天是 2026-10-26（北京时间）。回答使用 简体中文。\n【模型】")).toBe(true);
     expect(plan.system).toContain("- 问视频里具体讲了什么：先用一句话说明「字幕尚未就绪，无法依据视频原文回答」");
     expect(plan.system).toContain("- 一般知识、模型身份等不需要视频原文的问题：直接回答，不必提字幕；");
     expect(plan.system).not.toContain("以下回答未依据视频原文");

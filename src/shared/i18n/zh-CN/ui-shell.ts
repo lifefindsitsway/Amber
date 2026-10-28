@@ -179,6 +179,7 @@ export const shell = {
   flow: {
     title: "处理进度",
     rerun: "从这步重跑",
+    rerunPromptHint: "重跑会采用当前的提示词设置",
     rerunModel: "重跑所用模型",
     rerunModelHint: "换模型将重新处理本阶段全部内容",
     rerunAsrModel: "重跑所用转录模型",

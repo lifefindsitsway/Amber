@@ -91,7 +91,7 @@ describe("POST /api/collections/:id/export", () => {
     expect(response.headers["content-type"]).toBe("text/markdown; charset=utf-8");
     expect(response.headers["content-disposition"]).toBe(`attachment; filename*=UTF-8''${encodeURIComponent("示例合集.md")}`);
     expect(response.body).toBe(await text(h.exports.exportCollection(LOCAL, collectionId, { backlinks: true })));
-    expect(response.body).toContain("## 各讲");
+    expect(response.body).toContain("## 各项内容");
 
     expect((await app.inject({ method: "POST", url, headers: bob, payload: { backlinks: true } })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode).toBe(400);

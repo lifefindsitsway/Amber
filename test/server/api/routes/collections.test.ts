@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { BOB_TOKEN, createHarness, createLocalContent, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
-import { insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
+import { BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -75,5 +75,32 @@ describe("/api/collections", () => {
     const summary = await app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers: auth });
     expect(summary.statusCode).toBe(200);
     expect(summary.json()).toEqual({ stale: false, activeTaskId: accepted.json().taskId });
+  });
+
+  it("deletes the collection summary with 204, 404 for another owner or once gone, 409 while summarising", async () => {
+    const { h, app } = await setup();
+    const { id } = (await app.inject({ method: "POST", url: "/api/collections", headers: auth, payload: { name: "C" } })).json();
+    const contentId = createLocalContent(h);
+    const fixture = seedTranscripts(h, contentId);
+    const added = (await app.inject({ method: "POST", url: `/api/collections/${id}/items`, headers: auth, payload: { contentId } })).json();
+    const core = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id });
+    const { revisionId } = insertCollectionSummary(h, id, [
+      { collectionItemId: added.id, contentId, summaryRevisionId: core.revisionId, transcriptRevisionId: fixture.asr.revision.id, position: 0 },
+    ]);
+    const remove = (headers: typeof auth) => app.inject({ method: "DELETE", url: `/api/collections/${id}/summary`, headers });
+
+    expect((await remove(bob)).statusCode).toBe(404);
+    const accepted = await app.inject({ method: "POST", url: `/api/collections/${id}/summary`, headers: auth });
+    const busy = await remove(auth);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json().error).toMatchObject({ code: "conflict.tasks_unfinished" });
+    expect((await app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers: auth })).json()).toMatchObject({ current: { id: revisionId } });
+    h.tasks.cancel(LOCAL, accepted.json().taskId);
+
+    const removed = await remove(auth);
+    expect(removed.statusCode).toBe(204);
+    expect(removed.body).toBe("");
+    expect((await app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers: auth })).json()).toEqual({ stale: false });
+    expect((await remove(auth)).statusCode).toBe(404);
   });
 });

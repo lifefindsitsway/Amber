@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DISPLAY_NAME_MAX_CHARS } from "../defaults.ts";
-import { PROCESSING_STATUSES } from "../enums.ts";
+import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../enums.ts";
 import { STALE_REASONS } from "./chapter.ts";
 import { citationDtoSchema } from "./citation.ts";
 import { importSettingsSchema, languageTagSchema } from "./import.ts";
@@ -45,6 +45,10 @@ export const collectionItemDtoSchema = z.object({
   pinnedAt: msSchema.exactOptional(),
   /** The Content's canonical source URL; absent for local files. */
   sourceUrl: z.string().exactOptional(),
+  /** The Content's source kind, shaped like `ContentDto.source` cut to what the list shows. */
+  source: z.object({ kind: z.enum(CONTENT_SOURCE_KINDS) }),
+  /** The Content's own last change, as the content list shows it; not the item's. */
+  updatedAt: msSchema,
 });
 export type CollectionItemDto = z.infer<typeof collectionItemDtoSchema>;
 

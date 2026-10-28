@@ -4,7 +4,16 @@ import { amberError } from "../../../../src/server/domain/errors.ts";
 import { deriveFreshness } from "../../../../src/server/domain/freshness.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
-import { BUILTIN_SUMMARY_TEMPLATES, SUMMARY_ENVELOPE_PROMPT, renderPrompt } from "../../../../src/server/domain/prompts.ts";
+import {
+  BUILTIN_PROMPT_HISTORY,
+  BUILTIN_SUMMARY_TEMPLATES,
+  customPromptRef,
+  ROLLUP_CARRY_PROMPT,
+  ROLLUP_FINAL_PROMPT,
+  ROLLUP_PARTIAL_PROMPT,
+  SUMMARY_ENVELOPE_PROMPT,
+  renderPrompt,
+} from "../../../../src/server/domain/prompts.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { SummaryStageExecutor } from "../../../../src/server/pipeline/stages/summary.ts";
 import { CONTEXT_SAFETY_RATIO } from "../../../../src/shared/defaults.ts";
@@ -43,9 +52,10 @@ function promptOf(request: LlmRequest): string {
 function kindOf(request: LlmRequest): Kind {
   const prompt = promptOf(request);
   if (prompt.startsWith("以下引用标记")) return "repair";
-  if (prompt.startsWith("你在为一门课程做连贯的归纳")) return "partial";
+  // The second prefix is the historical rollup.partial text, still run by Tasks frozen on it.
+  if (prompt.startsWith("你在为一个合集或一段长内容做连贯的归纳") || prompt.startsWith("你在为一门课程做连贯的归纳")) return "partial";
   if (prompt.startsWith("把「已有压缩摘要」")) return "carry";
-  if (prompt.startsWith("下面是一段课程各组内容")) return "final";
+  if (prompt.startsWith("下面是一段长内容各组的归纳")) return "final";
   return "envelope";
 }
 
@@ -249,6 +259,53 @@ describe("summary stage: single call", () => {
   });
 });
 
+describe("summary stage: citation runs", () => {
+  it("cuts each run of adjacent citations to the first two before publishing, and keeps citations in step with the body", async () => {
+    const answer = "甲[[s1]][[s2]][[s3]][[s4]][[s5]]。乙 [[s3]]、[[s1]] [[s2]]。丙[[s4]]，丁[[s1]]";
+    const s = setup(provider(() => answer), { contextWindowTokens: 128_000 });
+    const job = regenerate(s, [...TEXTS, "第五句"]);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("succeeded");
+    expect(kinds(s.fake)).toEqual(["envelope"]);
+    const id = (i: number) => `[[seg:${job.segments[i]?.id}]]`;
+    const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
+    // A run of five keeps two; a run separated by 「、」 and spaces is a run too; markers apart from each other stay.
+    expect(revision.body).toBe(`甲${id(0)}${id(1)}。乙 ${id(2)}${id(0)}。丙${id(3)}，丁${id(0)}`);
+    expect(revision.citations.map((citation) => citation.segmentId)).toEqual([0, 1, 2, 3].map((i) => job.segments[i]?.id));
+    expectResolvable(s.h, revision);
+    expect(revision.quality).toBe("normal");
+    expect(resultOf(s.h, job.taskId)["reasons"]).toEqual([]);
+  });
+
+  it("cuts the runs of a rolling summary's final and of each partial it keeps", async () => {
+    const s = setup(
+      provider((kind, request, signal) => {
+        const all = (marker: string) => aliasesAfter(request, marker).map((alias) => `[[s${alias}]]`);
+        if (kind === "partial") return `本组讲了 ${all("【本组内容】").join("、")}`;
+        if (kind === "final") return `总归纳 ${[...new Set(all("【各组归纳】"))].join(" ")}`;
+        return cite(kind, request, signal);
+      }),
+      { contextWindowTokens: windowFor(ROOM) },
+    );
+    const job = regenerate(s, LONG);
+    chapters(s.h, job.contentId, [0, 4, 8]);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("succeeded");
+    // The model saw every partial's whole run; only what is published is cut.
+    expect(promptOf(s.fake.calls[6]?.request as LlmRequest)).toContain("本组讲了 [[s5]]、[[s6]]、[[s7]]、[[s8]]");
+    const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
+    expect(revision.body).toBe(`总归纳 [[seg:${job.segments[0]?.id}]][[seg:${job.segments[1]?.id}]]`);
+    expect(revision.citations).toHaveLength(2);
+    expectResolvable(s.h, revision);
+    const partials = partialsOf(s.h, revision.id);
+    expect(partials.map((partial) => partial.body)).toEqual([0, 4, 8].map((i) => `本组讲了 [[seg:${job.segments[i]?.id}]][[seg:${job.segments[i + 1]?.id}]]`));
+    for (const partial of partials) {
+      expectResolvable(s.h, partial);
+      expect(partial.citations).toHaveLength(2);
+    }
+  });
+});
+
 describe("summary stage: base revision gone", () => {
   it("fails without publishing when its base transcript is deleted while the model answers", async () => {
     let job: ReturnType<typeof regenerate> | undefined;
@@ -391,7 +448,8 @@ describe("summary stage: rolling", () => {
     expect(partials).toHaveLength(3);
     expect(revision.partialIds).toEqual(partials.map((partial) => partial.id));
     expect(partials.map((partial) => partial.body)).toEqual([0, 4, 8].map((i) => `本组讲了 [[seg:${job.segments[i]?.id}]]`));
-    expect(partials[0]?.promptRef).toEqual({ id: "rollup.partial", version: 1 });
+    expect(partials[0]?.promptRef).toEqual({ id: "rollup.partial", version: 2 });
+    expect(partials[0]?.promptRefs).toEqual([{ id: "rollup.partial", version: 2 }]);
 
     const usage = s.h.db.prepare("SELECT artifact_revision_id AS owner, COUNT(*) AS n FROM token_usage GROUP BY owner ORDER BY n").all();
     expect(usage).toEqual([...partials.map((partial) => ({ owner: partial.id, n: 1 })), { owner: revision.id, n: 4 }].sort((a, b) => a.n - b.n));
@@ -494,5 +552,93 @@ describe("summary stage: windows", () => {
     expect(await settled(s.h, job.taskId)).toBe("failed");
     expect(errorOf(s.h, job.taskId)?.code).toBe("llm_capability.context_length");
     expect(s.fake.calls).toHaveLength(0);
+  });
+});
+
+describe("summary stage: custom prompts", () => {
+  const CORE_REF = { id: CORE.id, version: CORE.version };
+
+  /** A Content with a primary transcript (and platform chapters when given) and a summary Task created through the service. */
+  async function submitted(s: Setup, texts: readonly string[], chapterStarts?: readonly number[]) {
+    const contentId = createLocalContent(s.h);
+    const base = transcript(s.h, contentId, texts);
+    if (chapterStarts !== undefined) chapters(s.h, contentId, chapterStarts);
+    const accepted = await s.h.summaries.create(LOCAL, contentId, { templateId: CORE.id, modelRef: s.modelRef, outputLanguage: "zh-CN" });
+    return { contentId, taskId: accepted.body.taskId, ...base };
+  }
+
+  it("a custom summary.envelope is sent and recorded beside the template on a single-call summary", async () => {
+    const custom = `${SUMMARY_ENVELOPE_PROMPT.text}\n自定义标记：多用列表。`;
+    const s = setup(provider(), { contextWindowTokens: 128_000 });
+    s.h.prompts.update(LOCAL, "summary.envelope", { text: custom });
+    const job = await submitted(s, TEXTS);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("succeeded");
+
+    expect(kinds(s.fake)).toEqual(["envelope"]);
+    const values = { output_language: "简体中文", terms_section: "", template_body: CORE.prompt };
+    const transcriptWithAliases = TEXTS.map((text, index) => `[[s${index + 1}]] ${text}`).join("\n");
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(renderPrompt(custom, { ...values, transcript_with_aliases: transcriptWithAliases }));
+    const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
+    expect(revision.provenance.promptRef).toEqual(CORE_REF);
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, customPromptRef("summary.envelope", 1)]);
+    expect(revision.provenance.promptSnapshot).toBe(renderPrompt(custom, values));
+    expect(revision.provenance.promptSnapshot).toContain("自定义标记：多用列表。");
+  });
+
+  it("custom partial, carry and final prompts drive a rolling summary and are all recorded", async () => {
+    const custom = {
+      partial: `${ROLLUP_PARTIAL_PROMPT.text}\n自定义分组标记。`,
+      carry: `${ROLLUP_CARRY_PROMPT.text}\n自定义压缩标记。`,
+      final: `${ROLLUP_FINAL_PROMPT.text}\n自定义总归纳标记。`,
+    };
+    const s = setup(provider(), { contextWindowTokens: windowFor(ROOM) });
+    s.h.prompts.update(LOCAL, "rollup.partial", { text: custom.partial });
+    s.h.prompts.update(LOCAL, "rollup.carry", { text: custom.carry });
+    s.h.prompts.update(LOCAL, "rollup.final", { text: custom.final });
+    const job = await submitted(s, LONG, [0, 4, 8]);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("succeeded");
+
+    expect(kinds(s.fake)).toEqual(["partial", "carry", "partial", "carry", "partial", "carry", "final"]);
+    const marks: Record<string, string> = { partial: "自定义分组标记。", carry: "自定义压缩标记。", final: "自定义总归纳标记。" };
+    for (const call of s.fake.calls) {
+      const prompt = promptOf(call.request);
+      const kind = kindOf(call.request);
+      expect(prompt.endsWith(marks[kind] as string)).toBe(true);
+      // Each call carries its own prompt's mark only.
+      expect(Object.entries(marks).filter(([other, mark]) => other !== kind && prompt.includes(mark))).toEqual([]);
+    }
+    const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
+    const partialRef = customPromptRef("rollup.partial", 1);
+    expect(revision.provenance.promptRef).toEqual(CORE_REF);
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, partialRef, customPromptRef("rollup.carry", 1), customPromptRef("rollup.final", 1)]);
+    expect(revision.provenance.promptSnapshot).toContain("自定义总归纳标记。");
+    const partials = partialsOf(s.h, revision.id);
+    expect(partials).toHaveLength(3);
+    for (const partial of partials) {
+      expect(partial.promptRef).toEqual(partialRef);
+      expect(partial.promptRefs).toEqual([partialRef]);
+      expect(partial.promptSnapshot).toContain("自定义分组标记。");
+    }
+  });
+
+  it("a Task frozen on a historical builtin rollup.partial runs that version's exact text", async () => {
+    const historical = BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === "rollup.partial" && prompt.ref.version === 1);
+    expect(historical).toBeDefined();
+    const s = setup(provider(), { contextWindowTokens: windowFor(ROOM) });
+    const job = regenerate(s, LONG, { promptRefs: { "rollup.partial": historical?.ref } });
+    chapters(s.h, job.contentId, [0, 4, 8]);
+    s.h.scheduler.start();
+    expect(await settled(s.h, job.taskId)).toBe("succeeded");
+
+    const partialCalls = s.fake.calls.filter((call) => kindOf(call.request) === "partial");
+    expect(partialCalls).toHaveLength(3);
+    for (const call of partialCalls) {
+      expect(promptOf(call.request).startsWith("你在为一门课程做连贯的归纳")).toBe(true);
+    }
+    const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, historical?.ref, ROLLUP_CARRY_PROMPT.ref, ROLLUP_FINAL_PROMPT.ref]);
+    expect(partialsOf(s.h, revision.id).map((partial) => partial.promptRef)).toEqual([historical?.ref, historical?.ref, historical?.ref]);
   });
 });

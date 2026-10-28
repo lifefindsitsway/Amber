@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
-import { chapterWindowNote, HIGHLIGHT_DEFAULT_PROMPT, renderPrompt } from "../../../../src/server/domain/prompts.ts";
+import { chapterWindowNote, customPromptRef, HIGHLIGHT_DEFAULT_PROMPT, renderPrompt } from "../../../../src/server/domain/prompts.ts";
 import { estimateTokens } from "../../../../src/server/domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { HighlightStageExecutor } from "../../../../src/server/pipeline/stages/highlight.ts";
@@ -139,7 +139,7 @@ describe("highlight stage", () => {
     expect(current?.provenance).toMatchObject({
       inputs: [{ kind: "transcriptRevision", id: job.revision.id }],
       modelRef: { ...s.modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: s.modelRef.modelId },
-      promptRef: { id: "highlight.default", version: 1 },
+      promptRef: { id: "highlight.default", version: 2 },
       promptSnapshot: renderPrompt(HIGHLIGHT_DEFAULT_PROMPT.text, { output_language: "简体中文" }),
     });
     expect(resultOf(s.h, job.taskId)).toEqual({ revisionId: current?.id, windows: 1, dropped: 0, reasons: [] });
@@ -309,5 +309,56 @@ describe("highlight stage", () => {
     const current = currentOf(s.h, job.contentId);
     expect(current?.transcriptRevisionId).toBe(job.revision.id);
     expect(current?.items.map((item) => item.segmentId)).toEqual([job.segments[0]?.id, job.segments[4]?.id, job.segments[8]?.id]);
+  });
+
+  describe("custom prompts", () => {
+    const CUSTOM_V1 = `${HIGHLIGHT_DEFAULT_PROMPT.text}\n自定义标记一：偏好定义类片段。`;
+    const CUSTOM_V2 = `${HIGHLIGHT_DEFAULT_PROMPT.text}\n自定义标记二：偏好例子。`;
+    const answer = { events: json({ highlights: [{ alias: "s1", score: 80, text: "开场" }, { alias: "s2", score: 60, text: "结论" }] }) };
+
+    async function submitted(s: Setup, sentences: readonly string[]) {
+      const contentId = createLocalContent(s.h);
+      const base = transcript(s.h, contentId, sentences);
+      const accepted = await s.h.derivedTasks.recomputeHighlights(LOCAL, contentId, { modelRef: s.modelRef });
+      return { contentId, taskId: accepted.body.taskId, ...base };
+    }
+
+    it("a custom highlight.default prompt is sent, its JSON answer parsed, and recorded as the provenance", async () => {
+      const s = setup({ contextWindowTokens: 128_000 });
+      s.h.prompts.update(LOCAL, "highlight.default", { text: CUSTOM_V1 });
+      const job = await submitted(s, ["开场白", "核心结论"]);
+      s.fake.script(answer);
+      s.h.scheduler.start();
+      expect(await settled(s.h, job.taskId)).toBe("succeeded");
+
+      expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(
+        renderPrompt(CUSTOM_V1, { output_language: "简体中文", window_note: "", transcript_with_aliases: "[[s1]] 开场白\n[[s2]] 核心结论" }),
+      );
+      const current = currentOf(s.h, job.contentId);
+      expect(current?.items.map((item) => [item.segmentId, item.score])).toEqual([[job.segments[0]?.id, 80], [job.segments[1]?.id, 60]]);
+      const ref = customPromptRef("highlight.default", 1);
+      expect(current?.provenance.promptRef).toEqual(ref);
+      expect(current?.provenance.promptRefs).toEqual([ref]);
+      expect(current?.provenance.promptSnapshot).toBe(renderPrompt(CUSTOM_V1, { output_language: "简体中文" }));
+    });
+
+    it("a queued Task keeps the version frozen at submission; a Task without frozen prompts takes the one in effect", async () => {
+      const s = setup({ contextWindowTokens: 128_000 });
+      s.h.prompts.update(LOCAL, "highlight.default", { text: CUSTOM_V1 });
+      const frozenJob = await submitted(s, ["甲", "乙"]);
+      const legacyJob = recompute(s, ["丙", "丁"]);
+      s.h.prompts.update(LOCAL, "highlight.default", { text: CUSTOM_V2 });
+      s.fake.script(answer, answer);
+      s.h.scheduler.start();
+      expect(await settled(s.h, frozenJob.taskId)).toBe("succeeded");
+      expect(await settled(s.h, legacyJob.taskId)).toBe("succeeded");
+
+      const sentFor = (first: string) => promptOf(s.fake.calls.find((call) => promptOf(call.request).includes(`[[s1]] ${first}`))?.request as LlmRequest);
+      expect(sentFor("甲")).toContain("自定义标记一");
+      expect(sentFor("甲")).not.toContain("自定义标记二");
+      expect(sentFor("丙")).toContain("自定义标记二");
+      expect(currentOf(s.h, frozenJob.contentId)?.provenance.promptRefs).toEqual([customPromptRef("highlight.default", 1)]);
+      expect(currentOf(s.h, legacyJob.contentId)?.provenance.promptRefs).toEqual([customPromptRef("highlight.default", 2)]);
+    });
   });
 });

@@ -6,7 +6,7 @@ import type { SegmentId } from "../../../shared/ids.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { ModelRef } from "../../domain/model-ref.ts";
-import { outputLanguageName, renderPrompt, TRANSLATE_SUBTITLES_PROMPT } from "../../domain/prompts.ts";
+import { outputLanguageName, renderPrompt, type ResolvedPrompt } from "../../domain/prompts.ts";
 import { translateRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
@@ -69,6 +69,7 @@ export class TranslateStageExecutor implements StageExecutor {
       throw amberError("llm_unconfigured", "translation needs a model");
     }
     const model = context.llm.describe(modelRef);
+    const prompt = context.prompt("translate.subtitles");
     const { base, segments, terms } = repository.withTransaction((scope) => {
       const revision = scope.transcripts.getRevision(owner, request.baseRevisionId);
       if (revision === undefined || revision.contentId !== content.id || revision.kind === "translated") {
@@ -89,7 +90,7 @@ export class TranslateStageExecutor implements StageExecutor {
     let settledCount = 0;
     const settled = await Promise.allSettled(
       batches.map(async (batch) => {
-        const payload = await this.runBatch(context, { batch, base, termsSection: terms, modelRef });
+        const payload = await this.runBatch(context, { batch, base, termsSection: terms, modelRef, prompt });
         settledCount += 1;
         context.reportProgress(settledCount / batches.length);
         return payload;
@@ -132,8 +133,9 @@ export class TranslateStageExecutor implements StageExecutor {
         generation: {
           kind: "llm",
           modelRef: model.snapshot,
-          promptRef: TRANSLATE_SUBTITLES_PROMPT.ref,
-          promptSnapshot: renderPrompt(TRANSLATE_SUBTITLES_PROMPT.text, { target_language: outputLanguageName(language), terms_section: terms }),
+          promptRef: prompt.ref,
+          promptRefs: [prompt.ref],
+          promptSnapshot: renderPrompt(prompt.text, { target_language: outputLanguageName(language), terms_section: terms }),
         },
         segmentCount: translated.length,
         createdAt,
@@ -160,7 +162,7 @@ export class TranslateStageExecutor implements StageExecutor {
 
   private async runBatch(
     context: StageExecutionContext,
-    input: { batch: Batch; base: TranscriptRevision; termsSection: string; modelRef: ModelRef },
+    input: { batch: Batch; base: TranscriptRevision; termsSection: string; modelRef: ModelRef; prompt: ResolvedPrompt },
   ): Promise<BatchPayload> {
     const { batch, modelRef } = input;
     const sources = batch.segments.map((segment) => oneLine(segment.text));
@@ -172,11 +174,11 @@ export class TranslateStageExecutor implements StageExecutor {
         segmentIds: batch.segments.map((segment) => segment.id),
         texts: sources,
         termsSection: input.termsSection,
-        promptRef: TRANSLATE_SUBTITLES_PROMPT.ref,
+        promptRef: input.prompt.ref,
         modelRef,
       }),
     );
-    const prompt = renderPrompt(TRANSLATE_SUBTITLES_PROMPT.text, {
+    const prompt = renderPrompt(input.prompt.text, {
       target_language: outputLanguageName(batch.language),
       count: String(sources.length),
       terms_section: input.termsSection,

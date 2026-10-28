@@ -191,6 +191,9 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const customTemplate = nextId();
   row("summary_template", { id: customTemplate, user_id: userId, builtin: 0, name: "mine", current_version: 1 });
   row("summary_template_version", { template_id: customTemplate, version: 1, prompt: "# mine", created_at: T0 });
+  row("prompt_override", { user_id: userId, prompt_id: "chapter.ai", updated_at: T0 });
+  row("prompt_override_version", { user_id: userId, prompt_id: "chapter.ai", version: 1, text: "mine", created_at: T0 });
+  db.prepare("UPDATE prompt_override SET current_version = 1 WHERE user_id = ? AND prompt_id = 'chapter.ai'").run(userId);
 
   const provenance = { inputs_json: json([{ kind: "transcriptRevision", id: primary }]), model_ref_json: modelRef, prompt_ref_json: promptRef, prompt_snapshot: "…", quality: "normal", created_at: T0 };
   const chapterArtifact = nextId();

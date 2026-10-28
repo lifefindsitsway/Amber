@@ -17,6 +17,7 @@ import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { ConfirmButton, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { SystemPromptsSection } from "./system-prompts-section.tsx";
 
 export const TEMPLATES_KEY = ["summary-templates"] as const;
 
@@ -27,8 +28,8 @@ export function useTemplateName(): (template: SummaryTemplateDto) => string {
 }
 
 /**
- * `/settings/templates`: the default template and output language, builtin (read-only) and
- * custom summary templates.
+ * `/settings/templates`: the defaults (summary template, output language), the builtin
+ * (read-only) and custom summary templates, and the customizable system prompts.
  */
 export function TemplatesSection() {
   const { t } = useTranslation();
@@ -45,8 +46,7 @@ export function TemplatesSection() {
   const uiLanguage = settings.data?.language ?? UI_LANGUAGE_DEFAULT;
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("settings.templates.intro")}</p>
-      <SettingsBlock title={t("settings.templates.defaultTemplate")}>
+      <SettingsBlock title={t("settings.systemPrompts.blocks.defaults")}>
         <Field label={t("settings.templates.defaultTemplate")} hint={t("settings.templates.defaultTemplateHint")} htmlFor="default-template">
           <select
             id="default-template"
@@ -62,8 +62,6 @@ export function TemplatesSection() {
             ))}
           </select>
         </Field>
-      </SettingsBlock>
-      <SettingsBlock title={t("settings.templates.outputLanguage")}>
         <Field label={t("settings.templates.outputLanguage")} hint={t("settings.templates.outputLanguageHint")} htmlFor="output-language">
           <select
             id="output-language"
@@ -82,6 +80,8 @@ export function TemplatesSection() {
         <RequestError error={patchSettings.error} />
       </SettingsBlock>
       <SettingsBlock
+        title={t("settings.systemPrompts.blocks.summaryTemplates")}
+        intro={t("settings.templates.intro")}
         actions={
           <Button size="sm" variant="primary" onClick={() => setEditing("new")}>
             {t("settings.templates.create")}
@@ -96,6 +96,7 @@ export function TemplatesSection() {
         <RequestError error={templates.error} />
       </SettingsBlock>
       {editing === undefined ? null : <TemplateEditor template={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} />}
+      <SystemPromptsSection />
     </div>
   );
 }

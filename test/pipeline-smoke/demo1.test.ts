@@ -167,14 +167,12 @@ describe("API pipeline demo: curl drives import → stages → summary → colle
     const summary = await curl.request("GET", `/api/collections/${collectionId}/summary`);
     expect(summary.status).toBe(200);
     const current = (summary.json as { current?: { body: string; citations: Citation[]; partials: unknown[]; inputItems: unknown[] }; stale: boolean }).current;
-    expect(current?.body).toMatch(/\[\[seg:[0-9A-Z]{26}\]\]/);
+    // A collection summary carries no citations.
+    expect(current?.body).not.toContain("[[");
+    expect(current?.citations).toEqual([]);
     expect(current?.inputItems).toHaveLength(2);
     expect(current?.partials).toHaveLength(1);
     expect((summary.json as { stale: boolean }).stale).toBe(false);
-    // The final cites both lectures.
-    const revisions = new Set(current?.citations.map((citation) => citation.transcriptRevisionId));
-    expect(revisions.size).toBe(2);
-    await expectCitationsResolve(curl, current?.citations ?? []);
 
     expect(stack.llm.kinds()).toEqual(
       expect.arrayContaining(["proofread", "chapter", "envelope", "partial", "carry", "final_collection"]),

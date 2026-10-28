@@ -6,7 +6,14 @@ import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
 import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef, PromptRef } from "../../../../src/server/domain/model-ref.ts";
-import { PROOFREAD_TEXT_PROMPT } from "../../../../src/server/domain/prompts.ts";
+import {
+  BUILTIN_PROMPT_HISTORY,
+  composeProofreadAudioPrompt,
+  customPromptRef,
+  PROOFREAD_AUDIO_PROMPT,
+  PROOFREAD_TEXT_PROMPT,
+  renderPrompt,
+} from "../../../../src/server/domain/prompts.ts";
 import { termsSection } from "../../../../src/server/domain/terminology.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
@@ -1337,4 +1344,176 @@ describe("range splitting at the budget's scale", () => {
     const projectionMs = (performance.now() - started) / rounds;
     console.info(`proofread scale: ${units.length} units, ${fake.calls.length} calls, ${events.length} events, task detail ${detailBytes} bytes, refreshProjection ${projectionMs.toFixed(3)} ms`);
   }, 60_000);
+});
+
+describe("custom proofread prompts", () => {
+  const TEXT_CUSTOM = `${PROOFREAD_TEXT_PROMPT.text}\n自定义文本标记：保留口头禅。`;
+  const PREAMBLE_CUSTOM = "自定义前置段：音频里可能有背景音乐。";
+  const AUDIO_CUSTOM = `${PREAMBLE_CUSTOM}\n\n{{proofread_text}}`;
+  const BUILTIN_PREAMBLE = PROOFREAD_AUDIO_PROMPT.text.replace("\n\n{{proofread_text}}", "");
+  const TEXT_REF = customPromptRef("proofread.text", 1);
+  const AUDIO_REF = customPromptRef("proofread.audio", 1);
+
+  type Generation = { promptRef: PromptRef; promptRefs: PromptRef[]; promptSnapshot: string };
+  const generationOf = (h: Harness, taskId: string) => revision(h, resultOf(h, taskId).revisionId).revision.generation as unknown as Generation;
+  const audioPartsOf = (request: LlmRequest) => request.messages[0]?.content.filter((part) => part.type === "audio") ?? [];
+  const hasAudio = (request: LlmRequest) => audioPartsOf(request).length > 0;
+
+  /** The slot values of the one range of a Content shorter than a chunk: no context lines, no terminology. */
+  function slotsOf(segments: readonly TranscriptSegment[]): Record<string, string> {
+    return {
+      terms_section: termsSection([]),
+      context_before: "",
+      count: String(segments.length),
+      target_lines: segments.map((segment, index) => `[s${index + 1}] ${segment.text.replace("\n", " ")}`).join("\n"),
+      context_after: "",
+    };
+  }
+
+  /** A three-sentence Content; with `audio` the model takes audio and an original is there to extract it from. */
+  function prepared(fake: FakeLlmProvider, options: { audio?: boolean; count?: number } = {}) {
+    const s = setup(fake);
+    if (options.audio === true) setAudioInput(s.h, s.modelRef, "supported");
+    const base = seedContent(s.h, options.count ?? 3);
+    if (options.audio === true) seedOriginal(s.h, base.contentId);
+    return { s, base };
+  }
+
+  /** A reproofread Task created through the service, which freezes the prompts in effect. */
+  async function submit(s: Setup, contentId: string): Promise<string> {
+    return (await s.h.derivedTasks.proofread(LOCAL, contentId, { modelRef: s.modelRef })).body.taskId;
+  }
+
+  it("a custom proofread.text is sent, its line answer parsed, and the revision records it alone", async () => {
+    const { s, base } = prepared(fakeProvider());
+    s.h.prompts.update(LOCAL, "proofread.text", { text: TEXT_CUSTOM });
+    const taskId = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+
+    expect(s.fake.calls).toHaveLength(1);
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(renderPrompt(TEXT_CUSTOM, slotsOf(base.segments)));
+    const result = resultOf(s.h, taskId);
+    expect(revision(s.h, result.revisionId).segments.map((segment) => segment.text)).toEqual(base.segments.map((segment) => `校:${segment.text.replace("\n", " ")}`));
+    const generation = generationOf(s.h, taskId);
+    expect(generation.promptRef).toEqual(TEXT_REF);
+    expect(generation.promptRefs).toEqual([TEXT_REF]);
+    expect(generation.promptSnapshot).toBe(renderPrompt(TEXT_CUSTOM, { terms_section: termsSection([]) }));
+    expect(generation.promptSnapshot).toContain("自定义文本标记：保留口头禅。");
+    expect(result.ranges.map((range) => range.promptRef)).toEqual([TEXT_REF]);
+  });
+
+  it.each([
+    ["only the preamble is custom", { audio: true, text: false }],
+    ["only the text prompt is custom", { audio: false, text: true }],
+    ["both are custom", { audio: true, text: true }],
+  ])("audio proofreading when %s sends the preamble, a blank line and the rendered text prompt", async (_case, custom) => {
+    const { s, base } = prepared(fakeProvider(corrected, ["audio/wav"]), { audio: true });
+    if (custom.audio) s.h.prompts.update(LOCAL, "proofread.audio", { text: AUDIO_CUSTOM });
+    if (custom.text) s.h.prompts.update(LOCAL, "proofread.text", { text: TEXT_CUSTOM });
+    const taskId = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+
+    const audioText = custom.audio ? AUDIO_CUSTOM : PROOFREAD_AUDIO_PROMPT.text;
+    const textText = custom.text ? TEXT_CUSTOM : PROOFREAD_TEXT_PROMPT.text;
+    const request = s.fake.calls[0]?.request as LlmRequest;
+    expect(s.fake.calls).toHaveLength(1);
+    expect(audioPartsOf(request)).toHaveLength(1);
+    expect(promptOf(request)).toBe(`${custom.audio ? PREAMBLE_CUSTOM : BUILTIN_PREAMBLE}\n\n${renderPrompt(textText, slotsOf(base.segments))}`);
+
+    const audioRef = custom.audio ? AUDIO_REF : PROOFREAD_AUDIO_PROMPT.ref;
+    const textRef = custom.text ? TEXT_REF : PROOFREAD_TEXT_PROMPT.ref;
+    const generation = generationOf(s.h, taskId);
+    expect(generation.promptRef).toEqual(audioRef);
+    expect(generation.promptRefs).toEqual([audioRef, textRef]);
+    expect(generation.promptSnapshot).toBe(renderPrompt(composeProofreadAudioPrompt(audioText, textText), { terms_section: termsSection([]) }));
+    expect(resultOf(s.h, taskId).ranges.map((range) => [range.promptRef, range.audio])).toEqual([[audioRef, true]]);
+  });
+
+  it("the builtin audio prompt composes to exactly the text of the historical proofread.audio v5", async () => {
+    const historical = BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === "proofread.audio" && prompt.ref.version === 5);
+    expect(historical).toBeDefined();
+    const { s, base } = prepared(fakeProvider(corrected, ["audio/wav"]), { audio: true });
+    const taskId = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(renderPrompt(historical?.text as string, slotsOf(base.segments)));
+    expect(generationOf(s.h, taskId).promptRefs).toEqual([PROOFREAD_AUDIO_PROMPT.ref, PROOFREAD_TEXT_PROMPT.ref]);
+  });
+
+  it.each([
+    ["the clip is over the size limit", "oversized"],
+    ["the adapter refuses the audio as a capability problem", "refused"],
+  ] as const)("a range that falls back to text when %s is sent and recorded with the text prompt only", async (_case, how) => {
+    const answer: Answer = (targets, request, opts) => {
+      if (how === "refused" && hasAudio(request)) throw amberError("llm_capability", "audio input rejected");
+      return corrected(targets, request, opts);
+    };
+    const { s, base } = prepared(fakeProvider(answer, ["audio/wav"]), { audio: true });
+    if (how === "oversized") s.ingest.clipBytes = PROOFREAD_AUDIO_MAX_MB * BYTES_PER_MB + 1;
+    s.h.prompts.update(LOCAL, "proofread.audio", { text: AUDIO_CUSTOM });
+    s.h.prompts.update(LOCAL, "proofread.text", { text: TEXT_CUSTOM });
+    const taskId = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+
+    const textCalls = s.fake.calls.filter((call) => !hasAudio(call.request));
+    expect(textCalls).toHaveLength(1);
+    expect(promptOf(textCalls[0]?.request as LlmRequest)).toBe(renderPrompt(TEXT_CUSTOM, slotsOf(base.segments)));
+    const result = resultOf(s.h, taskId);
+    expect(result.ranges.map((range) => [range.promptRef, range.audio])).toEqual([[TEXT_REF, false]]);
+    const generation = generationOf(s.h, taskId);
+    expect(generation.promptRef).toEqual(TEXT_REF);
+    expect(generation.promptRefs).toEqual([TEXT_REF]);
+    expect(generation.promptSnapshot).not.toContain(PREAMBLE_CUSTOM);
+  });
+
+  it.each([
+    ["nothing changed: the finished audio range is reused", false],
+    ["only the text prompt changed: the finished audio range is asked again", true],
+  ])("re-running a failed audio proofread when %s", async (_case, changeText) => {
+    let failOnce = true;
+    const fake = fakeProvider((targets, request, opts) => {
+      if (failOnce && (targets[0]?.alias ?? 0) > PROOFREAD_CHUNK_SENTENCES) {
+        failOnce = false;
+        throw amberError("llm_failed", "rejected", { code: "llm_failed.invalid_request" });
+      }
+      return corrected(targets, request, opts);
+    }, ["audio/wav"]);
+    const { s, base } = prepared(fake, { audio: true, count: TWO_CHUNKS });
+    const taskId = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    expect(chunkCalls(fake).sort()).toEqual([0, 1]);
+    expect(fake.calls.every((call) => hasAudio(call.request))).toBe(true);
+
+    if (changeText) s.h.prompts.update(LOCAL, "proofread.text", { text: TEXT_CUSTOM });
+    s.h.tasks.retryStage(LOCAL, taskId, { stage: "proofread" });
+    await waitFor(() => taskOf(s.h, taskId).statusProjection === "succeeded");
+    expect(chunkCalls(fake).sort()).toEqual(changeText ? [0, 0, 1, 1] : [0, 1, 1]);
+
+    const attempts = stageRunsOf(s.h, taskId).filter((run) => run.stage === "proofread");
+    const firstKey = `proofread:range:1-${PROOFREAD_CHUNK_SENTENCES}`;
+    const digestIn = (runId: string | undefined) => workUnitsOf(s.h, taskId).find((unit) => unit.stageRunId === runId && unit.key === firstKey)?.inputDigest;
+    expect(digestIn(attempts[1]?.id) === digestIn(attempts[0]?.id)).toBe(!changeText);
+    expect(generationOf(s.h, taskId).promptRefs).toEqual([PROOFREAD_AUDIO_PROMPT.ref, changeText ? TEXT_REF : PROOFREAD_TEXT_PROMPT.ref]);
+  });
+
+  it("after restoring the builtin text a new reproofread Task is back on the builtin version", async () => {
+    const { s, base } = prepared(fakeProvider());
+    s.h.prompts.update(LOCAL, "proofread.text", { text: TEXT_CUSTOM });
+    const first = await submit(s, base.contentId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, first)).toBe("succeeded");
+    expect(generationOf(s.h, first).promptRefs).toEqual([TEXT_REF]);
+
+    s.h.prompts.restore(LOCAL, "proofread.text");
+    const second = await submit(s, base.contentId);
+    expect(await settled(s.h, second)).toBe("succeeded");
+    expect(promptOf(s.fake.calls.at(-1)?.request as LlmRequest)).not.toContain("自定义文本标记");
+    const generation = generationOf(s.h, second);
+    expect(generation.promptRef).toEqual(PROOFREAD_TEXT_PROMPT.ref);
+    expect(generation.promptRefs).toEqual([PROOFREAD_TEXT_PROMPT.ref]);
+  });
 });

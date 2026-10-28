@@ -15,6 +15,7 @@ interface RevisionRow {
   inputs_json: string;
   model_ref_json: string | null;
   prompt_ref_json: string | null;
+  prompt_refs_json: string | null;
   prompt_snapshot: string | null;
   quality: CollectionSummaryRevision["quality"];
   input_items_json: string;
@@ -32,6 +33,7 @@ function toRevision(row: RevisionRow): CollectionSummaryRevision {
       inputs: parseJson(row.inputs_json),
       modelRef: parseJsonOrNull(row.model_ref_json),
       promptRef: parseJsonOrNull(row.prompt_ref_json),
+      promptRefs: parseJsonOrNull(row.prompt_refs_json),
       promptSnapshot: row.prompt_snapshot,
       createdAt: row.created_at,
     }),
@@ -54,10 +56,10 @@ export function sqliteCollectionSummaryRepository(db: SqliteConnection): Collect
   const insertArtifact = db.prepare("INSERT INTO collection_summary_artifact (id, collection_id) VALUES (?, ?)");
   const insertRevision = db.prepare(
     `INSERT INTO collection_summary_revision (
-       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_snapshot, quality, input_items_json,
+       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, quality, input_items_json,
        partial_ids_json, body, citations_json, created_at
      ) VALUES (
-       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptSnapshot, @quality, @inputItemsJson,
+       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @quality, @inputItemsJson,
        @partialIdsJson, @body, @citationsJson, @createdAt
      )`,
   );
@@ -70,6 +72,8 @@ export function sqliteCollectionSummaryRepository(db: SqliteConnection): Collect
   const revisionsOf = db.prepare("SELECT * FROM collection_summary_revision WHERE artifact_id = ? ORDER BY created_at, id");
   const revisionOfArtifact = db.prepare("SELECT * FROM collection_summary_revision WHERE id = ? AND artifact_id = ?");
   const setCurrent = db.prepare("UPDATE collection_summary_artifact SET current_revision_id = ? WHERE id = ?");
+  const deleteRevisions = db.prepare("DELETE FROM collection_summary_revision WHERE artifact_id = ?");
+  const deleteArtifact = db.prepare("DELETE FROM collection_summary_artifact WHERE id = ?");
 
   const artifact = (ownerUserId: string, collectionId: string) => artifactOf.get(collectionId, ownerUserId) as ArtifactRow | undefined;
 
@@ -97,6 +101,7 @@ export function sqliteCollectionSummaryRepository(db: SqliteConnection): Collect
         inputsJson: JSON.stringify(provenance.inputs),
         modelRefJson: jsonOrNull(provenance.modelRef),
         promptRefJson: jsonOrNull(provenance.promptRef),
+        promptRefsJson: jsonOrNull(provenance.promptRefs),
         promptSnapshot: nullable(provenance.promptSnapshot),
         quality: revision.quality,
         inputItemsJson: JSON.stringify(revision.inputItems),
@@ -129,6 +134,19 @@ export function sqliteCollectionSummaryRepository(db: SqliteConnection): Collect
         throw notFound("collection summary revision", revisionId);
       }
       setCurrent.run(revisionId, found.id);
+    },
+    deleteArtifact(ownerUserId, collectionId) {
+      const found = artifact(ownerUserId, collectionId);
+      if (found === undefined) {
+        return false;
+      }
+      // The artifact's current pointer is an immediate foreign key into its revisions, so it is
+      // cleared before they go. Deleting the revisions cascades to their partials; triggers on
+      // both unlink the usage rows that named them.
+      setCurrent.run(null, found.id);
+      deleteRevisions.run(found.id);
+      deleteArtifact.run(found.id);
+      return true;
     },
   };
 }

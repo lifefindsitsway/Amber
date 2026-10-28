@@ -5,7 +5,7 @@ import type { SegmentId } from "../../../../src/shared/ids.ts";
 import { translationsDtoSchema } from "../../../../src/shared/dto/translation.ts";
 import { FakeLlmProvider } from "../../../fixtures/llm/fake-llm.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
-import { BOB_TOKEN, configureLlm, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB_TOKEN, configureLlm, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -93,6 +93,7 @@ describe("POST /api/contents/:id/translations", () => {
       requestSchemaVersion: 1,
       kind: "translate",
       targetLanguages: ["ja", "fr-CA"],
+      promptRefs: builtinPromptRefs("translate"),
       modelRef,
       baseRevisionId: fixture.asr.revision.id,
     });

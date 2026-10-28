@@ -43,7 +43,7 @@ describe("/api/contents/:id/summaries and /api/summaries/:aid", () => {
     const first = await app.inject({ method: "POST", url, headers, payload: { templateId: "summary.detailed", outputLanguage: "en" } });
     expect(first.statusCode).toBe(202);
     const { taskId } = first.json();
-    expect(JSON.parse(taskOf(h, taskId).requestJson)).toMatchObject({ templateRef: { id: "summary.detailed", version: 1 }, outputLanguage: "en" });
+    expect(JSON.parse(taskOf(h, taskId).requestJson)).toMatchObject({ templateRef: { id: "summary.detailed", version: 2 }, outputLanguage: "en" });
     const replay = await app.inject({ method: "POST", url, headers, payload: { templateId: "summary.detailed", outputLanguage: "en" } });
     expect(replay.json()).toEqual({ taskId });
     const conflict = await app.inject({ method: "POST", url, headers: auth, payload: { templateId: "summary.detailed" } });

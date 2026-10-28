@@ -3,6 +3,7 @@ import { ensureBuiltinSummaryTemplates, resolveTemplateRef } from "../../../src/
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { BUILTIN_SUMMARY_TEMPLATES } from "../../../src/server/domain/prompts.ts";
 import { BOB, createHarness, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { EXPECTED_SUMMARY_TEMPLATE_HISTORY } from "../../fixtures/spec/prompts.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -30,11 +31,28 @@ describe("builtin templates", () => {
     ensureBuiltinSummaryTemplates(h.repository, 2);
     const items = h.summaryTemplates.list(LOCAL).items;
     expect(items).toEqual(
-      BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, builtin: true, name: template.nameKey, currentVersion: 1, deleted: false })),
+      BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, builtin: true, name: template.nameKey, currentVersion: template.version, deleted: false })),
     );
     expect(h.summaryTemplates.list(BOB).items.map((item) => item.id)).toEqual(items.map((item) => item.id));
     expect(h.summaryTemplates.versions(LOCAL, "summary.core").items).toEqual([
       { templateId: "summary.core", version: 1, prompt: BUILTIN_SUMMARY_TEMPLATES[0]?.prompt, createdAt: 1 },
+    ]);
+  });
+
+  it("move to a raised version at startup and keep the earlier version's row", () => {
+    const h = harness();
+    const v1 = EXPECTED_SUMMARY_TEMPLATE_HISTORY.find((entry) => entry.id === "summary.detailed" && entry.version === 1);
+    expect(v1).toBeDefined();
+    h.repository.withTransaction((scope) =>
+      scope.summaryTemplates.syncBuiltin([{ id: "summary.detailed", name: "summaryTemplate.detailed", versions: [{ version: 1, prompt: v1?.prompt as string }] }], 1),
+    );
+    ensureBuiltinSummaryTemplates(h.repository, 2);
+    const current = BUILTIN_SUMMARY_TEMPLATES.find((template) => template.id === "summary.detailed");
+    expect(current?.version).toBe(2);
+    expect(h.summaryTemplates.list(LOCAL).items.find((item) => item.id === "summary.detailed")?.currentVersion).toBe(2);
+    expect(h.summaryTemplates.versions(LOCAL, "summary.detailed").items.map(({ version, prompt }) => ({ version, prompt }))).toEqual([
+      { version: 1, prompt: v1?.prompt },
+      { version: 2, prompt: current?.prompt },
     ]);
   });
 

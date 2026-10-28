@@ -15,6 +15,7 @@ import type { ImportResponse } from "../../shared/dto/import.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { CollectionSummaryRevision } from "../domain/artifact.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
+import { withoutCitations } from "../domain/citations.ts";
 import type { Collection, CollectionItem } from "../domain/collection.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { deriveCollectionFreshness, transcriptAncestors, type CollectionMemberState, type Freshness } from "../domain/freshness.ts";
@@ -32,6 +33,7 @@ import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { ImportContentService } from "./import-content.ts";
+import { freezePromptRefs } from "./prompts.ts";
 import { outputLanguageFor } from "./settings.ts";
 import { qualityReasonsOf } from "./summaries.ts";
 import type { TaskControl } from "./tasks.ts";
@@ -236,6 +238,33 @@ export class CollectionService {
     });
   }
 
+  /**
+   * Removes the collection summary as a whole: every revision with its partials, and the
+   * artifact. Usage records stay, unlinked; member Contents' own summaries are untouched, and
+   * their revisions it was built from may be deleted afterwards. Nothing is regenerated, no
+   * Task is created and it cannot be undone. The collection's `updatedAt` stays: a published
+   * summary moves it, one taken away does not. Refused while a summary Task is unfinished,
+   * since it would publish into the artifact being removed.
+   */
+  deleteSummary(principal: RequestPrincipal, collectionId: string): void {
+    const owner = principal.userId;
+    this.options.repository.withTransaction((scope) => {
+      ownedCollection(scope, owner, collectionId);
+      if (scope.collectionSummaries.getArtifact(owner, collectionId) === undefined) {
+        throw amberError("not_found", "collection summary not found");
+      }
+      const unfinished = scope.tasks
+        .listByCollection(owner, collectionId)
+        .some((task) => task.kind === "summarize_collection" && !isTerminalProjection(task.statusProjection));
+      if (unfinished) {
+        throw amberError("conflict", "an unfinished task summarizes this collection", { code: "conflict.tasks_unfinished" });
+      }
+      if (!scope.collectionSummaries.deleteArtifact(owner, collectionId)) {
+        throw amberError("not_found", "collection summary not found");
+      }
+    });
+  }
+
   async createSummary(
     principal: RequestPrincipal,
     collectionId: string,
@@ -292,6 +321,7 @@ export class CollectionService {
           summarizeCollectionRequestSchema.parse({
             requestSchemaVersion: 1,
             kind: "summarize_collection",
+            promptRefs: freezePromptRefs(scope, owner, "summarize_collection"),
             ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
             outputLanguage: outputLanguageFor(scope, owner, body.outputLanguage),
             inputItems,
@@ -355,6 +385,8 @@ function itemDto(scope: RepositoryScope, owner: string, item: CollectionItem): C
     processingStatus: content.processingStatus,
     ...(content.pinnedAt === undefined ? {} : { pinnedAt: content.pinnedAt }),
     ...(content.source.sourceUrl === undefined ? {} : { sourceUrl: content.source.sourceUrl }),
+    source: { kind: content.source.kind },
+    updatedAt: content.updatedAt,
   };
 }
 
@@ -395,6 +427,11 @@ function snapshotState(item: CollectionSummaryRevision["inputItems"][number]): C
   };
 }
 
+/**
+ * A collection summary revision as shown, without citations: a revision stored while
+ * collection summaries still cited has its markers stripped on the way out, its partials
+ * too; storage is untouched.
+ */
 function collectionSummaryRevisionDto(
   scope: RepositoryScope,
   owner: string,
@@ -405,20 +442,21 @@ function collectionSummaryRevisionDto(
   return {
     id: revision.id,
     artifactId: revision.artifactId,
-    body: revision.body,
-    citations: revision.citations.map((citation) => ({ ...citation })),
+    body: withoutCitations(revision.body),
+    citations: [],
     inputItems: revision.inputItems.map((item) => ({ ...item })),
     partials: scope.rollupPartials.listByOwnerRevision(owner, revision.id).map((partial) => ({
       id: partial.id,
       index: partial.index,
-      body: partial.body,
-      citations: partial.citations.map((citation) => ({ ...citation })),
+      body: withoutCitations(partial.body),
+      citations: [],
       createdAt: partial.createdAt,
     })),
     ...(provenance.modelRef === undefined ? {} : { modelRef: { ...provenance.modelRef } }),
     ...(provenance.promptRef === undefined ? {} : { promptRef: { ...provenance.promptRef } }),
-    quality: revision.quality,
-    qualityReasons: qualityReasonsOf(revision.quality),
+    // The only quality reason is citation-based; a summary shown without citations is never degraded by it.
+    quality: "normal",
+    qualityReasons: qualityReasonsOf("normal"),
     ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
     createdAt: provenance.createdAt,
   };

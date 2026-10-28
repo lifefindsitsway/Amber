@@ -42,6 +42,8 @@ export const ASR_TEST_POLL_INTERVAL_MS = 2000;
 
 /** Invalid citation ratio above which one citation repair is attempted. */
 export const CITATION_INVALID_RATIO_MAX = 0.05;
+/** Citation markers kept from one run of adjacent markers in a summary. */
+export const CITATION_RUN_MAX = 2;
 /** Default AI highlight score threshold (0–100). */
 export const HIGHLIGHT_THRESHOLD_DEFAULT = 80;
 /** Lectures per group in collection rollup. */

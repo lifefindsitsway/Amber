@@ -5,6 +5,7 @@ import { amberError, appError, isAmberError } from "../../../src/server/domain/e
 import type { LlmRequest, LlmStreamEvent } from "../../../src/server/domain/llm.ts";
 import type { UserSettings } from "../../../src/server/domain/runtime-support.ts";
 import type { ChatWebSearch } from "../../../src/server/domain/web-search.ts";
+import { CHAT_SYSTEM_METADATA_PROMPT, CHAT_SYSTEM_PROMPT } from "../../../src/server/domain/prompts.ts";
 import type { Repository } from "../../../src/server/ports/repository.ts";
 import type { ChatMessageRequest, ChatRetryRequest, ChatStreamEvent } from "../../../src/shared/dto/chat.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
@@ -114,6 +115,21 @@ describe("sending a message", () => {
     expect(usage).toHaveLength(1);
     expect(usage[0]).toMatchObject({ feature: "chat", chatMessageId: done.messageId, contentId, outcome: "succeeded" });
     expect(provider.calls[0]?.request.system).toContain("【逐字稿】");
+  });
+
+  it("keeps a whole run of citations in an answer: only summaries cut their runs", async () => {
+    const provider = new FakeLlmProvider();
+    const { h } = setup(provider);
+    const { contentId, segments } = seedChatContent(h, 10);
+    const modelRef = configureChatModel(h, 128_000);
+    provider.script({ events: reply("答案见 [[s1]][[s2]]、[[s3]] [[s4]]。") });
+    const events = await collect(h.chat.send(LOCAL, contentId, { text: "讲了什么？", modelRef }, undefined, never()));
+    const marks = segments.slice(0, 4).map((segment) => `[[seg:${segment.id}]]`);
+    const answer = `答案见 ${marks[0]}${marks[1]}、${marks[2]} ${marks[3]}。`;
+    expect(textOf(events)).toBe(answer);
+    const stored = h.chat.get(LOCAL, contentId, {}).messages[1];
+    expect(stored?.text).toBe(answer);
+    expect(stored?.citations).toHaveLength(4);
   });
 
   it("sends the quoted sentence's stored text, never the client's, and refuses quotes from elsewhere", async () => {
@@ -1050,5 +1066,59 @@ describe("the model is told who it is", () => {
     const system = provider.calls[0]?.request.system ?? "";
     expect(system).toContain("relay");
     expect(system).toContain("model-a");
+  });
+});
+
+describe("custom chat system prompts", () => {
+  const LEAD = "自定义前言：先给结论。";
+  const TAIL = "自定义结尾：保持简洁。";
+  const customOf = (builtin: string) => `${LEAD}\n${builtin}\n${TAIL}`;
+  const ANSWER = "答案见 [[s2]]。\n<<<suggestions>>>\n- 追问甲\n- 追问乙\n<<<end>>>";
+
+  it("each question reads chat.system as in effect then: custom while saved, builtin again once restored", async () => {
+    const provider = new FakeLlmProvider();
+    const { h } = setup(provider);
+    const { contentId, segments } = seedChatContent(h, 5);
+    const modelRef = configureChatModel(h, 128_000);
+    provider.script({ events: reply(ANSWER) }, { events: reply(ANSWER) }, { events: reply(ANSWER) });
+
+    await send(h, contentId, { text: "第一问", modelRef });
+    const builtinSystem = provider.calls[0]?.request.system ?? "";
+    expect(builtinSystem).toContain("【逐字稿】");
+
+    h.prompts.update(LOCAL, "chat.system", { text: customOf(CHAT_SYSTEM_PROMPT.text) });
+    const events = await send(h, contentId, { text: "第二问", modelRef });
+    // Everything but the user's own text renders as with the builtin prompt.
+    expect(provider.calls[1]?.request.system).toBe(customOf(builtinSystem));
+    // The control section the custom prompt keeps is still parsed out of the answer.
+    expect(textOf(events)).toBe(`答案见 [[seg:${segments[1]?.id}]]。`);
+    expect(events.find((event) => event.type === "suggestions")?.data).toEqual({ items: ["追问甲", "追问乙"] });
+    expect(h.chat.get(LOCAL, contentId, {}).messages.at(-1)).toMatchObject({ status: "complete", suggestions: ["追问甲", "追问乙"] });
+
+    h.prompts.restore(LOCAL, "chat.system");
+    await send(h, contentId, { text: "第三问", modelRef });
+    expect(provider.calls[2]?.request.system).toBe(builtinSystem);
+  });
+
+  it("a Content without a transcript is answered under the custom chat.system.metadata", async () => {
+    const provider = new FakeLlmProvider();
+    const { h } = setup(provider);
+    const modelRef = configureChatModel(h, 128_000);
+    const contentId = createLocalContent(h);
+    h.repository.withTransaction((scope) => scope.contents.setMetadata(LOCAL.userId, contentId, { title: "第一讲：梯度下降", durationMs: 60_000 }, 2));
+    const answer = "字幕尚未就绪。\n<<<suggestions>>>\n- 追问甲\n<<<end>>>";
+    provider.script({ events: reply(answer) }, { events: reply(answer) });
+
+    await send(h, contentId, { text: "第一问", modelRef });
+    const builtinSystem = provider.calls[0]?.request.system ?? "";
+    expect(builtinSystem).toContain("标题：第一讲：梯度下降");
+
+    // Saving chat.system does not reach the metadata mode.
+    h.prompts.update(LOCAL, "chat.system", { text: customOf(CHAT_SYSTEM_PROMPT.text) });
+    h.prompts.update(LOCAL, "chat.system.metadata", { text: customOf(CHAT_SYSTEM_METADATA_PROMPT.text) });
+    const events = await send(h, contentId, { text: "第二问", modelRef });
+    expect(provider.calls[1]?.request.system).toBe(customOf(builtinSystem));
+    expect(events.find((event) => event.type === "suggestions")?.data).toEqual({ items: ["追问甲"] });
+    expect(doneOf(events).status).toBe("complete");
   });
 });

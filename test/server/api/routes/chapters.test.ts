@@ -3,7 +3,7 @@ import type { SegmentId } from "../../../../src/shared/ids.ts";
 import { UI_LANGUAGE_DEFAULT } from "../../../../src/shared/defaults.ts";
 import { FakeLlmProvider } from "../../../fixtures/llm/fake-llm.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
-import { BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -125,6 +125,7 @@ describe("POST /api/contents/:id/chapters/regenerate", () => {
       requestSchemaVersion: 1,
       kind: "regenerate_chapters",
       baseRevisionId: fixture.asr.revision.id,
+      promptRefs: builtinPromptRefs("regenerate_chapters"),
       outputLanguage: UI_LANGUAGE_DEFAULT,
     });
     expect((await app.inject({ method: "POST", url, headers: { ...auth, "idempotency-key": "c-1" } })).json()).toEqual({ taskId });

@@ -1,7 +1,7 @@
 import type { RollupPartial } from "../../../domain/artifact.ts";
 import type { RollupPartialRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
-import { notFound, parseJson } from "./rows.ts";
+import { jsonOrNull, notFound, parseJson, parseJsonOrNull } from "./rows.ts";
 
 interface PartialRow {
   id: string;
@@ -13,11 +13,13 @@ interface PartialRow {
   citations_json: string;
   model_ref_json: string;
   prompt_ref_json: string;
+  prompt_refs_json: string | null;
   prompt_snapshot: string;
   created_at: number;
 }
 
 function toPartial(row: PartialRow): RollupPartial {
+  const promptRefs = parseJsonOrNull<RollupPartial["promptRefs"]>(row.prompt_refs_json);
   return {
     id: row.id,
     ownerRevisionId: (row.summary_revision_id ?? row.collection_summary_revision_id) as string,
@@ -27,6 +29,7 @@ function toPartial(row: PartialRow): RollupPartial {
     citations: parseJson(row.citations_json),
     modelRef: parseJson(row.model_ref_json),
     promptRef: parseJson(row.prompt_ref_json),
+    ...(promptRefs === null || promptRefs === undefined ? {} : { promptRefs }),
     promptSnapshot: row.prompt_snapshot,
     createdAt: row.created_at,
   };
@@ -49,10 +52,10 @@ export function sqliteRollupPartialRepository(db: SqliteConnection): RollupParti
   const insert = db.prepare(
     `INSERT INTO rollup_partial (
        id, summary_revision_id, collection_summary_revision_id, partial_index, inputs_json, body, citations_json,
-       model_ref_json, prompt_ref_json, prompt_snapshot, created_at
+       model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, created_at
      ) VALUES (
        @id, @summaryRevisionId, @collectionSummaryRevisionId, @index, @inputsJson, @body, @citationsJson,
-       @modelRefJson, @promptRefJson, @promptSnapshot, @createdAt
+       @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @createdAt
      )`,
   );
   const byOwner = db.prepare(
@@ -89,6 +92,7 @@ export function sqliteRollupPartialRepository(db: SqliteConnection): RollupParti
           citationsJson: JSON.stringify(partial.citations),
           modelRefJson: JSON.stringify(partial.modelRef),
           promptRefJson: JSON.stringify(partial.promptRef),
+          promptRefsJson: jsonOrNull(partial.promptRefs),
           promptSnapshot: partial.promptSnapshot,
           createdAt: partial.createdAt,
         });

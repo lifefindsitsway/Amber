@@ -1,4 +1,5 @@
-import type { LlmProtocol } from "../../shared/enums.ts";
+import { PROMPT_CUSTOM_MAX_CHARS } from "../../shared/defaults.ts";
+import type { LlmProtocol, TaskKind } from "../../shared/enums.ts";
 import { languageNames } from "../../shared/i18n/zh-CN/languages.ts";
 import type { PromptRef } from "./model-ref.ts";
 
@@ -12,10 +13,11 @@ export interface BuiltinPrompt {
   text: string;
 }
 
-/** The `proofread.text` prompt, v5. */
-export const PROOFREAD_TEXT_PROMPT: BuiltinPrompt = {
-  ref: { id: "proofread.text", version: 5 },
-  text: `你是字幕校对员。下面是一段语音识别得到的字幕，每行以句标记 [s<n>] 开头。请逐句校正识别错误，并标出自然段的开头。
+/**
+ * The text of `proofread.text` v5, kept apart from the prompt so that the historical
+ * `proofread.audio` v5 (its literal concatenation) stays verbatim when the text prompt moves on.
+ */
+const PROOFREAD_TEXT_V5_TEXT = `你是字幕校对员。下面是一段语音识别得到的字幕，每行以句标记 [s<n>] 开头。请逐句校正识别错误，并标出自然段的开头。
 
 要求：
 - 只修正识别错误（错字、同音字、专有名词、数字、英文缩写），不改变说话人的表达方式、语气与句式
@@ -37,19 +39,40 @@ export const PROOFREAD_TEXT_PROMPT: BuiltinPrompt = {
 {{target_lines}}
 
 【只读上下文（后）】
-{{context_after}}`,
+{{context_after}}`;
+
+/** The `proofread.text` prompt, v5. */
+export const PROOFREAD_TEXT_PROMPT: BuiltinPrompt = {
+  ref: { id: "proofread.text", version: 5 },
+  text: PROOFREAD_TEXT_V5_TEXT,
 };
 
-/** The `proofread.audio` prompt, v5: the `proofread.text` prompt preceded by this paragraph, sent with the audio clip. */
+const PROOFREAD_AUDIO_PREAMBLE = "我会同时提供这段字幕对应的音频和识别文本。请对照音频校正文本。音频是 ground truth：文本与音频不一致时，以音频为准。";
+
+/**
+ * The `proofread.audio` prompt, v6: a preamble before the effective `proofread.text` prompt,
+ * sent with the audio clip. `{{proofread_text}}` is filled with that prompt's template text
+ * (builtin or the user's own) before the text prompt's slots are rendered, so the preamble
+ * and the text prompt can be customized apart.
+ */
 export const PROOFREAD_AUDIO_PROMPT: BuiltinPrompt = {
-  ref: { id: "proofread.audio", version: 5 },
-  text: `我会同时提供这段字幕对应的音频和识别文本。请对照音频校正文本。音频是 ground truth：文本与音频不一致时，以音频为准。\n\n${PROOFREAD_TEXT_PROMPT.text}`,
+  ref: { id: "proofread.audio", version: 6 },
+  text: `${PROOFREAD_AUDIO_PREAMBLE}\n\n{{proofread_text}}`,
 };
 
-/** The `chapter.ai` prompt, v1. */
+/**
+ * The audio proofreading template for one request: `{{proofread_text}}` of `audioText` filled
+ * with the effective text proofreading template, still unrendered. A historical audio text
+ * without the slot (v5 carried the whole text prompt) is returned as it is.
+ */
+export function composeProofreadAudioPrompt(audioText: string, proofreadText: string): string {
+  return audioText.replace(/\{\{proofread_text\}\}/g, () => proofreadText);
+}
+
+/** The `chapter.ai` prompt, v2. */
 export const CHAPTER_AI_PROMPT: BuiltinPrompt = {
-  ref: { id: "chapter.ai", version: 1 },
-  text: `下面是一段课程逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+  ref: { id: "chapter.ai", version: 2 },
+  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
 { "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
 规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
 【逐字稿】
@@ -75,10 +98,10 @@ export const TRANSLATE_SUBTITLES_PROMPT: BuiltinPrompt = {
 {{subtitles}}`,
 };
 
-/** The `highlight.default` prompt, v1; `{{window_note}}` is filled like the `chapter.ai` prompt's. */
+/** The `highlight.default` prompt, v2; `{{window_note}}` is filled like the `chapter.ai` prompt's. */
 export const HIGHLIGHT_DEFAULT_PROMPT: BuiltinPrompt = {
-  ref: { id: "highlight.default", version: 1 },
-  text: `下面是一段课程逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+  ref: { id: "highlight.default", version: 2 },
+  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
 输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
 评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
 【逐字稿】
@@ -86,15 +109,16 @@ export const HIGHLIGHT_DEFAULT_PROMPT: BuiltinPrompt = {
 };
 
 /**
- * The `summary.envelope` prompt, v1: wraps every summary template for a single-call summary.
- * `{{template_body}}` is the template version's prompt.
+ * The `summary.envelope` prompt, v2: wraps every summary template for a single-call summary.
+ * `{{template_body}}` is the template version's prompt. Each claim asks for one or two
+ * sentence marks only: left free, models list every sentence behind a claim.
  */
 export const SUMMARY_ENVELOPE_PROMPT: BuiltinPrompt = {
-  ref: { id: "summary.envelope", version: 1 },
-  text: `下面是一段课程音视频的逐字稿，每句以 [[s<n>]] 标记（n 为句号）。请按「任务」的要求写作。
+  ref: { id: "summary.envelope", version: 2 },
+  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记（n 为句号）。请按「任务」的要求写作。
 
 引用规则：
-- 每个论点、要点、答案、术语解释后面附上它所依据的句标记，形如 [[s12]]；可附多个
+- 每个论点、要点、答案、术语解释后面附上最能支撑它的 1–2 个句标记，形如 [[s12]]；不要把相关的句标记逐个罗列
 - 只能引用下面出现过的句标记，不要编造
 - 不要输出 [[s<n>]] 以外的时间信息
 
@@ -109,20 +133,32 @@ export const SUMMARY_ENVELOPE_PROMPT: BuiltinPrompt = {
 };
 
 /**
- * The shared fragment `citation.rules` v1: the three citation rules of the `summary.envelope`
- * prompt, filling `{{citation_rules}}` in the rolling-summary prompts.
+ * The shared fragment `citation.rules` v2: the three citation rules of the `summary.envelope`
+ * prompt, filling `{{citation_rules}}` in the rolling prompts of a single video's summary.
  */
 export const CITATION_RULES_FRAGMENT: BuiltinPrompt = {
-  ref: { id: "citation.rules", version: 1 },
+  ref: { id: "citation.rules", version: 2 },
   text: `引用规则：
-- 每个论点、要点、答案、术语解释后面附上它所依据的句标记，形如 [[s12]]；可附多个
+- 每个论点、要点、答案、术语解释后面附上最能支撑它的 1–2 个句标记，形如 [[s12]]；不要把相关的句标记逐个罗列
 - 只能引用下面出现过的句标记，不要编造
 - 不要输出 [[s<n>]] 以外的时间信息`,
 };
 
 /**
+ * The shared fragment `citation.none` v1, filling `{{citation_rules}}` in the partial and
+ * final calls of a collection summary: it speaks for a whole collection, where sentence
+ * citations would bury the text, so members are named by their position instead.
+ */
+export const CITATION_NONE_FRAGMENT: BuiltinPrompt = {
+  ref: { id: "citation.none", version: 1 },
+  text: "引用规则：不要输出任何句标记（形如 [[s12]]）或时间信息；不要逐条注明出处，只在需要区分不同内容时写「第 k 项」。",
+};
+
+/**
  * The builtin summary templates. `nameKey` is the i18n key stored as the
- * template's `name`; each entry is the template's version `version`.
+ * template's `name`; each entry is the template's version `version`. Raising a version adds
+ * a row at startup and leaves the earlier ones in the database, so summaries and Tasks that
+ * name them still resolve.
  */
 export const BUILTIN_SUMMARY_TEMPLATES: ReadonlyArray<{ id: string; nameKey: string; version: number; prompt: string }> = [
   {
@@ -136,8 +172,8 @@ export const BUILTIN_SUMMARY_TEMPLATES: ReadonlyArray<{ id: string; nameKey: str
   {
     id: "summary.detailed",
     nameKey: "summaryTemplate.detailed",
-    version: 1,
-    prompt: `面向要认真学完这门课的学习者，按内容顺序展开：
+    version: 2,
+    prompt: `面向要认真学习这段内容的学习者，按内容顺序展开：
 ## 摘要（一段）
 ## 分节讲解（每节：小标题、讲了什么、为什么重要、关键细节；每节至少一处引用）
 ## 思考题（3–5 个问题，每题给出依据原文的简答）
@@ -156,10 +192,10 @@ export const BUILTIN_SUMMARY_TEMPLATES: ReadonlyArray<{ id: string; nameKey: str
 /** The template used when none is chosen; each member's current summary under it is the input of a collection summary. */
 export const DEFAULT_SUMMARY_TEMPLATE_ID = "summary.core";
 
-/** The `rollup.partial` prompt, v1. */
+/** The `rollup.partial` prompt, v2. */
 export const ROLLUP_PARTIAL_PROMPT: BuiltinPrompt = {
-  ref: { id: "rollup.partial", version: 1 },
-  text: `你在为一门课程做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
+  ref: { id: "rollup.partial", version: 2 },
+  text: `你在为一个合集或一段长内容做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
 {{citation_rules}}
 输出语言：{{output_language}}
 {{terms_section}}
@@ -185,10 +221,10 @@ export const ROLLUP_CARRY_PROMPT: BuiltinPrompt = {
 {{partial}}`,
 };
 
-/** The `rollup.final` prompt, v1: the final call of a single video's rolling summary, still under the user's template. */
+/** The `rollup.final` prompt, v2: the final call of a single video's rolling summary, still under the user's template. */
 export const ROLLUP_FINAL_PROMPT: BuiltinPrompt = {
-  ref: { id: "rollup.final", version: 1 },
-  text: `下面是一段课程各组内容的归纳与整体压缩摘要。请按「任务」的要求写出总归纳。
+  ref: { id: "rollup.final", version: 2 },
+  text: `下面是一段长内容各组的归纳与整体压缩摘要。请按「任务」的要求写出总归纳。
 {{citation_rules}}
 输出语言：{{output_language}}
 {{terms_section}}
@@ -200,17 +236,20 @@ export const ROLLUP_FINAL_PROMPT: BuiltinPrompt = {
 {{carry}}`,
 };
 
-/** The `rollup.final.collection` prompt, v1. */
+/**
+ * The `rollup.final.collection` prompt, v3: like `rollup.final`, under the collection goal
+ * as `{{template_body}}`; a collection is not presumed to be a course, and its summary is
+ * kept short because it is read above the member list.
+ */
 export const ROLLUP_FINAL_COLLECTION_PROMPT: BuiltinPrompt = {
-  ref: { id: "rollup.final.collection", version: 1 },
-  text: `下面是一门课程各组内容的归纳与整体压缩摘要。请写出课程总归纳：
-## 这门课在讲什么（一段）
-## 主线与结构（各组如何衔接）
-## 核心结论与术语
-## 建议的复习顺序
+  ref: { id: "rollup.final.collection", version: 3 },
+  text: `下面是一个合集各组内容的归纳与整体压缩摘要。合集是一组相关的音视频内容：可能是一门课程，也可能只是同一主题、同一作者或同一系列的若干视频；「第 k 项」只是合集内的序号。请先判断它的实际性质，再按这个性质措辞，不要把不是课程的内容说成课程。请按「任务」的要求写出合集总归纳。
+写得精炼：只保留把握整个合集所必需的信息，不复述各组归纳的细节与例子，不写套话；全文不超过 800 字。
 {{citation_rules}}
 输出语言：{{output_language}}
 {{terms_section}}
+【任务】
+{{template_body}}
 【各组归纳】
 {{partials}}
 【整体压缩摘要】
@@ -218,13 +257,16 @@ export const ROLLUP_FINAL_COLLECTION_PROMPT: BuiltinPrompt = {
 };
 
 /**
- * The goal of a collection summary: the four sections of `rollup.final.collection`, which
- * fill `{{template_body}}` in the collection's partial and carry calls.
+ * The `rollup.goal.collection` prompt, v3: the goal of a collection summary, the one place
+ * its two sections are defined, each bounded in length. It fills `{{template_body}}` in the
+ * partial, carry and final calls of a collection summary.
  */
-export const COLLECTION_ROLLUP_GOAL = `## 这门课在讲什么（一段）
-## 主线与结构（各组如何衔接）
-## 核心结论与术语
-## 建议的复习顺序`;
+export const ROLLUP_GOAL_COLLECTION_PROMPT: BuiltinPrompt = {
+  ref: { id: "rollup.goal.collection", version: 3 },
+  text: `只写下面两节；括号里是写作要求，不要写进标题：
+## 这个合集在讲什么（2–3 句）
+## 主线与结构（3–5 条，每条一句，说明各项内容如何关联；只有一项内容时改为概括它的论述脉络）`,
+};
 
 /** The `citation.repair` prompt, v1. */
 export const CITATION_REPAIR_PROMPT: BuiltinPrompt = {
@@ -235,13 +277,13 @@ export const CITATION_REPAIR_PROMPT: BuiltinPrompt = {
 };
 
 /**
- * The `chat.system` prompt, v2: answers by question type (the video, general knowledge,
+ * The `chat.system` prompt, v3: answers by question type (the video, general knowledge,
  * time-sensitive facts), tells the model who it is and what day it is, and ends with the
  * control section the backend parses into suggestions.
  */
 export const CHAT_SYSTEM_PROMPT: BuiltinPrompt = {
-  ref: { id: "chat.system", version: 2 },
-  text: `你是这段课程内容的学习助手，帮助用户理解这段视频，也回答与它相关的问题。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
+  ref: { id: "chat.system", version: 3 },
+  text: `你是这段音视频内容的学习助手，帮助用户理解这段视频，也回答与它相关的问题。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
 {{model_section}}
 按问题类型回答：
 - 问视频里讲了什么：只依据下面的【资料】回答，每个论断后附依据句标记 [[s<n>]]；资料里没有的，明确说「视频里没提到」，不要用你自己的知识冒充视频内容。
@@ -262,13 +304,13 @@ export const CHAT_SYSTEM_PROMPT: BuiltinPrompt = {
 };
 
 /**
- * The `chat.system.metadata` prompt, v2: the system prompt while the Content has no primary
+ * The `chat.system.metadata` prompt, v3: the system prompt while the Content has no primary
  * revision. Only a question that needs the video's own words gets the "subtitles not ready"
  * statement; it cites no sentence.
  */
 export const CHAT_SYSTEM_METADATA_PROMPT: BuiltinPrompt = {
-  ref: { id: "chat.system.metadata", version: 2 },
-  text: `你是这段课程内容的学习助手。这段内容的字幕尚未就绪，下面只有它的基本信息。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
+  ref: { id: "chat.system.metadata", version: 3 },
+  text: `你是这段音视频内容的学习助手。这段内容的字幕尚未就绪，下面只有它的基本信息。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
 {{model_section}}
 按问题类型回答：
 - 问视频里具体讲了什么：先用一句话说明「字幕尚未就绪，无法依据视频原文回答」，再结合基本信息与你自己的知识给出可能的方向；不要编造视频里具体说了什么。
@@ -380,4 +422,303 @@ export function outputLanguageName(tag: string): string {
   }
   const primary = tag.split("-")[0]?.toLowerCase() ?? "";
   return languageNames[primary] ?? tag;
+}
+
+/** The three citation rules of `summary.envelope` v1, which also made up `citation.rules` v1. */
+const CITATION_RULES_V1_TEXT = `引用规则：
+- 每个论点、要点、答案、术语解释后面附上它所依据的句标记，形如 [[s12]]；可附多个
+- 只能引用下面出现过的句标记，不要编造
+- 不要输出 [[s<n>]] 以外的时间信息`;
+
+/**
+ * Builtin prompt versions replaced by a later one, still resolvable by id and version so a
+ * Task frozen on one runs with the exact text it was submitted with.
+ */
+export const BUILTIN_PROMPT_HISTORY: readonly BuiltinPrompt[] = [
+  {
+    ref: { id: "proofread.audio", version: 5 },
+    text: `${PROOFREAD_AUDIO_PREAMBLE}\n\n${PROOFREAD_TEXT_V5_TEXT}`,
+  },
+  {
+    ref: { id: "rollup.partial", version: 1 },
+    text: `你在为一门课程做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
+{{citation_rules}}
+输出语言：{{output_language}}
+{{terms_section}}
+【任务】
+{{template_body}}
+【此前内容的压缩摘要】
+{{carry}}
+【本组内容】
+{{group_content}}`,
+  },
+  {
+    ref: { id: "rollup.final.collection", version: 1 },
+    text: `下面是一门课程各组内容的归纳与整体压缩摘要。请写出课程总归纳：
+## 这门课在讲什么（一段）
+## 主线与结构（各组如何衔接）
+## 核心结论与术语
+## 建议的复习顺序
+{{citation_rules}}
+输出语言：{{output_language}}
+{{terms_section}}
+【各组归纳】
+{{partials}}
+【整体压缩摘要】
+{{carry}}`,
+  },
+  {
+    ref: { id: "rollup.final.collection", version: 2 },
+    text: `下面是一个合集各组内容的归纳与整体压缩摘要。合集是一组相关的音视频内容：可能是一门课程，也可能只是同一主题、同一作者或同一系列的若干视频；「第 k 项」只是合集内的序号。请先判断它的实际性质，再按这个性质措辞，不要把不是课程的内容说成课程。请按「任务」的要求写出合集总归纳。
+{{citation_rules}}
+输出语言：{{output_language}}
+{{terms_section}}
+【任务】
+{{template_body}}
+【各组归纳】
+{{partials}}
+【整体压缩摘要】
+{{carry}}`,
+  },
+  {
+    ref: { id: "rollup.goal.collection", version: 1 },
+    text: `## 这个合集在讲什么（一段）
+## 主线与结构（各组内容如何关联）
+## 核心结论与术语
+## 建议的观看或复习顺序`,
+  },
+  {
+    ref: { id: "rollup.goal.collection", version: 2 },
+    text: `## 这个合集在讲什么（2–3 句）
+## 主线与结构（3–5 条，每条一句，说明各项内容如何关联；只有一项内容时改为概括它的论述脉络）
+## 核心结论与术语（不超过 8 条，每条一句）
+## 建议的观看顺序（1–2 句；只有一项内容时省略本节）`,
+  },
+  {
+    ref: { id: "rollup.final", version: 1 },
+    text: `下面是一段课程各组内容的归纳与整体压缩摘要。请按「任务」的要求写出总归纳。
+{{citation_rules}}
+输出语言：{{output_language}}
+{{terms_section}}
+【任务】
+{{template_body}}
+【各组归纳】
+{{partials}}
+【整体压缩摘要】
+{{carry}}`,
+  },
+  {
+    ref: { id: "chapter.ai", version: 1 },
+    text: `下面是一段课程逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+{ "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
+规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    ref: { id: "highlight.default", version: 1 },
+    text: `下面是一段课程逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
+评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    ref: { id: "summary.envelope", version: 1 },
+    text: `下面是一段课程音视频的逐字稿，每句以 [[s<n>]] 标记（n 为句号）。请按「任务」的要求写作。
+
+${CITATION_RULES_V1_TEXT}
+
+输出语言：{{output_language}}
+{{terms_section}}
+
+【任务】
+{{template_body}}
+
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    ref: { id: "citation.rules", version: 1 },
+    text: CITATION_RULES_V1_TEXT,
+  },
+  {
+    ref: { id: "chat.system", version: 2 },
+    text: `你是这段课程内容的学习助手，帮助用户理解这段视频，也回答与它相关的问题。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
+{{model_section}}
+按问题类型回答：
+- 问视频里讲了什么：只依据下面的【资料】回答，每个论断后附依据句标记 [[s<n>]]；资料里没有的，明确说「视频里没提到」，不要用你自己的知识冒充视频内容。
+- 一般知识（概念、原理、背景与延伸）：可以用你自己的知识回答，不确定的地方明确说不确定；这部分不附 [[s<n>]]。
+- 时效性事实（最新版本、近期事件、价格、现状等）：有【网页资料】时依据它回答，并在论断后附网页标记 [[w<n>]]；没有网页资料时说明你无法联网核实，可以给出你所知的情况并注明可能已过时。
+- 同时涉及几类时，分别说明哪些来自视频、哪些来自网页、哪些是你自己的知识。
+{{compaction_section}}
+【资料】
+{{context_section}}
+{{web_section}}
+回答结束后，另起一行输出控制段：
+<<<suggestions>>>
+- 追问 1
+- 追问 2
+- 追问 3
+<<<end>>>
+控制段给出 2–3 条用户接下来可能想问的问题。除此之外不要输出任何标记。`,
+  },
+  {
+    ref: { id: "chat.system.metadata", version: 2 },
+    text: `你是这段课程内容的学习助手。这段内容的字幕尚未就绪，下面只有它的基本信息。今天是 {{today}}（北京时间）。回答使用 {{output_language}}。
+{{model_section}}
+按问题类型回答：
+- 问视频里具体讲了什么：先用一句话说明「字幕尚未就绪，无法依据视频原文回答」，再结合基本信息与你自己的知识给出可能的方向；不要编造视频里具体说了什么。
+- 一般知识、模型身份等不需要视频原文的问题：直接回答，不必提字幕；不确定的地方明确说不确定。
+- 时效性事实：有【网页资料】时依据它回答，并在论断后附网页标记 [[w<n>]]；没有网页资料时说明你无法联网核实，可以给出你所知的情况并注明可能已过时。
+不要输出任何形如 [[s<n>]] 的标记。
+{{compaction_section}}
+【基本信息】
+{{metadata_section}}
+{{web_section}}
+回答结束后，另起一行输出控制段：
+<<<suggestions>>>
+- 追问 1
+- 追问 2
+- 追问 3
+<<<end>>>
+控制段给出 2–3 条用户接下来可能想问的问题。除此之外不要输出任何标记。`,
+  },
+];
+
+/** The ids of the builtin prompts a user may rewrite; the mechanism prompts (citations, compaction, search planning) stay fixed. */
+export const CUSTOMIZABLE_PROMPT_IDS = [
+  "proofread.text",
+  "proofread.audio",
+  "translate.subtitles",
+  "summary.envelope",
+  "chapter.ai",
+  "highlight.default",
+  "rollup.partial",
+  "rollup.carry",
+  "rollup.final",
+  "rollup.final.collection",
+  "rollup.goal.collection",
+  "chat.system",
+  "chat.system.metadata",
+] as const;
+export type CustomizablePromptId = (typeof CUSTOMIZABLE_PROMPT_IDS)[number];
+
+/**
+ * One customizable prompt. `slots` are the `{{…}}` placeholders of the builtin text, each of
+ * which a custom text must keep (and may not add others); `protocol` are the literal
+ * fragments the output parsers depend on, which it must keep as well. Both are written as
+ * they appear in the text.
+ */
+export interface CustomizablePrompt {
+  id: CustomizablePromptId;
+  nameKey: string;
+  descriptionKey: string;
+  builtin: BuiltinPrompt;
+  slots: readonly string[];
+  protocol: readonly string[];
+}
+
+const SLOT = /\{\{(\w+)\}\}/g;
+
+/** The distinct `{{…}}` placeholders of `text`, in order of first appearance, as written. */
+export function promptSlots(text: string): string[] {
+  return [...new Set([...text.matchAll(SLOT)].map((match) => match[0]))];
+}
+
+function customizable(key: string, builtin: BuiltinPrompt, protocol: readonly string[]): CustomizablePrompt {
+  return {
+    id: builtin.ref.id as CustomizablePromptId,
+    nameKey: `settings.systemPrompts.items.${key}.name`,
+    descriptionKey: `settings.systemPrompts.items.${key}.description`,
+    builtin,
+    slots: promptSlots(builtin.text),
+    protocol,
+  };
+}
+
+/** The customizable prompts, in the order the settings page lists them. */
+export const CUSTOMIZABLE_PROMPTS: readonly CustomizablePrompt[] = [
+  customizable("proofreadText", PROOFREAD_TEXT_PROMPT, ["[s<n>]", "¶"]),
+  customizable("proofreadAudio", PROOFREAD_AUDIO_PROMPT, []),
+  customizable("translateSubtitles", TRANSLATE_SUBTITLES_PROMPT, ["序号. 译文"]),
+  customizable("summaryEnvelope", SUMMARY_ENVELOPE_PROMPT, ["[[s<n>]]"]),
+  customizable("chapterAi", CHAPTER_AI_PROMPT, ['"chapters"', '"startAlias"', '"title"', "只输出 JSON"]),
+  customizable("highlightDefault", HIGHLIGHT_DEFAULT_PROMPT, ['"highlights"', '"alias"', '"score"', "只输出 JSON"]),
+  customizable("rollupPartial", ROLLUP_PARTIAL_PROMPT, []),
+  customizable("rollupCarry", ROLLUP_CARRY_PROMPT, ["[[s<n>]]"]),
+  customizable("rollupFinal", ROLLUP_FINAL_PROMPT, []),
+  customizable("rollupFinalCollection", ROLLUP_FINAL_COLLECTION_PROMPT, []),
+  customizable("rollupGoalCollection", ROLLUP_GOAL_COLLECTION_PROMPT, []),
+  customizable("chatSystem", CHAT_SYSTEM_PROMPT, ["[[s<n>]]", "<<<suggestions>>>", "<<<end>>>"]),
+  customizable("chatSystemMetadata", CHAT_SYSTEM_METADATA_PROMPT, ["<<<suggestions>>>", "<<<end>>>"]),
+];
+
+export function customizablePrompt(id: string): CustomizablePrompt | undefined {
+  return CUSTOMIZABLE_PROMPTS.find((entry) => entry.id === id);
+}
+
+/**
+ * What a custom text for `entry` lacks or has too much: each slot and protocol fragment it
+ * does not contain, and each placeholder the builtin text does not have. `undefined` when
+ * the text is acceptable; an empty or over-long text is never acceptable. The check only
+ * makes sure the model still receives what the parsers rely on, not that the result is good.
+ */
+export function validatePromptText(entry: CustomizablePrompt, text: string): { missing: string[]; unknown: string[] } | undefined {
+  const present = new Set(promptSlots(text));
+  const missing = [...entry.slots.filter((slot) => !present.has(slot)), ...entry.protocol.filter((fragment) => !text.includes(fragment))];
+  const unknown = [...present].filter((slot) => !entry.slots.includes(slot));
+  const usable = text.trim().length > 0 && text.length <= PROMPT_CUSTOM_MAX_CHARS;
+  return usable && missing.length === 0 && unknown.length === 0 ? undefined : { missing, unknown };
+}
+
+/** A customizable prompt as it is used: the version in effect (builtin or the user's own) and its text. */
+export interface ResolvedPrompt {
+  ref: PromptRef;
+  text: string;
+}
+
+/** The prefix of the `PromptRef` id of a user's own version of a customizable prompt. */
+export const CUSTOM_PROMPT_REF_PREFIX = "custom:";
+
+export function customPromptRef(promptId: CustomizablePromptId, version: number): PromptRef {
+  return { id: `${CUSTOM_PROMPT_REF_PREFIX}${promptId}`, version };
+}
+
+/** The prompt id a custom `PromptRef` names, or `undefined` for a builtin ref. */
+export function customPromptIdOf(ref: PromptRef): string | undefined {
+  return ref.id.startsWith(CUSTOM_PROMPT_REF_PREFIX) ? ref.id.slice(CUSTOM_PROMPT_REF_PREFIX.length) : undefined;
+}
+
+/** The builtin prompt of a builtin `PromptRef`: the current version first, then the history. */
+export function builtinPromptOf(ref: PromptRef): BuiltinPrompt | undefined {
+  const current = customizablePrompt(ref.id)?.builtin;
+  if (current !== undefined && current.ref.version === ref.version) {
+    return current;
+  }
+  return BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === ref.id && prompt.ref.version === ref.version);
+}
+
+/** The customizable prompts a Task of `kind` uses, frozen into its request at submission. */
+export function promptIdsOf(kind: TaskKind): readonly CustomizablePromptId[] {
+  switch (kind) {
+    case "process_content":
+      return ["proofread.text", "proofread.audio", "chapter.ai", "highlight.default", "summary.envelope", "rollup.partial", "rollup.carry", "rollup.final"];
+    case "regenerate_summary":
+      return ["summary.envelope", "rollup.partial", "rollup.carry", "rollup.final"];
+    case "summarize_collection":
+      return ["rollup.goal.collection", "rollup.partial", "rollup.carry", "rollup.final.collection"];
+    case "reproofread":
+      return ["proofread.text", "proofread.audio"];
+    case "regenerate_chapters":
+      return ["chapter.ai"];
+    case "recompute_highlights":
+      return ["highlight.default"];
+    case "translate":
+      return ["translate.subtitles"];
+    case "retranscribe":
+    case "cache_media":
+    case "burn":
+      return [];
+  }
 }

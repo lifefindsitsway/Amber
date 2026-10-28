@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ExportService, type ExportFile } from "../../../src/server/application/export.ts";
+import type { SummaryRevision } from "../../../src/server/domain/artifact.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import { API_PAGE_SIZE_MAX } from "../../../src/shared/defaults.ts";
@@ -237,6 +238,34 @@ describe("ExportService", () => {
     expect(markdown).toContain("开场 [00:01]，结尾 [6:00:01]");
   });
 
+  it("a summary stored with long citation runs is exported with each run cut to two, alone and inside a collection; storage is untouched", async () => {
+    const { h, exports, fixture } = setup();
+    const marks = fixture.corrected.segments.slice(0, 5).map((segment) => `[[seg:${segment.id}]]`);
+    const stored = `## 摘要\n要点${marks.join("")}。另一处 ${marks[3]}、${marks[4]} ${marks[0]}，再一处${marks[2]}\n`;
+    const revisionId = h.newId();
+    h.repository.withTransaction((scope) => {
+      const previous = scope.summaries.getRevision(LOCAL.userId, fixture.summaryRevisionId) as SummaryRevision;
+      const citations = fixture.corrected.segments.slice(0, 5).map((segment) => ({ transcriptRevisionId: fixture.corrected.revision.id, segmentId: segment.id }));
+      scope.summaries.insertRevision(LOCAL.userId, {
+        contentId: fixture.contentId,
+        templateId: "summary.core",
+        artifactId: previous.artifactId,
+        revision: { id: revisionId, provenance: previous.provenance, quality: "normal", body: stored, citations },
+      });
+      scope.summaries.setCurrent(LOCAL.userId, previous.artifactId, revisionId);
+    });
+    const stampsPerClause = (markdown: string) =>
+      (markdown.split("\n").find((line) => line.startsWith("要点")) ?? "").split(/[。，]/).map((clause) => clause.match(/\[\d/g)?.length ?? 0);
+
+    const alone = await text(exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { summary: { templateId: "summary.core" } }, backlinks: false }));
+    expect(stampsPerClause(alone)).toEqual([2, 2, 1]);
+    const local = seedExportContent(h, LOCAL.userId, "local");
+    const collectionId = seedExportCollection(h, fixture, local);
+    const inCollection = await text(exports.exportCollection(LOCAL, collectionId, { backlinks: false }));
+    expect(stampsPerClause(inCollection)).toEqual([2, 2, 1]);
+    expect(h.db.prepare("SELECT body FROM summary_revision WHERE id = ?").get(revisionId)).toEqual({ body: stored });
+  });
+
   it("collection Markdown holds the collection summary and each lecture's title with its core summary inline", async () => {
     const { h, exports, fixture } = setup();
     const local = seedExportContent(h, LOCAL.userId, "local");
@@ -256,9 +285,10 @@ describe("ExportService", () => {
         "## 合集归纳",
         "",
         "## 这门课在讲什么",
-        `总起 [00:01](${at(1)})`,
+        // Stored while collection summaries still cited; exported without the citation.
+        "总起",
         "",
-        "## 各讲",
+        "## 各项内容",
         "",
         `### [示例课程：第一讲/导论](${URL})`,
         "",

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
-import { BOB, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../fixtures/pipeline/summary-data.ts";
 import { countRows, insertRow } from "../../tools/sqlite.ts";
 
@@ -131,6 +131,7 @@ describe("generating a summary", () => {
     expect(JSON.parse(task.requestJson)).toEqual({
       requestSchemaVersion: 1,
       kind: "regenerate_summary",
+      promptRefs: builtinPromptRefs("regenerate_summary"),
       modelRef,
       outputLanguage: UI_LANGUAGE_DEFAULT,
       templateRef: { id: custom.id, version: 1 },
@@ -191,6 +192,25 @@ describe("revisions and current", () => {
     const other = insertSummary(h, { contentId, templateId: "summary.terms", transcriptRevisionId: fixture.asr.revision.id });
     expect(await codeOf(() => h.summaries.setCurrent(LOCAL, older.artifactId, other.revisionId))).toBe("not_found");
     expect(await codeOf(() => h.summaries.setCurrent(BOB, older.artifactId, older.revisionId))).toBe("not_found");
+  });
+});
+
+describe("citation runs of stored summaries", () => {
+  it("are shown cut to two in the current revision and the history, with citations in step; storage is untouched", () => {
+    const { h, contentId, fixture } = setup();
+    const cited = fixture.asr.segments.slice(0, 4);
+    expect(cited).toHaveLength(4);
+    const citations = cited.map((segment) => ({ transcriptRevisionId: fixture.asr.revision.id, segmentId: segment.id }));
+    const mark = (i: number) => `[[seg:${cited[i]?.id}]]`;
+    const body = `要点${[0, 1, 2, 3].map(mark).join("")}。又一点 ${mark(1)}、${mark(0)}；单独 ${mark(1)}`;
+    const { artifactId, revisionId } = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id, citations, body });
+
+    // The run of four keeps two, a run within the cap stays as written, and the citations dropped with it go.
+    const shown = { body: `要点${mark(0)}${mark(1)}。又一点 ${mark(1)}、${mark(0)}；单独 ${mark(1)}`, citations: [0, 1].map((i) => citations[i]) };
+    expect(h.summaries.list(LOCAL, contentId).templates[0]?.current).toMatchObject(shown);
+    expect(h.summaries.revisions(LOCAL, artifactId).items[0]).toMatchObject(shown);
+    const stored = h.repository.withTransaction((scope) => scope.summaries.getRevision(LOCAL.userId, revisionId));
+    expect(stored).toMatchObject({ body, citations });
   });
 });
 

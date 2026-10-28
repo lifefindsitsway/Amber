@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
 import type { AppError } from "../../../src/shared/errors.ts";
+import type { SegmentId } from "../../../src/shared/ids.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
-import { BOB, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { BOB, builtinPromptRefs, configureLlm, createHarness, createLocalContent, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../fixtures/pipeline/summary-data.ts";
+import { countRows, insertRow } from "../../tools/sqlite.ts";
 import type { TranscriptFixture } from "../../fixtures/transcripts/lecture.ts";
 
 const WATCH = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
@@ -118,6 +120,18 @@ describe("collection items", () => {
     expect(platform?.sourceUrl).toBe(WATCH);
   });
 
+  it("gives each member its Content's source kind and own update time, not the item's", async () => {
+    const h = harness();
+    const collection = h.collections.create(LOCAL, { name: "Course" });
+    await h.collections.addItem(LOCAL, collection.id, { contentId: createLocalContent(h) });
+    await h.collections.addItem(LOCAL, collection.id, { url: WATCH });
+    const [local, platform] = h.collections.get(LOCAL, collection.id).items;
+    h.db.prepare("UPDATE content SET updated_at = ? WHERE id = ?").run(4242, local?.contentId);
+    expect(local).toMatchObject({ source: { kind: "local" }, updatedAt: 1 });
+    expect(platform?.source).toEqual({ kind: "youtube" });
+    expect(h.collections.get(LOCAL, collection.id).items[0]).toMatchObject({ source: { kind: "local" }, updatedAt: 4242 });
+  });
+
   it("reorders with a complete permutation only and removes items", async () => {
     const h = harness();
     const { collectionId } = await collectionOf(h, 3);
@@ -202,6 +216,7 @@ describe("collection summary", () => {
     expect(JSON.parse(task.requestJson)).toEqual({
       requestSchemaVersion: 1,
       kind: "summarize_collection",
+      promptRefs: builtinPromptRefs("summarize_collection"),
       modelRef,
       outputLanguage: UI_LANGUAGE_DEFAULT,
       inputItems: members.map((member, index) => ({
@@ -246,6 +261,30 @@ describe("collection summary", () => {
     expect(h.repository.withTransaction((scope) => scope.tasks.listByCollection(LOCAL.userId, collectionId))).toEqual([]);
   });
 
+  it("shows a summary stored while collection summaries still cited without its markers, partials too; storage is untouched", async () => {
+    const h = harness();
+    const { collectionId, members } = await collectionOf(h, 1);
+    const items = h.collections.get(LOCAL, collectionId).items;
+    const member = members[0] as (typeof members)[number];
+    const segment = member.fixture.asr.segments[0];
+    const citation = { transcriptRevisionId: member.fixture.asr.revision.id, segmentId: segment?.id as SegmentId };
+    const stored = {
+      body: `## 这个合集在讲什么\n结论 [[seg:${segment?.id}]][[unresolved:s4]]。`,
+      citations: [citation],
+      partialBody: `第一组[[seg:${segment?.id}]]、[[unresolved:seg:gone]]归纳`,
+      partialCitations: [citation],
+    };
+    const inputItems = [
+      { collectionItemId: items[0]?.id as string, contentId: member.contentId, summaryRevisionId: member.summaryRevisionId as string, transcriptRevisionId: member.transcriptRevisionId, position: 0 },
+    ];
+    const { revisionId, partialId } = insertCollectionSummary(h, collectionId, inputItems, LOCAL.userId, stored);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({
+      current: { id: revisionId, body: "## 这个合集在讲什么\n结论。", citations: [], partials: [{ id: partialId, body: "第一组归纳", citations: [] }] },
+    });
+    const kept = h.repository.withTransaction((scope) => scope.collectionSummaries.getCurrent(LOCAL.userId, collectionId));
+    expect(kept).toMatchObject({ body: stored.body, citations: stored.citations });
+  });
+
   it("shows the current revision with its partials and derives member_changed and order_changed", async () => {
     const h = harness();
     const { collectionId, members } = await collectionOf(h, 2);
@@ -283,6 +322,98 @@ describe("collection summary", () => {
     insertSummary(h, { contentId: members[1]?.contentId as string, transcriptRevisionId: members[1]?.transcriptRevisionId as string });
     expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: true, staleReason: "member_changed" });
     expect(await codeOf(() => h.collections.getSummary(BOB, collectionId))).toBe("not_found");
+  });
+});
+
+describe("deleting the collection summary", () => {
+  /** A collection of two whose summary has two revisions (the later current), each with a partial and usage. */
+  async function summarised(h: Harness) {
+    const { collectionId, members } = await collectionOf(h, 2);
+    const items = h.collections.get(LOCAL, collectionId).items;
+    const inputItems = () =>
+      members.map((member, index) => ({
+        collectionItemId: items[index]?.id as string,
+        contentId: member.contentId,
+        summaryRevisionId: currentSummaryOf(h, member.contentId) as string,
+        transcriptRevisionId: member.transcriptRevisionId,
+        position: index,
+      }));
+    const older = insertCollectionSummary(h, collectionId, inputItems());
+    // The first member's core summary moves on; the older collection summary keeps its earlier revision frozen.
+    const first = members[0] as (typeof members)[number];
+    const newer = insertSummary(h, { contentId: first.contentId, transcriptRevisionId: first.transcriptRevisionId, createdAt: 30 });
+    const latest = insertCollectionSummary(h, collectionId, inputItems());
+    for (const [id, revisionId] of [
+      ["usage-older", older.revisionId],
+      ["usage-latest", latest.revisionId],
+      ["usage-partial", latest.partialId],
+    ] as const) {
+      insertRow(h.db, "token_usage", {
+        id,
+        user_id: LOCAL.userId,
+        model_ref_json: "{}",
+        feature: "collection_summary",
+        artifact_revision_id: revisionId,
+        outcome: "succeeded",
+        created_at: 10,
+      });
+    }
+    return { collectionId, first, older, newer, latest, coreArtifactId: newer.artifactId };
+  }
+
+  function currentSummaryOf(h: Harness, contentId: string): string | undefined {
+    return h.repository.withTransaction((scope) => scope.summaries.findArtifact(LOCAL.userId, contentId, "summary.core")?.currentRevisionId);
+  }
+
+  it("removes every revision, partial and the artifact, keeps usage unlinked and frees the member summaries it froze", async () => {
+    const h = harness();
+    const { collectionId, first, newer, latest, coreArtifactId } = await summarised(h);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ current: { id: latest.revisionId } });
+    expect(countRows(h.db, "collection_summary_revision")).toBe(2);
+    expect(countRows(h.db, "rollup_partial", "collection_summary_revision_id IS NOT NULL")).toBe(2);
+    expect(h.summaries.revisions(LOCAL, coreArtifactId).frozenRevisionIds).toEqual([first.summaryRevisionId]);
+    h.db.prepare("UPDATE collection SET updated_at = ? WHERE id = ?").run(777, collectionId);
+
+    h.collections.deleteSummary(LOCAL, collectionId);
+    expect(countRows(h.db, "collection_summary_artifact")).toBe(0);
+    expect(countRows(h.db, "collection_summary_revision")).toBe(0);
+    expect(countRows(h.db, "rollup_partial", "collection_summary_revision_id IS NOT NULL")).toBe(0);
+    expect(countRows(h.db, "token_usage")).toBe(3);
+    expect(countRows(h.db, "token_usage", "artifact_revision_id IS NULL")).toBe(3);
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+    expect(h.summaries.revisions(LOCAL, coreArtifactId).frozenRevisionIds).toEqual([]);
+    expect(h.collections.get(LOCAL, collectionId).updatedAt).toBe(777);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toEqual({ stale: false });
+    expect(h.repository.withTransaction((scope) => scope.tasks.listByCollection(LOCAL.userId, collectionId))).toEqual([]);
+    // The member summary the older revision froze can be deleted now.
+    expect(h.summaries.deleteRevision(LOCAL, coreArtifactId, first.summaryRevisionId as string).items.map((item) => item.id)).toEqual([newer.revisionId]);
+    // Once gone there is nothing to delete: a second (or concurrent) request is not_found.
+    expect(await codeOf(() => h.collections.deleteSummary(LOCAL, collectionId))).toBe("not_found");
+  });
+
+  it("is not_found without a summary, for another owner (deleting nothing) and for an unknown collection", async () => {
+    const h = harness();
+    const bare = await collectionOf(h, 1);
+    expect(await codeOf(() => h.collections.deleteSummary(LOCAL, bare.collectionId))).toBe("not_found");
+    const { collectionId, latest } = await summarised(h);
+    expect(await codeOf(() => h.collections.deleteSummary(BOB, collectionId))).toBe("not_found");
+    expect(await codeOf(() => h.collections.deleteSummary(LOCAL, "missing"))).toBe("not_found");
+    expect(countRows(h.db, "collection_summary_revision")).toBe(2);
+    expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ current: { id: latest.revisionId } });
+  });
+
+  it("refuses while a summary Task is unfinished and goes once it is cancelled", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const { collectionId } = await summarised(h);
+    const { body } = await h.collections.createSummary(LOCAL, collectionId, { modelRef });
+    expect(await codeOf(() => h.collections.deleteSummary(LOCAL, collectionId))).toBe("conflict.tasks_unfinished");
+    expect(countRows(h.db, "collection_summary_revision")).toBe(2);
+    h.tasks.cancel(LOCAL, body.taskId);
+    h.collections.deleteSummary(LOCAL, collectionId);
+    expect(countRows(h.db, "collection_summary_artifact")).toBe(0);
+    // The finished Task's record stays.
+    expect(taskOf(h, body.taskId).kind).toBe("summarize_collection");
   });
 });
 

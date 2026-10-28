@@ -285,6 +285,9 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.note_anchor": {},
   "invalid_request.note_span": { detailsKeys: ["limit"] },
   "invalid_request.note_limit": { detailsKeys: ["limit"] },
+  // A custom system prompt that lacks a placeholder or protocol fragment of its builtin text,
+  // adds an unknown placeholder, or is empty or too long; `missing` / `unknown` list them as written.
+  "invalid_request.prompt_protocol": { detailsKeys: ["missing", "unknown"] },
   // A media cache location the sidecar or the shell refuses; `reason` is a CacheDirReason.
   "invalid_request.cache_dir": { detailsKeys: ["reason"] },
   "unauthenticated.csrf": {},

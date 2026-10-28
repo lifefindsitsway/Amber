@@ -1,4 +1,5 @@
-import { API_PAGE_SIZE_MAX } from "../../shared/defaults.ts";
+import { capCitationRuns } from "../../shared/citation-runs.ts";
+import { API_PAGE_SIZE_MAX, CITATION_RUN_MAX } from "../../shared/defaults.ts";
 import {
   BILINGUAL_EXPORT_FORMATS,
   type CollectionExportRequest,
@@ -15,6 +16,7 @@ import { summaryTemplate } from "../../shared/i18n/zh-CN/summary-templates.ts";
 import { contentView } from "../../shared/i18n/zh-CN/ui-content.ts";
 import type { ChapterRevision, SummaryRevision } from "../domain/artifact.ts";
 import { backlinkUrl } from "../domain/backlink.ts";
+import { withoutCitations } from "../domain/citations.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import { assDialogue, ASS_HEADER, STYLED_ASS_PLAY_RES_Y, styledAssDocument, type AssPlayRes } from "../domain/export/ass.ts";
@@ -268,7 +270,7 @@ export class ExportService {
       if (summary !== undefined) {
         const { revision, templateName } = summary;
         const rendered = service.options.repository.withTransaction((scope) =>
-          renderCitations(revision.body, service.resolver(scope, owner, body.backlinks), exportFile.unresolvedCitation),
+          renderCitations(capCitationRuns(revision.body, CITATION_RUN_MAX), service.resolver(scope, owner, body.backlinks), exportFile.unresolvedCitation),
         );
         yield `\n## ${fillText(exportFile.summary, { template: templateName })}\n\n${rendered.trim()}\n`;
       }
@@ -299,7 +301,10 @@ export class ExportService {
     return { filename: exportFilename(title, exportFile.untitled, "md"), contentType: MARKDOWN_TYPE, body: lines() };
   }
 
-  /** The collection Markdown: its summary, then each item's title and inlined `summary.core`. */
+  /**
+   * The collection Markdown: its summary, then each item's title and inlined `summary.core`.
+   * Summaries are exported as they are shown: each run of citations cut to the cap.
+   */
   private collectionMarkdown(scope: RepositoryScope, owner: string, collectionId: string, backlinks: boolean, exportedAt: number): string {
     const collection = scope.collections.get(owner, collectionId);
     if (collection === undefined) {
@@ -315,7 +320,8 @@ export class ExportService {
       // Withheld like `GET /collections/:id/summary`: it draws on a member in the trash.
       out.push(`\n${exportFile.collectionSummaryHidden}\n`);
     } else if (summary !== undefined) {
-      out.push(`\n## ${exportFile.collectionSummary}\n\n${renderCitations(summary.body, resolve, exportFile.unresolvedCitation).trim()}\n`);
+      // A collection summary carries no citations; one stored while they still did is exported without them.
+      out.push(`\n## ${exportFile.collectionSummary}\n\n${withoutCitations(summary.body).trim()}\n`);
     }
     out.push(`\n## ${exportFile.lectures}\n`);
     const items = [...scope.collections.listVisibleItems(owner, collectionId)].sort((a, b) => a.position - b.position);
@@ -328,7 +334,8 @@ export class ExportService {
       const heading = content.source.sourceUrl === undefined ? title : `[${title}](${content.source.sourceUrl})`;
       const artifact = scope.summaries.findArtifact(owner, content.id, DEFAULT_SUMMARY_TEMPLATE_ID);
       const core = artifact?.currentRevisionId === undefined ? undefined : scope.summaries.getRevision(owner, artifact.currentRevisionId);
-      const text = core === undefined ? exportFile.noCoreSummary : renderCitations(core.body, resolve, exportFile.unresolvedCitation).trim();
+      const text =
+        core === undefined ? exportFile.noCoreSummary : renderCitations(capCitationRuns(core.body, CITATION_RUN_MAX), resolve, exportFile.unresolvedCitation).trim();
       out.push(`\n### ${heading}\n\n${text}\n`);
     }
     return out.join("");

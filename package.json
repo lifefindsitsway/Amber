@@ -22,6 +22,7 @@
     "setup:tools": "node src/tooling/setup-tools.ts",
     "tauri": "tauri",
     "sync:mirror": "node src/tooling/sync-mirror.ts",
+    "verify:mirror": "node src/tooling/verify-mirror.ts",
     "updater:config": "node src/tooling/updater-config.ts",
     "release:manifest": "node src/tooling/release-manifest.ts",
     "build:report": "node src/tooling/build-report.ts"

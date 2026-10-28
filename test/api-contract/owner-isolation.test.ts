@@ -172,6 +172,10 @@ const MATRIX: Record<string, Entry> = {
   "PATCH /api/summary-templates/:id": owned((ids) => [{ method: "PATCH", url: `/api/summary-templates/${ids.templateId}`, payload: { prompt: "changed" } }]),
   "DELETE /api/summary-templates/:id": owned((ids) => [{ method: "DELETE", url: `/api/summary-templates/${ids.templateId}` }]),
   "GET /api/summary-templates/:id/versions": owned((ids) => [get(`/api/summary-templates/${ids.templateId}/versions`)]),
+  "GET /api/prompts": { kind: "self", reason: "the caller's own prompt settings", requests: () => [get("/api/prompts")] },
+  "PUT /api/prompts/:id": { kind: "self", reason: "saves the caller's own version", requests: () => [{ method: "PUT", url: "/api/prompts/chapter.ai", payload: { text: "x" } }] },
+  "DELETE /api/prompts/:id": { kind: "self", reason: "restores the caller's own builtin", requests: () => [{ method: "DELETE", url: "/api/prompts/chapter.ai" }] },
+  "GET /api/prompts/:id/versions": { kind: "self", reason: "the caller's own versions", requests: () => [get("/api/prompts/chapter.ai/versions")] },
   "GET /api/contents/:id/summaries": owned((ids) => [get(`/api/contents/${ids.contentId}/summaries`)]),
   "POST /api/contents/:id/summaries": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/summaries`, payload: { templateId: "summary.core", modelRef: modelRef(ids) } },
@@ -198,6 +202,7 @@ const MATRIX: Record<string, Entry> = {
   ]),
   "POST /api/collections/:id/summary": owned((ids) => [{ method: "POST", url: `/api/collections/${ids.collectionId}/summary`, payload: { modelRef: modelRef(ids) } }]),
   "GET /api/collections/:id/summary": owned((ids) => [get(`/api/collections/${ids.collectionId}/summary`)]),
+  "DELETE /api/collections/:id/summary": owned((ids) => [{ method: "DELETE", url: `/api/collections/${ids.collectionId}/summary` }]),
   "GET /api/search": owned((ids) => [get(`/api/search?q=${MARK}&scope=${ids.collectionId}`)]),
   "GET /api/contents/:id/chat": owned((ids) => [get(`/api/contents/${ids.contentId}/chat`)]),
   "POST /api/contents/:id/chat/messages": owned((ids) => [

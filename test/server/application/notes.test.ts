@@ -366,3 +366,125 @@ describe("NoteService.groups", () => {
     expect(h.db.prepare("SELECT count(*) AS n FROM note").get()).toEqual({ n: 0 });
   });
 });
+
+describe("NoteService quotes on read", () => {
+  /**
+   * A punctuation-restored revision whose sentences run on without closing punctuation, and
+   * a note across all three stored with the space an earlier reading rule put between them.
+   */
+  function legacySetup() {
+    const { h, contentId, fixture } = setup();
+    const revisionId = h.newId();
+    const texts = ["第一句没有标点", "第二句也没有", "第三句。"];
+    const segments: TranscriptSegment[] = texts.map((text, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 1000, text, sourceSegmentIds: [], paragraphStart: ordinal === 0,
+    }));
+    const insertNote = (anchor: { startSegment: number; startOffset: number; endSegment: number; endOffset: number }, quote: string, at: number): string => {
+      const id = h.newId();
+      h.repository.withTransaction((scope) =>
+        scope.notes.insert({
+          id, userId: LOCAL.userId, contentId, transcriptRevisionId: revisionId,
+          startSegmentId: segments[anchor.startSegment]?.id as string, startOffset: anchor.startOffset,
+          endSegmentId: segments[anchor.endSegment]?.id as string, endOffset: anchor.endOffset,
+          quote, mark: "background", color: "yellow", createdAt: at, updatedAt: at,
+        }),
+      );
+      return id;
+    };
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id: revisionId, contentId, kind: "imported", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "imported", format: "srt" }, segmentCount: segments.length, createdAt: 9 },
+        segments,
+      ),
+    );
+    const legacy = insertNote({ startSegment: 0, startOffset: 2, endSegment: 2, endOffset: 2 }, "句没有标点 第二句也没有 第三", 10);
+    const warnings: Array<{ message: string; fields: unknown }> = [];
+    const loads: string[] = [];
+    const logger = {
+      debug: () => undefined, info: () => undefined, error: () => undefined,
+      warn: (message: string, fields?: unknown) => void warnings.push({ message, fields }),
+      child() { return logger; },
+    };
+    const repository: Repository = {
+      withTransaction: (work) =>
+        h.repository.withTransaction((scope) =>
+          work({
+            ...scope,
+            transcripts: {
+              ...scope.transcripts,
+              listSegments: (owner: string, id: string, page?: Parameters<typeof scope.transcripts.listSegments>[2]) => {
+                loads.push(id);
+                return scope.transcripts.listSegments(owner, id, page);
+              },
+            },
+          }),
+        ),
+    };
+    const clock = { now: 5_000 };
+    const notes = new NoteService({ repository, now: () => clock.now, newId: h.newId, logger });
+    const storedQuote = (id: string): unknown => (h.db.prepare("SELECT quote FROM note WHERE id = ?").get(id) as { quote: string }).quote;
+    return { h, contentId, fixture, revisionId, segments, insertNote, legacy, warnings, loads, notes, storedQuote };
+  }
+
+  const RECUT = "句没有标点第二句也没有第三";
+
+  it("recuts the quote with today's separator on every read and leaves the stored snapshot alone", () => {
+    const { contentId, fixture, revisionId, legacy, warnings, notes, storedQuote } = legacySetup();
+    expect(notes.list(LOCAL, contentId).items.find((item) => item.id === legacy)?.quote).toBe(RECUT);
+    expect(notes.list(LOCAL, contentId, revisionId).items.find((item) => item.id === legacy)?.quote).toBe(RECUT);
+    expect(notes.list(LOCAL, contentId, fixture.corrected.revision.id).items.find((item) => item.id === legacy)?.quote).toBe(RECUT);
+    expect(notes.find(LOCAL, legacy)?.quote).toBe(RECUT);
+    expect(notes.patch(LOCAL, legacy, { color: "green" })).toMatchObject({ quote: RECUT, color: "green", updatedAt: 5_000 });
+    expect(storedQuote(legacy)).toBe("句没有标点 第二句也没有 第三");
+    expect(warnings).toEqual([]);
+  });
+
+  it("loads each anchored revision's sentences once per request, with or without a target revision", () => {
+    const { contentId, fixture, revisionId, insertNote, loads, notes } = legacySetup();
+    insertNote({ startSegment: 1, startOffset: 0, endSegment: 1, endOffset: 3 }, "第二句", 11);
+    insertNote({ startSegment: 2, startOffset: 0, endSegment: 2, endOffset: 3 }, "第三句", 12);
+    expect(notes.list(LOCAL, contentId).items.map((item) => item.quote)).toEqual([RECUT, "第二句", "第三句"]);
+    expect(loads.splice(0)).toEqual([revisionId]);
+    // Mapping onto another revision reuses the anchored revision already loaded for the quotes.
+    notes.list(LOCAL, contentId, fixture.corrected.revision.id);
+    expect([...loads.splice(0)].sort()).toEqual([fixture.corrected.revision.id, revisionId].sort());
+  });
+
+  it("falls back to the stored quote and warns when the anchor no longer checks out", () => {
+    const { h, contentId, insertNote, warnings, notes, storedQuote } = legacySetup();
+    const reversed = insertNote({ startSegment: 2, startOffset: 0, endSegment: 0, endOffset: 2 }, "倒序快照", 11);
+    const pastEnd = insertNote({ startSegment: 0, startOffset: 0, endSegment: 1, endOffset: 99 }, "越界快照", 12);
+    const startPastEnd = insertNote({ startSegment: 1, startOffset: 6, endSegment: 2, endOffset: 1 }, "起点越界快照", 13);
+    // A span wider than NOTE_SPAN_MAX_SEGMENTS, on a revision long enough to hold one.
+    const long = h.newId();
+    const longSegments: TranscriptSegment[] = Array.from({ length: NOTE_SPAN_MAX_SEGMENTS + 1 }, (_, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId: long, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 1000, text: `句子${ordinal}。`, sourceSegmentIds: [],
+    }));
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id: long, contentId, kind: "imported", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "imported", format: "srt" }, segmentCount: longSegments.length, createdAt: 9 },
+        longSegments,
+      );
+      scope.notes.insert({
+        id: "01J00000000000000000000WIDE", userId: LOCAL.userId, contentId, transcriptRevisionId: long, startSegmentId: longSegments[0]?.id as string, startOffset: 0,
+        endSegmentId: longSegments[NOTE_SPAN_MAX_SEGMENTS]?.id as string, endOffset: 1, quote: "过宽快照", mark: "underline", color: "blue", createdAt: 14, updatedAt: 14,
+      });
+    });
+    const quotes = new Map(notes.list(LOCAL, contentId).items.map((item) => [item.id, item.quote]));
+    expect([quotes.get(reversed), quotes.get(pastEnd), quotes.get(startPastEnd), quotes.get("01J00000000000000000000WIDE")]).toEqual(["倒序快照", "越界快照", "起点越界快照", "过宽快照"]);
+    expect(warnings.map((warning) => warning.message)).toEqual(Array(4).fill("note_quote_fallback"));
+    expect(warnings.map((warning) => (warning.fields as { noteId: string }).noteId).sort()).toEqual([reversed, pastEnd, startPastEnd, "01J00000000000000000000WIDE"].sort());
+    expect(notes.find(LOCAL, pastEnd)?.quote).toBe("越界快照");
+    expect(storedQuote(pastEnd)).toBe("越界快照");
+  });
+
+  it("finds only the owner's note on a Content outside the trash", () => {
+    const { h, contentId, legacy, notes } = legacySetup();
+    expect(notes.find(BOB, legacy)).toBeUndefined();
+    expect(notes.find(LOCAL, "01J0000000000000000000NOPE")).toBeUndefined();
+    h.trash.trash(LOCAL, contentId);
+    expect(notes.find(LOCAL, legacy)).toBeUndefined();
+  });
+});

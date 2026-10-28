@@ -26,19 +26,20 @@ export function promptText(request: LlmRequest): string {
 }
 
 export function pipelinePromptKind(request: LlmRequest): PipelinePromptKind {
-  if (request.system.startsWith("你是这段课程内容的学习助手")) return "chat";
+  if (request.system.startsWith("你是这段音视频内容的学习助手")) return "chat";
   const text = promptText(request);
   if (text.startsWith("把「已有压缩摘要」与「新增对话」")) return "chat_compaction";
   if (text.startsWith("你负责判断回答用户的当前问题是否需要联网搜索")) return "chat_search_plan";
   if (text.startsWith("你是字幕校对员") || text.startsWith("我会同时提供这段字幕对应的音频")) return "proofread";
-  if (text.startsWith("下面是一段课程逐字稿") && text.includes("最值得回看")) return "highlight";
-  if (text.startsWith("下面是一段课程逐字稿")) return "chapter";
+  // Chapters, highlights and the summary envelope open alike; their bodies tell them apart.
+  if (text.startsWith("下面是一段音视频的逐字稿") && text.includes("最值得回看")) return "highlight";
+  if (text.startsWith("下面是一段音视频的逐字稿") && text.includes('"startAlias"')) return "chapter";
   if (text.startsWith("请将以下字幕翻译成")) return "translate";
-  if (text.startsWith("下面是一段课程音视频的逐字稿")) return "envelope";
-  if (text.startsWith("你在为一门课程做连贯的归纳")) return "partial";
+  if (text.startsWith("下面是一段音视频的逐字稿")) return "envelope";
+  if (text.startsWith("你在为一个合集或一段长内容做连贯的归纳")) return "partial";
   if (text.startsWith("把「已有压缩摘要」")) return "carry";
-  if (text.startsWith("下面是一段课程各组内容")) return "final";
-  if (text.startsWith("下面是一门课程各组内容")) return "final_collection";
+  if (text.startsWith("下面是一段长内容各组的归纳")) return "final";
+  if (text.startsWith("下面是一个合集各组内容")) return "final_collection";
   if (text.startsWith("以下引用标记")) return "repair";
   throw new Error(`unrecognised prompt: ${text.slice(0, 40)}`);
 }

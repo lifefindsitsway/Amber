@@ -13,9 +13,9 @@ export const exportFile = {
   subtitles: "字幕",
   unresolvedCitation: "引用无法定位",
   collectionSummary: "合集归纳",
-  lectures: "各讲",
+  lectures: "各项内容",
   noCoreSummary: "（尚无核心总结）",
-  collectionSummaryHidden: "合集归纳暂不可用：有讲次在回收站中",
+  collectionSummaryHidden: "合集归纳暂不可用：有内容在回收站中",
   untitled: "未命名",
   /** Titles of the subtitle tracks muxed into an exported video. */
   subtitleTrack: {

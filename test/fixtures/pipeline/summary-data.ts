@@ -31,6 +31,8 @@ export function insertSummary(
     transcriptRevisionId: string;
     chapterRevisionId?: string;
     citations?: Citation[];
+    /** The stored body; by default one line per citation. */
+    body?: string;
     quality?: "normal" | "degraded";
     createdAt?: number;
     userId?: string;
@@ -56,7 +58,7 @@ export function insertSummary(
           createdAt: input.createdAt ?? 10,
         },
         quality: input.quality ?? "normal",
-        body: (input.citations ?? []).map((citation) => `要点 [[seg:${citation.segmentId}]]`).join("\n") || "摘要",
+        body: input.body ?? ((input.citations ?? []).map((citation) => `要点 [[seg:${citation.segmentId}]]`).join("\n") || "摘要"),
         citations: input.citations ?? [],
       },
     });
@@ -66,12 +68,13 @@ export function insertSummary(
   return { artifactId, revisionId };
 }
 
-/** A current collection summary over `inputItems`, with one partial. */
+/** A current collection summary over `inputItems`, with one partial; `stored` overrides what the two hold. */
 export function insertCollectionSummary(
   h: Harness,
   collectionId: string,
   inputItems: CollectionSummaryRevision["inputItems"],
   userId = LOCAL.userId,
+  stored: { body?: string; citations?: Citation[]; partialBody?: string; partialCitations?: Citation[] } = {},
 ): { artifactId: string; revisionId: string; partialId: string } {
   const revisionId = h.newId();
   const partialId = h.newId();
@@ -91,8 +94,8 @@ export function insertCollectionSummary(
         quality: "normal",
         inputItems,
         partialIds: [partialId],
-        body: "## 这门课在讲什么",
-        citations: [],
+        body: stored.body ?? "## 这门课在讲什么",
+        citations: stored.citations ?? [],
       },
     });
     scope.rollupPartials.insertMany(userId, "collection_summary", [
@@ -101,8 +104,8 @@ export function insertCollectionSummary(
         ownerRevisionId: revisionId,
         index: 0,
         inputs: [],
-        body: "第一组归纳",
-        citations: [],
+        body: stored.partialBody ?? "第一组归纳",
+        citations: stored.partialCitations ?? [],
         modelRef: MODEL_SNAPSHOT,
         promptRef: { id: "rollup.partial", version: 1 },
         promptSnapshot: "<partial prompt>",

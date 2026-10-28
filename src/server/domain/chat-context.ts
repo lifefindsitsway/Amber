@@ -16,8 +16,6 @@ import {
   CHAT_COMPACTION_PROMPT,
   CHAT_QUOTE_HEADING,
   CHAT_REFERENCE_HEADING,
-  CHAT_SYSTEM_METADATA_PROMPT,
-  CHAT_SYSTEM_PROMPT,
   CHAT_WEB_HEADING,
   CHAT_WEB_NONE,
   chatModelSection,
@@ -137,6 +135,11 @@ export interface ChatPlanInput {
   today?: string;
   /** Absent: no web search for this answer. */
   web?: ChatWebMaterial;
+  /**
+   * The texts of the `chat.system` and `chat.system.metadata` prompts in effect for this
+   * answer: the user's own versions or the builtin ones.
+   */
+  prompts: { system: string; metadata: string };
 }
 
 export interface ChatRequestPlan {
@@ -352,7 +355,7 @@ function planMetadataRequest(input: ChatPlanInput, budget: number, allTurns: num
 }
 
 function metadataSystem(input: ChatPlanInput, section: readonly string[], table: AliasTable): string {
-  return renderPrompt(CHAT_SYSTEM_METADATA_PROMPT.text, { ...commonSlots(input, table), metadata_section: section.join("\n") });
+  return renderPrompt(input.prompts.metadata, { ...commonSlots(input, table), metadata_section: section.join("\n") });
 }
 
 /** Title, source and channel, duration and publication date, each when known. */
@@ -500,7 +503,7 @@ function tableOf(revisionId: string, segments: readonly TranscriptSegment[]): Al
 }
 
 function systemText(input: ChatPlanInput, context: string, table: AliasTable): string {
-  return renderPrompt(CHAT_SYSTEM_PROMPT.text, { ...commonSlots(input, table), context_section: context });
+  return renderPrompt(input.prompts.system, { ...commonSlots(input, table), context_section: context });
 }
 
 function fullContext(input: ChatPlanInput, table: AliasTable): string {

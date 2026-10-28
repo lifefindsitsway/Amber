@@ -86,7 +86,7 @@ describe("Sidebar", () => {
     expect(toggle.closest("a")).toBeNull();
     const link = screen.getByRole("link", { name: /LLM/u });
     expect(link.getAttribute("href")).toBe("/collections/k1");
-    expect(within(link).getByTitle("3 讲").textContent).toBe("3");
+    expect(within(link).getByTitle("3 项").textContent).toBe("3");
     // An empty collection shows neither a count nor a button.
     const [, empty] = screen.getAllByTestId("sidebar-collection");
     expect(empty?.textContent).toBe("空合集");
@@ -348,7 +348,7 @@ describe("Sidebar", () => {
     await waitFor(() => expect(card.textContent).toBe("admin"));
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: "登出" });
-    expect(menuLabels()).toEqual(["功能配置", "外观设置", "修改密码", "系统管理", "关于 Amberv0.0.0-test", "登出"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "修改密码", "系统管理", "关于 Amberv0.0.0-test", "登出"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "登出" }));
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/login"));
     expect(calls.find((call) => call.path === "/api/auth/logout")?.headers["x-amber-request"]).toBe("1");
@@ -364,7 +364,7 @@ describe("Sidebar", () => {
     await waitFor(() => expect(card.textContent).toBe("Alice"));
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: "登出" });
-    expect(menuLabels()).toEqual(["功能配置", "外观设置", "修改密码", "关于 Amberv0.0.0-test", "登出"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "修改密码", "关于 Amberv0.0.0-test", "登出"]);
   });
 
   it("keeps the local menu to settings, appearance and about", async () => {
@@ -374,7 +374,7 @@ describe("Sidebar", () => {
     expect(card.textContent).toBe("系统设置");
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: /关于 Amber/ });
-    expect(menuLabels()).toEqual(["功能配置", "外观设置", "关于 Amberv0.0.0-test"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "关于 Amberv0.0.0-test"]);
   });
 
   it("switches the theme from the appearance submenu and lists the bundled interface languages", async () => {

@@ -7,7 +7,7 @@ import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
 import type { LocalMediaIngest } from "../../../src/server/ports/local-media-ingest.ts";
 import { mediaFixtures } from "../../fixtures/media/index.ts";
 import { BYTES_PER_GB } from "../../../src/shared/units.ts";
-import { BOB, LOCAL, taskOf } from "../../fixtures/pipeline/harness.ts";
+import { builtinPromptRefs, BOB, LOCAL, taskOf } from "../../fixtures/pipeline/harness.ts";
 import { createMediaStack, type MediaStack, type MediaStackOptions } from "../../fixtures/pipeline/media-stack.ts";
 import { countRows, tempDataDir } from "../../tools/sqlite.ts";
 
@@ -77,6 +77,7 @@ describe("upload", () => {
     expect(JSON.parse(task.requestJson)).toEqual({
       requestSchemaVersion: 1,
       kind: "process_content",
+      promptRefs: builtinPromptRefs("process_content"),
       autoProofread: false,
       templateRef: { id: "summary.core", version: 1 },
       initialSubtitleRevisionId: revision?.id,

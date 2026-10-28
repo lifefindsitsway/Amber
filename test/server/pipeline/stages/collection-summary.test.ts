@@ -1,10 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { CollectionSummaryRevision } from "../../../../src/server/domain/artifact.ts";
 import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
+import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
 import { normalizeTermKey } from "../../../../src/server/domain/terminology.ts";
-import { BUILTIN_SUMMARY_TEMPLATES, COLLECTION_ROLLUP_GOAL } from "../../../../src/server/domain/prompts.ts";
+import {
+  BUILTIN_PROMPT_HISTORY,
+  BUILTIN_SUMMARY_TEMPLATES,
+  CITATION_NONE_FRAGMENT,
+  CITATION_RULES_FRAGMENT,
+  customPromptRef,
+  ROLLUP_CARRY_PROMPT,
+  ROLLUP_FINAL_COLLECTION_PROMPT,
+  ROLLUP_GOAL_COLLECTION_PROMPT,
+  ROLLUP_PARTIAL_PROMPT,
+} from "../../../../src/server/domain/prompts.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
 import { CollectionSummaryStageExecutor } from "../../../../src/server/pipeline/stages/collection-summary.ts";
@@ -41,27 +52,37 @@ type Kind = "partial" | "carry" | "final" | "repair";
 function kindOf(request: LlmRequest): Kind {
   const prompt = promptOf(request);
   if (prompt.startsWith("以下引用标记")) return "repair";
-  if (prompt.startsWith("你在为一门课程做连贯的归纳")) return "partial";
+  // The second prefix is the historical rollup.partial text, still run by Tasks frozen on it.
+  if (prompt.startsWith("你在为一个合集或一段长内容做连贯的归纳") || prompt.startsWith("你在为一门课程做连贯的归纳")) return "partial";
   if (prompt.startsWith("把「已有压缩摘要」")) return "carry";
   return "final";
 }
 
-function aliasesAfter(request: LlmRequest, marker: string): number[] {
+/** The section of a prompt after `marker`. */
+function sectionAfter(request: LlmRequest, marker: string): string {
   const prompt = promptOf(request);
-  return [...prompt.slice(prompt.lastIndexOf(marker)).matchAll(/\[\[s(\d+)\]\]/g)].map((match) => Number(match[1]));
+  return prompt.slice(prompt.lastIndexOf(marker));
 }
 
-/** Partials cite every alias of their group, carries the first one, the final every partial's citations. */
-function provider(): FakeLlmProvider {
+/** What the model answers although asked not to cite: aliases in every form models write, and stored markers. */
+const PARTIAL_ANSWER = "本组归纳[[s3]] [s4]]，见第 1 项[[s99]";
+const CARRY_ANSWER = "压缩[[s1]]";
+const FINAL_ANSWER = "## 这个合集在讲什么\n跨项结论[[s3]][[s7]]、[[seg:01J000000000000000000000AA]] [[unresolved:s9]]。";
+
+/**
+ * Every output cites although the collection summary asks it not to. `fail` may turn a call
+ * into an error the stage cannot retry by itself.
+ */
+function provider(fail?: (kind: Kind) => boolean): FakeLlmProvider {
   const fake = new FakeLlmProvider();
   fake.script(
     ...Array.from({ length: 100 }, () => (request: LlmRequest) =>
       (async function* (): AsyncGenerator<LlmStreamEvent> {
         const kind = kindOf(request);
-        const cite = (aliases: number[]) => aliases.map((alias) => `[[s${alias}]]`).join(" ");
-        if (kind === "partial") yield* reply(`本组 ${cite(aliasesAfter(request, "【本组内容】"))}`);
-        else if (kind === "carry") yield* reply(`压缩 ${cite(aliasesAfter(request, "【新增归纳】").slice(0, 1))}`);
-        else if (kind === "final") yield* reply(`## 这门课在讲什么\n跨讲 ${cite(aliasesAfter(request, "【各组归纳】"))}`);
+        if (fail?.(kind) === true) throw amberError("llm_capability", "scripted failure");
+        if (kind === "partial") yield* reply(PARTIAL_ANSWER);
+        else if (kind === "carry") yield* reply(CARRY_ANSWER);
+        else if (kind === "final") yield* reply(FINAL_ANSWER);
         else yield* reply("{}");
       })(),
     ),
@@ -86,8 +107,8 @@ interface Setup {
 }
 
 /** A collection of `count` lectures, each with a 3-sentence primary and a `summary.core` current citing two of them. */
-function setup(count: number, options: { contextWindowTokens?: number } = {}): Setup {
-  const fake = provider();
+function setup(count: number, options: { contextWindowTokens?: number; fake?: FakeLlmProvider } = {}): Setup {
+  const fake = options.fake ?? provider();
   const h = createHarness({ llmProviders: [fake], executors: {} });
   open.push(h);
   h.executors.collection_summary = new CollectionSummaryStageExecutor({ repository: h.repository, newId: h.newId });
@@ -153,12 +174,13 @@ function setup(count: number, options: { contextWindowTokens?: number } = {}): S
   return { h, fake, modelRef, collectionId, lectures };
 }
 
-function summarize(s: Setup): string {
+function summarize(s: Setup, extra: Record<string, unknown> = {}): string {
   const request = {
     requestSchemaVersion: 1,
     kind: "summarize_collection",
     modelRef: s.modelRef,
     outputLanguage: "zh-CN",
+    ...extra,
     inputItems: s.lectures.map((lecture, position) => ({
       collectionItemId: lecture.itemId,
       contentId: lecture.contentId,
@@ -185,7 +207,7 @@ const resultOf = (h: Harness, taskId: string) =>
   JSON.parse(stageRunsOf(h, taskId).at(-1)?.resultJson ?? "{}") as Record<string, unknown>;
 
 describe("collection summary stage", () => {
-  it("twelve lectures roll in three groups; the final cites across lectures and every citation resolves to its own Content", async () => {
+  it("twelve lectures roll in three groups without citations: members' markers are stripped, the calls asked not to cite, and stray markers dropped", async () => {
     const s = setup(12);
     s.h.repository.withTransaction((scope) =>
       scope.terminology.put({
@@ -200,29 +222,46 @@ describe("collection summary stage", () => {
     expect(await settled(s.h, taskId)).toBe("succeeded");
 
     expect(Math.ceil(12 / COLLECTION_PARTIAL_SIZE)).toBe(3);
-    expect(workUnitsOf(s.h, taskId).map((unit) => unit.key)).toEqual([
-      "rollup:partial:0",
-      "rollup:carry:0",
-      "rollup:partial:1",
-      "rollup:carry:1",
-      "rollup:partial:2",
-      "rollup:carry:2",
-      "rollup:final",
-    ]);
+    const keys = ["rollup:partial:0", "rollup:carry:0", "rollup:partial:1", "rollup:carry:1", "rollup:partial:2", "rollup:carry:2", "rollup:final"];
+    expect(workUnitsOf(s.h, taskId).map((unit) => unit.key)).toEqual(keys);
+    // Every output cited, yet nothing was repaired.
+    expect(s.fake.calls.map((call) => kindOf(call.request))).toEqual(["partial", "carry", "partial", "carry", "partial", "carry", "final"]);
     const firstPartial = promptOf(s.fake.calls[0]?.request as LlmRequest);
-    expect(firstPartial).toContain(COLLECTION_ROLLUP_GOAL);
+    expect(firstPartial).toContain(ROLLUP_GOAL_COLLECTION_PROMPT.text);
     expect(firstPartial).toContain("【术语表】\nRAG = 检索增强生成");
-    // Lectures are numbered across the collection; aliases are renumbered across lectures.
-    expect(firstPartial).toContain("【第 1 讲】\n## 摘要\n要点一 [[s1]]，要点二 [[s2]]");
-    expect(promptOf(s.fake.calls[2]?.request as LlmRequest)).toContain("【第 6 讲】\n## 摘要\n要点一 [[s11]]，要点二 [[s12]]");
-    expect(promptOf(s.fake.calls[6]?.request as LlmRequest).startsWith("下面是一门课程各组内容的归纳与整体压缩摘要")).toBe(true);
+    // Members are numbered across the collection and sent without their citation markers.
+    expect(firstPartial).toContain("【第 1 项】\n## 摘要\n要点一，要点二");
+    expect(promptOf(s.fake.calls[2]?.request as LlmRequest)).toContain("【第 6 项】\n## 摘要\n要点一，要点二");
+    for (const call of s.fake.calls) {
+      const kind = kindOf(call.request);
+      if (kind === "partial") expect(sectionAfter(call.request, "【本组内容】")).not.toContain("[[");
+      if (kind === "partial" || kind === "final") {
+        expect(promptOf(call.request)).toContain(`\n${CITATION_NONE_FRAGMENT.text}\n输出语言：`);
+        expect(promptOf(call.request)).not.toContain(CITATION_RULES_FRAGMENT.text);
+      }
+      // What is fed forward carries no marker either.
+      if (kind === "carry") expect(sectionAfter(call.request, "【已有压缩摘要】")).not.toContain("[");
+    }
+    const final = promptOf(s.fake.calls[6]?.request as LlmRequest);
+    expect(final.startsWith("下面是一个合集各组内容的归纳与整体压缩摘要")).toBe(true);
+    expect(final).toContain("【第 1 组】\n本组归纳，见第 1 项");
+    expect(final).toContain("【整体压缩摘要】\n压缩");
 
     const result = resultOf(s.h, taskId);
     expect(result).toMatchObject({ groups: 3, reasons: [] });
     const revision = s.h.repository.withTransaction((scope) => scope.collectionSummaries.getCurrent(LOCAL.userId, s.collectionId)) as CollectionSummaryRevision;
     expect(revision.id).toBe(result["revisionId"]);
+    expect(revision.body).toBe("## 这个合集在讲什么\n跨项结论。");
+    expect(revision.citations).toEqual([]);
     expect(revision.quality).toBe("normal");
-    expect(revision.provenance.promptRef).toEqual({ id: "rollup.final.collection", version: 1 });
+    expect(revision.provenance.promptRef).toEqual({ id: "rollup.final.collection", version: 3 });
+    expect(revision.provenance.promptRefs).toEqual([
+      { id: "rollup.goal.collection", version: 3 },
+      { id: "rollup.partial", version: 2 },
+      { id: "rollup.carry", version: 1 },
+      { id: "rollup.final.collection", version: 3 },
+    ]);
+    expect(revision.provenance.promptSnapshot).toContain(CITATION_NONE_FRAGMENT.text);
     // A published rollup summary counts as a change of the collection.
     expect(s.h.repository.withTransaction((scope) => scope.collections.get(LOCAL.userId, s.collectionId))?.updatedAt).toBe(revision.provenance.createdAt);
     expect(revision.inputItems).toHaveLength(12);
@@ -235,26 +274,11 @@ describe("collection summary stage", () => {
       position: 0,
     });
 
-    // Every lecture's two cited sentences reach the final, each resolving to that lecture's own transcript.
-    const markers = [...revision.body.matchAll(/\[\[seg:([^\]]+)\]\]/g)].map((match) => match[1] as string);
-    expect(new Set(markers).size).toBe(24);
-    for (const lecture of s.lectures) {
-      for (const index of [0, 2]) {
-        const id = lecture.segments[index]?.id as string;
-        expect(markers).toContain(id);
-        expect(revision.citations).toContainEqual({ transcriptRevisionId: lecture.revision.id, segmentId: id });
-        const segment = s.h.repository.withTransaction((scope) => scope.transcripts.getSegment(LOCAL.userId, id));
-        expect(segment?.revisionId).toBe(lecture.revision.id);
-      }
-    }
-    const contentsCited = new Set(revision.citations.map((citation) => s.lectures.find((lecture) => lecture.revision.id === citation.transcriptRevisionId)?.contentId));
-    expect(contentsCited.size).toBe(12);
-
     const partials = s.h.repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision(LOCAL.userId, revision.id));
     expect(partials).toHaveLength(3);
     expect(revision.partialIds).toEqual(partials.map((partial) => partial.id));
     expect(partials.map((partial) => partial.inputs.length)).toEqual([5, 5, 2]);
-    expect(partials[2]?.citations).toHaveLength(4);
+    expect(partials.map((partial) => [partial.body, partial.citations])).toEqual(Array.from({ length: 3 }, () => ["本组归纳，见第 1 项", []]));
     const usage = s.h.db.prepare("SELECT feature, COUNT(*) AS n FROM token_usage WHERE artifact_revision_id IS NOT NULL GROUP BY feature").all();
     expect(usage).toEqual([{ feature: "collection_summary", n: 7 }]);
   });
@@ -269,5 +293,108 @@ describe("collection summary stage", () => {
     expect(s.fake.calls).toHaveLength(0);
     // Nothing was published, so the collection has not changed.
     expect(s.h.repository.withTransaction((scope) => scope.collections.get(LOCAL.userId, s.collectionId))?.updatedAt).toBe(1);
+  });
+});
+
+describe("collection summary stage: custom prompts", () => {
+  const GOAL = "## 自定义目标：列出全部核心术语\n## 给出学习路线";
+  const currentRevision = (s: Setup) =>
+    s.h.repository.withTransaction((scope) => scope.collectionSummaries.getCurrent(LOCAL.userId, s.collectionId)) as CollectionSummaryRevision;
+
+  it("a custom rollup.goal.collection is the task of every partial, carry and final call and is recorded first", async () => {
+    const s = setup(12);
+    s.h.prompts.update(LOCAL, "rollup.goal.collection", { text: GOAL });
+    const taskId = summarize(s);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+
+    expect(s.fake.calls.map((call) => kindOf(call.request))).toEqual(["partial", "carry", "partial", "carry", "partial", "carry", "final"]);
+    for (const call of s.fake.calls) {
+      const prompt = promptOf(call.request);
+      expect(prompt).toContain(`【任务】\n${GOAL}\n【`);
+      expect(prompt).not.toContain(ROLLUP_GOAL_COLLECTION_PROMPT.text);
+    }
+    // Members are labelled by their position in the collection.
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toContain("【第 1 项】\n## 摘要");
+    expect(promptOf(s.fake.calls[4]?.request as LlmRequest)).toContain("【第 11 项】\n## 摘要");
+
+    const revision = currentRevision(s);
+    expect(revision.provenance.promptRef).toEqual(ROLLUP_FINAL_COLLECTION_PROMPT.ref);
+    expect(revision.provenance.promptRefs).toEqual([
+      customPromptRef("rollup.goal.collection", 1),
+      ROLLUP_PARTIAL_PROMPT.ref,
+      ROLLUP_CARRY_PROMPT.ref,
+      ROLLUP_FINAL_COLLECTION_PROMPT.ref,
+    ]);
+    expect(revision.provenance.promptSnapshot).toContain(GOAL);
+  });
+
+  it.each([
+    ["an unchanged goal reuses the finished partials and carries", false],
+    ["a changed goal changes every partial's digest, so each is asked again", true],
+  ])("re-running a failed stage: %s", async (_case, changeGoal) => {
+    let failFinal = true;
+    const fake = provider((kind) => {
+      if (kind !== "final" || !failFinal) return false;
+      failFinal = false;
+      return true;
+    });
+    const s = setup(12, { fake });
+    const taskId = summarize(s);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    const firstRun = stageRunsOf(s.h, taskId).at(-1)?.id;
+    const before = s.fake.calls.length;
+    const partialDigests = (runId: string | undefined) =>
+      workUnitsOf(s.h, taskId)
+        .filter((unit) => unit.stageRunId === runId && unit.key.startsWith("rollup:partial:"))
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .map((unit) => unit.inputDigest);
+    const firstDigests = partialDigests(firstRun);
+    expect(firstDigests).toHaveLength(3);
+
+    if (changeGoal) s.h.prompts.update(LOCAL, "rollup.goal.collection", { text: GOAL });
+    s.h.tasks.retryStage(LOCAL, taskId, { stage: "collection_summary" });
+    await waitFor(() => stageRunsOf(s.h, taskId).at(-1)?.id !== firstRun);
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+
+    const again = s.fake.calls.slice(before).map((call) => kindOf(call.request));
+    const secondDigests = partialDigests(stageRunsOf(s.h, taskId).at(-1)?.id);
+    if (changeGoal) {
+      expect(again).toEqual(["partial", "carry", "partial", "carry", "partial", "carry", "final"]);
+      expect(secondDigests.every((digest, index) => digest !== firstDigests[index])).toBe(true);
+      expect(s.fake.calls.slice(before).every((call) => promptOf(call.request).includes(GOAL))).toBe(true);
+      expect(currentRevision(s).provenance.promptRefs?.[0]).toEqual(customPromptRef("rollup.goal.collection", 1));
+    } else {
+      expect(again).toEqual(["final"]);
+      expect(secondDigests).toEqual(firstDigests);
+      expect(currentRevision(s).provenance.promptRefs?.[0]).toEqual(ROLLUP_GOAL_COLLECTION_PROMPT.ref);
+    }
+  });
+
+  it("a Task frozen on a historical builtin rollup.partial runs that version's exact text", async () => {
+    const historical = BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === "rollup.partial" && prompt.ref.version === 1);
+    expect(historical).toBeDefined();
+    const s = setup(6);
+    const taskId = summarize(s, { promptRefs: { "rollup.partial": historical?.ref } });
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    const partialCalls = s.fake.calls.filter((call) => kindOf(call.request) === "partial");
+    expect(partialCalls).toHaveLength(2);
+    for (const call of partialCalls) {
+      expect(promptOf(call.request).startsWith("你在为一门课程做连贯的归纳")).toBe(true);
+    }
+    expect(currentRevision(s).provenance.promptRefs?.[1]).toEqual(historical?.ref);
+  });
+
+  it("a summary created through the service keeps the goal in effect at submission", async () => {
+    const s = setup(3);
+    s.h.prompts.update(LOCAL, "rollup.goal.collection", { text: GOAL });
+    const accepted = await s.h.collections.createSummary(LOCAL, s.collectionId, { modelRef: s.modelRef, outputLanguage: "zh-CN" });
+    s.h.prompts.restore(LOCAL, "rollup.goal.collection");
+    s.h.scheduler.start();
+    expect(await settled(s.h, accepted.body.taskId)).toBe("succeeded");
+    expect(s.fake.calls.every((call) => promptOf(call.request).includes(`【任务】\n${GOAL}\n`))).toBe(true);
+    expect(currentRevision(s).provenance.promptRefs?.[0]).toEqual(customPromptRef("rollup.goal.collection", 1));
   });
 });

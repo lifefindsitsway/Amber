@@ -38,6 +38,7 @@ import type { SettingsService } from "./application/settings.ts";
 import type { StorageQuota } from "./application/storage-quota.ts";
 import type { SummaryService } from "./application/summaries.ts";
 import type { SummaryTemplateService } from "./application/summary-templates.ts";
+import type { PromptService } from "./application/prompts.ts";
 import type { TaskService } from "./application/tasks.ts";
 import type { TerminologyService } from "./application/terminology.ts";
 import type { TranscriptService } from "./application/transcripts.ts";
@@ -73,6 +74,7 @@ import { registerSearchRoutes } from "./api/routes/search.ts";
 import { registerSettingsRoutes } from "./api/routes/settings.ts";
 import { registerSummaryRoutes } from "./api/routes/summaries.ts";
 import { registerSummaryTemplateRoutes } from "./api/routes/summary-templates.ts";
+import { registerPromptRoutes } from "./api/routes/prompts.ts";
 import { registerSystemRoutes } from "./api/routes/system.ts";
 import { registerTaskRoutes } from "./api/routes/tasks.ts";
 import { registerTerminologyRoutes } from "./api/routes/terminology.ts";
@@ -144,6 +146,8 @@ export interface AppDeps {
   /** The bundled subtitle font, `GET /api/fonts/subtitle` (both modes). */
   subtitleFont?: BundledSubtitleFont;
   summaryTemplates?: SummaryTemplateService;
+  /** The customizable system prompts (both modes). */
+  prompts?: PromptService;
   summaries?: SummaryService;
   collections?: CollectionService;
   search?: SearchService;
@@ -310,6 +314,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.summaryTemplates !== undefined) {
     registerSummaryTemplateRoutes(app, { summaryTemplates: deps.summaryTemplates });
+  }
+  if (deps.prompts !== undefined) {
+    registerPromptRoutes(app, { prompts: deps.prompts });
   }
   if (deps.summaries !== undefined) {
     registerSummaryRoutes(app, { summaries: deps.summaries });

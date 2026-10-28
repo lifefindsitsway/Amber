@@ -12,7 +12,7 @@ describe("CollectionsPage", () => {
       "POST /api/collections": { status: 201, body: { id: "k2", name: "新课", itemCount: 0, createdAt: 0, updatedAt: 0, items: [] } },
     });
     renderApp(<CollectionsPage />, { route: "/collections", path: "/collections" });
-    expect(await screen.findByText("6 讲", { exact: false })).toBeTruthy();
+    expect(await screen.findByText("6 项", { exact: false })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "新合集" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("合集名称"), { target: { value: "  新课 " } });
@@ -67,7 +67,7 @@ describe("CollectionsPage", () => {
     mockApi({ "GET /api/collections": { body: { items: [{ id: "k1", name: "生成式软件工程", itemCount: 7, createdAt, updatedAt }] } } });
     renderApp(<CollectionsPage />, { route: "/collections", path: "/collections" });
     const card = await screen.findByTestId("collection-card");
-    expect(card.textContent).toContain(`7 讲 · 更新于 ${formatDateTime(updatedAt, "zh-CN")}`);
+    expect(card.textContent).toContain(`7 项 · 更新于 ${formatDateTime(updatedAt, "zh-CN")}`);
     expect(card.textContent).not.toContain("创建于");
   });
 

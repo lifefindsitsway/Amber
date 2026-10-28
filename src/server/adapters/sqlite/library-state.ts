@@ -23,6 +23,8 @@ const CATEGORY_QUERIES: ReadonlyArray<readonly [LibraryCategory, string]> = [
   ["secret", "SELECT 1 FROM secret LIMIT 1"],
   ["terminology_set", "SELECT 1 FROM terminology_set LIMIT 1"],
   ["summary_template", "SELECT 1 FROM summary_template WHERE builtin = 0 LIMIT 1"],
+  // Any saved version counts, even after the builtin was restored: it is the user's text.
+  ["prompt_override_version", "SELECT 1 FROM prompt_override_version LIMIT 1"],
   ["token_usage", "SELECT 1 FROM token_usage LIMIT 1"],
   ["asr_usage", "SELECT 1 FROM asr_usage LIMIT 1"],
   ["network_allowlist", "SELECT 1 FROM network_allowlist LIMIT 1"],

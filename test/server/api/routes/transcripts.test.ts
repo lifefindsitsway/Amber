@@ -6,6 +6,7 @@ import { SEEK_MATCH_TOLERANCE_MS } from "../../../../src/shared/defaults.ts";
 import { taskDetailDtoSchema, taskListDtoSchema } from "../../../../src/shared/dto/task.ts";
 import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
 import {
+  builtinPromptRefs,
   BOB_TOKEN,
   configureLlm,
   countingExecutor,
@@ -256,7 +257,7 @@ describe("POST /api/contents/:id/transcript/proofread", () => {
     expect(first.statusCode).toBe(202);
     const { taskId } = first.json() as { taskId: string };
     expect(taskOf(h, taskId).kind).toBe("reproofread");
-    expect(JSON.parse(taskOf(h, taskId).requestJson)).toEqual({ requestSchemaVersion: 1, kind: "reproofread", modelRef, baseRevisionId: fixture.corrected.revision.id });
+    expect(JSON.parse(taskOf(h, taskId).requestJson)).toEqual({ requestSchemaVersion: 1, kind: "reproofread", promptRefs: builtinPromptRefs("reproofread"), modelRef, baseRevisionId: fixture.corrected.revision.id });
     const replay = await app.inject({ method: "POST", url, headers: { ...auth, "idempotency-key": "p-1" }, payload: { modelRef } });
     expect(replay.statusCode).toBe(202);
     expect(replay.json()).toEqual({ taskId });

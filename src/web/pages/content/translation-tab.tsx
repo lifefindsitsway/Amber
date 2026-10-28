@@ -12,12 +12,18 @@ import { useApi } from "../../api/context.tsx";
 import { useProviders, useSettings } from "../../api/queries.ts";
 import { chatModelOptions, defaultChatModel, modelKey } from "../../chat/chat-data.ts";
 import { ErrorView } from "../../components/error-view.tsx";
+import { FailedTaskNotice } from "../../components/failed-task-notice.tsx";
 import { TaskFlow } from "../../components/task-flow.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, useRevisions, useTranslations } from "./content-data.ts";
+import { contentKeys, useLatestTranslateTask, useRevisions, useTranslations } from "./content-data.ts";
 import { languageLabel, revisionLabel } from "./labels.ts";
+
+/** Per Content, the failed translate Task whose flow the user closed. */
+export function translateFailureDismissedKey(contentId: string): string {
+  return `amber.translate.failureDismissed.${contentId}`;
+}
 
 const primarySubtag = (tag: string): string => (tag.split("-")[0] ?? tag).toLowerCase();
 
@@ -43,6 +49,7 @@ export function TranslationTab() {
   const [params, setParams] = useSearchParams();
   const revisions = useRevisions(contentId);
   const translations = useTranslations(contentId);
+  const latestTask = useLatestTranslateTask(contentId);
   const providers = useProviders();
   const settings = useSettings();
   const options = useMemo(() => chatModelOptions(providers.data?.items ?? []), [providers.data]);
@@ -175,6 +182,14 @@ export function TranslationTab() {
           <TaskFlow taskId={task.taskId} />
         </section>
       ))}
+      {translations.data.activeTasks.length === 0 ? (
+        <FailedTaskNotice
+          task={latestTask.data}
+          storageKey={translateFailureDismissedKey(contentId)}
+          message={t("contentView.translation.failed")}
+          testId="translation-failed"
+        />
+      ) : null}
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-semibold">{t("contentView.translation.versions")}</h2>
         {translations.data.translations.length === 0 ? (

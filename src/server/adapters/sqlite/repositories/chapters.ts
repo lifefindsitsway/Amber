@@ -2,7 +2,7 @@ import type { ArtifactInputRef, ChapterArtifact, ChapterRevision } from "../../.
 import { canonicalJson } from "../../../domain/canonical-json.ts";
 import type { ChapterRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
-import { notFound, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
+import { jsonOrNull, notFound, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
 
 interface ChapterRevisionRow {
   id: string;
@@ -10,6 +10,7 @@ interface ChapterRevisionRow {
   inputs_json: string;
   model_ref_json: string | null;
   prompt_ref_json: string | null;
+  prompt_refs_json: string | null;
   prompt_snapshot: string | null;
   quality: ChapterRevision["quality"];
   origin_json: string;
@@ -25,6 +26,7 @@ function toRevision(row: ChapterRevisionRow): ChapterRevision {
       inputs: parseJson(row.inputs_json),
       modelRef: parseJsonOrNull(row.model_ref_json),
       promptRef: parseJsonOrNull(row.prompt_ref_json),
+      promptRefs: parseJsonOrNull(row.prompt_refs_json),
       promptSnapshot: row.prompt_snapshot,
       createdAt: row.created_at,
     }),
@@ -60,9 +62,9 @@ export function sqliteChapterRepository(db: SqliteConnection): ChapterRepository
   );
   const insertAiRevision = db.prepare(
     `INSERT INTO chapter_revision (
-       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_snapshot, quality, origin_json, chapters_json, created_at
+       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, quality, origin_json, chapters_json, created_at
      ) VALUES (
-       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptSnapshot, @quality, @originJson, @chaptersJson, @createdAt
+       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @quality, @originJson, @chaptersJson, @createdAt
      )`,
   );
   const transcriptOfContent = db.prepare("SELECT 1 FROM transcript_revision WHERE id = ? AND content_id = ?");
@@ -127,6 +129,7 @@ export function sqliteChapterRepository(db: SqliteConnection): ChapterRepository
         inputsJson: JSON.stringify(inputs),
         modelRefJson: JSON.stringify(revision.modelRef),
         promptRefJson: JSON.stringify(revision.promptRef),
+        promptRefsJson: jsonOrNull(revision.promptRefs),
         promptSnapshot: revision.promptSnapshot,
         quality: revision.quality,
         originJson: JSON.stringify({ kind: "ai", transcriptRevisionId: revision.transcriptRevisionId }),
