@@ -1,8 +1,8 @@
 {
   "name": "amber",
-  "version": "0.2.0",
+  "version": "0.3.0-rc.1",
   "private": true,
-  "description": "Amber: An open-source AI toolkit for processing, understanding, and transforming audio and video content.",
+  "description": "Amber: An open-source AI-powered audio & video processing tool that supports transcription, subtitle proofreading, summarization, translation, and more.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "engines": {
