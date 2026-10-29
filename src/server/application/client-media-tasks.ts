@@ -3,6 +3,7 @@ import { monotonicFactory } from "ulid";
 import {
   audioCacheFileName,
   cacheFileNameOf,
+  CACHE_QUALITY_TIERS,
   cacheQualityTier,
   cacheRefOf,
   fittedCacheStem,
@@ -13,7 +14,7 @@ import {
   videoCacheFileName,
 } from "../../shared/cache-file-name.ts";
 import { CACHE_MEDIA_MAX_HEIGHT } from "../../shared/defaults.ts";
-import type { BurnRequest, CacheMediaInspectDto, CacheMediaInspectRequest, CacheMediaRequest, ContentCacheDto } from "../../shared/dto/media.ts";
+import type { BurnRequest, CacheMediaInspectDto, CacheMediaInspectRequest, CacheMediaQualitiesDto, CacheMediaRequest, ContentCacheDto } from "../../shared/dto/media.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { TaskKind } from "../../shared/enums.ts";
 import { cacheFile } from "../../shared/i18n/zh-CN/cache-file.ts";
@@ -209,6 +210,40 @@ export class ClientMediaTaskService {
           ok: space.shortfall === undefined,
         },
       };
+    };
+    const heavy = this.options.heavy;
+    return heavy === undefined ? work() : heavy.run({ key: `foreground:${owner}`, createdAt: this.now() }, signal, work);
+  }
+
+  /**
+   * `GET /api/contents/:id/cache-media/qualities` [client]: the quality tiers the source
+   * currently offers, read from the platform's metadata with the login the download would
+   * use, inside the owner's foreground slot of the heavy-job governor. Each listed video
+   * stream is labelled by its equivalent height, kept when that is a quality tier, and the
+   * tiers are returned ascending without duplicates: `available` when there are any,
+   * `audio_only` when the source lists no usable video stream, `unknown` when its metadata
+   * has no format list. Nothing is read from the cache directory, so an unmounted cache
+   * root does not stop the probe. A yt-dlp failure is passed on as is.
+   */
+  async listCacheQualities(principal: RequestPrincipal, contentId: string, signal: AbortSignal): Promise<CacheMediaQualitiesDto> {
+    const owner = principal.userId;
+    const content = this.options.repository.withTransaction((scope) => this.platformContent(scope, owner, contentId));
+    const work = async (): Promise<CacheMediaQualitiesDto> => {
+      const target = platformTarget(this.options.platforms, content);
+      if (target === undefined) {
+        throw amberError("invalid_request", "only platform contents have media to cache", { params: { detail: "contentId" } });
+      }
+      const { adapter, auth, ref } = target;
+      if (typeof adapter.listVideoFormats !== "function") {
+        throw amberError("internal", `the ${adapter.kind} adapter cannot list video formats`);
+      }
+      const formats = await adapter.listVideoFormats(ref, auth, signal);
+      if (formats === undefined) {
+        return { status: "unknown", qualities: [] };
+      }
+      const tiers = new Set(formats.map((format) => cacheQualityTier(format.height, format.width)));
+      const qualities = CACHE_QUALITY_TIERS.filter((tier) => tiers.has(tier));
+      return qualities.length === 0 ? { status: "audio_only", qualities: [] } : { status: "available", qualities };
     };
     const heavy = this.options.heavy;
     return heavy === undefined ? work() : heavy.run({ key: `foreground:${owner}`, createdAt: this.now() }, signal, work);

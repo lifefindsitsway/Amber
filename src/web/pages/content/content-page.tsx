@@ -31,7 +31,7 @@ import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { usePlatformAccounts } from "../../api/queries.ts";
 import { ChatComposer, ChatComposerProvider, useChatComposer } from "../../chat/chat-composer.tsx";
-import { ChatPanel } from "../../chat/chat-panel.tsx";
+import { ChatPanel, type ChatPlacement } from "../../chat/chat-panel.tsx";
 import { SelectionToolbar } from "../../chat/selection-toolbar.tsx";
 import { NotePopover } from "../../notes/note-popover.tsx";
 import { NoteSelectionActions } from "../../notes/note-selection-actions.tsx";
@@ -53,8 +53,10 @@ import { HighlightsBelowPlayer, Timeline } from "../../player/timeline.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Splitter } from "../../ui/splitter.tsx";
+import type { BoxRect } from "../../ui/use-floating-box.ts";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
 import { useDocumentTitle } from "../../use-document-title.ts";
+import { useStoredValue } from "../../use-stored-value.ts";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { DeleteContentDialog } from "../../components/delete-content-dialog.tsx";
 import { CacheMediaDialog } from "./cache-media-dialog.tsx";
@@ -70,6 +72,13 @@ import { TrackedTask } from "./tracked-task.tsx";
 const WIDTH_KEY = "amber.content.outputsWidth";
 const SWAP_KEY = "amber.content.swapped";
 const MIDDLE_KEY = "amber.content.middleCollapsed";
+/** Whether the chat floats, and where: one setting for every Content, not one per Content. */
+const CHAT_FLOATING_KEY = "amber.content.chatFloating";
+const CHAT_RECT_KEY = "amber.content.chatRect";
+/** The first floating chat window: bottom right, this far from the viewport's edges. */
+const CHAT_FLOAT_MARGIN_PX = 16;
+const CHAT_FLOAT_WIDTH_PX = 480;
+const CHAT_FLOAT_HEIGHT_SHARE = 0.6;
 const OUTPUTS_MIN_PX = 320;
 const MIDDLE_MIN_PX = 360;
 const OUTPUTS_DEFAULT_PX = 480;
@@ -196,6 +205,29 @@ interface PlaybackControls {
   dismissQualityNotice: () => void;
   /** Reports the video cache the local player shows, for the subtitled video export. */
   onPlayingCache: (assetId: string | undefined) => void;
+}
+
+/** The stored floating chat window, or undefined when it is missing or not a usable box. */
+export function parseChatRect(value: string | undefined): BoxRect | undefined {
+  if (value === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const { left, top, width, height } = parsed as Record<string, unknown>;
+  const finite = (item: unknown): item is number => typeof item === "number" && Number.isFinite(item);
+  if (!finite(left) || !finite(top) || !finite(width) || !finite(height) || width <= 0 || height <= 0) return undefined;
+  return { left, top, width, height };
+}
+
+/** Where the chat window first floats in a viewport of this size. */
+export function defaultChatRect(viewportWidth: number, viewportHeight: number): BoxRect {
+  const width = Math.min(CHAT_FLOAT_WIDTH_PX, viewportWidth - 2 * CHAT_FLOAT_MARGIN_PX);
+  const height = Math.min(Math.round(viewportHeight * CHAT_FLOAT_HEIGHT_SHARE), viewportHeight - 2 * CHAT_FLOAT_MARGIN_PX);
+  return { left: viewportWidth - width - CHAT_FLOAT_MARGIN_PX, top: viewportHeight - height - CHAT_FLOAT_MARGIN_PX, width, height };
 }
 
 /** Whether a finished cache Task fell back to audio because the Content has no picture. */
@@ -331,6 +363,26 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
     if (columns && middleCollapsed) setMiddleCollapsed(false);
   }
 
+  // One chat panel for every layout, outside the layout trees below, so changing layout, the
+  // single layout's tab or floating never remounts it (which would stop its answers in flight).
+  // It is shown in the middle column's dock slot, or floats over the page; the single layout
+  // has no room to float in, so it docks there while the setting stays.
+  const [chatFloatingValue, setChatFloatingValue] = useStoredValue(CHAT_FLOATING_KEY);
+  const [chatRectValue, setChatRectValue] = useStoredValue(CHAT_RECT_KEY);
+  const [dockHost, setDockHost] = useState<HTMLElement | null>(null);
+  const canFloat = width >= BREAKPOINT_SINGLE_PX;
+  const chatFloating = canFloat && chatFloatingValue === "1";
+  const setChatFloating = (next: boolean): void => setChatFloatingValue(next ? "1" : "0");
+  const placement: ChatPlacement = {
+    dockHost,
+    floating: chatFloating,
+    canFloat,
+    onFloatingChange: setChatFloating,
+    rect: parseChatRect(chatRectValue) ?? defaultChatRect(window.innerWidth, window.innerHeight),
+    onRectCommit: (rect) => setChatRectValue(JSON.stringify(rect)),
+  };
+  const chat = <ChatPanel fill={playerHidden} placement={placement} />;
+
   const toolbar = (
     <Toolbar
       desktop={desktop}
@@ -348,7 +400,16 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   );
   const middle = (
     <>
-      <MiddleColumn toolbar={toolbar} playerHidden={playerHidden} playback={playback} desktop={desktop} subtitles={subtitles} />
+      <MiddleColumn
+        toolbar={toolbar}
+        playerHidden={playerHidden}
+        playback={playback}
+        desktop={desktop}
+        subtitles={subtitles}
+        chatFloating={chatFloating}
+        onDock={() => setChatFloating(false)}
+        onDockHost={setDockHost}
+      />
       {playback.openCache === undefined ? null : (
         <CacheMediaDialog
           contentId={content.id}
@@ -367,8 +428,10 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
     </>
   );
 
+  // Every layout is returned as `<>{layout}{chat}</>`: the chat keeps its place among the
+  // children whichever layout is shown, which is what keeps it mounted.
   if (width < BREAKPOINT_SINGLE_PX) {
-    return (
+    const layout = (
       <div className="flex h-full flex-col" data-layout="single">
         <div className="flex border-b border-line" role="tablist">
           {(["middle", "outputs"] as const).map((view) => (
@@ -387,10 +450,16 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
         <div className="min-h-0 flex-1 overflow-auto">{singleView === "middle" ? middle : <OutputTabs />}</div>
       </div>
     );
+    return (
+      <>
+        {layout}
+        {chat}
+      </>
+    );
   }
 
   if (width < BREAKPOINT_DRAWER_PX) {
-    return (
+    const layout = (
       <div className="relative flex h-full" data-layout="drawer">
         <div className="min-w-0 flex-1 overflow-auto">{middle}</div>
         {drawerOpen ? (
@@ -399,6 +468,12 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
           </aside>
         ) : null}
       </div>
+    );
+    return (
+      <>
+        {layout}
+        {chat}
+      </>
     );
   }
 
@@ -438,8 +513,8 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
     splitter
   );
   // The middle column keeps its slot whatever is swapped or collapsed, and collapsing only
-  // hides it, so the player and the chat are never remounted.
-  return (
+  // hides it, so the player is never remounted.
+  const layout = (
     <div className="flex h-full" data-layout="columns">
       {swapped ? outputs : null}
       {swapped ? gap : null}
@@ -449,6 +524,12 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
       {swapped ? null : gap}
       {swapped ? null : outputs}
     </div>
+  );
+  return (
+    <>
+      {layout}
+      {chat}
+    </>
   );
 }
 
@@ -908,7 +989,17 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
   );
 }
 
-function MiddleColumn(props: { toolbar: ReactNode; playerHidden: boolean; playback: PlaybackControls; desktop: boolean; subtitles: SubtitleTrackModel | undefined }) {
+function MiddleColumn(props: {
+  toolbar: ReactNode;
+  playerHidden: boolean;
+  playback: PlaybackControls;
+  desktop: boolean;
+  subtitles: SubtitleTrackModel | undefined;
+  chatFloating: boolean;
+  onDock: () => void;
+  /** Receives the chat's dock slot, and null once the column is gone. */
+  onDockHost: (host: HTMLElement | null) => void;
+}) {
   const { t } = useTranslation();
   const { content, highlightThreshold } = useContentPage();
   const { playback } = props;
@@ -989,7 +1080,16 @@ function MiddleColumn(props: { toolbar: ReactNode; playerHidden: boolean; playba
           </Button>
         </p>
       ) : null}
-      <ChatPanel fill={props.playerHidden} />
+      {props.chatFloating ? (
+        <p className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-muted" data-testid="chat-floating-placeholder">
+          <span className="min-w-0 flex-1">{t("chat.floating")}</span>
+          <Button size="sm" variant="ghost" onClick={props.onDock} data-testid="chat-floating-dock">
+            {t("chat.dock")}
+          </Button>
+        </p>
+      ) : null}
+      {/* The page's one chat panel is rendered into this slot while it is docked. */}
+      <div className="contents" ref={props.onDockHost} data-testid="chat-dock-host" />
     </div>
   );
 }

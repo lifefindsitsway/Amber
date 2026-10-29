@@ -105,6 +105,8 @@ export function fittedCacheStem(stem: string, cacheDir: string): string | undefi
  * menus (720P, 1080P, ...).
  */
 export const CACHE_QUALITY_TIERS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320] as const;
+/** A height cap a cache request may ask for: any quality tier. */
+export type CacheMediaQuality = (typeof CACHE_QUALITY_TIERS)[number];
 /** How far above a tier a picture may still be labelled with it (1280×756 is still 720P). */
 const TIER_TOLERANCE = 1.05;
 

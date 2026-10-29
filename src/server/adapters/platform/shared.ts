@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { monotonicFactory } from "ulid";
+import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../shared/defaults.ts";
 import { formatBytes } from "../../../shared/units.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { YtDlp } from "./yt-dlp.ts";
@@ -269,6 +270,52 @@ export async function inspectVideo(
     ...(selected?.height === undefined ? {} : { height: selected.height }),
     ...(selected?.width === undefined ? {} : { width: selected.width }),
   };
+}
+
+interface ListedFormat {
+  height?: unknown;
+  width?: unknown;
+  vcodec?: unknown;
+  ext?: unknown;
+}
+
+const positiveInteger = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
+
+/**
+ * The video streams of the source's yt-dlp metadata (`--dump-single-json`, nothing
+ * downloaded), as the cache dialog's quality candidates: only streams in a container
+ * WebView2 plays (MP4, WebM), with a video codec and a positive integer height. yt-dlp
+ * lists only the streams the platform returned for the login of this run, so qualities
+ * that need another login are absent. `undefined` when the document has no format list.
+ */
+export async function listVideoFormats(
+  ytDlp: YtDlp,
+  input: { url: string; extractors: readonly string[]; cookies?: string; signal: AbortSignal },
+): Promise<Array<{ height: number; width?: number }> | undefined> {
+  const info = await ytDlp.json<{ formats?: ListedFormat[] | null } | null>({
+    args: ["--dump-single-json", "--skip-download", "--no-playlist", input.url],
+    extractors: input.extractors,
+    ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
+    signal: input.signal,
+    timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
+  });
+  const formats = info?.formats;
+  if (!Array.isArray(formats)) {
+    return undefined;
+  }
+  const listed: Array<{ height: number; width?: number }> = [];
+  for (const format of formats) {
+    if (typeof format !== "object" || format === null) {
+      continue;
+    }
+    const ext = typeof format.ext === "string" ? format.ext.toLowerCase() : undefined;
+    const vcodec = typeof format.vcodec === "string" ? format.vcodec.toLowerCase() : undefined;
+    if (ext === undefined || VIDEO_MIME_BY_EXT[ext] === undefined || vcodec === undefined || vcodec === "" || vcodec === "none" || !positiveInteger(format.height)) {
+      continue;
+    }
+    listed.push({ height: format.height, ...(positiveInteger(format.width) ? { width: format.width } : {}) });
+  }
+  return listed;
 }
 
 /**

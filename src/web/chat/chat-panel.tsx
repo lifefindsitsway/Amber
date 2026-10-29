@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Maximize2, MessageSquare, Minimize2, Plus, Quote, Send, Square, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { ChevronDown, ChevronUp, Dock, GripHorizontal, ListChecks, Maximize2, MessageSquare, Minimize2, PictureInPicture2, Plus, Quote, Send, Square, Trash2, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type UIEvent } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { z } from "zod";
@@ -28,6 +29,7 @@ import { useContentPage } from "../pages/content/content-context.tsx";
 import { ConfirmDialog } from "../pages/content/confirm-dialog.tsx";
 import { usePlayerController } from "../player/player-controller.tsx";
 import { Button } from "../ui/button.tsx";
+import { RESIZE_EDGES, useFloatingBox, type BoxRect, type ResizeEdge } from "../ui/use-floating-box.ts";
 import { useChatComposer, useComposerState, type QuoteDraft } from "./chat-composer.tsx";
 import {
   chatKeys,
@@ -53,6 +55,56 @@ import { TurnCheckbox, TurnSelectBar } from "./chat-turn-select.tsx";
 import { storedSearchView, WebSearchToggle, type WebSearchView } from "./chat-web-search.tsx";
 
 type PanelSize = "collapsed" | "normal" | "full";
+
+/** The smallest floating window; a smaller viewport shrinks it to the viewport. */
+const FLOAT_MIN_WIDTH_PX = 360;
+const FLOAT_MIN_HEIGHT_PX = 280;
+/** A message list scrolled to within this distance of its end counts as following the end. */
+const AT_BOTTOM_PX = 8;
+
+const NO_RECT: BoxRect = { left: 0, top: 0, width: 0, height: 0 };
+
+/**
+ * Where the panel is shown, for a page that keeps one panel across its layouts. The panel
+ * stays mounted while it moves between the dock and the floating window, or has nowhere to
+ * be shown at all, so no answer in flight and no draft is lost on the way.
+ */
+export interface ChatPlacement {
+  /** The slot under the player; null while that column is not rendered. */
+  dockHost: HTMLElement | null;
+  /** Shown as a window fixed on the viewport instead of in the dock. */
+  floating: boolean;
+  /** Whether the layout allows floating; the dock offers it only then. */
+  canFloat: boolean;
+  onFloatingChange: (floating: boolean) => void;
+  /** The floating window's stored place and size, clamped to the viewport when shown. */
+  rect: BoxRect;
+  /** A move or resize the user made. */
+  onRectCommit: (rect: BoxRect) => void;
+}
+
+const EDGE_CLASS: Record<ResizeEdge, string> = {
+  n: "-top-1 inset-x-3 h-2 cursor-ns-resize",
+  s: "-bottom-1 inset-x-3 h-2 cursor-ns-resize",
+  e: "-right-1 inset-y-3 w-2 cursor-ew-resize",
+  w: "-left-1 inset-y-3 w-2 cursor-ew-resize",
+  ne: "-right-1 -top-1 size-3 cursor-nesw-resize",
+  nw: "-left-1 -top-1 size-3 cursor-nwse-resize",
+  se: "-right-1 -bottom-1 size-3 cursor-nwse-resize",
+  sw: "-left-1 -bottom-1 size-3 cursor-nesw-resize",
+};
+
+const GESTURE_CURSOR: Record<"move" | ResizeEdge, string> = {
+  move: "move",
+  n: "ns-resize",
+  s: "ns-resize",
+  e: "ew-resize",
+  w: "ew-resize",
+  ne: "nesw-resize",
+  sw: "nesw-resize",
+  nw: "nwse-resize",
+  se: "nwse-resize",
+};
 
 /** The answer being streamed, shown until the stored thread is read back. */
 export interface PendingTurn {
@@ -135,8 +187,9 @@ const NEW_THREAD = "";
  * fills the column when asked to or when the player is hidden. Nothing is sent without the
  * user pressing send. Switching threads never stops an answer: each thread keeps its own
  * draft and answer in flight, and the open thread is remembered for this page session.
+ * Without `placement` it renders where it stands; with it, it goes to the dock or floats.
  */
-export function ChatPanel(props: { fill: boolean }) {
+export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   const { t } = useTranslation();
   const page = useContentPage();
   const contentId = page.content.id;
@@ -187,6 +240,27 @@ export function ChatPanel(props: { fill: boolean }) {
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const { placement } = props;
+  const floating = placement?.floating === true;
+  const floatBox = useFloatingBox({
+    rect: placement?.rect ?? NO_RECT,
+    minWidth: FLOAT_MIN_WIDTH_PX,
+    minHeight: FLOAT_MIN_HEIGHT_PX,
+    onCommit: (rect) => placement?.onRectCommit(rect),
+  });
+  // `undefined`: rendered in place; `null`: nowhere to show it, though the panel lives on.
+  const target = placement === undefined ? undefined : floating ? document.body : placement.dockHost;
+  // Moving to another container renders the list afresh; it comes back at the reader's place.
+  const reading = useRef({ top: 0, atBottom: true });
+  const onListScroll = (event: UIEvent<HTMLDivElement>): void => {
+    const list = event.currentTarget;
+    reading.current = { top: list.scrollTop, atBottom: list.scrollHeight - list.scrollTop - list.clientHeight < AT_BOTTOM_PX };
+  };
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (list === null) return;
+    list.scrollTop = reading.current.atBottom ? list.scrollHeight : reading.current.top;
+  }, [target]);
 
   const patch = (stateKey: string, change: (current: ThreadState) => ThreadState): void =>
     setStates((all) => ({ ...all, [stateKey]: change(all[stateKey] ?? EMPTY_THREAD) }));
@@ -215,8 +289,8 @@ export function ChatPanel(props: { fill: boolean }) {
 
   // A dragged input height is dropped when the panel folds, so it comes back at its natural size.
   useEffect(() => {
-    if (size === "collapsed" && inputRef.current !== null) inputRef.current.style.height = "";
-  }, [size]);
+    if (size === "collapsed" && !floating && inputRef.current !== null) inputRef.current.style.height = "";
+  }, [size, floating]);
 
   const stored = chat.data?.messages ?? [];
   const pending = state.pending;
@@ -484,10 +558,12 @@ export function ChatPanel(props: { fill: boolean }) {
     }
   };
 
-  const fill = props.fill || size === "full";
-  const collapsed = size === "collapsed";
+  // The floating window has neither fold nor full height: its own size is what the user set.
+  const shownSize: PanelSize = floating ? "normal" : size;
+  const fill = floating || props.fill || shownSize === "full";
+  const collapsed = shownSize === "collapsed";
   // In full height the section is a size container, so the input's cap can be a share of it.
-  const frame = collapsed ? "" : fill ? "min-h-96 flex-1 [container-type:size]" : "h-96";
+  const frame = floating ? "" : collapsed ? "" : fill ? "min-h-96 flex-1 [container-type:size]" : "h-96";
   // The height is dragged from the grip on the box's top edge, so the textarea's own corner handle is off.
   const inputSize = collapsed ? "h-9 resize-none" : `field-sizing-content resize-none min-h-14 ${fill ? "max-h-[45cqh]" : "max-h-60"}`;
 
@@ -685,57 +761,128 @@ export function ChatPanel(props: { fill: boolean }) {
   const showPendingSend = live?.kind === "send";
   const empty = turns.length === 0 && !showPendingSend;
 
-  return (
-    <section className={`flex flex-col gap-2 rounded-md border border-line p-3 ${frame}`} aria-label={t("chat.title")} data-testid="chat-panel" data-size={size}>
-      {collapsed ? null : (
-        <header className="flex items-center gap-1">
-          <MessageSquare size={14} className="shrink-0 text-muted" aria-hidden="true" />
-          <ChatThreadMenu
-            threads={threadList ?? []}
-            current={thread}
-            running={runningThreads}
-            onSelect={selectThread}
-            onRename={setRenaming}
-            onPin={pinThread}
-            onDelete={setConfirmThread}
-          />
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void newThread()} data-testid="chat-new-thread">
-            <Plus size={14} aria-hidden="true" />
-            {t("chat.threads.newThread")}
+  const threadMenu = (
+    <ChatThreadMenu
+      threads={threadList ?? []}
+      current={thread}
+      running={runningThreads}
+      onSelect={selectThread}
+      onRename={setRenaming}
+      onPin={pinThread}
+      onDelete={setConfirmThread}
+    />
+  );
+  const selectDisabled = turns.length === 0 || selecting;
+  const clearDisabled = (threadList ?? []).length === 0 || anyRunning || busy;
+
+  const dockedHeader = (
+    <header className="flex items-center gap-1">
+      <MessageSquare size={14} className="shrink-0 text-muted" aria-hidden="true" />
+      {threadMenu}
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void newThread()} data-testid="chat-new-thread">
+        <Plus size={14} aria-hidden="true" />
+        {t("chat.threads.newThread")}
+      </Button>
+      <div className="ml-auto flex items-center gap-1">
+        <Button size="sm" variant="ghost" disabled={selectDisabled} onClick={() => setSelecting(true)} data-testid="chat-select">
+          {t("chat.select.start")}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={clearDisabled} onClick={() => setConfirmClear(true)} data-testid="chat-clear">
+          {t("chat.clear")}
+        </Button>
+        {props.fill ? null : (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSize(size === "full" ? "normal" : "full")}
+            title={size === "full" ? t("chat.restore") : t("chat.full")}
+            aria-label={size === "full" ? t("chat.restore") : t("chat.full")}
+            data-testid="chat-full"
+          >
+            {size === "full" ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </Button>
-          <div className="ml-auto flex items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={turns.length === 0 || selecting}
-              onClick={() => setSelecting(true)}
-              data-testid="chat-select"
-            >
-              {t("chat.select.start")}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={(threadList ?? []).length === 0 || anyRunning || busy} onClick={() => setConfirmClear(true)} data-testid="chat-clear">
-              {t("chat.clear")}
-            </Button>
-            {props.fill ? null : (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setSize(size === "full" ? "normal" : "full")}
-                title={size === "full" ? t("chat.restore") : t("chat.full")}
-                aria-label={size === "full" ? t("chat.restore") : t("chat.full")}
-                data-testid="chat-full"
-              >
-                {size === "full" ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-              </Button>
-            )}
-            <Button size="sm" variant="ghost" onClick={() => setSize("collapsed")} title={t("chat.collapse")} aria-label={t("chat.collapse")} data-testid="chat-collapse">
-              <ChevronDown size={14} />
-            </Button>
-          </div>
-        </header>
-      )}
+        )}
+        {placement?.canFloat === true ? (
+          <Button size="sm" variant="ghost" onClick={() => placement.onFloatingChange(true)} title={t("chat.float")} aria-label={t("chat.float")} data-testid="chat-float">
+            <PictureInPicture2 size={14} />
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={() => setSize("collapsed")} title={t("chat.collapse")} aria-label={t("chat.collapse")} data-testid="chat-collapse">
+          <ChevronDown size={14} />
+        </Button>
+      </div>
+    </header>
+  );
+
+  // A narrow window has room for icons only; the whole row, controls aside, moves the window.
+  const floatingHeader = (
+    <header className="flex cursor-move touch-none select-none items-center gap-1" {...floatBox.moveHandle}>
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label={t("chat.move")}
+        title={t("chat.move")}
+        className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted outline-none hover:bg-sunken hover:text-ink focus-visible:bg-sunken focus-visible:ring-2 focus-visible:ring-accent"
+        onKeyDown={floatBox.onKeyDown}
+        data-testid="chat-drag-handle"
+      >
+        <GripHorizontal size={14} aria-hidden="true" />
+      </span>
+      <div className="flex min-w-0 flex-1">{threadMenu}</div>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => void newThread()}
+        title={t("chat.threads.newThread")}
+        aria-label={t("chat.threads.newThread")}
+        data-testid="chat-new-thread"
+      >
+        <Plus size={14} aria-hidden="true" />
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={selectDisabled}
+        onClick={() => setSelecting(true)}
+        title={t("chat.select.start")}
+        aria-label={t("chat.select.start")}
+        data-testid="chat-select"
+      >
+        <ListChecks size={14} aria-hidden="true" />
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={clearDisabled}
+        onClick={() => setConfirmClear(true)}
+        title={t("chat.clear")}
+        aria-label={t("chat.clear")}
+        data-testid="chat-clear"
+      >
+        <Trash2 size={14} aria-hidden="true" />
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => placement?.onFloatingChange(false)} title={t("chat.dock")} aria-label={t("chat.dock")} data-testid="chat-dock">
+        <Dock size={14} aria-hidden="true" />
+      </Button>
+    </header>
+  );
+
+  const sectionClass = floating
+    ? "fixed z-[25] flex flex-col gap-2 rounded-md border border-line bg-surface p-3 shadow-xl [container-type:size]"
+    : `flex flex-col gap-2 rounded-md border border-line p-3 ${frame}`;
+  const section = (
+    <section
+      className={sectionClass}
+      style={floating ? floatBox.box : undefined}
+      aria-label={t("chat.title")}
+      data-testid="chat-panel"
+      data-size={shownSize}
+      data-floating={floating ? "true" : undefined}
+    >
+      {collapsed ? null : floating ? floatingHeader : dockedHeader}
       {collapsed ? null : (
-        <div ref={listRef} className="min-h-0 flex-1 overflow-auto" data-testid="chat-messages" data-thread={threadId ?? ""}>
+        <div ref={listRef} className="min-h-0 flex-1 overflow-auto" onScroll={onListScroll} data-testid="chat-messages" data-thread={threadId ?? ""}>
           {empty ? <p className="py-6 text-center text-xs text-muted">{t("chat.empty")}</p> : null}
           {turns.map(renderTurn)}
           {live === undefined || !showPendingSend ? null : (
@@ -786,6 +933,29 @@ export function ChatPanel(props: { fill: boolean }) {
       )}
       {actionError === undefined ? null : <ErrorView error={actionError} />}
       {composerRow}
+      {floating
+        ? RESIZE_EDGES.map((edge) => (
+            <div
+              key={edge}
+              aria-label={t("chat.resize", { edge: t(`chat.edges.${edge}`) })}
+              title={t("chat.resize", { edge: t(`chat.edges.${edge}`) })}
+              className={`absolute z-10 touch-none ${EDGE_CLASS[edge]}`}
+              data-testid={`chat-resize-${edge}`}
+              {...floatBox.resizeHandle(edge)}
+            />
+          ))
+        : null}
+    </section>
+  );
+
+  // The dialogs are outside the moving section, so one that is open stays open as it is,
+  // typed text included, when the panel docks or floats.
+  return (
+    <>
+      {target === undefined ? section : target === null ? null : createPortal(section, target)}
+      {floating && floatBox.active !== undefined
+        ? createPortal(<div className="fixed inset-0 z-[24]" style={{ cursor: GESTURE_CURSOR[floatBox.active] }} data-testid="chat-drag-overlay" />, document.body)
+        : null}
       <ConfirmDialog
         open={confirmClear}
         title={t("chat.clearTitle")}
@@ -827,7 +997,7 @@ export function ChatPanel(props: { fill: boolean }) {
         }}
         onCancel={() => setModelMissing(undefined)}
       />
-    </section>
+    </>
   );
 }
 

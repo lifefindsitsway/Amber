@@ -1,14 +1,17 @@
 import { z } from "zod";
-import { CACHE_MEDIA_TYPES } from "../cache-file-name.ts";
+import { CACHE_MEDIA_TYPES, CACHE_QUALITY_TIERS } from "../cache-file-name.ts";
 import { DISPLAY_NAME_MAX_CHARS } from "../defaults.ts";
-import { BURN_MODES, CACHE_MEDIA_QUALITIES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_CONTAINERS } from "../enums.ts";
+import { BURN_MODES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_CONTAINERS } from "../enums.ts";
 import { subtitleStyleSchema } from "../subtitle-style.ts";
 
 const idSchema = z.string().min(1);
 
+/** A video height cap: one of the quality tiers. */
+export const cacheQualitySchema = z.union(CACHE_QUALITY_TIERS.map((quality) => z.literal(quality)));
+
 const cacheMediaFields = {
   type: z.enum(CACHE_MEDIA_TYPES).exactOptional(),
-  quality: z.union(CACHE_MEDIA_QUALITIES.map((quality) => z.literal(quality))).exactOptional(),
+  quality: cacheQualitySchema.exactOptional(),
   fileName: z.string().max(DISPLAY_NAME_MAX_CHARS).exactOptional(),
 };
 const audioHasNoQuality = {
@@ -35,6 +38,23 @@ export const cacheMediaRequestSchema = z
   .strict()
   .refine(audioHasNoQuality.check, audioHasNoQuality.params);
 export type CacheMediaRequest = z.infer<typeof cacheMediaRequestSchema>;
+
+/**
+ * How the source's downloadable qualities were probed: `available` lists them,
+ * `audio_only` means the probe succeeded but found no usable video stream, `unknown` means
+ * no format list could be read.
+ */
+export const CACHE_QUALITY_STATUSES = ["available", "audio_only", "unknown"] as const;
+export type CacheQualityStatus = (typeof CACHE_QUALITY_STATUSES)[number];
+
+/**
+ * Response of `GET /api/contents/:id/cache-media/qualities` [client]: the quality tiers the
+ * source currently offers with the login the download would use, ascending and without
+ * duplicates. Only the tiers: never the format list, its URLs or cookies. A listed tier is
+ * a candidate, not a promise; the inspect estimate tells what would really be downloaded.
+ */
+export const cacheMediaQualitiesDtoSchema = z.object({ status: z.enum(CACHE_QUALITY_STATUSES), qualities: z.array(cacheQualitySchema) }).strict();
+export type CacheMediaQualitiesDto = z.infer<typeof cacheMediaQualitiesDtoSchema>;
 
 const volumeSpaceSchema = z.object({ freeBytes: z.number().int().nonnegative(), lowWaterBytes: z.number().int().nonnegative() }).strict();
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { asrModelRefSchema, modelRefSchema } from "../../shared/dto/model-ref.ts";
-import { CACHE_MEDIA_TYPES } from "../../shared/cache-file-name.ts";
+import { CACHE_MEDIA_TYPES, CACHE_QUALITY_TIERS } from "../../shared/cache-file-name.ts";
 import { BURN_MODES, CACHE_MEDIA_QUALITIES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_CONTAINERS, type TaskKind } from "../../shared/enums.ts";
 import { subtitleStyleSchema } from "../../shared/subtitle-style.ts";
 import { canonicalJson } from "./canonical-json.ts";
@@ -199,8 +199,9 @@ export type CacheMediaTaskRequestV2 = z.infer<typeof cacheMediaTaskRequestV2Sche
 
 /**
  * `Task.requestJson` of a `cache_media` Task, schema version 3 (client only), frozen at
- * submission: what to cache, the height cap of a video, the cleaned stem of the file name,
- * the height the format check expected (absent when unknown), the id of the asset to
+ * submission: what to cache, the height cap of a video (any quality tier, while the older
+ * versions accept only the general-purpose caps), the cleaned stem of the file name, the
+ * height the format check expected (absent when unknown), the id of the asset to
  * register and the user's confirmation to replace another Content's cache holding the
  * expected name. The quality label and extension of the file come from the finished
  * download, so the stem is frozen and the full name is not.
@@ -210,7 +211,7 @@ export const cacheMediaTaskRequestV3Schema = z
     requestSchemaVersion: z.literal(3),
     kind: z.literal("cache_media"),
     type: z.enum(CACHE_MEDIA_TYPES),
-    quality: z.union(CACHE_MEDIA_QUALITIES.map((quality) => z.literal(quality))).exactOptional(),
+    quality: z.union(CACHE_QUALITY_TIERS.map((quality) => z.literal(quality))).exactOptional(),
     stem: z.string().min(1),
     expectedHeight: z.number().int().positive().exactOptional(),
     assetId: z.string().min(1),

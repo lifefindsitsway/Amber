@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, moveFile, parseFormatLine, secondsToMs, videoFormat } from "../../../../src/server/adapters/platform/shared.ts";
+import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoFormats, moveFile, parseFormatLine, secondsToMs, videoFormat } from "../../../../src/server/adapters/platform/shared.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
+import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
 import type { ProcessRunOptions, ProcessSpec } from "../../../../src/server/ports/process-runner.ts";
 import { argAfter, scriptedYtDlp, signal, type ScriptedProcess } from "../../../fixtures/platform/scripted-io.ts";
 
@@ -367,5 +368,70 @@ describe("inspectVideo", () => {
   it("refuses a container WebView2 cannot play before anything is downloaded", async () => {
     const failure = await inspect("amber-format 10 360 flv h264").result.catch((error: unknown) => error);
     expect(isAmberError(failure) && failure.appError.class).toBe("media_unsupported_type");
+  });
+});
+
+describe("listVideoFormats", () => {
+  const URL = "https://www.bilibili.com/video/BV1xx411c7mD?p=2";
+  const list = (document: unknown, cookies?: string) => {
+    const io = scriptedYtDlp(() => ({ stdout: `${JSON.stringify(document)}\n` }));
+    return { ...io, result: listVideoFormats(io.ytDlp, { url: URL, extractors: ["bilibili"], ...(cookies === undefined ? {} : { cookies }), signal: signal() }) };
+  };
+
+  it("dumps the metadata once without downloading, within the metadata timeout and with the given login", async () => {
+    const { runner, result } = list({ formats: [] }, "# Netscape HTTP Cookie File\n");
+    expect(await result).toEqual([]);
+    expect(runner.specs).toHaveLength(1);
+    const spec = runner.specs[0]!;
+    expect(spec.args.slice(spec.args.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", URL]);
+    expect(spec.args).toContain("--cookies");
+    expect(spec.args).not.toContain("--format");
+    expect(spec.timeoutMs).toBe(PLATFORM_METADATA_TIMEOUT_MS);
+    const guest = list({ formats: [] });
+    await guest.result;
+    expect(guest.runner.specs[0]?.args).not.toContain("--cookies");
+  });
+
+  it("keeps only MP4 and WebM streams with a video codec and a positive integer height", async () => {
+    const { result } = list({
+      formats: [
+        { ext: "mp4", vcodec: "avc1.640032", height: 1080, width: 1920 },
+        { ext: "MP4", vcodec: "hev1.1.6.L120.90", height: 720, width: 1280 },
+        { ext: "webm", vcodec: "vp09.00.40.08", height: 480 },
+        { ext: "mp4", vcodec: "none", height: 720, width: 1280 },
+        { ext: "m4a", vcodec: "none" },
+        { ext: "mp4", height: 360, width: 640 },
+        { ext: "mp4", vcodec: "", height: 360 },
+        { ext: "flv", vcodec: "avc1", height: 1080, width: 1920 },
+        { ext: "mp4", vcodec: "avc1", height: 0, width: 640 },
+        { ext: "mp4", vcodec: "avc1", width: 640 },
+        { ext: "mp4", vcodec: "avc1", height: 359.5 },
+        { ext: "mp4", vcodec: "avc1", height: "360" },
+        { vcodec: "avc1", height: 360 },
+        { ext: "mp4", vcodec: "avc1", height: 1920, width: 1080 },
+        { ext: "mp4", vcodec: "avc1", height: 240, width: 0 },
+        null,
+      ],
+    });
+    expect(await result).toEqual([
+      { height: 1080, width: 1920 },
+      { height: 720, width: 1280 },
+      { height: 480 },
+      { height: 1920, width: 1080 },
+      { height: 240 },
+    ]);
+  });
+
+  it("tells a document without a format list apart from one without video streams", async () => {
+    expect(await list({ id: "BV1xx411c7mD" }).result).toBeUndefined();
+    expect(await list({ formats: null }).result).toBeUndefined();
+    expect(await list({ formats: "none" }).result).toBeUndefined();
+    expect(await list({ formats: [{ ext: "m4a", vcodec: "none", acodec: "mp4a.40.2" }] }).result).toEqual([]);
+  });
+
+  it("passes a yt-dlp failure on", async () => {
+    const io = scriptedYtDlp(() => ({ exitCode: 1, stderr: "ERROR: [BiliBili] unable to download JSON metadata" }));
+    const failure = await listVideoFormats(io.ytDlp, { url: URL, extractors: ["bilibili"], signal: signal() }).catch((error: unknown) => error);
+    expect(isAmberError(failure)).toBe(true);
   });
 });

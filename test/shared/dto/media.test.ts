@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { burnRequestSchema } from "../../../src/shared/dto/media.ts";
+import { burnRequestSchema, cacheMediaInspectRequestSchema, cacheMediaQualitiesDtoSchema, cacheMediaRequestSchema } from "../../../src/shared/dto/media.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../src/shared/subtitle-style.ts";
 
 const style = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
@@ -25,5 +25,30 @@ describe("burnRequestSchema", () => {
 
   it("refuses a hard-subtitle MKV", () => {
     expect(burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "hard", container: "mkv", style }).success).toBe(false);
+  });
+});
+
+describe("cacheMediaInspectRequestSchema / cacheMediaRequestSchema", () => {
+  it("take any quality tier as the height cap and refuse other heights", () => {
+    for (const schema of [cacheMediaInspectRequestSchema, cacheMediaRequestSchema]) {
+      for (const quality of [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]) {
+        expect(schema.safeParse({ quality }).success, String(quality)).toBe(true);
+      }
+      for (const quality of [700, 0, -1, 1200, "1440"]) {
+        expect(schema.safeParse({ quality }).success, String(quality)).toBe(false);
+      }
+      expect(schema.safeParse({ type: "audio", quality: 1440 }).success).toBe(false);
+    }
+  });
+});
+
+describe("cacheMediaQualitiesDtoSchema", () => {
+  it("holds only a status and quality tiers", () => {
+    expect(cacheMediaQualitiesDtoSchema.parse({ status: "available", qualities: [240, 720, 1440] })).toEqual({ status: "available", qualities: [240, 720, 1440] });
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "audio_only", qualities: [] }).success).toBe(true);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "unknown", qualities: [] }).success).toBe(true);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "probing", qualities: [] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [700] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [720], formats: [] }).success).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { Route, Routes } from "react-router";
+import { Link, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX, BREAKPOINT_SINGLE_PX, SAVE_NOTICE_DISMISS_MS } from "../../../../src/shared/defaults.ts";
-import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
+import { ContentPage, defaultChatRect, parseChatRect } from "../../../../src/web/pages/content/content-page.tsx";
 import type { MediaAssetDto } from "../../../../src/shared/dto/content.ts";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, highlightsBody } from "../../../fixtures/web/content-data.ts";
 import { fakeShell, pickedFile } from "../../../fixtures/web/desktop-bridge.ts";
@@ -865,7 +865,9 @@ describe("ContentPage cache progress card", () => {
     // Still right above the chat with the player hidden.
     fireEvent.click(screen.getByTestId("toggle-player"));
     expect(follows(screen.getByTestId("tracked-task"), screen.getByTestId("chat-panel"))).toBe(true);
-    expect(card.parentElement?.lastElementChild).toBe(screen.getByTestId("chat-panel"));
+    // The chat is docked in its slot, the column's last child, which lays it out in the column.
+    expect(card.parentElement?.lastElementChild).toBe(screen.getByTestId("chat-dock-host"));
+    expect(screen.getByTestId("chat-panel").parentElement).toBe(screen.getByTestId("chat-dock-host"));
   });
 
   it("remembers a closed card across reloads, until another Task comes along", async () => {
@@ -1111,5 +1113,249 @@ describe("ContentPage toolbar overflow in the desktop client", () => {
       expect((await screen.findByTestId("player-subtitles-iframe-hint")).textContent).toBe("切到本地缓存播放后可显示字幕");
       expect(screen.getByTestId("player-bilibili")).toBeTruthy();
     });
+  });
+});
+
+describe("ContentPage chat panel across layouts", () => {
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges();
+    delete (document as unknown as Record<string, unknown>)["caretPositionFromPoint"];
+  });
+
+  const MODEL = { providerProfileId: "p1", modelId: "m-chat" };
+  const COLUMNS_PX = BREAKPOINT_DRAWER_PX + 300;
+  const DRAWER_PX = Math.round((BREAKPOINT_SINGLE_PX + BREAKPOINT_DRAWER_PX) / 2);
+  const SINGLE_PX = BREAKPOINT_SINGLE_PX - 100;
+
+  /** A usable chat model and an empty chat for each Content, so the input is enabled. */
+  function chatRoutes(...ids: string[]) {
+    return Object.assign(
+      {
+        "GET /api/providers": { body: { items: [provider("p1", "Relay", ["m-chat"])] } },
+        "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, chatModelRef: MODEL, defaultModelRef: MODEL, updatedAt: 1 } },
+      },
+      ...ids.map((id) => ({
+        [`GET /api/contents/${id}/chat`]: { body: { thread: null, messages: [], context: { mode: "full", estimatedTokens: 1 } } },
+        [`GET /api/contents/${id}/chat/threads`]: { body: { threads: [] } },
+      })),
+    );
+  }
+
+  /** Answers every question with a stream that stays open; returns the requests' abort signals. */
+  function holdAnswers(): AbortSignal[] {
+    const signals: AbortSignal[] = [];
+    const base = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if ((init.method ?? "GET") === "POST" && String(input).endsWith("/chat/messages")) {
+        const signal = init.signal ?? new AbortController().signal;
+        signals.push(signal);
+        const body = new ReadableStream<Uint8Array>({
+          start: (controller) => signal.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError"))),
+        });
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return base(input, init);
+    });
+    return signals;
+  }
+
+  async function resizeTo(width: number, layout: "columns" | "drawer" | "single"): Promise<void> {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    await waitFor(() => expect(document.querySelector(`[data-layout='${layout}']`)).not.toBeNull());
+  }
+
+  const panel = () => screen.getByTestId("chat-panel");
+  const chatInput = () => screen.getByTestId("chat-input") as HTMLTextAreaElement;
+  const docked = () => panel().parentElement === screen.getByTestId("chat-dock-host");
+  const floatingNow = () => panel().parentElement === document.body && panel().getAttribute("data-floating") === "true";
+
+  it("keeps one chat panel, its draft and its answer in flight through every layout, tab, collapse, float and dock", async () => {
+    mockApi({ ...contentRoutes(), ...chatRoutes("c1") });
+    const signals = holdAnswers();
+    const { unmount } = renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    await waitFor(() => expect(chatInput().disabled).toBe(false));
+    fireEvent.change(chatInput(), { target: { value: "第一问" } });
+    fireEvent.click(screen.getByTestId("chat-send"));
+    await waitFor(() => expect(signals).toHaveLength(1));
+    await screen.findByTestId("chat-stop");
+    fireEvent.change(chatInput(), { target: { value: "下一问的草稿" } });
+    // The panel is what the page renders it as: the stop button and the draft live in its state.
+    const intact = (): void => {
+      expect(screen.getAllByTestId("chat-panel")).toHaveLength(1);
+      expect(chatInput().value).toBe("下一问的草稿");
+      expect(screen.getByTestId("chat-stop")).toBeTruthy();
+      expect(signals[0]?.aborted).toBe(false);
+    };
+    expect(docked()).toBe(true);
+
+    await resizeTo(DRAWER_PX, "drawer");
+    expect(docked()).toBe(true);
+    intact();
+
+    await resizeTo(SINGLE_PX, "single");
+    expect(docked()).toBe(true);
+    intact();
+    const [middleTab, outputsTab] = screen.getAllByRole("tab");
+    fireEvent.click(outputsTab!);
+    // Nowhere to dock: no chat on screen, but the panel lives on.
+    expect(screen.queryByTestId("chat-panel")).toBeNull();
+    expect(screen.queryByTestId("chat-input")).toBeNull();
+    expect(signals[0]?.aborted).toBe(false);
+    fireEvent.click(middleTab!);
+    intact();
+
+    await resizeTo(COLUMNS_PX, "columns");
+    intact();
+    fireEvent.click(screen.getByTestId("collapse-middle"));
+    expect(screen.getByTestId("middle-column").classList.contains("hidden")).toBe(true);
+    expect(signals[0]?.aborted).toBe(false);
+    fireEvent.click(screen.getByTestId("expand-middle"));
+    intact();
+
+    fireEvent.click(screen.getByTestId("chat-float"));
+    expect(floatingNow()).toBe(true);
+    intact();
+    fireEvent.click(screen.getByTestId("toggle-player"));
+    fireEvent.click(screen.getByRole("button", { name: "左右交换" }));
+    expect(floatingNow()).toBe(true);
+    await resizeTo(DRAWER_PX, "drawer");
+    expect(floatingNow()).toBe(true);
+    intact();
+    fireEvent.click(screen.getByTestId("chat-dock"));
+    expect(docked()).toBe(true);
+    intact();
+
+    // Leaving the page is what stops it.
+    unmount();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it("floats from the dock, leaves a line with 「停靠」 in the column, and docks from there", async () => {
+    mockApi({ ...contentRoutes(), ...chatRoutes("c1") });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    await screen.findByTestId("chat-panel");
+    expect(screen.queryByTestId("chat-floating-placeholder")).toBeNull();
+    fireEvent.click(screen.getByTestId("chat-float"));
+    expect(floatingNow()).toBe(true);
+    expect(localStorage.getItem("amber.content.chatFloating")).toBe("1");
+    const line = screen.getByTestId("chat-floating-placeholder");
+    expect(within(screen.getByTestId("middle-column")).getByTestId("chat-floating-placeholder")).toBe(line);
+    expect(line.textContent).toBe("对话已悬浮停靠");
+    // The first window: 480 wide, 60% of the viewport high, 16 px from the bottom right.
+    const rect = defaultChatRect(window.innerWidth, window.innerHeight);
+    expect(rect).toEqual({ left: window.innerWidth - 496, top: window.innerHeight - Math.round(window.innerHeight * 0.6) - 16, width: 480, height: Math.round(window.innerHeight * 0.6) });
+    expect(panel().style.left).toBe(`${rect.left}px`);
+    expect(panel().style.top).toBe(`${rect.top}px`);
+
+    fireEvent.click(within(line).getByTestId("chat-floating-dock"));
+    expect(docked()).toBe(true);
+    expect(screen.queryByTestId("chat-floating-placeholder")).toBeNull();
+    expect(localStorage.getItem("amber.content.chatFloating")).toBe("0");
+  });
+
+  it("stores where the window was dragged, and falls back to the first place for a broken stored value", async () => {
+    localStorage.setItem("amber.content.chatFloating", "1");
+    localStorage.setItem("amber.content.chatRect", "{not json");
+    mockApi({ ...contentRoutes(), ...chatRoutes("c1") });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    await screen.findByTestId("chat-panel");
+    const rect = defaultChatRect(window.innerWidth, window.innerHeight);
+    expect(floatingNow()).toBe(true);
+    expect(panel().style.left).toBe(`${rect.left}px`);
+    const header = panel().querySelector("header") as HTMLElement;
+    fireEvent.pointerDown(header, { pointerId: 1, button: 0, clientX: 1000, clientY: 400 });
+    fireEvent.pointerMove(header, { pointerId: 1, clientX: 900, clientY: 350 });
+    fireEvent.pointerUp(header, { pointerId: 1, clientX: 900, clientY: 350 });
+    expect(JSON.parse(localStorage.getItem("amber.content.chatRect") ?? "")).toEqual({ ...rect, left: rect.left - 100, top: rect.top - 50 });
+  });
+
+  it("reads back only a usable stored window", () => {
+    expect(parseChatRect('{"left":10,"top":20,"width":400,"height":300}')).toEqual({ left: 10, top: 20, width: 400, height: 300 });
+    expect(parseChatRect(undefined)).toBeUndefined();
+    expect(parseChatRect("{not json")).toBeUndefined();
+    expect(parseChatRect("null")).toBeUndefined();
+    expect(parseChatRect("[1,2,3,4]")).toBeUndefined();
+    expect(parseChatRect('{"left":10,"top":20,"width":0,"height":300}')).toBeUndefined();
+    expect(parseChatRect('{"left":10,"top":20,"width":400,"height":-1}')).toBeUndefined();
+    expect(parseChatRect('{"left":"10","top":20,"width":400,"height":300}')).toBeUndefined();
+    expect(parseChatRect('{"left":10,"top":20,"width":400}')).toBeUndefined();
+    expect(parseChatRect('{"left":1e999,"top":20,"width":400,"height":300}')).toBeUndefined();
+    // A narrow viewport: the margins still hold.
+    expect(defaultChatRect(400, 300)).toEqual({ left: 16, top: 104, width: 368, height: 180 });
+  });
+
+  it("keeps floating, at the same place, for another Content, whose own chat it shows", async () => {
+    const stored = { left: 200, top: 100, width: 420, height: 360 };
+    localStorage.setItem("amber.content.chatFloating", "1");
+    localStorage.setItem("amber.content.chatRect", JSON.stringify(stored));
+    const { calls } = mockApi({ ...contentRoutes(), ...contentRoutes(contentDetail({ id: "c2", title: "第二讲" })), ...chatRoutes("c1", "c2") });
+    renderApp(
+      <>
+        <Link to="/contents/c2" data-testid="go-c2">
+          go
+        </Link>
+        <ContentPage />
+      </>,
+      { route: "/contents/c1", path: "/contents/:id" },
+    );
+    await screen.findByTestId("chat-panel");
+    expect(floatingNow()).toBe(true);
+    expect([panel().style.left, panel().style.top, panel().style.width, panel().style.height]).toEqual(["200px", "100px", "420px", "360px"]);
+
+    fireEvent.click(screen.getByTestId("go-c2"));
+    expect(await screen.findByText("第二讲", { selector: "[data-testid='content-title'] *, [data-testid='content-title']" })).toBeTruthy();
+    await screen.findByTestId("chat-panel");
+    expect(floatingNow()).toBe(true);
+    expect([panel().style.left, panel().style.top, panel().style.width, panel().style.height]).toEqual(["200px", "100px", "420px", "360px"]);
+    await waitFor(() => expect(calls.some((call) => call.path.startsWith("/api/contents/c2/chat"))).toBe(true));
+  });
+
+  it("docks in the single layout without offering to float, and floats again once the window is wide", async () => {
+    localStorage.setItem("amber.content.chatFloating", "1");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: SINGLE_PX });
+    mockApi({ ...contentRoutes(), ...chatRoutes("c1") });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    await screen.findByTestId("chat-panel");
+    expect(document.querySelector("[data-layout='single']")).not.toBeNull();
+    expect(docked()).toBe(true);
+    expect(screen.queryByTestId("chat-float")).toBeNull();
+    expect(screen.queryByTestId("chat-floating-placeholder")).toBeNull();
+    expect(localStorage.getItem("amber.content.chatFloating")).toBe("1");
+
+    await resizeTo(DRAWER_PX, "drawer");
+    expect(floatingNow()).toBe(true);
+    expect(screen.getByTestId("chat-floating-placeholder")).toBeTruthy();
+  });
+
+  it("fills the floating window's input when a selection is explained, and focuses it", async () => {
+    localStorage.setItem("amber.content.chatFloating", "1");
+    mockApi({ ...contentRoutes(), ...chatRoutes("c1") });
+    renderApp(
+      <ContextMenuHost blockNative={false}>
+        <ContentPage />
+      </ContextMenuHost>,
+      { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" },
+    );
+    await waitFor(() => expect(chatInput().disabled).toBe(false));
+    expect(floatingNow()).toBe(true);
+    const reader = await screen.findByTestId("transcript-reader");
+    const cited = await waitFor(() => reader.querySelector(`[data-segment-id='${CITED_SEGMENT_ID}']`) as HTMLElement);
+    const text = cited.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 2);
+    range.setEnd(text, 5);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    (document as unknown as Record<string, unknown>)["caretPositionFromPoint"] = () => ({ offsetNode: text, offset: 3 });
+    act(() => {
+      cited.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    fireEvent.click(screen.getByTestId("context-menu-item-explain-selection"));
+    await waitFor(() => expect(chatInput().value).toBe("解释一下「重排序」"));
+    expect(floatingNow()).toBe(true);
+    expect(document.activeElement).toBe(chatInput());
   });
 });

@@ -2,7 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { mediaAssetDtoSchema } from "../../../shared/dto/content.ts";
 import { cacheLocationDtoSchema, cacheLocationPutSchema, relinkRequestSchema, saveGrantDtoSchema } from "../../../shared/dto/local-media.ts";
-import { burnOutputListDtoSchema, burnRequestSchema, cacheMediaInspectDtoSchema, cacheMediaInspectRequestSchema, cacheMediaRequestSchema } from "../../../shared/dto/media.ts";
+import {
+  burnOutputListDtoSchema,
+  burnRequestSchema,
+  cacheMediaInspectDtoSchema,
+  cacheMediaInspectRequestSchema,
+  cacheMediaQualitiesDtoSchema,
+  cacheMediaRequestSchema,
+} from "../../../shared/dto/media.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { CacheHoldService } from "../../application/cache-holds.ts";
 import type { CacheRootService } from "../../application/cache-root.ts";
@@ -25,6 +32,12 @@ export function registerClientMediaRoutes(
   app: FastifyInstance,
   deps: { clientMedia: ClientMediaTaskService; media: MediaAssetService; relink: RelinkService; cacheRoot?: CacheRootService; cacheHolds?: CacheHoldService },
 ): void {
+  // Synchronous like the inspection: the dialog waits for the source's qualities, and closing it stops the probe.
+  app.get("/api/contents/:id/cache-media/qualities", async (request, reply) => {
+    const { id } = parseInput(contentParamsSchema, request.params, "params");
+    return sendValidated(reply, 200, cacheMediaQualitiesDtoSchema, await deps.clientMedia.listCacheQualities(principalOf(request), id, requestSignal(reply)));
+  });
+
   // Synchronous: the format check runs while the dialog waits; a closed dialog stops it.
   app.post("/api/contents/:id/cache-media/inspect", async (request, reply) => {
     const { id } = parseInput(contentParamsSchema, request.params, "params");

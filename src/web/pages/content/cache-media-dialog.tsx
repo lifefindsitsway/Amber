@@ -1,14 +1,20 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
-import { CACHE_MEDIA_TYPES, type CacheMediaType } from "../../../shared/cache-file-name.ts";
+import { CACHE_MEDIA_TYPES, type CacheMediaQuality, type CacheMediaType } from "../../../shared/cache-file-name.ts";
 import { CACHE_MEDIA_MAX_HEIGHT, DISPLAY_NAME_MAX_CHARS } from "../../../shared/defaults.ts";
 import type { MediaAssetDto } from "../../../shared/dto/content.ts";
-import { cacheMediaInspectDtoSchema, type CacheMediaInspectDto, type CacheMediaRequest } from "../../../shared/dto/media.ts";
+import {
+  cacheMediaInspectDtoSchema,
+  cacheMediaQualitiesDtoSchema,
+  type CacheMediaInspectDto,
+  type CacheMediaRequest,
+  type CacheQualityStatus,
+} from "../../../shared/dto/media.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
-import { CACHE_MEDIA_QUALITIES, type CacheMediaQuality } from "../../../shared/enums.ts";
+import { CACHE_MEDIA_QUALITIES } from "../../../shared/enums.ts";
 import { formatBytes } from "../../../shared/units.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
@@ -22,6 +28,18 @@ import { Modal } from "../../ui/modal.tsx";
 import { contentKeys } from "./content-data.ts";
 
 const DEFAULT_QUALITY: CacheMediaQuality = CACHE_MEDIA_QUALITIES.find((quality) => quality === CACHE_MEDIA_MAX_HEIGHT) ?? CACHE_MEDIA_QUALITIES[0];
+
+/**
+ * The quality preselected among the source's own: the highest one not above
+ * `CACHE_MEDIA_MAX_HEIGHT`, else the highest there is.
+ */
+export function defaultCacheQuality(qualities: readonly CacheMediaQuality[]): CacheMediaQuality {
+  const sorted = [...qualities].sort((a, b) => a - b);
+  return sorted.filter((quality) => quality <= CACHE_MEDIA_MAX_HEIGHT).pop() ?? sorted.pop() ?? DEFAULT_QUALITY;
+}
+
+/** Where the probe of the source's qualities stands; one probe per opening of the dialog. */
+type QualityProbe = { kind: "loading" } | { kind: "ready"; status: CacheQualityStatus; qualities: CacheMediaQuality[] } | { kind: "failed" };
 
 /** The `POST /cache-media` (and `/inspect`) body for a choice; the height cap applies to a video only. */
 export function cacheMediaRequest(type: CacheMediaType, quality: CacheMediaQuality, fileName: string, overwriteAssetId?: string): CacheMediaRequest {
@@ -42,15 +60,18 @@ export function cacheBlockers(inspection: CacheMediaInspectDto): Array<"foreignF
 /**
  * Whether the inspected request needs the user before it starts: something blocks it, it
  * would overwrite another Content's cache, replace one of this Content's caches (whose file
- * may carry another name and is then deleted), or cache audio where a video was asked for.
+ * may carry another name and is then deleted), cache audio where a video was asked for, or,
+ * given the requested quality, is expected to download a video of another or an unknown
+ * quality: a listed quality is only a candidate, and the format selection may settle lower.
  * Anything else starts right after the inspection, without a second click.
  */
-export function needsReview(inspection: CacheMediaInspectDto, requestedType: CacheMediaType): boolean {
+export function needsReview(inspection: CacheMediaInspectDto, requestedType: CacheMediaType, requestedQuality?: CacheMediaQuality): boolean {
   return (
     cacheBlockers(inspection).length > 0 ||
     inspection.overwrite !== undefined ||
     inspection.replaces.length > 0 ||
-    (requestedType === "video" && inspection.expected.type === "audio")
+    (requestedType === "video" && inspection.expected.type === "audio") ||
+    (requestedType === "video" && requestedQuality !== undefined && inspection.expected.type === "video" && inspection.expected.height !== requestedQuality)
   );
 }
 
@@ -101,7 +122,10 @@ function cacheRowsOfInspection(caches: CacheMediaInspectDto["caches"]): CacheRow
 
 /**
  * 「缓存本视频」 (desktop client): the user picks a video (height cap) or audio only and
- * the file name, prefilled with the Content's display title. 「开始缓存」 first asks the server
+ * the file name, prefilled with the Content's display title. Each opening probes the
+ * qualities the source currently offers once and lists only those; until the probe answers
+ * a video cannot be started, and when it fails the general-purpose caps are offered instead.
+ * 「开始缓存」 first asks the server
  * what the request would produce: the expected file name, the caches it replaces, another
  * Content's cache it would overwrite (which needs a confirmation) and what blocks it. When
  * none of that needs the user (`needsReview`), the `cache_media` Task starts right away;
@@ -139,6 +163,28 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   // Set once an inspection found something for the user to decide (or its automatic start failed).
   const [reviewing, setReviewing] = useState(false);
   const path = `/api/contents/${encodeURIComponent(props.contentId)}/cache-media`;
+  const [probe, setProbe] = useState<QualityProbe>({ kind: "loading" });
+  // Not a cached query: every opening asks afresh, and an answer arriving after the dialog
+  // closed (or after a later opening started its own probe) must not touch the form.
+  useEffect(() => {
+    const controller = new AbortController();
+    client.get(`${path}/qualities`, cacheMediaQualitiesDtoSchema, { signal: controller.signal }).then(
+      (answer) => {
+        if (controller.signal.aborted) return;
+        setProbe({ kind: "ready", status: answer.status, qualities: answer.qualities });
+        // Only the cap changes: an audio inspection in flight is not about the cap, and no
+        // video inspection can be, since a video cannot be started before this answer.
+        if (answer.status === "available") setQuality(defaultCacheQuality(answer.qualities));
+      },
+      () => {
+        if (!controller.signal.aborted) setProbe({ kind: "failed" });
+      },
+    );
+    return () => controller.abort();
+  }, [client, path]);
+  const listed = probe.kind === "ready" && probe.status === "available";
+  const qualityOptions: readonly CacheMediaQuality[] = listed ? probe.qualities : CACHE_MEDIA_QUALITIES;
+  const videoBlocked = probe.kind === "loading" || (probe.kind === "ready" && probe.status === "audio_only");
   const inspect = useMutation({
     mutationFn: (body: CacheMediaRequest) => client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body }),
     // The inspection reads the quality of older caches from their files; show it.
@@ -200,27 +246,46 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
           </label>
         ))}
       </fieldset>
-      {type === "video" ? (
+      {type !== "video" ? null : probe.kind === "ready" && probe.status === "audio_only" ? (
+        <p className="text-xs text-danger" role="status" data-testid="cache-qualities-audio-only">
+          {t("contentView.cache.qualitiesAudioOnly")}
+        </p>
+      ) : (
         <label className="flex flex-col gap-1">
           <span className="text-xs text-muted">{t("contentView.cache.quality")}</span>
-          <select
-            className="h-8 rounded border border-line bg-surface px-2"
-            value={quality}
-            onChange={(event) => {
-              const next = CACHE_MEDIA_QUALITIES.find((value) => String(value) === event.target.value);
-              if (next !== undefined) edit(() => setQuality(next));
-            }}
-            disabled={locked}
-            data-testid="cache-quality"
-          >
-            {CACHE_MEDIA_QUALITIES.map((value) => (
-              <option key={value} value={value}>
-                {t("contentView.cache.qualityValue", { height: value })}
-              </option>
-            ))}
-          </select>
+          {probe.kind === "loading" ? (
+            <select className="h-8 rounded border border-line bg-surface px-2" value="" disabled data-testid="cache-quality">
+              <option value="">{t("contentView.cache.qualityProbing")}</option>
+            </select>
+          ) : (
+            <select
+              className="h-8 rounded border border-line bg-surface px-2"
+              value={quality}
+              onChange={(event) => {
+                const next = qualityOptions.find((value) => String(value) === event.target.value);
+                if (next !== undefined) edit(() => setQuality(next));
+              }}
+              disabled={locked}
+              data-testid="cache-quality"
+            >
+              {qualityOptions.map((value) => (
+                <option key={value} value={value}>
+                  {t("contentView.cache.qualityValue", { height: value })}
+                </option>
+              ))}
+            </select>
+          )}
+          {probe.kind === "loading" ? null : listed ? (
+            <span className="text-xs text-muted" data-testid="cache-qualities-hint">
+              {t("contentView.cache.qualitiesHint")}
+            </span>
+          ) : (
+            <span className="text-xs text-muted" data-testid="cache-qualities-unknown">
+              {t("contentView.cache.qualitiesUnknown")}
+            </span>
+          )}
         </label>
-      ) : null}
+      )}
       <label className="flex flex-col gap-1">
         <span className="text-xs text-muted">{t("contentView.cache.fileName")}</span>
         <input
@@ -239,6 +304,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
         <InspectionPanel
           inspection={shown}
           requestedType={type}
+          requestedQuality={quality}
           blockers={blockers}
           overwriteConfirmed={overwriteConfirmed}
           onOverwriteConfirmed={setOverwriteConfirmed}
@@ -250,16 +316,17 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
         {shown === undefined ? (
           <Button
             variant="primary"
-            disabled={inspect.isPending || start.isPending}
+            disabled={inspect.isPending || start.isPending || (type === "video" && videoBlocked)}
             onClick={() => {
               start.reset();
               const body = cacheMediaRequest(type, quality, fileName);
               const requestedType = type;
+              const requestedQuality = quality;
               inspect.mutate(body, {
                 // Passed to this call rather than to `useMutation`: it is dropped once the dialog
                 // closes or the choice changes (`inspect.reset()`), so neither starts a Task.
                 onSuccess: (answer) => {
-                  if (needsReview(answer, requestedType)) {
+                  if (needsReview(answer, requestedType, requestedQuality)) {
                     setReviewing(true);
                   } else {
                     start.mutate(body);
@@ -297,6 +364,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
 function InspectionPanel(props: {
   inspection: CacheMediaInspectDto;
   requestedType: CacheMediaType;
+  requestedQuality: CacheMediaQuality;
   blockers: ReturnType<typeof cacheBlockers>;
   overwriteConfirmed: boolean;
   onOverwriteConfirmed: (confirmed: boolean) => void;
@@ -313,8 +381,15 @@ function InspectionPanel(props: {
           ? t("contentView.cache.expectedUnknown", { name })
           : t("contentView.cache.expected", { name });
   const overwrite = inspection.overwrite;
+  const expectedHeight = inspection.expected.height;
+  const differs = props.requestedType === "video" && inspection.expected.type === "video" && expectedHeight !== undefined && expectedHeight !== props.requestedQuality;
   return (
     <div className="flex flex-col gap-2 rounded-md border border-line px-3 py-2 text-xs" data-testid="cache-inspection">
+      {differs ? (
+        <p data-testid="cache-expected-differs">
+          {t("contentView.cache.expectedDiffers", { expected: qualityLabel(expectedHeight, t), requested: qualityLabel(props.requestedQuality, t) })}
+        </p>
+      ) : null}
       <p className="break-all" data-testid="cache-expected-name">
         {expected}
       </p>

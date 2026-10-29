@@ -168,6 +168,15 @@ export interface PlatformSourceAdapter {
     signal: AbortSignal,
   ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }>;
   /**
+   * Client only (`cache_media`): the video streams the source currently offers with the
+   * login this adapter would download with (the same login rule as `inspectVideo`), read
+   * from yt-dlp's metadata without downloading. Only streams in an MP4 or WebM container,
+   * with a video codec (a string other than `none`) and a positive integer height count;
+   * `width` is present when announced. `undefined` when the metadata holds no format list.
+   * Candidates only: the format selection of `fetchVideo` may still pick another stream.
+   */
+  listVideoFormats?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<Array<{ height: number; width?: number }> | undefined>;
+  /**
    * Client only (`cache_media`): downloads the video, at most `maxHeight` pixels
    * high and merged into an MP4 or WebM container both WebView2 builds play, to
    * `output.path` inside the caller's scratch directory. The intermediate files go below

@@ -1254,3 +1254,229 @@ describe("chat input", () => {
     await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
   });
 });
+
+describe("chat panel docking and floating", () => {
+  afterEach(() => sessionStorage.clear());
+
+  const RECT = { left: 100, top: 120, width: 480, height: 400 };
+  /** What the test can change from outside, as a page would. */
+  let place: { setFloating: (floating: boolean) => void; setHostShown: (shown: boolean) => void } | undefined;
+
+  function Placed(props: { canFloat?: boolean; floating?: boolean }) {
+    const [host, setHost] = useState<HTMLElement | null>(null);
+    const [hostShown, setHostShown] = useState(true);
+    const [floating, setFloating] = useState(props.floating ?? false);
+    const [rect, setRect] = useState(RECT);
+    place = { setFloating, setHostShown };
+    return (
+      <Page>
+        {hostShown ? <div data-testid="dock" ref={setHost} /> : null}
+        <ChatPanel
+          fill={false}
+          placement={{ dockHost: host, floating, canFloat: props.canFloat ?? true, onFloatingChange: setFloating, rect, onRectCommit: setRect }}
+        />
+      </Page>
+    );
+  }
+
+  const panel = () => screen.getByTestId("chat-panel");
+  const HISTORY = () => chatOf([user("u1", "第一问"), answer("a1", "第一个回答"), user("u2", "第二问"), answer("a2", "第二个回答")]);
+
+  it("offers floating only where the layout allows it", async () => {
+    api({ chat: HISTORY });
+    const { unmount } = renderApp(<Placed canFloat={false} />);
+    await screen.findByText("第二个回答");
+    expect(screen.queryByTestId("chat-float")).toBeNull();
+    unmount();
+
+    api({ chat: HISTORY });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    // Right before the fold.
+    expect(screen.getByTestId("chat-float").nextElementSibling).toBe(screen.getByTestId("chat-collapse"));
+    expect(screen.getByTestId("chat-float").getAttribute("aria-label")).toBe("悬浮");
+  });
+
+  it("floats over the page as a fixed window with a compact top row, and docks back", async () => {
+    api({ chat: HISTORY, threads: () => ({ threads: [threadOf("th1", "一个很长很长很长很长很长很长很长很长很长很长的中文会话名")] }) });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    expect(panel().parentElement).toBe(screen.getByTestId("dock"));
+    expect(panel().getAttribute("data-floating")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("chat-float"));
+    expect(panel().parentElement).toBe(document.body);
+    expect(panel().getAttribute("data-floating")).toBe("true");
+    expect(panel().className).toContain("fixed");
+    expect(panel().style.left).toBe("100px");
+    expect(panel().style.top).toBe("120px");
+    expect(panel().style.width).toBe("480px");
+    expect(panel().style.height).toBe("400px");
+    expect(screen.getByTestId("dock").childElementCount).toBe(0);
+    // No fold and no full height; icon buttons with their names on hover.
+    expect(screen.queryByTestId("chat-full")).toBeNull();
+    expect(screen.queryByTestId("chat-collapse")).toBeNull();
+    expect(screen.queryByTestId("chat-float")).toBeNull();
+    const header = panel().querySelector("header") as HTMLElement;
+    const grip = within(header).getByTestId("chat-drag-handle");
+    expect(grip.getAttribute("role")).toBe("button");
+    expect(grip.tabIndex).toBe(0);
+    expect(grip.getAttribute("aria-label")).toBe("移动对话窗口");
+    for (const [id, name] of [
+      ["chat-new-thread", "新对话"],
+      ["chat-select", "选择"],
+      ["chat-clear", "清空"],
+      ["chat-dock", "停靠"],
+    ] as const) {
+      const button = within(header).getByTestId(id);
+      expect(button.textContent, id).toBe("");
+      expect(button.getAttribute("title"), id).toBe(name);
+    }
+    // The thread menu takes the room left, so a long title is cut instead of pushing the buttons out.
+    expect(screen.getByTestId("chat-thread-menu").parentElement?.className).toContain("min-w-0 flex-1");
+    expect(screen.getByTestId("chat-thread-title").className).toContain("truncate");
+    // Eight resize handles, named by their edge.
+    expect(["n", "s", "e", "w", "ne", "nw", "se", "sw"].map((edge) => screen.getByTestId(`chat-resize-${edge}`).getAttribute("aria-label"))).toEqual([
+      "调整对话窗口大小（上）",
+      "调整对话窗口大小（下）",
+      "调整对话窗口大小（右）",
+      "调整对话窗口大小（左）",
+      "调整对话窗口大小（右上）",
+      "调整对话窗口大小（左上）",
+      "调整对话窗口大小（右下）",
+      "调整对话窗口大小（左下）",
+    ]);
+    // The input's cap is a share of the window's height.
+    expect(input().className).toContain("max-h-[45cqh]");
+
+    fireEvent.click(screen.getByTestId("chat-dock"));
+    expect(panel().parentElement).toBe(screen.getByTestId("dock"));
+    expect(panel().getAttribute("data-floating")).toBeNull();
+    expect(panel().style.left).toBe("");
+    expect(screen.getByTestId("chat-collapse")).toBeTruthy();
+  });
+
+  it("covers the page while the window is dragged by its top row, and moves it there", async () => {
+    api({ chat: HISTORY });
+    renderApp(<Placed floating />);
+    await screen.findByText("第二个回答");
+    const header = panel().querySelector("header") as HTMLElement;
+    fireEvent.pointerDown(header, { pointerId: 1, button: 0, clientX: 200, clientY: 130 });
+    expect(screen.getByTestId("chat-drag-overlay").className).toContain("z-[24]");
+    fireEvent.pointerMove(header, { pointerId: 1, clientX: 260, clientY: 150 });
+    fireEvent.pointerUp(header, { pointerId: 1, clientX: 260, clientY: 150 });
+    expect(screen.queryByTestId("chat-drag-overlay")).toBeNull();
+    expect(panel().style.left).toBe("160px");
+    expect(panel().style.top).toBe("140px");
+    // Pressing a button of the row does not move the window.
+    fireEvent.pointerDown(screen.getByTestId("chat-select"), { pointerId: 1, button: 0, clientX: 300, clientY: 150 });
+    expect(screen.queryByTestId("chat-drag-overlay")).toBeNull();
+  });
+
+  it("folds only while docked: a folded panel floats at its normal size and folds again once docked", async () => {
+    api({ chat: HISTORY });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    fireEvent.click(screen.getByTestId("chat-collapse"));
+    expect(panel().getAttribute("data-size")).toBe("collapsed");
+    act(() => place?.setFloating(true));
+    expect(panel().getAttribute("data-size")).toBe("normal");
+    expect(screen.getByTestId("chat-messages")).toBeTruthy();
+    act(() => place?.setFloating(false));
+    expect(panel().getAttribute("data-size")).toBe("collapsed");
+  });
+
+  it("shows nothing while there is nowhere to dock, yet keeps its draft and the answer in flight", async () => {
+    const live: Array<ReturnType<typeof controlledStream>> = [];
+    const calls = api({
+      chat: HISTORY,
+      post: (call) => {
+        const next = controlledStream(call);
+        live.push(next);
+        return next.response;
+      },
+    });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    fireEvent.change(input(), { target: { value: "第三问" } });
+    fireEvent.click(screen.getByTestId("chat-send"));
+    await waitFor(() => expect(live).toHaveLength(1));
+    await live[0]!.push("answer.delta", { delta: "流到一半" });
+    expect(await screen.findByText("流到一半")).toBeTruthy();
+    fireEvent.change(input(), { target: { value: "下一问的草稿" } });
+
+    act(() => place?.setHostShown(false));
+    expect(screen.queryByTestId("chat-panel")).toBeNull();
+    await live[0]!.push("answer.delta", { delta: "，继续" });
+
+    act(() => place?.setFloating(true));
+    expect(panel().parentElement).toBe(document.body);
+    expect(await screen.findByText("流到一半，继续")).toBeTruthy();
+    expect(input().value).toBe("下一问的草稿");
+
+    act(() => {
+      place?.setFloating(false);
+      place?.setHostShown(true);
+    });
+    expect(panel().parentElement).toBe(screen.getByTestId("dock"));
+    expect(screen.getByTestId("chat-stop")).toBeTruthy();
+    expect(input().value).toBe("下一问的草稿");
+    expect((calls.find((call) => call.method === "POST") as { signal?: AbortSignal }).signal?.aborted).toBe(false);
+  });
+
+  it("keeps a confirmation or a rename dialog open, typed name included, when the panel docks or floats", async () => {
+    api({ chat: HISTORY, threads: () => ({ threads: [threadOf("th1", "第一个会话")] }) });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    fireEvent.click(screen.getByTestId("chat-clear"));
+    expect(await screen.findByRole("dialog", { name: "清空全部会话" })).toBeTruthy();
+    act(() => place?.setFloating(true));
+    expect(screen.getByRole("dialog", { name: "清空全部会话" })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("chat-thread-menu"));
+    fireEvent.click(within((await screen.findAllByTestId("chat-thread-item"))[0]!).getByTestId("chat-thread-rename"));
+    const field = (await screen.findByTestId("chat-thread-rename-input")) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: "改了一半的名字" } });
+    act(() => place?.setFloating(false));
+    expect(screen.getByRole("dialog", { name: "重命名会话" })).toBeTruthy();
+    expect((screen.getByTestId("chat-thread-rename-input") as HTMLInputElement).value).toBe("改了一半的名字");
+  });
+
+  it("comes back at the reader's place in the list, or at its end when that is where the reader was", async () => {
+    api({ chat: HISTORY });
+    renderApp(<Placed />);
+    await screen.findByText("第二个回答");
+    const scrollable = (list: HTMLElement, scrollHeight: number, clientHeight: number): void => {
+      Object.defineProperty(list, "scrollHeight", { configurable: true, value: scrollHeight });
+      Object.defineProperty(list, "clientHeight", { configurable: true, value: clientHeight });
+    };
+    // A list jsdom renders afresh in each container: give every new one the same size.
+    const sized = (): HTMLElement => {
+      const list = screen.getByTestId("chat-messages");
+      scrollable(list, 1000, 200);
+      return list;
+    };
+    let list = sized();
+    list.scrollTop = 300;
+    fireEvent.scroll(list);
+
+    act(() => place?.setFloating(true));
+    list = screen.getByTestId("chat-messages");
+    expect(list.scrollTop).toBe(300);
+
+    // Read to the end: it follows the end after the move.
+    sized();
+    list.scrollTop = 795;
+    fireEvent.scroll(list);
+    const prototype = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 1000 });
+    try {
+      act(() => place?.setFloating(false));
+      expect(screen.getByTestId("chat-messages").scrollTop).toBe(1000);
+    } finally {
+      if (prototype !== undefined) Object.defineProperty(HTMLElement.prototype, "scrollHeight", prototype);
+    }
+  });
+});

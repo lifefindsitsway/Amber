@@ -347,6 +347,27 @@ describe("BilibiliAdapter.inspectVideo / inspectAudio", () => {
   });
 });
 
+describe("BilibiliAdapter.listVideoFormats", () => {
+  const FORMATS = { formats: [{ ext: "mp4", vcodec: "avc1.640028", height: 720, width: 1280 }, { ext: "m4a", vcodec: "none" }] };
+
+  it("lists the part located by cid from its metadata, with the login, without downloading", async () => {
+    const { adapter, runner } = setup({ process: () => ({ stdout: JSON.stringify(FORMATS) }) });
+    expect(await adapter.listVideoFormats({ platformContentId: BV, platformPartId: "1002" }, LOGIN, signal())).toEqual([{ height: 720, width: 1280 }]);
+    expect(runner.specs).toHaveLength(1);
+    const args = runner.specs[0]?.args ?? [];
+    expect(args.slice(args.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", `https://www.bilibili.com/video/${BV}?p=2`]);
+    expect(argAfter(args, "--use-extractors")).toBe(BILIBILI_EXTRACTORS.join(","));
+    expect(args).toContain("--cookies");
+    expect(args).not.toContain("--format");
+  });
+
+  it("lists as a guest without a login, and reports a document without a format list", async () => {
+    const { adapter, runner } = setup({ process: () => ({ stdout: JSON.stringify({ id: BV }) }) });
+    expect(await adapter.listVideoFormats({ platformContentId: BV }, undefined, signal())).toBeUndefined();
+    expect(runner.specs[0]?.args).not.toContain("--cookies");
+  });
+});
+
 describe("BilibiliAdapter.fetchVideo", () => {
   it("caches the part located by cid with the login, height-capped and merged to MP4 / WebM", async () => {
     const { adapter, runner, dataDir } = setup({

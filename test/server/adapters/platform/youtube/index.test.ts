@@ -414,6 +414,31 @@ describe("YoutubeAdapter.inspectVideo / inspectAudio", () => {
   });
 });
 
+describe("YoutubeAdapter.listVideoFormats", () => {
+  const FORMATS = JSON.stringify({ formats: [{ ext: "webm", vcodec: "vp9", height: 2160, width: 3840 }, { ext: "mp4", vcodec: "avc1.4d401f", height: 720, width: 1280 }] });
+
+  it("lists as a guest and retries once with the login when refused", async () => {
+    const { adapter, runner } = setup(sequence(BOT_CHECK, { stdout: FORMATS }));
+    expect(await adapter.listVideoFormats({ platformContentId: ID }, LOGIN, signal())).toEqual([
+      { height: 2160, width: 3840 },
+      { height: 720, width: 1280 },
+    ]);
+    expect(runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false, true]);
+    for (const spec of runner.specs) {
+      expect(spec.args.slice(spec.args.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", WATCH]);
+    }
+  });
+
+  it("stays a guest when the guest run succeeds, and passes the refusal on without a login", async () => {
+    const guest = setup(() => ({ stdout: FORMATS }));
+    await guest.adapter.listVideoFormats({ platformContentId: ID }, LOGIN, signal());
+    expect(guest.runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false]);
+    const refused = setup(sequence(BOT_CHECK));
+    expect((await errorOf(refused.adapter.listVideoFormats({ platformContentId: ID }, undefined, signal()))).class).toBe("auth_required");
+    expect(refused.runner.specs).toHaveLength(1);
+  });
+});
+
 describe("YoutubeAdapter.fetchVideo", () => {
   it("caches as a guest first and repeats the whole download once with the login when refused", async () => {
     const { adapter, runner, dataDir } = setup(

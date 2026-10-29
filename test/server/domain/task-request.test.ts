@@ -95,5 +95,25 @@ describe("cacheMediaTaskRequestSchema", () => {
     expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, fileName: "x" }).success).toBe(false);
     expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, expectedHeight: 0 }).success).toBe(false);
   });
+
+  it("takes any quality tier as the v3 height cap, while v1 and v2 keep the general-purpose caps", () => {
+    const v3 = { requestSchemaVersion: 3, kind: "cache_media", type: "video", stem: "课", assetId: "a" };
+    for (const quality of [144, 240, 360, 720, 1080, 1440, 2160, 4320]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, quality }).success, String(quality)).toBe(true);
+    }
+    for (const quality of [700, 0, 1200, "720"]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v3, quality }).success, String(quality)).toBe(false);
+    }
+    const v2 = { requestSchemaVersion: 2, kind: "cache_media", type: "video", fileName: "x", assetId: "a" };
+    const v1 = { requestSchemaVersion: 1, kind: "cache_media" };
+    for (const quality of [360, 480, 720, 1080]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v2, quality }).success).toBe(true);
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v1, quality }).success).toBe(true);
+    }
+    for (const quality of [240, 1440, 700]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v2, quality }).success, String(quality)).toBe(false);
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...v1, quality }).success, String(quality)).toBe(false);
+    }
+  });
 });
 

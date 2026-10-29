@@ -18,7 +18,7 @@ import type {
   SubtitleTrackRef,
 } from "../../../ports/platform-source.ts";
 import { platformGet } from "../http.ts";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, secondsToMs, type YtDlpChapter } from "../shared.ts";
+import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoFormats, secondsToMs, type YtDlpChapter } from "../shared.ts";
 import { PLATFORM_SCRATCH_DIR, type YtDlp } from "../yt-dlp.ts";
 import { collapseRollingCaptions } from "./captions.ts";
 import { parseYoutubeUrl, playlistUrl, watchUrl } from "./url.ts";
@@ -324,6 +324,14 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
         maxHeight: options.maxHeight,
         signal,
       }),
+    );
+    return value;
+  }
+
+  /** The downloadable video streams, guest first like every other YouTube call. */
+  async listVideoFormats(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<Array<{ height: number; width?: number }> | undefined> {
+    const { value } = await this.guestFirst(auth, (cookies) =>
+      listVideoFormats(this.options.ytDlp, { url: watchUrl(ref.platformContentId), extractors: YOUTUBE_EXTRACTORS, ...(cookies === undefined ? {} : { cookies }), signal }),
     );
     return value;
   }

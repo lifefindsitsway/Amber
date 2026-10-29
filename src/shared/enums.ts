@@ -181,9 +181,11 @@ export type Freshness = (typeof FRESHNESS_VALUES)[number];
 export const CREDENTIAL_STATUSES = ["missing", "configured", "unavailable"] as const;
 export type CredentialStatus = (typeof CREDENTIAL_STATUSES)[number];
 
-/** Height tiers a `cache_media` Task may ask for; the default is `CACHE_MEDIA_MAX_HEIGHT`. */
+/**
+ * The general-purpose height caps the cache dialog offers when the source's own qualities
+ * cannot be probed; also the only caps the older `cache_media` request versions accept.
+ */
 export const CACHE_MEDIA_QUALITIES = [360, 480, 720, 1080] as const;
-export type CacheMediaQuality = (typeof CACHE_MEDIA_QUALITIES)[number];
 
 /** What a `burn` Task writes into the picture: the original, its translation, or both. */
 export const BURN_MODES = ["original", "translation", "bilingual"] as const;

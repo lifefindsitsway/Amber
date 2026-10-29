@@ -10,7 +10,7 @@ import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import { cacheFileNameOf } from "../../../src/shared/cache-file-name.ts";
 import { CACHE_MEDIA_MAX_HEIGHT } from "../../../src/shared/defaults.ts";
-import { cacheMediaInspectDtoSchema } from "../../../src/shared/dto/media.ts";
+import { cacheMediaInspectDtoSchema, cacheMediaQualitiesDtoSchema } from "../../../src/shared/dto/media.ts";
 import { cacheFile } from "../../../src/shared/i18n/zh-CN/cache-file.ts";
 import { CacheDownloadLedger } from "../../../src/server/pipeline/cache-download-ledger.ts";
 import { CacheHoldRegistry } from "../../../src/server/pipeline/cache-holds.ts";
@@ -659,6 +659,95 @@ describe("ClientMediaTaskService.inspectCacheMedia", () => {
     expect(await codeOf(inspect(service, "nope"))).toBe("not_found");
     cache.available = false;
     expect(await codeOf(inspect(service, platformContent(h)))).toBe("conflict.cache_unavailable");
+  });
+});
+
+describe("ClientMediaTaskService.listCacheQualities", () => {
+  type Formats = Awaited<ReturnType<NonNullable<PlatformSourceAdapter["listVideoFormats"]>>>;
+  const list = (service: ClientMediaTaskService, contentId: string, signal = new AbortController().signal) => service.listCacheQualities(LOCAL, contentId, signal);
+  /** What the YouTube adapter's format list answers. */
+  const formats = (h: Harness, answer: Formats | (() => Promise<Formats>)): void => {
+    const listVideoFormats: NonNullable<PlatformSourceAdapter["listVideoFormats"]> = async () => (typeof answer === "function" ? answer() : answer);
+    Object.assign(h.platforms.youtube, { listVideoFormats });
+  };
+
+  it("labels the listed streams by equivalent height, without duplicates and ascending, in the foreground heavy slot", async () => {
+    const { h, service, heavyRuns } = setup();
+    // The adapter already dropped `vcodec: none` and FLV streams; what reaches the service is labelled here.
+    formats(h, [
+      { height: 1080, width: 1920 },
+      { height: 720, width: 1280 },
+      { height: 720, width: 1280 },
+      { height: 720, width: 1280 },
+      { height: 360, width: 640 },
+    ]);
+    const answer = await list(service, platformContent(h));
+    expect(answer).toEqual({ status: "available", qualities: [360, 720, 1080] });
+    expect(Object.keys(answer).sort()).toEqual(["qualities", "status"]);
+    expect(cacheMediaQualitiesDtoSchema.safeParse(answer).success).toBe(true);
+    expect(heavyRuns).toEqual([`foreground:${LOCAL.userId}`]);
+  });
+
+  it("labels a portrait stream by its short side and leaves out labels beyond the tiers", async () => {
+    const { h, service } = setup();
+    formats(h, [{ height: 1920, width: 1080 }, { height: 534, width: 1280 }, { height: 600 }, { height: 9000, width: 16000 }]);
+    expect(await list(service, platformContent(h))).toEqual({ status: "available", qualities: [720, 1080] });
+  });
+
+  it("tells a source without usable video streams apart from one without a format list", async () => {
+    const { h, service } = setup();
+    const contentId = platformContent(h);
+    formats(h, []);
+    expect(await list(service, contentId)).toEqual({ status: "audio_only", qualities: [] });
+    formats(h, undefined);
+    expect(await list(service, contentId)).toEqual({ status: "unknown", qualities: [] });
+  });
+
+  it("does not need the cache root, and passes a yt-dlp failure on as is", async () => {
+    const { h, service, cache } = setup();
+    cache.available = false;
+    const contentId = platformContent(h);
+    formats(h, [{ height: 480, width: 854 }]);
+    expect(await list(service, contentId)).toEqual({ status: "available", qualities: [480] });
+    formats(h, () => Promise.reject(amberError("source_unreachable", "yt-dlp timed out")));
+    expect(await codeOf(list(service, contentId))).toBe("source_unreachable");
+  });
+
+  it("refuses local, unknown and foreign Contents, and an adapter that cannot list formats", async () => {
+    const { h, service } = setup();
+    expect(await codeOf(list(service, createLocalContent(h)))).toBe("invalid_request");
+    expect(await codeOf(list(service, "nope"))).toBe("not_found");
+    expect(await codeOf(list(service, platformContent(h, { userId: BOB.userId })))).toBe("not_found");
+    expect(typeof (h.platforms.youtube as Partial<PlatformSourceAdapter>).listVideoFormats).toBe("undefined");
+    expect(await codeOf(list(service, platformContent(h)))).toBe("internal");
+  });
+
+  it("frees the foreground slot when the probe is aborted, so the inspection waiting behind it runs", async () => {
+    const { h, service, heavyRuns } = setup();
+    const controller = new AbortController();
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => (started = resolve));
+    const listVideoFormats: NonNullable<PlatformSourceAdapter["listVideoFormats"]> = (_ref, _auth, signal) =>
+      new Promise((_resolve, reject) => {
+        started();
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    Object.assign(h.platforms.youtube, { listVideoFormats });
+    videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    const probe = list(service, contentId, controller.signal);
+    await running;
+    let inspected = false;
+    const inspection = service.inspectCacheMedia(LOCAL, contentId, { quality: 720 }, new AbortController().signal).then((answer) => {
+      inspected = true;
+      return answer;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(inspected).toBe(false);
+    controller.abort();
+    await expect(probe).rejects.toThrow("aborted");
+    expect((await inspection).expected).toMatchObject({ type: "video", height: 720 });
+    expect(heavyRuns).toEqual([`foreground:${LOCAL.userId}`, `foreground:${LOCAL.userId}`]);
   });
 });
 

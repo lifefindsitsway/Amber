@@ -21,6 +21,7 @@ import { RelinkService } from "../../../../src/server/application/relink.ts";
 import { SplitMediaFiles } from "../../../../src/server/pipeline/media-files.ts";
 import { cacheLocationDtoSchema } from "../../../../src/shared/dto/local-media.ts";
 import type { MediaAsset } from "../../../../src/server/domain/media-asset.ts";
+import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { LocalMediaIngest, MediaProbe } from "../../../../src/server/ports/local-media-ingest.ts";
 import { FILE_GRANT_TTL_MS } from "../../../../src/shared/defaults.ts";
 import type { FileGrant } from "../../../../src/shared/dto/local-media.ts";
@@ -55,8 +56,11 @@ interface Stack {
   grant(path: string, purpose: FileGrant["purpose"]): FileGrant;
   holds: CacheHoldRegistry;
   stores: SplitMediaFiles;
-  /** The app per mode; like `compose`, only local mode gives the ContentService a path resolver. */
-  app(mode: "local" | "server"): Promise<BuiltApp>;
+  /**
+   * The app per mode; like `compose`, only local mode gives the ContentService a path
+   * resolver. `clientMedia` replaces the unreachable cache-media and burn service.
+   */
+  app(mode: "local" | "server", clientMedia?: ClientMediaTaskService): Promise<BuiltApp>;
 }
 
 const open: Array<{ h: Harness; apps: BuiltApp[] }> = [];
@@ -90,7 +94,7 @@ function stack(): Stack {
     grants,
     userDir,
     grant: (path, purpose) => signFileGrant(key, { path, purpose, expiresAt: Date.now() + FILE_GRANT_TTL_MS }),
-    async app(mode) {
+    async app(mode, clientMedia = unreachableClientMedia) {
       const local = mode === "local";
       const built = await buildApp({
         mode,
@@ -113,7 +117,7 @@ function stack(): Stack {
         }),
         media: new MediaAssetService({ repository, media: stores, gate: h.gate, ...(local ? { grants } : {}) }),
         // Passed in both modes so the mode gate of `buildApp` itself is what is tested.
-        clientMedia: unreachableClientMedia,
+        clientMedia,
         relink: new RelinkService({ repository, ingest, grants }),
         cacheRoot: new CacheRootService({
           repository,
@@ -299,7 +303,8 @@ describe("POST /api/contents/:id/cache-media and /burn [client] request validati
     const contentId = createLocalContent(s.h);
     const { app } = await s.app("local");
     for (const payload of [
-      { quality: 240 },
+      { quality: 700 },
+      { quality: 0 },
       { quality: "720" },
       { quality: 720, extra: true },
       { type: "audio", quality: 720 },
@@ -392,8 +397,73 @@ describe("POST /api/contents/:id/cache-media/inspect [client]", () => {
   });
 });
 
+describe("cache-media quality tiers [client]", () => {
+  it("accepts every quality tier as the height cap of an inspection and a cache request", async () => {
+    const s = stack();
+    const contentId = createLocalContent(s.h);
+    const seen: unknown[] = [];
+    const recording = {
+      inspectCacheMedia: async (_principal: unknown, _id: string, body: unknown) => (seen.push(body), Promise.reject(amberError("not_found", "recorded"))),
+      cacheMedia: async (_principal: unknown, _id: string, body: unknown) => (seen.push(body), Promise.reject(amberError("not_found", "recorded"))),
+    } as unknown as ClientMediaTaskService;
+    const { app } = await s.app("local", recording);
+    for (const quality of [144, 240, 1440, 2160, 4320]) {
+      for (const url of [`/api/contents/${contentId}/cache-media/inspect`, `/api/contents/${contentId}/cache-media`]) {
+        const response = await app.inject({ method: "POST", url, headers: auth, payload: { quality } });
+        expect(response.statusCode, `${url} ${quality}`).toBe(404);
+      }
+    }
+    expect(seen.map((body) => (body as { quality: number }).quality)).toEqual([144, 144, 240, 240, 1440, 1440, 2160, 2160, 4320, 4320]);
+  });
+});
+
+describe("GET /api/contents/:id/cache-media/qualities [client]", () => {
+  it("answers the service's tiers with only status and qualities, and passes the request's signal", async () => {
+    const s = stack();
+    const contentId = createLocalContent(s.h);
+    const calls: Array<{ id: string; aborted: boolean }> = [];
+    const answering = {
+      listCacheQualities: async (_principal: unknown, id: string, signal: AbortSignal) => {
+        calls.push({ id, aborted: signal.aborted });
+        return { status: "available", qualities: [360, 720, 1440] };
+      },
+    } as unknown as ClientMediaTaskService;
+    const { app } = await s.app("local", answering);
+    const response = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities`, headers: auth });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "available", qualities: [360, 720, 1440] });
+    expect(calls).toEqual([{ id: contentId, aborted: false }]);
+    const anonymous = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities` });
+    expect(anonymous.statusCode).toBe(401);
+  });
+
+  it("refuses an answer outside the response schema rather than sending it", async () => {
+    const s = stack();
+    const contentId = createLocalContent(s.h);
+    const leaking = {
+      listCacheQualities: async () => ({ status: "available", qualities: [720], formats: [{ url: "https://example.invalid/stream" }] }),
+    } as unknown as ClientMediaTaskService;
+    const { app } = await s.app("local", leaking);
+    const response = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities`, headers: auth });
+    expect(response.statusCode).toBe(500);
+    expect(response.body).not.toContain("example.invalid");
+  });
+
+  it("passes the service's errors on", async () => {
+    const s = stack();
+    const contentId = createLocalContent(s.h);
+    const refusing = {
+      listCacheQualities: async () => Promise.reject(amberError("invalid_request", "only platform contents have media to cache")),
+    } as unknown as ClientMediaTaskService;
+    const { app } = await s.app("local", refusing);
+    const response = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities`, headers: auth });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.class).toBe("invalid_request");
+  });
+});
+
 describe("client-only routes in server mode", () => {
-  it("does not register the eight client media routes or import-browser", async () => {
+  it("does not register the client media routes or import-browser", async () => {
     const s = stack();
     const contentId = createLocalContent(s.h);
     const { app, routes } = await s.app("server");
@@ -406,6 +476,7 @@ describe("client-only routes in server mode", () => {
       { method: "GET", url: "/api/media/cache-location" },
       { method: "PUT", url: "/api/media/cache-location", payload: { useDefault: true } },
       { method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, payload: {} },
+      { method: "GET", url: `/api/contents/${contentId}/cache-media/qualities` },
       { method: "POST", url: `/api/media/cache-location/holds/${s.h.newId()}/keep` },
       { method: "POST", url: `/api/media/cache-location/holds/${s.h.newId()}/restore` },
       { method: "POST", url: "/api/platform-accounts/youtube/import-browser", payload: {} },
@@ -417,6 +488,8 @@ describe("client-only routes in server mode", () => {
     const urls = routes.map((route) => `${route.method} ${route.url}`);
     for (const route of [
       "POST /api/contents/:id/cache-media",
+      "POST /api/contents/:id/cache-media/inspect",
+      "GET /api/contents/:id/cache-media/qualities",
       "POST /api/contents/:id/burn",
       "PUT /api/media/:assetId/relink",
       "GET /api/media/burn-outputs",
@@ -429,7 +502,7 @@ describe("client-only routes in server mode", () => {
     }
     const local = await s.app("local");
     expect(local.routes.map((route) => `${route.method} ${route.url}`)).toEqual(
-      expect.arrayContaining(["GET /api/media/burn-outputs", "GET /api/media/cache-location", "PUT /api/media/cache-location", "POST /api/platform-accounts/youtube/import-browser"]),
+      expect.arrayContaining(["GET /api/contents/:id/cache-media/qualities", "GET /api/media/burn-outputs", "GET /api/media/cache-location", "PUT /api/media/cache-location", "POST /api/platform-accounts/youtube/import-browser"]),
     );
   });
 });

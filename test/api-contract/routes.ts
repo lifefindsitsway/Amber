@@ -119,6 +119,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   // media
   { method: "GET", path: "/media/:assetId", modes: ["server"] },
   { method: "HEAD", path: "/media/:assetId", modes: ["server"] },
+  { method: "GET", path: "/contents/:id/cache-media/qualities", modes: ["local"] },
   { method: "POST", path: "/contents/:id/cache-media/inspect", modes: ["local"] },
   { method: "POST", path: "/contents/:id/cache-media", modes: ["local"] },
   { method: "DELETE", path: "/media/:assetId", modes: BOTH },
