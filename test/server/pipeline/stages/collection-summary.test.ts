@@ -64,6 +64,13 @@ function sectionAfter(request: LlmRequest, marker: string): string {
   return prompt.slice(prompt.lastIndexOf(marker));
 }
 
+/** The `【此前内容的压缩摘要】` section of a partial prompt: the carry it was given. */
+function carryOf(request: LlmRequest): string {
+  const prompt = promptOf(request);
+  const start = prompt.lastIndexOf("【此前内容的压缩摘要】") + "【此前内容的压缩摘要】".length;
+  return prompt.slice(start, prompt.indexOf("【本组内容】", start));
+}
+
 /** What the model answers although asked not to cite: aliases in every form models write, and stored markers. */
 const PARTIAL_ANSWER = "本组归纳[[s3]] [s4]]，见第 1 项[[s99]";
 const CARRY_ANSWER = "压缩[[s1]]";
@@ -227,6 +234,10 @@ describe("collection summary stage", () => {
     // Every output cited, yet nothing was repaired.
     expect(s.fake.calls.map((call) => kindOf(call.request))).toEqual(["partial", "carry", "partial", "carry", "partial", "carry", "final"]);
     const firstPartial = promptOf(s.fake.calls[0]?.request as LlmRequest);
+    // The first group is told it is the first by an empty carry; later groups get the carry so far.
+    expect(firstPartial).toContain("如果「此前内容的压缩摘要」为空，这就是第一组");
+    expect(carryOf(s.fake.calls[0]?.request as LlmRequest).trim()).toBe("");
+    expect(carryOf(s.fake.calls[2]?.request as LlmRequest).trim()).toBe("压缩");
     expect(firstPartial).toContain(ROLLUP_GOAL_COLLECTION_PROMPT.text);
     expect(firstPartial).toContain("【术语表】\nRAG = 检索增强生成");
     // Members are numbered across the collection and sent without their citation markers.
@@ -257,7 +268,7 @@ describe("collection summary stage", () => {
     expect(revision.provenance.promptRef).toEqual({ id: "rollup.final.collection", version: 3 });
     expect(revision.provenance.promptRefs).toEqual([
       { id: "rollup.goal.collection", version: 3 },
-      { id: "rollup.partial", version: 2 },
+      { id: "rollup.partial", version: 3 },
       { id: "rollup.carry", version: 1 },
       { id: "rollup.final.collection", version: 3 },
     ]);

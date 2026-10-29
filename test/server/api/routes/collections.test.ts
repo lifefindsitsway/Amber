@@ -77,6 +77,21 @@ describe("/api/collections", () => {
     expect(summary.json()).toEqual({ stale: false, activeTaskId: accepted.json().taskId });
   });
 
+  it("returns each partial's member range in the summary response", async () => {
+    const { h, app } = await setup();
+    const { id } = (await app.inject({ method: "POST", url: "/api/collections", headers: auth, payload: { name: "C" } })).json();
+    const contentId = createLocalContent(h);
+    const fixture = seedTranscripts(h, contentId);
+    const added = (await app.inject({ method: "POST", url: `/api/collections/${id}/items`, headers: auth, payload: { contentId } })).json();
+    const core = insertSummary(h, { contentId, transcriptRevisionId: fixture.asr.revision.id });
+    const item = { collectionItemId: added.id, contentId, summaryRevisionId: core.revisionId, transcriptRevisionId: fixture.asr.revision.id, position: 0 };
+    insertCollectionSummary(h, id, [item], LOCAL.userId, { partialInputs: [{ kind: "collectionItemSnapshot", ...item }] });
+
+    const summary = await app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers: auth });
+    expect(summary.statusCode).toBe(200);
+    expect(summary.json().current.partials[0].itemRange).toEqual({ first: 1, last: 1 });
+  });
+
   it("deletes the collection summary with 204, 404 for another owner or once gone, 409 while summarising", async () => {
     const { h, app } = await setup();
     const { id } = (await app.inject({ method: "POST", url: "/api/collections", headers: auth, payload: { name: "C" } })).json();

@@ -431,6 +431,10 @@ describe("summary stage: rolling", () => {
       "rollup:carry:2",
       "rollup:final",
     ]);
+    // The first group is told it is the first by an empty carry.
+    const firstPartial = promptOf(s.fake.calls[0]?.request as LlmRequest);
+    expect(firstPartial).toContain("如果「此前内容的压缩摘要」为空，这就是第一组");
+    expect(firstPartial).toMatch(/【此前内容的压缩摘要】\n+【本组内容】/);
     // Each partial sees its own chapter only, under the template.
     expect(aliasesAfter(s.fake.calls[2]?.request as LlmRequest, "【本组内容】")).toEqual([5, 6, 7, 8]);
     expect(promptOf(s.fake.calls[2]?.request as LlmRequest)).toContain(`【此前内容的压缩摘要】\n压缩 [[s1]]`);
@@ -448,8 +452,8 @@ describe("summary stage: rolling", () => {
     expect(partials).toHaveLength(3);
     expect(revision.partialIds).toEqual(partials.map((partial) => partial.id));
     expect(partials.map((partial) => partial.body)).toEqual([0, 4, 8].map((i) => `本组讲了 [[seg:${job.segments[i]?.id}]]`));
-    expect(partials[0]?.promptRef).toEqual({ id: "rollup.partial", version: 2 });
-    expect(partials[0]?.promptRefs).toEqual([{ id: "rollup.partial", version: 2 }]);
+    expect(partials[0]?.promptRef).toEqual({ id: "rollup.partial", version: 3 });
+    expect(partials[0]?.promptRefs).toEqual([{ id: "rollup.partial", version: 3 }]);
 
     const usage = s.h.db.prepare("SELECT artifact_revision_id AS owner, COUNT(*) AS n FROM token_usage GROUP BY owner ORDER BY n").all();
     expect(usage).toEqual([...partials.map((partial) => ({ owner: partial.id, n: 1 })), { owner: revision.id, n: 4 }].sort((a, b) => a.n - b.n));

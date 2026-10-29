@@ -1,4 +1,4 @@
-import type { Citation } from "../../../src/server/domain/artifact.ts";
+import type { ArtifactInputRef, Citation } from "../../../src/server/domain/artifact.ts";
 import type { CollectionSummaryRevision } from "../../../src/server/domain/artifact.ts";
 import { lectureTranscripts, type TranscriptFixture } from "../transcripts/lecture.ts";
 import { LOCAL, type Harness } from "./harness.ts";
@@ -74,7 +74,7 @@ export function insertCollectionSummary(
   collectionId: string,
   inputItems: CollectionSummaryRevision["inputItems"],
   userId = LOCAL.userId,
-  stored: { body?: string; citations?: Citation[]; partialBody?: string; partialCitations?: Citation[] } = {},
+  stored: { body?: string; citations?: Citation[]; partialBody?: string; partialCitations?: Citation[]; partialInputs?: ArtifactInputRef[] } = {},
 ): { artifactId: string; revisionId: string; partialId: string } {
   const revisionId = h.newId();
   const partialId = h.newId();
@@ -103,7 +103,7 @@ export function insertCollectionSummary(
         id: partialId,
         ownerRevisionId: revisionId,
         index: 0,
-        inputs: [],
+        inputs: stored.partialInputs ?? [],
         body: stored.partialBody ?? "第一组归纳",
         citations: stored.partialCitations ?? [],
         modelRef: MODEL_SNAPSHOT,

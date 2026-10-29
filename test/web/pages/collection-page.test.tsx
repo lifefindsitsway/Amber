@@ -290,7 +290,7 @@ describe("CollectionPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "合集归纳" }));
     expect(screen.getByText("整门课的脉络")).toBeTruthy();
     expect(document.querySelector("[data-citation]")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "分组归纳（1 组）" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看详细归纳" }));
     expect(await screen.findByText("第一组")).toBeTruthy();
     expect(api.calls.every((call) => call.method === "GET")).toBe(true);
   });
@@ -337,7 +337,7 @@ describe("CollectionPage", () => {
     render();
     fireEvent.click(await screen.findByRole("button", { name: "删除归纳" }));
     const dialog = await screen.findByRole("dialog", { name: "删除合集归纳？" });
-    expect(dialog.textContent).toContain("将删除这个合集的全部归纳版本与分组归纳，不可恢复；各项内容自己的总结不受影响，被归纳引用而不能删除的总结版本将解除限制");
+    expect(dialog.textContent).toContain("将删除这个合集的全部归纳版本与详细归纳，不可恢复；各项内容自己的总结不受影响，被归纳引用而不能删除的总结版本将解除限制");
     expect(api.calls.filter((call) => call.method === "DELETE")).toEqual([]);
     fireEvent.click(within(dialog).getByRole("button", { name: "删除归纳" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());

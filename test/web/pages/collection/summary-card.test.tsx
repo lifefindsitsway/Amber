@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CollectionSummaryDto } from "../../../../src/shared/dto/collection.ts";
+import type { RollupPartialDto } from "../../../../src/shared/dto/summary.ts";
 import type { TaskDto } from "../../../../src/shared/dto/task.ts";
 import { SummaryCard, summaryExpandedKey, summaryFailureDismissedKey } from "../../../../src/web/pages/collection/summary-card.tsx";
 import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
@@ -28,6 +29,11 @@ const PUBLISHED: CollectionSummaryDto = {
     createdAt: 0,
   },
 };
+function withPartials(partials: RollupPartialDto[]): CollectionSummaryDto {
+  if (PUBLISHED.current === undefined) throw new Error("fixture has a current summary");
+  return { ...PUBLISHED, current: { ...PUBLISHED.current, partials } };
+}
+
 const FAILED: TaskDto = { id: "f1", kind: "summarize_collection", statusProjection: "failed", collectionId: "k1", createdAt: 1 };
 
 function routes() {
@@ -70,7 +76,7 @@ describe("SummaryCard", () => {
     expect(toggle().title).toBe("展开");
     expect(screen.queryByTestId("collection-summary-body")).toBeNull();
     expect(screen.queryByText("合集的脉络")).toBeNull();
-    expect(screen.queryByRole("button", { name: "分组归纳（1 组）" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "查看详细归纳" })).toBeNull();
     expect(within(screen.getByTestId("collection-summary-actions")).getAllByRole("button").map((button) => button.textContent)).toEqual(["重新归纳", "删除归纳"]);
     expect(screen.getByText("内容顺序已调整，归纳可能已过时")).toBeTruthy();
   });
@@ -84,7 +90,7 @@ describe("SummaryCard", () => {
     const body = screen.getByTestId("collection-summary-body");
     expect(toggle().getAttribute("aria-controls")).toBe(body.id);
     expect(within(body).getByText("合集的脉络")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "分组归纳（1 组）" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看详细归纳" }));
     expect(screen.getByText("第一组")).toBeTruthy();
     expect(document.querySelector("[data-citation]")).toBeNull();
     expect(localStorage.getItem(summaryExpandedKey("k1"))).toBe("1");
@@ -104,6 +110,59 @@ describe("SummaryCard", () => {
     fireEvent.click(toggle());
     expect(screen.queryByText("合集的脉络")).toBeNull();
     expect(localStorage.getItem(summaryExpandedKey("k1"))).toBeNull();
+  });
+
+  it("offers no details toggle when the summary has no partials", () => {
+    routes();
+    renderApp(card({ summary: withPartials([]) }));
+    fireEvent.click(toggle());
+    expect(screen.getByText("合集的脉络")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /详细归纳/ })).toBeNull();
+  });
+
+  it("shows a single partial as the details themselves, without a number or hint", () => {
+    routes();
+    renderApp(card());
+    fireEvent.click(toggle());
+    const details = screen.getByRole("button", { name: "查看详细归纳" });
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("第一组")).toBeNull();
+    fireEvent.click(details);
+    expect(details.getAttribute("aria-expanded")).toBe("true");
+    const body = screen.getByTestId("collection-summary-body");
+    expect(within(body).getByText("第一组")).toBeTruthy();
+    expect(within(body).queryByText(/^第 \d+ (组|段|项)$/)).toBeNull();
+    expect(within(body).queryByText("第 1 组")).toBeNull();
+    expect(within(body).queryByText("第 1 段")).toBeNull();
+    expect(screen.queryByText("内容较多时会按顺序分段归纳，序号以生成时为准")).toBeNull();
+  });
+
+  it("labels several partials in order by the members they covered, or by sequence when unknown", () => {
+    routes();
+    const partials = [
+      { id: "p2", index: 2, body: "第三段内容", citations: [], createdAt: 0 },
+      { id: "p0", index: 0, body: "第一段内容", citations: [], createdAt: 0, itemRange: { first: 1, last: 5 } },
+      { id: "p1", index: 1, body: "第二段内容", citations: [], createdAt: 0, itemRange: { first: 6, last: 6 } },
+    ];
+    renderApp(card({ summary: withPartials(partials) }));
+    fireEvent.click(toggle());
+    fireEvent.click(screen.getByRole("button", { name: "详细归纳（3 段）" }));
+    expect(screen.getByText("内容较多时会按顺序分段归纳，序号以生成时为准")).toBeTruthy();
+    const items = within(screen.getByTestId("collection-summary-body")).getAllByRole("listitem");
+    expect(items.map((item) => item.textContent)).toEqual(["第 1–5 项第一段内容", "第 6 项第二段内容", "第 3 段第三段内容"]);
+  });
+
+  it("counts two partials in the toggle and falls back to the segment number without a range", () => {
+    routes();
+    const partials = [
+      { id: "p0", index: 0, body: "前半", citations: [], createdAt: 0, itemRange: { first: 1, last: 5 } },
+      { id: "p1", index: 1, body: "后半", citations: [], createdAt: 0 },
+    ];
+    renderApp(card({ summary: withPartials(partials) }));
+    fireEvent.click(toggle());
+    fireEvent.click(screen.getByRole("button", { name: "详细归纳（2 段）" }));
+    expect(screen.getByText("第 1–5 项")).toBeTruthy();
+    expect(screen.getByText("第 2 段")).toBeTruthy();
   });
 
   it("keeps the choice for the session when storage refuses writes", () => {

@@ -17,6 +17,7 @@ import {
   promptSlots,
   renderPrompt,
   ROLLUP_GOAL_COLLECTION_PROMPT,
+  ROLLUP_PARTIAL_PROMPT,
   validatePromptText,
   type BuiltinPrompt,
   type CustomizablePrompt,
@@ -47,7 +48,7 @@ describe("builtin prompts", () => {
   });
 
   it("keeps the replaced builtin versions verbatim and resolvable by id and version", () => {
-    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(13);
+    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(14);
     expect(BUILTIN_PROMPT_HISTORY.map((prompt) => ({ ...prompt.ref, text: prompt.text }))).toEqual(EXPECTED_PROMPT_HISTORY);
     for (const { id, version, text } of EXPECTED_PROMPTS) {
       if (customizablePrompt(id) !== undefined) {
@@ -58,6 +59,10 @@ describe("builtin prompts", () => {
     for (const { id, version, text } of EXPECTED_PROMPT_HISTORY) {
       expect(builtinPromptOf({ id, version })?.text).toBe(text);
     }
+    expect(builtinPromptOf({ id: "rollup.partial", version: 2 })?.text).toBe(
+      EXPECTED_PROMPT_HISTORY.find((prompt) => prompt.id === "rollup.partial" && prompt.version === 2)?.text,
+    );
+    expect(builtinPromptOf({ id: "rollup.partial", version: 2 })?.text).not.toBe(ROLLUP_PARTIAL_PROMPT.text);
     expect(builtinPromptOf({ id: "chapter.ai", version: 99 })).toBeUndefined();
     expect(builtinPromptOf({ id: "custom:chapter.ai", version: 1 })).toBeUndefined();
   });

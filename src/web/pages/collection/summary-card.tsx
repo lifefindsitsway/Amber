@@ -1,7 +1,9 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { CollectionSummaryDto } from "../../../shared/dto/collection.ts";
+import type { RollupPartialDto } from "../../../shared/dto/summary.ts";
 import type { TaskDto } from "../../../shared/dto/task.ts";
 import { ConfirmDialog } from "../../components/confirm-dialog.tsx";
 import { FailedTaskNotice } from "../../components/failed-task-notice.tsx";
@@ -21,8 +23,18 @@ export function summaryFailureDismissedKey(collectionId: string): string {
 }
 
 /**
+ * Names a detailed segment by the members it covered, numbered as they were when it was
+ * generated; segments whose coverage is unknown fall back to their own sequence number.
+ */
+function partialLabel(partial: RollupPartialDto, t: TFunction): string {
+  const range = partial.itemRange;
+  if (range === undefined) return t("library.summary.detailSegment", { n: partial.index + 1 });
+  return range.first === range.last ? t("library.summary.detailItem", { n: range.first }) : t("library.summary.detailItems", { first: range.first, last: range.last });
+}
+
+/**
  * The collection's rollup summary: generated only on explicit request,
- * partials expandable once the final is published, stale reasons shown on top. Once there is
+ * its detailed segments expandable once the final is published, stale reasons shown on top. Once there is
  * one (shown or withheld), it can be summarised again or deleted as a whole behind a
  * confirmation; both wait while a summary Task is unfinished. The card folds away its body
  * (closed by default, remembered per collection) but never the actions, notices or a summary
@@ -127,19 +139,23 @@ export function SummaryCard(props: {
             <div className="mt-4 border-t border-line pt-3">
               <button type="button" className="flex items-center gap-1 text-xs text-muted hover:underline" aria-expanded={showPartials} onClick={() => setShowPartials(!showPartials)}>
                 {showPartials ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                {t("library.summary.partials", { count: current.partials.length })}
+                {current.partials.length === 1 ? t("library.summary.details") : t("library.summary.detailsCount", { count: current.partials.length })}
               </button>
               {showPartials ? (
-                <ol className="mt-2 flex flex-col gap-3">
-                  {[...current.partials]
-                    .sort((a, b) => a.index - b.index)
-                    .map((partial) => (
-                      <li key={partial.id} className="rounded bg-panel p-3">
-                        <p className="mb-1 text-xs font-medium text-muted">{t("library.summary.partial", { n: partial.index + 1 })}</p>
-                        <RichText source={partial.body} />
-                      </li>
-                    ))}
-                </ol>
+                <>
+                  {current.partials.length === 1 ? null : <p className="mt-2 text-xs text-muted">{t("library.summary.detailsHint")}</p>}
+                  <ol className="mt-2 flex flex-col gap-3">
+                    {[...current.partials]
+                      .sort((a, b) => a.index - b.index)
+                      .map((partial) => (
+                        <li key={partial.id} className="rounded bg-panel p-3">
+                          {/* A single segment is the whole detail; numbering it would suggest parts are missing. */}
+                          {current.partials.length === 1 ? null : <p className="mb-1 text-xs font-medium text-muted">{partialLabel(partial, t)}</p>}
+                          <RichText source={partial.body} />
+                        </li>
+                      ))}
+                  </ol>
+                </>
               ) : null}
             </div>
           )}

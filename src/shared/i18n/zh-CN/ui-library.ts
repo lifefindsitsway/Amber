@@ -104,7 +104,7 @@ export const library = {
     regenerate: "重新归纳",
     delete: "删除归纳",
     deleteTitle: "删除合集归纳？",
-    deleteDescription: "将删除这个合集的全部归纳版本与分组归纳，不可恢复；各项内容自己的总结不受影响，被归纳引用而不能删除的总结版本将解除限制",
+    deleteDescription: "将删除这个合集的全部归纳版本与详细归纳，不可恢复；各项内容自己的总结不受影响，被归纳引用而不能删除的总结版本将解除限制",
     missing: "以下内容尚无核心总结，请先生成：",
     stale: {
       member_changed: "合集成员或某项内容的总结已变化，归纳可能已过时",
@@ -116,8 +116,12 @@ export const library = {
     expand: "展开",
     collapse: "收起",
     failed: "上次归纳失败，可从失败的步骤重跑",
-    partials: "分组归纳（{{count}} 组）",
-    partial: "第 {{n}} 组",
+    details: "查看详细归纳",
+    detailsCount: "详细归纳（{{count}} 段）",
+    detailsHint: "内容较多时会按顺序分段归纳，序号以生成时为准",
+    detailItem: "第 {{n}} 项",
+    detailItems: "第 {{first}}–{{last}} 项",
+    detailSegment: "第 {{n}} 段",
     hidden: {
       member_trashed: "有内容在回收站中，归纳暂不显示；恢复这些内容后会重新显示",
     },

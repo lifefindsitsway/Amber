@@ -20,6 +20,7 @@ import type { Collection, CollectionItem } from "../domain/collection.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { deriveCollectionFreshness, transcriptAncestors, type CollectionMemberState, type Freshness } from "../domain/freshness.ts";
 import { DEFAULT_SUMMARY_TEMPLATE_ID } from "../domain/prompts.ts";
+import { partialItemRange } from "../domain/rollup.ts";
 import { summarizeCollectionRequestSchema, type SummarizeCollectionRequest } from "../domain/task-request.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -445,13 +446,17 @@ function collectionSummaryRevisionDto(
     body: withoutCitations(revision.body),
     citations: [],
     inputItems: revision.inputItems.map((item) => ({ ...item })),
-    partials: scope.rollupPartials.listByOwnerRevision(owner, revision.id).map((partial) => ({
-      id: partial.id,
-      index: partial.index,
-      body: withoutCitations(partial.body),
-      citations: [],
-      createdAt: partial.createdAt,
-    })),
+    partials: scope.rollupPartials.listByOwnerRevision(owner, revision.id).map((partial) => {
+      const itemRange = partialItemRange(revision.inputItems, partial.inputs);
+      return {
+        id: partial.id,
+        index: partial.index,
+        body: withoutCitations(partial.body),
+        citations: [],
+        createdAt: partial.createdAt,
+        ...(itemRange === undefined ? {} : { itemRange }),
+      };
+    }),
     ...(provenance.modelRef === undefined ? {} : { modelRef: { ...provenance.modelRef } }),
     ...(provenance.promptRef === undefined ? {} : { promptRef: { ...provenance.promptRef } }),
     // The only quality reason is citation-based; a summary shown without citations is never degraded by it.

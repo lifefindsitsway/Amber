@@ -123,5 +123,10 @@ export const rollupPartialDtoSchema = z.object({
   body: z.string(),
   citations: z.array(citationDtoSchema),
   createdAt: msSchema,
+  /**
+   * Collection summaries only: the members this partial covered, as 1-based numbers in the
+   * revision's own member order when it was generated. Absent when that cannot be told exactly.
+   */
+  itemRange: z.object({ first: z.number().int().positive(), last: z.number().int().positive() }).exactOptional(),
 });
 export type RollupPartialDto = z.infer<typeof rollupPartialDtoSchema>;

@@ -323,6 +323,37 @@ describe("collection summary", () => {
     expect(h.collections.getSummary(LOCAL, collectionId)).toMatchObject({ stale: true, staleReason: "member_changed" });
     expect(await codeOf(() => h.collections.getSummary(BOB, collectionId))).toBe("not_found");
   });
+
+  it("labels each partial with the members it covered, numbered in the revision's own order", async () => {
+    const h = harness();
+    const { collectionId, members } = await collectionOf(h, 3);
+    const items = h.collections.get(LOCAL, collectionId).items;
+    const inputItems = members.map((member, index) => ({
+      collectionItemId: items[index]?.id as string,
+      contentId: member.contentId,
+      summaryRevisionId: member.summaryRevisionId as string,
+      transcriptRevisionId: member.transcriptRevisionId,
+      position: index * 3,
+    }));
+    const partialInputs = inputItems.slice(1).map((item) => ({ kind: "collectionItemSnapshot" as const, ...item }));
+    insertCollectionSummary(h, collectionId, inputItems, LOCAL.userId, { partialInputs });
+    expect(h.collections.getSummary(LOCAL, collectionId).current?.partials[0]?.itemRange).toEqual({ first: 2, last: 3 });
+
+    // Reordering the live collection does not relabel what an existing revision covered.
+    h.collections.reorder(LOCAL, collectionId, [items[2]?.id as string, items[1]?.id as string, items[0]?.id as string]);
+    expect(h.collections.getSummary(LOCAL, collectionId).current?.partials[0]?.itemRange).toEqual({ first: 2, last: 3 });
+  });
+
+  it("leaves the range out when a partial's inputs do not name its members", async () => {
+    const h = harness();
+    const { collectionId, members } = await collectionOf(h, 1);
+    const items = h.collections.get(LOCAL, collectionId).items;
+    const member = members[0] as (typeof members)[number];
+    insertCollectionSummary(h, collectionId, [
+      { collectionItemId: items[0]?.id as string, contentId: member.contentId, summaryRevisionId: member.summaryRevisionId as string, transcriptRevisionId: member.transcriptRevisionId, position: 0 },
+    ]);
+    expect(h.collections.getSummary(LOCAL, collectionId).current?.partials[0]).not.toHaveProperty("itemRange");
+  });
 });
 
 describe("deleting the collection summary", () => {

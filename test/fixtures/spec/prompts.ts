@@ -108,8 +108,8 @@ export const EXPECTED_PROMPTS: ReadonlyArray<{ id: string; version: number; text
   },
   {
     id: "rollup.partial",
-    version: 2,
-    text: `你在为一个合集或一段长内容做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
+    version: 3,
+    text: `你在为一个合集或一段长内容做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：如果「此前内容的压缩摘要」为空，这就是第一组，直接展开本组内容，不要写本组与此前内容的关系；否则先用一段话说明本组与此前内容的关系。然后按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
 {{citation_rules}}
 输出语言：{{output_language}}
 {{terms_section}}
@@ -283,6 +283,20 @@ export const EXPECTED_PROMPT_HISTORY: ReadonlyArray<{ id: string; version: numbe
     id: "rollup.partial",
     version: 1,
     text: `你在为一门课程做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
+{{citation_rules}}
+输出语言：{{output_language}}
+{{terms_section}}
+【任务】
+{{template_body}}
+【此前内容的压缩摘要】
+{{carry}}
+【本组内容】
+{{group_content}}`,
+  },
+  {
+    id: "rollup.partial",
+    version: 2,
+    text: `你在为一个合集或一段长内容做连贯的归纳，最终结果要满足下面的「任务」。下面是「此前内容的压缩摘要」和「本组的内容」。请写出本组的归纳：先用一段话说明本组与此前内容的关系，再按「任务」的要求展开本组内容——目标是为最终归纳保存本组全部必要信息（术语、定义、结论、关键例子），不要泛化概括。
 {{citation_rules}}
 输出语言：{{output_language}}
 {{terms_section}}

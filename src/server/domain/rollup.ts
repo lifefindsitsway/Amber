@@ -1,4 +1,5 @@
 import { CONTEXT_SAFETY_RATIO, LLM_MAX_OUTPUT_TOKENS_DEFAULT, ROLLUP_CARRY_BUDGET_CHARS } from "../../shared/defaults.ts";
+import type { ArtifactInputRef, CollectionSummaryRevision } from "./artifact.ts";
 import { amberError } from "./errors.ts";
 import type { ModelRef } from "./model-ref.ts";
 import { estimateTokens } from "./token-estimate.ts";
@@ -187,4 +188,37 @@ function sum(costs: readonly number[], group: SentenceGroup): number {
     total += costs[position] as number;
   }
   return total;
+}
+
+/**
+ * The members a collection summary partial covered, as 1-based numbers in the revision's own
+ * member order (its `inputItems` by ascending position, numbered without gaps). Taken from the
+ * snapshot, never from the live collection, so a later reorder cannot relabel an old partial.
+ * `undefined` unless the partial's inputs are member snapshots that map onto one run of
+ * consecutive numbers exactly; a range that only approximates the inputs would mislead.
+ */
+export function partialItemRange(
+  inputItems: readonly Pick<CollectionSummaryRevision["inputItems"][number], "collectionItemId" | "position">[],
+  inputs: readonly ArtifactInputRef[],
+): { first: number; last: number } | undefined {
+  if (inputs.length === 0) {
+    return undefined;
+  }
+  const numbers = new Map(
+    [...inputItems].sort((a, b) => a.position - b.position).map((item, index) => [item.collectionItemId, index + 1] as const),
+  );
+  const covered = new Set<number>();
+  for (const input of inputs) {
+    if (input.kind !== "collectionItemSnapshot") {
+      return undefined;
+    }
+    const number = numbers.get(input.collectionItemId);
+    if (number === undefined || covered.has(number)) {
+      return undefined;
+    }
+    covered.add(number);
+  }
+  const first = Math.min(...covered);
+  const last = Math.max(...covered);
+  return last - first + 1 === inputs.length ? { first, last } : undefined;
 }
