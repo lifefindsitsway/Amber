@@ -1325,13 +1325,15 @@ describe("chat panel docking and floating", () => {
     for (const [id, name] of [
       ["chat-new-thread", "新对话"],
       ["chat-select", "选择"],
-      ["chat-clear", "清空"],
+      ["chat-clear", "清空全部会话"],
       ["chat-dock", "停靠"],
     ] as const) {
       const button = within(header).getByTestId(id);
       expect(button.textContent, id).toBe("");
       expect(button.getAttribute("title"), id).toBe(name);
     }
+    // Clearing every thread wears a broom, so it is not taken for a thread's own delete (a bin).
+    expect(within(header).getByTestId("chat-clear").querySelector("svg")?.getAttribute("class")).toContain("brush-cleaning");
     // The thread menu takes the room left, so a long title is cut instead of pushing the buttons out.
     expect(screen.getByTestId("chat-thread-menu").parentElement?.className).toContain("min-w-0 flex-1");
     expect(screen.getByTestId("chat-thread-title").className).toContain("truncate");
@@ -1442,6 +1444,45 @@ describe("chat panel docking and floating", () => {
     act(() => place?.setFloating(false));
     expect(screen.getByRole("dialog", { name: "重命名会话" })).toBeTruthy();
     expect((screen.getByTestId("chat-thread-rename-input") as HTMLInputElement).value).toBe("改了一半的名字");
+  });
+
+  it("keeps the thread menu's rename, pin and delete working while the panel floats", async () => {
+    let pinned: unknown;
+    api({
+      chat: HISTORY,
+      threads: () => ({ threads: [threadOf("th1", "第一个会话")] }),
+      routes: {
+        "PATCH /api/contents/c1/chat/threads/th1": (call: RecordedCall) => {
+          pinned = call.body;
+          return { status: 200, body: { ...threadOf("th1", "第一个会话"), pinnedAt: 1 } };
+        },
+      },
+    });
+    renderApp(<Placed floating />);
+    await screen.findByText("第二个回答");
+    expect(panel().getAttribute("data-floating")).toBe("true");
+    // A real press: pointer down, up, then the click. The menu is portaled out of the top row,
+    // but React bubbles its presses through the row, which is the window's drag handle.
+    const press = (element: Element): void => {
+      fireEvent.pointerDown(element, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+      expect(screen.queryByTestId("chat-drag-overlay")).toBeNull();
+      fireEvent.pointerUp(element, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+      fireEvent.click(element);
+    };
+    fireEvent.click(screen.getByTestId("chat-thread-menu"));
+    press(within((await screen.findAllByTestId("chat-thread-item"))[0]!).getByTestId("chat-thread-rename"));
+    expect(await screen.findByRole("dialog", { name: "重命名会话" })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("chat-thread-menu"));
+    press(within((await screen.findAllByTestId("chat-thread-item"))[0]!).getByTestId("chat-thread-pin"));
+    await waitFor(() => expect(pinned).toEqual({ pinned: true }));
+
+    // Pinning keeps the menu open, so the thread is seen moving to its new place.
+    press(within((await screen.findAllByTestId("chat-thread-item"))[0]!).getByTestId("chat-thread-delete"));
+    expect(await screen.findByRole("dialog", { name: "删除会话" })).toBeTruthy();
+    expect(panel().style.left).toBe(`${RECT.left}px`);
   });
 
   it("comes back at the reader's place in the list, or at its end when that is where the reader was", async () => {

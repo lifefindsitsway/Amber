@@ -198,6 +198,8 @@ describe("LocalPlayer", () => {
     const controller = new PlayerController();
     const { rerender, root, video } = show({ src: "/fixture.mp3", audioOnly: true }, controller);
     expect(screen.getByTestId("player-audio-only").textContent).toBe("仅音频，没有画面");
+    // No picture, nothing to cover.
+    expect(screen.queryByTestId("player-picture-cover")).toBeNull();
     act(() => controller.seek(5_000));
     expect(Math.round(video.currentTime)).toBe(5);
     expect(screen.getByTestId("player-seek")).toBeTruthy();
@@ -380,8 +382,16 @@ describe("LocalPlayer", () => {
     // Playing without the pointer over the picture: hidden at once.
     expect(root.dataset["controls"]).toBe("hidden");
     expect(within(root).getByTestId("player-progress-line")).toBeTruthy();
+    // Whatever the controls do, a faint cover stays over the picture without taking the pointer,
+    // so the video is never left alone on screen (see the cover in the component).
+    const cover = within(root).getByTestId("player-picture-cover");
+    expect(cover.className).toContain("bg-black/[0.01]");
+    expect(cover.className).toContain("pointer-events-none");
+    expect(cover.className).toContain("inset-0");
+    expect(cover.previousElementSibling).toBe(video);
     fireEvent.pointerMove(root);
     expect(root.dataset["controls"]).toBe("shown");
+    expect(within(root).getByTestId("player-picture-cover")).toBe(cover);
     expect(within(root).queryByTestId("player-progress-line")).toBeNull();
     act(() => vi.advanceTimersByTime(PLAYER_CONTROLS_IDLE_MS - 1));
     expect(root.dataset["controls"]).toBe("shown");

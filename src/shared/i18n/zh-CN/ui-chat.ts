@@ -27,6 +27,7 @@ export const chat = {
     sw: "左下",
   },
   clear: "清空",
+  clearAll: "清空全部会话",
   clearTitle: "清空全部会话",
   clearConfirm: "清空后这段内容的全部会话及其对话历史将被删除，无法恢复。",
   configure: "去配置",

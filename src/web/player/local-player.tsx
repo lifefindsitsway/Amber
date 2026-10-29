@@ -397,6 +397,13 @@ export function LocalPlayer(props: {
         onError={failSwap}
         onDurationChange={(event) => onDuration(event.currentTarget.duration)}
       />
+      {/* Always over the picture, too faint to see and never in the way of the pointer. Left
+          alone on screen, a playing video is handed to the GPU as a plane of its own, which in
+          the desktop client's fullscreen (WebView2) then stays on top of anything that does not
+          cover the picture itself: the control bar over a letterboxed picture (a wide video's
+          black bands) was never drawn again once it had hidden. Covering the picture at all
+          times keeps the video in the page's own drawing. */}
+      {audioOnly ? null : <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black/[0.01]" data-testid="player-picture-cover" />}
       {notice === undefined ? null : (
         <div className="pointer-events-none absolute inset-x-0 top-2 z-[2] flex justify-center px-2">
           <p className="rounded bg-black/75 px-3 py-1.5 text-xs text-white" role="status" data-testid="player-notice">

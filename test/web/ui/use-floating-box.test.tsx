@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESIZE_EDGES, useFloatingBox, type BoxRect, type ResizeEdge } from "../../../src/web/ui/use-floating-box.ts";
 
@@ -23,6 +24,13 @@ function Harness(props: { rect: BoxRect; onCommit: (rect: BoxRect) => void }) {
         <span role="button" tabIndex={0} data-testid="grip" onKeyDown={floating.onKeyDown} />
         <button type="button" data-testid="bar-button" />
         <div role="menu" data-testid="bar-menu" />
+        {/* Like the thread menu opened from the bar: rendered into body, bubbling through the bar. */}
+        {createPortal(
+          <div data-testid="bar-portal">
+            <span data-testid="bar-portal-text">item</span>
+          </div>,
+          document.body,
+        )}
       </header>
       {RESIZE_EDGES.map((edge) => (
         <div key={edge} data-testid={`edge-${edge}`} {...floating.resizeHandle(edge)} />
@@ -102,6 +110,19 @@ describe("useFloatingBox", () => {
     // A secondary button never starts a gesture.
     fireEvent.pointerDown(screen.getByTestId("bar"), { pointerId: 1, button: 2, clientX: 0, clientY: 0 });
     expect(active()).toBe("");
+  });
+
+  it("ignores presses inside content portaled out of the bar, so a menu opened from it keeps its clicks", () => {
+    const { onCommit } = setup({ left: 100, top: 100, width: 400, height: 300 });
+    const text = screen.getByTestId("bar-portal-text");
+    // React bubbles the press through the bar although the content is not inside it in the DOM.
+    const pointerDown = fireEvent.pointerDown(text, { pointerId: 1, button: 0, clientX: 500, clientY: 500 });
+    expect(pointerDown).toBe(true);
+    expect(active()).toBe("");
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 560, clientY: 540 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 560, clientY: 540 });
+    expect(shown()).toEqual({ left: 100, top: 100, width: 400, height: 300 });
+    expect(onCommit).not.toHaveBeenCalled();
   });
 
   it("follows only the first pointer of a gesture", () => {

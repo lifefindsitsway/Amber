@@ -142,6 +142,11 @@ export function useFloatingBox(options: { rect: BoxRect; minWidth: number; minHe
 
   const begin = (event: PointerEvent<HTMLElement>, kind: "move" | ResizeEdge): void => {
     if (event.button !== 0 || gesture.current !== undefined) return;
+    // React bubbles events from portaled content (a menu opened from a button on the handle)
+    // through the handle, although that content is elsewhere in the DOM: only a press on the
+    // handle's own elements may start a gesture, or it would capture the pointer and swallow
+    // the menu's clicks.
+    if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
     if (kind === "move") {
       const hit = event.target instanceof Element ? event.target.closest(NO_DRAG_SELECTOR) : null;
       if (hit !== null && event.currentTarget.contains(hit)) return;

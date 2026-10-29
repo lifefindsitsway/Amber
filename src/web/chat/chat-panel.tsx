@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Dock, GripHorizontal, ListChecks, Maximize2, MessageSquare, Minimize2, PictureInPicture2, Plus, Quote, Send, Square, Trash2, X } from "lucide-react";
+import { BrushCleaning, ChevronDown, ChevronUp, Dock, GripHorizontal, ListChecks, Maximize2, MessageSquare, Minimize2, PictureInPicture2, Plus, Quote, Send, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type UIEvent } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -856,11 +856,12 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         variant="ghost"
         disabled={clearDisabled}
         onClick={() => setConfirmClear(true)}
-        title={t("chat.clear")}
-        aria-label={t("chat.clear")}
+        title={t("chat.clearAll")}
+        aria-label={t("chat.clearAll")}
         data-testid="chat-clear"
       >
-        <Trash2 size={14} aria-hidden="true" />
+        {/* A broom, not a bin: this clears every thread, unlike a thread's own delete. */}
+        <BrushCleaning size={14} aria-hidden="true" />
       </Button>
       <Button size="sm" variant="ghost" onClick={() => placement?.onFloatingChange(false)} title={t("chat.dock")} aria-label={t("chat.dock")} data-testid="chat-dock">
         <Dock size={14} aria-hidden="true" />
