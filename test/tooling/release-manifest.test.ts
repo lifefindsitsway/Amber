@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -59,6 +59,13 @@ describe("release manifest", () => {
     ).toThrow(/--local-test/u);
   });
 
+  it("uses given release notes, trimmed, in place of the changelog section and refuses blank ones", () => {
+    const base = { version: "0.1.0", changelog: CHANGELOG, installer: "Amber_0.1.0_x64-setup.exe", signature: SIG, now: new Date(0) };
+    expect(renderLatestJson({ ...base, notes: "\n公开说明\n\n- 重点\n\n" }).notes).toBe("公开说明\n\n- 重点");
+    expect(renderLatestJson(base).notes).toBe("### 新增\n\n- 首个公开版本");
+    expect(() => renderLatestJson({ ...base, notes: " \n\t\n" })).toThrow(/--notes-file is empty/u);
+  });
+
   it("needs exactly one installer with its signature", () => {
     expect(findSignedInstaller(artifacts({ "Amber_0.1.0_x64-setup.exe": "x", "Amber_0.1.0_x64-setup.exe.sig": SIG }))).toEqual({
       installer: "Amber_0.1.0_x64-setup.exe",
@@ -77,5 +84,25 @@ describe("release manifest", () => {
     const { version } = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as { version: string };
     expect(latest.version).toBe(version);
     expect(latest.platforms["windows-x86_64"]?.signature).toBe(SIG);
+  });
+
+  it("takes the notes from --notes-file on the command line and writes nothing when the file is missing or empty", () => {
+    const run = (dir: string, notesFile: string) =>
+      spawnSync(process.execPath, ["src/tooling/release-manifest.ts", "--", "--dir", dir, "--notes-file", notesFile], { cwd: REPO_ROOT, encoding: "utf8" });
+    const dir = artifacts({ "Amber_0.0.22_x64-setup.exe": "x", "Amber_0.0.22_x64-setup.exe.sig": SIG, "notes.md": "本次更新重点。\n\n### 新增\n\n- 一项\n" });
+    const ok = run(dir, join(dir, "notes.md"));
+    expect(ok.stderr).toBe("");
+    expect(ok.status).toBe(0);
+    expect((JSON.parse(readFileSync(join(dir, "latest.json"), "utf8")) as { notes: string }).notes).toBe("本次更新重点。\n\n### 新增\n\n- 一项");
+
+    const missing = artifacts({ "Amber_0.0.22_x64-setup.exe": "x", "Amber_0.0.22_x64-setup.exe.sig": SIG });
+    expect(run(missing, join(missing, "absent.md")).status).toBe(1);
+    expect(existsSync(join(missing, "latest.json"))).toBe(false);
+
+    const blank = artifacts({ "Amber_0.0.22_x64-setup.exe": "x", "Amber_0.0.22_x64-setup.exe.sig": SIG, "notes.md": "\n  \n" });
+    const refused = run(blank, join(blank, "notes.md"));
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toMatch(/--notes-file is empty/u);
+    expect(existsSync(join(blank, "latest.json"))).toBe(false);
   });
 });

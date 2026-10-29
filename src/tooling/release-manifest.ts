@@ -8,12 +8,15 @@ import { localTestEndpoint } from "./updater-config.ts";
 /**
  * Writes the updater manifest `latest.json` next to a signed build:
  *
- *   pnpm release:manifest -- --dir <artifact directory> [--local-test <base URL>]
+ *   pnpm release:manifest -- --dir <artifact directory> [--notes-file <file>] [--local-test <base URL>]
  *
  * The directory holds exactly one NSIS installer (`*-setup.exe`) and its `.sig`. `signature`
- * is the `.sig` content as written by the signer, `notes` the changelog section of the
- * release version (empty when there is none), and `url` the asset of the `v<version>` GitHub
- * Release. `--local-test <base URL>` points `url` at that loopback directory instead, for the
+ * is the `.sig` content as written by the signer, and `url` the asset of the `v<version>` GitHub
+ * Release. `notes` is what the update dialog shows: the text of `--notes-file`, trimmed, when
+ * one is given (a published release uses the short public notes the maintainer reviewed,
+ * while the local changelog keeps the full record); otherwise the changelog section of the
+ * release version (empty when there is none). A notes file that is missing or empty is an
+ * error, so a release never goes out with notes left blank by mistake. `--local-test <base URL>` points `url` at that loopback directory instead, for the
  * candidate upgrade test; it never names anything else.
  */
 
@@ -65,28 +68,44 @@ export function renderLatestJson(input: {
   installer: string;
   signature: string;
   now: Date;
+  /** Release notes that replace the changelog section; must not be blank. */
+  notes?: string;
   localTest?: string;
 }): LatestJson {
   const base = input.localTest === undefined ? `${RELEASES_PAGE_URL}/download/v${input.version}/` : appendSlash(localTestEndpoint(input.localTest));
   return {
     version: input.version,
-    notes: changelogSection(input.changelog, releaseVersionOf(input.version)),
+    notes: input.notes === undefined ? changelogSection(input.changelog, releaseVersionOf(input.version)) : nonBlankNotes(input.notes),
     pub_date: rfc3339(input.now),
     platforms: { [WINDOWS_PLATFORM]: { signature: input.signature, url: `${base}${encodeURIComponent(input.installer)}` } },
   };
+}
+
+function nonBlankNotes(notes: string): string {
+  const trimmed = notes.trim();
+  if (trimmed === "") {
+    throw new Error("--notes-file is empty");
+  }
+  return trimmed;
 }
 
 function appendSlash(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
 }
 
-function parseArgs(argv: readonly string[]): { dir: string; localTest?: string } {
+function parseArgs(argv: readonly string[]): { dir: string; notesFile?: string; localTest?: string } {
   let dir: string | undefined;
+  let notesFile: string | undefined;
   let localTest: string | undefined;
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
     if (arg === "--dir") {
       dir = argv[++index];
+    } else if (arg === "--notes-file") {
+      notesFile = argv[++index];
+      if (notesFile === undefined) {
+        throw new Error("--notes-file needs a file");
+      }
     } else if (arg === "--local-test") {
       localTest = argv[++index];
       if (localTest === undefined) {
@@ -97,9 +116,9 @@ function parseArgs(argv: readonly string[]): { dir: string; localTest?: string }
     }
   }
   if (dir === undefined) {
-    throw new Error("usage: pnpm release:manifest -- --dir <artifact directory> [--local-test <base URL>]");
+    throw new Error("usage: pnpm release:manifest -- --dir <artifact directory> [--notes-file <file>] [--local-test <base URL>]");
   }
-  return localTest === undefined ? { dir } : { dir, localTest };
+  return { dir, ...(notesFile === undefined ? {} : { notesFile }), ...(localTest === undefined ? {} : { localTest }) };
 }
 
 function main(): void {
@@ -113,6 +132,8 @@ function main(): void {
   } catch {
     // Without a changelog the notes stay empty; `check:versions --release` guards releases.
   }
+  // Read before anything is written: a missing notes file stops here with no latest.json.
+  const notes = args.notesFile === undefined ? undefined : readFileSync(resolve(args.notesFile), "utf8");
   const { installer, signature } = findSignedInstaller(dir);
   const latest = renderLatestJson({
     version,
@@ -120,6 +141,7 @@ function main(): void {
     installer,
     signature: readFileSync(join(dir, signature), "utf8"),
     now: new Date(),
+    ...(notes === undefined ? {} : { notes }),
     ...(args.localTest === undefined ? {} : { localTest: args.localTest }),
   });
   writeFileSync(join(dir, LATEST_JSON), `${JSON.stringify(latest, null, 2)}\n`);
