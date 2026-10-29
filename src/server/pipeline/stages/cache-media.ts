@@ -12,9 +12,10 @@ import { BYTES_PER_GB } from "../../../shared/units.ts";
 import type { Content } from "../../domain/content.ts";
 import { amberError, isAmberError } from "../../domain/errors.ts";
 import { verifiedCacheHeight, type MediaAsset } from "../../domain/media-asset.ts";
-import { cacheMediaTaskRequestSchema, type CacheMediaTaskRequestV2, type CacheMediaTaskRequestV3 } from "../../domain/task-request.ts";
+import { cacheMediaTaskRequestSchema, type CacheMediaTaskRequestV2, type CacheMediaTaskRequestV3, type CacheMediaTaskRequestV4 } from "../../domain/task-request.ts";
 import { FileTooLargeError } from "../../ports/file-store.ts";
 import type { LocalMediaIngest } from "../../ports/local-media-ingest.ts";
+import type { VideoTarget } from "../../ports/platform-source.ts";
 import type { Logger } from "../../ports/logger.ts";
 import type { Repository } from "../../ports/repository.ts";
 import type { SubtitleMuxer } from "../../ports/subtitle-muxer.ts";
@@ -63,6 +64,8 @@ export interface CacheMediaStageDeps {
 }
 
 type CacheMediaType = CacheMediaTaskRequestV3["type"];
+/** The requests this stage downloads: a v3 `quality` is a height cap, a v4 one the exact tier. */
+type CurrentCacheRequest = CacheMediaTaskRequestV3 | CacheMediaTaskRequestV4;
 
 const DOWNLOAD_UNIT_KEY = "cache_media:download";
 const MP3_MIME = "audio/mpeg";
@@ -119,7 +122,8 @@ interface Published {
 
 /**
  * The `cache_media` stage (client only): downloads a platform Content into a
- * `platform_cache` asset whose id and file stem the request froze at submission (schema v3).
+ * `platform_cache` asset whose id and file stem the request froze at submission (schema v3
+ * or v4).
  * `resultJson` = `{ assetId, fileName, requestedType, actualType, height?, aboveRequested?,
  * replaced, evicted }`; `evicted` is always empty, caches are never evicted automatically.
  *
@@ -131,10 +135,14 @@ interface Published {
  *   `CACHE_UNKNOWN_SIZE_RESERVE_GB`. The adapter stops at the byte budget, and every
  *   `CACHE_DISK_CHECK_INTERVAL_MS` both volumes are read again: one below its low-water
  *   mark stops the download with `disk_low`. Any failure leaves the existing caches alone.
- * - Video: the format check must find a picture (else `cache_request_outdated`); the file
+ * - Video: a v4 request with a `quality` downloads that tier exactly; a v3 request, or a v4
+ *   one without `quality`, the best stream under its cap (`CACHE_MEDIA_MAX_HEIGHT` when
+ *   absent). The format check must find a picture (else `cache_request_outdated`); the file
  *   is downloaded into `.amber-tmp/<assetId>/`, then ffprobe reads its picture size and
  *   container, which name it `<stem> [<tier>P].<ext>` (no picture → `cache_request_outdated`,
- *   no height → `cache_probe_failed`). A video whose tier is above the requested cap is kept
+ *   no height → `cache_probe_failed`). A file whose tier is not the exact one asked for fails
+ *   with `invalid_request.cache_quality_mismatch` before anything is published, so no cache
+ *   is replaced by the wrong quality. Under a cap, a video whose tier is above it is kept
  *   and reported as `aboveRequested`.
  * - Audio: the best audio track goes into the data directory and is transcoded to MP3
  *   (`CACHE_AUDIO_MP3_KBPS`) into the scratch directory, named `<stem>.mp3`.
@@ -264,8 +272,8 @@ export class CacheMediaStageExecutor implements StageExecutor {
     if (typeof adapter.inspectVideo !== "function" || typeof adapter.fetchVideo !== "function") {
       throw amberError("internal", `the ${adapter.kind} adapter cannot download video`);
     }
-    const maxHeight = job.request.quality ?? CACHE_MEDIA_MAX_HEIGHT;
-    const inspected = await adapter.inspectVideo(platformRef, auth, { maxHeight }, job.signal);
+    const wanted = videoTargetOf(job.request);
+    const inspected = await adapter.inspectVideo(platformRef, auth, wanted, job.signal);
     if (!inspected.hasVideo) {
       outdated("the source offers no picture any more; cache its audio instead");
     }
@@ -278,7 +286,7 @@ export class CacheMediaStageExecutor implements StageExecutor {
     let acquisition: MediaAsset["acquisition"];
     await this.watchingDisks(job.signal, async (signal) => {
       try {
-        const fetched = await adapter.fetchVideo?.(platformRef, auth, { maxHeight, maxBytes, output: { path: downloadPath, scratchDir: scratch.path } }, job.progress, signal);
+        const fetched = await adapter.fetchVideo?.(platformRef, auth, { ...wanted, maxBytes, output: { path: downloadPath, scratchDir: scratch.path } }, job.progress, signal);
         acquisition = fetched?.acquisition;
       } catch (error) {
         throw asDiskLow(error, "cache");
@@ -303,6 +311,13 @@ export class CacheMediaStageExecutor implements StageExecutor {
     }
     const identity = await this.identityOf(downloadPath);
     const tier = cacheQualityTier(picture.height, picture.width);
+    // Checked before the old caches are touched: a wrong file must not replace the right one.
+    if ("tier" in wanted && tier !== wanted.tier) {
+      throw amberError("invalid_request", `the download is ${tier}P, not the requested ${wanted.tier}P`, {
+        code: "invalid_request.cache_quality_mismatch",
+        params: { expected: String(wanted.tier), actual: String(tier) },
+      });
+    }
     const targetRef = cacheRefOf(videoCacheFileName(job.request.stem, tier, container.ext));
     // Earlier builds recorded the requested cap, or the encoded height, as the quality; the
     // old cache this one replaces is found by the tier of its file.
@@ -328,7 +343,7 @@ export class CacheMediaStageExecutor implements StageExecutor {
     job.progress(1);
     // A cap names a tier (720, 1080): a portrait or rotated video encoded taller than wide is
     // not above a cap its tier fits, even when the format filter had to fall back to it.
-    return { ...done, aboveRequested: tier > maxHeight };
+    return { ...done, aboveRequested: "maxHeight" in wanted && tier > wanted.maxHeight };
   }
 
   private async cacheAudio(job: CacheJob): Promise<Published> {
@@ -466,7 +481,7 @@ interface CacheJob {
   owner: string;
   content: Content;
   target: PlatformTarget;
-  request: CacheMediaTaskRequestV3;
+  request: CurrentCacheRequest;
   progress: (progress: number) => void;
   signal: AbortSignal;
 }
@@ -485,8 +500,24 @@ function resultOf(asset: MediaAsset, requestedType: CacheMediaType, published: P
   };
 }
 
-/** Everything that decides the cache file: source, what was asked for, the frozen stem, expected height, confirmation and asset id. */
-function inputDigestOf(target: PlatformTarget, contentId: string, request: CacheMediaTaskRequestV3): string {
+/**
+ * What a video download asks the adapter for: a v4 `quality` is the exact tier; a v3
+ * `quality`, or none, is a height cap (`CACHE_MEDIA_MAX_HEIGHT` when absent).
+ */
+function videoTargetOf(request: CurrentCacheRequest): VideoTarget {
+  if (request.requestSchemaVersion === 4 && request.quality !== undefined) {
+    return { tier: request.quality };
+  }
+  return { maxHeight: request.quality ?? CACHE_MEDIA_MAX_HEIGHT };
+}
+
+/**
+ * Everything that decides the cache file: source, what was asked for, the frozen stem,
+ * expected height, confirmation and asset id. A v4 request adds its version, since the same
+ * `quality` means a tier there and a cap in v3; the v3 fields are unchanged so the digests
+ * of stored v3 work units still match.
+ */
+function inputDigestOf(target: PlatformTarget, contentId: string, request: CurrentCacheRequest): string {
   const fields = [
     target.adapter.kind,
     target.ref.platformContentId,
@@ -499,6 +530,7 @@ function inputDigestOf(target: PlatformTarget, contentId: string, request: Cache
     request.overwrite?.assetId ?? "",
     request.overwrite?.fileName ?? "",
     request.assetId,
+    ...(request.requestSchemaVersion === 4 ? ["v4"] : []),
   ];
   return `sha256:${createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex")}`;
 }

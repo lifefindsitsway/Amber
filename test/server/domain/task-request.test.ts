@@ -115,5 +115,23 @@ describe("cacheMediaTaskRequestSchema", () => {
       expect(cacheMediaTaskRequestSchema.safeParse({ ...v1, quality }).success, String(quality)).toBe(false);
     }
   });
+
+  it("parses v4 with the v3 fields, its quality being any tier or absent", () => {
+    const v4 = { requestSchemaVersion: 4, kind: "cache_media", type: "video", quality: 480, stem: "课", expectedHeight: 480, assetId: "a", overwrite: { assetId: "b", fileName: "课 [480P].mp4" } };
+    const parsed = cacheMediaTaskRequestSchema.parse(v4);
+    expect(parsed).toEqual(v4);
+    expect(parsed.requestSchemaVersion).toBe(4);
+    const bare = { requestSchemaVersion: 4, kind: "cache_media", type: "video", stem: "课", assetId: "a" };
+    expect(cacheMediaTaskRequestSchema.parse(bare)).toEqual(bare);
+    for (const quality of [240, 1440]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...bare, quality }).success, String(quality)).toBe(true);
+    }
+    for (const quality of [700, 0, "480"]) {
+      expect(cacheMediaTaskRequestSchema.safeParse({ ...bare, quality }).success, String(quality)).toBe(false);
+    }
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...bare, stem: "" }).success).toBe(false);
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...bare, fileName: "x" }).success).toBe(false);
+    expect(cacheMediaTaskRequestSchema.safeParse({ ...bare, requestSchemaVersion: 5 }).success).toBe(false);
+  });
 });
 

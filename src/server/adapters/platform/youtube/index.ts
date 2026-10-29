@@ -16,9 +16,11 @@ import type {
   PlatformMetadata,
   PlatformSourceAdapter,
   SubtitleTrackRef,
+  VideoQuality,
+  VideoTarget,
 } from "../../../ports/platform-source.ts";
 import { platformGet } from "../http.ts";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoFormats, secondsToMs, type YtDlpChapter } from "../shared.ts";
+import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoQualities, secondsToMs, videoTargetOf, type YtDlpChapter } from "../shared.ts";
 import { PLATFORM_SCRATCH_DIR, type YtDlp } from "../yt-dlp.ts";
 import { collapseRollingCaptions } from "./captions.ts";
 import { parseYoutubeUrl, playlistUrl, watchUrl } from "./url.ts";
@@ -313,7 +315,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
   async inspectVideo(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number },
+    target: VideoTarget,
     signal: AbortSignal,
   ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
     const { value } = await this.guestFirst(auth, (cookies) =>
@@ -321,17 +323,17 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
         url: watchUrl(ref.platformContentId),
         extractors: YOUTUBE_EXTRACTORS,
         ...(cookies === undefined ? {} : { cookies }),
-        maxHeight: options.maxHeight,
+        target,
         signal,
       }),
     );
     return value;
   }
 
-  /** The downloadable video streams, guest first like every other YouTube call. */
-  async listVideoFormats(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<Array<{ height: number; width?: number }> | undefined> {
+  /** The quality tiers a video cache can be made in, guest first like every other YouTube call. */
+  async listVideoQualities(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<VideoQuality[] | undefined> {
     const { value } = await this.guestFirst(auth, (cookies) =>
-      listVideoFormats(this.options.ytDlp, { url: watchUrl(ref.platformContentId), extractors: YOUTUBE_EXTRACTORS, ...(cookies === undefined ? {} : { cookies }), signal }),
+      listVideoQualities(this.options.ytDlp, { url: watchUrl(ref.platformContentId), extractors: YOUTUBE_EXTRACTORS, ...(cookies === undefined ? {} : { cookies }), signal }),
     );
     return value;
   }
@@ -340,7 +342,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
   async fetchVideo(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number; maxBytes: number; output: { path: string; scratchDir: string } },
+    options: VideoTarget & { maxBytes: number; output: { path: string; scratchDir: string } },
     onProgress: (progress: number) => void,
     signal: AbortSignal,
   ): Promise<{ sizeBytes: number; mimeType: string; height?: number; acquisition: "guest" | "authenticated" }> {
@@ -349,7 +351,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
         url: watchUrl(ref.platformContentId),
         extractors: YOUTUBE_EXTRACTORS,
         ...(cookies === undefined ? {} : { cookies }),
-        maxHeight: options.maxHeight,
+        target: videoTargetOf(options),
         maxBytes: options.maxBytes,
         output: options.output,
         onProgress,

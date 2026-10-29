@@ -14,12 +14,13 @@ import { latestAttempts } from "../../../../src/server/pipeline/projection.ts";
 import { audioReservation, CacheMediaStageExecutor, mp3EstimateBytes, videoReservation } from "../../../../src/server/pipeline/stages/cache-media.ts";
 import type { CacheFileStore } from "../../../../src/server/pipeline/media-files.ts";
 import type { LocalMediaIngest } from "../../../../src/server/ports/local-media-ingest.ts";
-import type { PlatformSourceAdapter } from "../../../../src/server/ports/platform-source.ts";
+import type { PlatformSourceAdapter, VideoTarget } from "../../../../src/server/ports/platform-source.ts";
 import type { MediaInspection, SubtitleMuxer } from "../../../../src/server/ports/subtitle-muxer.ts";
 import type { FileStore } from "../../../../src/server/ports/file-store.ts";
 import {
   CACHE_AUDIO_MP3_KBPS,
   CACHE_DOWNLOAD_PEAK_FACTOR,
+  CACHE_MEDIA_MAX_HEIGHT,
   CACHE_UNKNOWN_SIZE_RESERVE_GB,
   LOW_WATER_FREE_GB,
 } from "../../../../src/shared/defaults.ts";
@@ -38,6 +39,8 @@ const MP3_BYTES = Buffer.concat([Buffer.from("ID3"), Buffer.from([4, 0, 0, 0, 0,
 type FetchVideo = NonNullable<PlatformSourceAdapter["fetchVideo"]>;
 type InspectVideo = NonNullable<PlatformSourceAdapter["inspectVideo"]>;
 type Usage = { usedBytes: number; freeBytes: number; totalBytes: number };
+/** How a call asked for the video, recorded as the field it carried. */
+const targetOf = (target: VideoTarget): { maxHeight: number } | { tier: number } => ("tier" in target ? { tier: target.tier } : { maxHeight: target.maxHeight });
 /** A volume far above any low-water mark, for tests that are not about the disk budget. */
 const AMPLE_USAGE: Usage = { usedBytes: 0, freeBytes: 1000 * GB, totalBytes: 2000 * GB };
 
@@ -136,17 +139,17 @@ function setup(options: SetupOptions = {}) {
   open.push(stack);
   const contentId = addContent(stack, "BV1cache", options.durationMs);
   const adapter = stack.h.platforms.bilibili;
-  const calls: Array<{ method: string; maxHeight?: number; maxBytes?: number }> = [];
+  const calls: Array<{ method: string; maxHeight?: number; tier?: number; maxBytes?: number }> = [];
   const fetchWith = (impl: FetchVideo) => {
     const fetchVideo: FetchVideo = async (ref, auth, opts, onProgress, signal) => {
-      calls.push({ method: "fetchVideo", maxHeight: opts.maxHeight, maxBytes: opts.maxBytes });
+      calls.push({ method: "fetchVideo", ...targetOf(opts), maxBytes: opts.maxBytes });
       return impl(ref, auth, opts, onProgress, signal);
     };
     Object.assign(adapter, { fetchVideo });
   };
   const inspectWith = (impl: InspectVideo) => {
     const inspectVideo: InspectVideo = async (ref, auth, opts, signal) => {
-      calls.push({ method: "inspectVideo", maxHeight: opts.maxHeight });
+      calls.push({ method: "inspectVideo", ...targetOf(opts) });
       return impl(ref, auth, opts, signal);
     };
     Object.assign(adapter, { inspectVideo });
@@ -1009,5 +1012,108 @@ describe("CacheMediaStageExecutor: input digest", () => {
     }
     expect(new Set(digests.values()).size).toBe(digests.size);
     expect(calls.some((call) => call.method === "fetchVideo")).toBe(false);
+  });
+});
+
+describe("CacheMediaStageExecutor: v4 requests for an exact tier", () => {
+  const v4Request = (fields: Record<string, unknown> = {}) => cacheRequest({ requestSchemaVersion: 4, ...fields });
+
+  it("asks the adapter for the tier, publishes the download in it and reports nothing above a cap", async () => {
+    const { stack, contentId, calls, videoSource } = setup();
+    // An ultra-wide picture: 854×274 is 480P by its equivalent height.
+    videoSource({ height: 274, sizeBytes: 100 }, { width: 854, height: 274 });
+    const request = v4Request({ quality: 480 });
+    const taskId = await runCache(stack, contentId, request);
+    expect(taskOf(stack.h, taskId).statusProjection).toBe("succeeded");
+    expect(resultOf(stack, taskId)).toEqual({
+      assetId: request.assetId,
+      fileName: "第 1 讲 [480P].mp4",
+      requestedType: "video",
+      actualType: "video",
+      height: 480,
+      replaced: [],
+      evicted: [],
+    });
+    const available = AMPLE_USAGE.freeBytes - LOW_WATER_FREE_GB * GB;
+    expect(calls).toEqual([
+      { method: "inspectVideo", tier: 480 },
+      { method: "fetchVideo", tier: 480, maxBytes: Math.floor(available / CACHE_DOWNLOAD_PEAK_FACTOR) },
+    ]);
+  });
+
+  it("fails with cache_quality_mismatch when the download is another tier, publishing nothing and keeping the caches", async () => {
+    const { stack, contentId, videoSource } = setup();
+    const old480 = await putCache(stack, contentId, "第 1 讲 [480P].mp4", mediaBytes({ width: 854, height: 480, salt: "old 480" }), { quality: "480", qualityVerified: true });
+    const old720 = await putCache(stack, contentId, "第 1 讲 [720P].mp4", mediaBytes({ width: 1280, height: 720, salt: "old 720" }), { quality: "720", qualityVerified: true });
+    // Asked for 480P, the download came out 1280×410: 720P.
+    videoSource({ height: 274 }, { width: 1280, height: 410 });
+    const request = v4Request({ quality: 480 });
+    const taskId = await runCache(stack, contentId, request);
+    expect(taskOf(stack.h, taskId).statusProjection).toBe("failed");
+    const error = errorOf(stack, taskId);
+    expect(error).toMatchObject({ class: "invalid_request", code: "invalid_request.cache_quality_mismatch" });
+    expect(error?.userMessage).toContain("720P");
+    expect(error?.userMessage).toContain("480P");
+    expect(assetOf(stack, request.assetId)).toBeUndefined();
+    expect(assetOf(stack, old480.id)).toMatchObject({ availability: "available", storageRef: "media/第 1 讲 [480P].mp4" });
+    expect(assetOf(stack, old720.id)).toMatchObject({ availability: "available", storageRef: "media/第 1 讲 [720P].mp4" });
+    expect(fileOf(stack, "第 1 讲 [480P].mp4")).toEqual(mediaBytes({ width: 854, height: 480, salt: "old 480" }));
+    expect(fileOf(stack, "第 1 讲 [720P].mp4")).toEqual(mediaBytes({ width: 1280, height: 720, salt: "old 720" }));
+    // No new file and no scratch directory are left behind.
+    expect(cacheFiles(stack)).toEqual(["第 1 讲 [480P].mp4", "第 1 讲 [720P].mp4"]);
+    expect(existsSync(join(stack.stores.cache.directory(), ".amber-tmp", request.assetId as string))).toBe(false);
+  });
+
+  it("selects the tier again when the stage is re-run", async () => {
+    const { stack, contentId, calls, videoSource } = setup();
+    videoSource({ height: 274 }, { width: 1280, height: 410 });
+    const request = v4Request({ quality: 480 });
+    const taskId = await runCache(stack, contentId, request);
+    expect(errorOf(stack, taskId)?.code).toBe("invalid_request.cache_quality_mismatch");
+    videoSource({ height: 274 }, { width: 854, height: 274 });
+    calls.length = 0;
+    stack.h.tasks.retryStage(LOCAL, taskId, { stage: "cache_media" });
+    await waitFor(() => taskOf(stack.h, taskId).statusProjection === "succeeded");
+    expect(calls.map((call) => ({ method: call.method, tier: call.tier, maxHeight: call.maxHeight }))).toEqual([
+      { method: "inspectVideo", tier: 480, maxHeight: undefined },
+      { method: "fetchVideo", tier: 480, maxHeight: undefined },
+    ]);
+    expect(assetOf(stack, request.assetId)).toMatchObject({ storageRef: "media/第 1 讲 [480P].mp4", availability: "available" });
+  });
+
+  it("downloads under the default cap without a quality, reporting a tier above it", async () => {
+    const { stack, contentId, calls, videoSource } = setup();
+    videoSource({ height: 1440 }, { width: 2560, height: 1440 });
+    const { quality: _quality, ...request } = v4Request();
+    const taskId = await runCache(stack, contentId, request);
+    expect(taskOf(stack.h, taskId).statusProjection).toBe("succeeded");
+    expect(resultOf(stack, taskId)).toMatchObject({ fileName: "第 1 讲 [1440P].mp4", height: 1440, aboveRequested: true });
+    expect(calls.map((call) => ({ method: call.method, tier: call.tier, maxHeight: call.maxHeight }))).toEqual([
+      { method: "inspectVideo", tier: undefined, maxHeight: CACHE_MEDIA_MAX_HEIGHT },
+      { method: "fetchVideo", tier: undefined, maxHeight: CACHE_MEDIA_MAX_HEIGHT },
+    ]);
+  });
+
+  it("keeps the v3 digest as it was and gives v4 another one for the same fields", async () => {
+    const { stack, contentId, videoSource, inspectWith } = setup();
+    // Every run stops at the format check, so one asset id can be run again.
+    videoSource({}, {});
+    inspectWith(async () => ({ hasVideo: false }));
+    const assetId = nextAssetId();
+    const fields = { quality: 720, stem: "第 1 讲", expectedHeight: 720, overwrite: { assetId: "01OVERWRITTEN", fileName: "第 1 讲 [720P].mp4" }, assetId };
+    const digestOfRun = async (request: Record<string, unknown>): Promise<string> => {
+      const taskId = await runCache(stack, contentId, request);
+      expect(errorOf(stack, taskId)?.code).toBe("invalid_request.cache_request_outdated");
+      return workUnitsOf(stack.h, taskId)[0]?.inputDigest as string;
+    };
+    const v3 = await digestOfRun(cacheRequest(fields));
+    const v4 = await digestOfRun(cacheRequest({ ...fields, requestSchemaVersion: 4 }));
+    // The v3 fields, in the order stored v3 work units were digested with.
+    const content = stack.h.repository.withTransaction((scope) => scope.contents.get(LOCAL.userId, contentId));
+    const source = content?.source as { platformContentId: string; platformPartId: string };
+    const v3Fields = ["bilibili", source.platformContentId, source.platformPartId, contentId, "video", 720, "第 1 讲", 720, "01OVERWRITTEN", "第 1 讲 [720P].mp4", assetId];
+    expect(v3).toBe(`sha256:${createHash("sha256").update(JSON.stringify(v3Fields), "utf8").digest("hex")}`);
+    expect(v4).toBe(`sha256:${createHash("sha256").update(JSON.stringify([...v3Fields, "v4"]), "utf8").digest("hex")}`);
+    expect(v4).not.toBe(v3);
   });
 });

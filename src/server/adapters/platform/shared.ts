@@ -1,9 +1,11 @@
 import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { monotonicFactory } from "ulid";
+import { CACHE_QUALITY_TIERS, cacheQualityTier } from "../../../shared/cache-file-name.ts";
 import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../shared/defaults.ts";
 import { formatBytes } from "../../../shared/units.ts";
-import { amberError } from "../../domain/errors.ts";
+import { amberError, isAmberError } from "../../domain/errors.ts";
+import type { VideoQuality, VideoTarget } from "../../ports/platform-source.ts";
 import type { YtDlp } from "./yt-dlp.ts";
 
 /** A chapter as yt-dlp prints it: seconds, possibly fractional. */
@@ -215,12 +217,181 @@ interface VideoSelection {
   url: string;
   extractors: readonly string[];
   cookies?: string;
-  maxHeight: number;
+  target: VideoTarget;
   signal: AbortSignal;
 }
 
-function videoSelectionArgs(maxHeight: number): string[] {
-  return ["--no-playlist", "--format", videoFormat(maxHeight), "--format-sort", VIDEO_FORMAT_SORT, "--merge-output-format", VIDEO_MERGE_FORMATS];
+function videoSelectionArgs(format: string): string[] {
+  return ["--no-playlist", "--format", format, "--format-sort", VIDEO_FORMAT_SORT, "--merge-output-format", VIDEO_MERGE_FORMATS];
+}
+
+/**
+ * Format ids an exact selection may name. yt-dlp parses `--format` as an expression, so an
+ * id carrying `+`, `/`, `[`, spaces or the like would change what is selected.
+ */
+const SAFE_FORMAT_ID = /^[A-Za-z0-9._-]+$/;
+/** yt-dlp's message when a `--format` expression matches none of the current formats. */
+const FORMAT_NOT_AVAILABLE = /Requested format is not available/i;
+
+/** A video stream of the metadata that a cache of an exact tier may take. */
+interface VideoCandidate {
+  formatId: string;
+  ext: string;
+  vcodec: string;
+  width: number;
+  height: number;
+  tbr: number;
+  /** Position in yt-dlp's list, which runs from worst to best. */
+  index: number;
+}
+
+/** The stream a cache of a tier downloads, as `pickTierFormat` selects it. */
+export interface TierFormat {
+  formatId: string;
+  ext: string;
+  width: number;
+  height: number;
+}
+
+const positiveInteger = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
+
+/**
+ * The streams of a yt-dlp format list a tier can be cached from: an MP4 or WebM container
+ * (what WebView2 plays), a video codec, a positive integer height and width, and a format id
+ * that is safe to name in a `--format` expression. The width is required because the tier
+ * is judged from both sides; a stream announcing its height alone could land in a different
+ * tier than its picture has.
+ */
+function videoCandidates(formats: readonly unknown[]): VideoCandidate[] {
+  const candidates: VideoCandidate[] = [];
+  formats.forEach((format, index) => {
+    if (typeof format !== "object" || format === null) {
+      return;
+    }
+    const { format_id: formatId, ext, vcodec, width, height, tbr } = format as Record<string, unknown>;
+    if (typeof formatId !== "string" || !SAFE_FORMAT_ID.test(formatId) || typeof ext !== "string" || !Object.hasOwn(VIDEO_MIME_BY_EXT, ext.toLowerCase())) {
+      return;
+    }
+    if (typeof vcodec !== "string" || vcodec === "" || vcodec.toLowerCase() === "none" || !positiveInteger(height) || !positiveInteger(width)) {
+      return;
+    }
+    const bitrate = typeof tbr === "number" && Number.isFinite(tbr) && tbr > 0 ? tbr : 0;
+    candidates.push({ formatId, ext: ext.toLowerCase(), vcodec: vcodec.toLowerCase(), width, height, tbr: bitrate, index });
+  });
+  return candidates;
+}
+
+const isH264 = (candidate: VideoCandidate) => candidate.vcodec.startsWith("avc1") || candidate.vcodec.startsWith("h264");
+const equivalentHeight = (candidate: VideoCandidate) =>
+  Math.max(Math.min(candidate.width, candidate.height), (Math.max(candidate.width, candidate.height) * 9) / 16);
+
+/**
+ * Best first: H.264, which every WebView2 build decodes; then the larger picture within the
+ * tier; then MP4 over WebM; then the higher bitrate; then the later entry, as yt-dlp lists
+ * formats from worst to best.
+ */
+function compareCandidates(a: VideoCandidate, b: VideoCandidate): number {
+  return (
+    Number(isH264(b)) - Number(isH264(a)) ||
+    equivalentHeight(b) - equivalentHeight(a) ||
+    Number(b.ext === "mp4") - Number(a.ext === "mp4") ||
+    b.tbr - a.tbr ||
+    b.index - a.index
+  );
+}
+
+function pickFrom(candidates: readonly VideoCandidate[], tier: number): TierFormat | undefined {
+  const [best] = candidates.filter((candidate) => cacheQualityTier(candidate.height, candidate.width) === tier).sort(compareCandidates);
+  return best === undefined ? undefined : { formatId: best.formatId, ext: best.ext, width: best.width, height: best.height };
+}
+
+/**
+ * The stream of yt-dlp's `formats` a cache of quality `tier` downloads: among the candidates
+ * (`videoCandidates`) whose picture falls in that tier, the first by `compareCandidates`.
+ * `undefined` when none does.
+ */
+export function pickTierFormat(formats: readonly unknown[], tier: number): TierFormat | undefined {
+  return pickFrom(videoCandidates(formats), tier);
+}
+
+/** The tiers `formats` can be cached in, ascending, each with the size of the stream `pickTierFormat` takes for it. */
+export function availableTiers(formats: readonly unknown[]): VideoQuality[] {
+  const candidates = videoCandidates(formats);
+  const qualities: VideoQuality[] = [];
+  for (const tier of CACHE_QUALITY_TIERS) {
+    const pick = pickFrom(candidates, tier);
+    if (pick !== undefined) {
+      qualities.push({ tier, width: pick.width, height: pick.height });
+    }
+  }
+  return qualities;
+}
+
+/**
+ * The `--format` expression for exactly `pick`. A bare format id matches only that format,
+ * and `/` takes the first alternative that matches (`YoutubeDL.py` of the pinned release):
+ * the stream with an audio stream of its own container, else with any audio stream (the
+ * merge then falls back as `--merge-output-format` allows), else the stream alone. Which
+ * audio stream is taken is left to `--format-sort`.
+ */
+export function exactVideoFormat(pick: Pick<TierFormat, "formatId" | "ext">): string {
+  const audio = pick.ext === "webm" ? "ba[ext=webm]" : "ba[ext=m4a]";
+  return `${pick.formatId}+${audio}/${pick.formatId}+ba/${pick.formatId}`;
+}
+
+/** The format list of the source's metadata (`--dump-single-json`, nothing downloaded); `undefined` when the document has none. */
+async function dumpFormats(ytDlp: YtDlp, input: { url: string; extractors: readonly string[]; cookies?: string; signal: AbortSignal }): Promise<unknown[] | undefined> {
+  const info = await ytDlp.json<{ formats?: unknown } | null>({
+    args: ["--dump-single-json", "--skip-download", "--no-playlist", input.url],
+    extractors: input.extractors,
+    ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
+    signal: input.signal,
+    timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
+  });
+  const formats = info?.formats;
+  return Array.isArray(formats) ? formats : undefined;
+}
+
+function tierUnavailable(tier: number) {
+  return amberError("invalid_request", `no stream of the ${tier}P tier is offered`, {
+    code: "invalid_request.cache_quality_unavailable",
+    params: { quality: String(tier) },
+  });
+}
+
+/**
+ * A failure of a run with an exact selection whose stream is gone by the time yt-dlp reads
+ * the formats again: that tier is no longer offered, and nothing else is taken in its place.
+ */
+function tierFailure(target: VideoTarget, error: unknown): unknown {
+  if ("tier" in target && isAmberError(error) && FORMAT_NOT_AVAILABLE.test(error.appError.upstreamMessage ?? error.message)) {
+    return tierUnavailable(target.tier);
+  }
+  return error;
+}
+
+/** Just the target of a `fetchVideo` request, without its other options. */
+export function videoTargetOf(options: VideoTarget): VideoTarget {
+  return "tier" in options ? { tier: options.tier } : { maxHeight: options.maxHeight };
+}
+
+/**
+ * The `--format` expression for `target`, shared by the format check and the download so
+ * both select the same stream. A tier is selected exactly from a fresh metadata dump
+ * (`pickTierFormat`), and a tier the source does not offer fails with
+ * `invalid_request.cache_quality_unavailable` before anything else runs; a height cap uses
+ * `videoFormat`.
+ */
+async function resolveVideoTarget(ytDlp: YtDlp, input: VideoSelection): Promise<{ format: string }> {
+  if (!("tier" in input.target)) {
+    return { format: videoFormat(input.target.maxHeight) };
+  }
+  const formats = await dumpFormats(ytDlp, input);
+  const pick = formats === undefined ? undefined : pickTierFormat(formats, input.target.tier);
+  if (pick === undefined) {
+    throw tierUnavailable(input.target.tier);
+  }
+  return { format: exactVideoFormat(pick) };
 }
 
 /**
@@ -228,22 +399,26 @@ function videoSelectionArgs(maxHeight: number): string[] {
  * yt-dlp derives the approximation from the bitrate and sums both streams of a merged pair
  * (`YoutubeDL.py`) — its height, the container the merge produces, its video codec and width.
  */
-async function checkVideoFormat(ytDlp: YtDlp, input: VideoSelection): Promise<ReturnType<typeof parseFormatLine>> {
+async function checkVideoFormat(ytDlp: YtDlp, input: VideoSelection, format: string): Promise<ReturnType<typeof parseFormatLine>> {
   let selected: ReturnType<typeof parseFormatLine>;
-  await ytDlp.run({
-    args: [...videoSelectionArgs(input.maxHeight), "--print", `${FORMAT_PREFIX}%(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s`, input.url],
-    extractors: input.extractors,
-    ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
-    signal: input.signal,
-    onStdoutLine: (line) => {
-      selected = parseFormatLine(line) ?? selected;
-    },
-  });
+  try {
+    await ytDlp.run({
+      args: [...videoSelectionArgs(format), "--print", `${FORMAT_PREFIX}%(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s`, input.url],
+      extractors: input.extractors,
+      ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
+      signal: input.signal,
+      onStdoutLine: (line) => {
+        selected = parseFormatLine(line) ?? selected;
+      },
+    });
+  } catch (error) {
+    throw tierFailure(input.target, error);
+  }
   return selected;
 }
 
 /**
- * What `downloadVideo` would fetch for `maxHeight`, without fetching it.
+ * What `downloadVideo` would fetch for `target`, without fetching it.
  * The selection has no video stream when yt-dlp reports `vcodec` `none`, or reports no
  * codec and no height either: the content is audio only. A container WebView2 cannot play
  * fails with `media_unsupported_type` here rather than after the download.
@@ -252,7 +427,8 @@ export async function inspectVideo(
   ytDlp: YtDlp,
   input: VideoSelection,
 ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
-  const selected = await checkVideoFormat(ytDlp, input);
+  const { format } = await resolveVideoTarget(ytDlp, input);
+  const selected = await checkVideoFormat(ytDlp, input, format);
   const codec = selected?.vcodec?.toLowerCase();
   if (codec === "none" || (codec === undefined && selected?.height === undefined)) {
     return { hasVideo: false };
@@ -272,55 +448,25 @@ export async function inspectVideo(
   };
 }
 
-interface ListedFormat {
-  height?: unknown;
-  width?: unknown;
-  vcodec?: unknown;
-  ext?: unknown;
-}
-
-const positiveInteger = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
-
 /**
- * The video streams of the source's yt-dlp metadata (`--dump-single-json`, nothing
- * downloaded), as the cache dialog's quality candidates: only streams in a container
- * WebView2 plays (MP4, WebM), with a video codec and a positive integer height. yt-dlp
- * lists only the streams the platform returned for the login of this run, so qualities
- * that need another login are absent. `undefined` when the document has no format list.
+ * The quality tiers a video cache of the source can be made in, from one metadata dump
+ * (nothing downloaded): each tier `pickTierFormat` finds a stream for, with that stream's
+ * picture size, so a listed tier is exactly what `downloadVideo` fetches for it. yt-dlp lists
+ * only the streams the platform returned for the login of this run, so qualities that need
+ * another login are absent. `undefined` when the document has no format list.
  */
-export async function listVideoFormats(
+export async function listVideoQualities(
   ytDlp: YtDlp,
   input: { url: string; extractors: readonly string[]; cookies?: string; signal: AbortSignal },
-): Promise<Array<{ height: number; width?: number }> | undefined> {
-  const info = await ytDlp.json<{ formats?: ListedFormat[] | null } | null>({
-    args: ["--dump-single-json", "--skip-download", "--no-playlist", input.url],
-    extractors: input.extractors,
-    ...(input.cookies === undefined ? {} : { cookies: input.cookies }),
-    signal: input.signal,
-    timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
-  });
-  const formats = info?.formats;
-  if (!Array.isArray(formats)) {
-    return undefined;
-  }
-  const listed: Array<{ height: number; width?: number }> = [];
-  for (const format of formats) {
-    if (typeof format !== "object" || format === null) {
-      continue;
-    }
-    const ext = typeof format.ext === "string" ? format.ext.toLowerCase() : undefined;
-    const vcodec = typeof format.vcodec === "string" ? format.vcodec.toLowerCase() : undefined;
-    if (ext === undefined || VIDEO_MIME_BY_EXT[ext] === undefined || vcodec === undefined || vcodec === "" || vcodec === "none" || !positiveInteger(format.height)) {
-      continue;
-    }
-    listed.push({ height: format.height, ...(positiveInteger(format.width) ? { width: format.width } : {}) });
-  }
-  return listed;
+): Promise<VideoQuality[] | undefined> {
+  const formats = await dumpFormats(ytDlp, input);
+  return formats === undefined ? undefined : availableTiers(formats);
 }
 
 /**
- * Downloads a video at most `maxHeight` pixels high to exactly `output.path` (`cache_media`).
- * A first, download-free run (`checkVideoFormat`) reads the selected format's
+ * Downloads the video for `target` to exactly `output.path` (`cache_media`): exactly the
+ * stream of a tier, or the best stream at most `maxHeight` pixels high (`resolveVideoTarget`).
+ * A download-free run (`checkVideoFormat`) then reads the selected format's
  * announced size, and a size over `maxBytes` fails with `media_too_large` before anything
  * is fetched. While downloading, yt-dlp is stopped as soon as the bytes received for both
  * streams together, or an announced total, exceed `maxBytes` (`media_too_large`, nothing
@@ -335,16 +481,17 @@ export async function downloadVideo(
     url: string;
     extractors: readonly string[];
     cookies?: string;
-    maxHeight: number;
+    target: VideoTarget;
     maxBytes: number;
     output: { path: string; scratchDir: string };
     onProgress: (progress: number) => void;
     signal: AbortSignal;
   },
 ): Promise<{ sizeBytes: number; mimeType: string; height?: number }> {
-  const selection = videoSelectionArgs(input.maxHeight);
+  const { format } = await resolveVideoTarget(ytDlp, input);
+  const selection = videoSelectionArgs(format);
   const cookies = input.cookies === undefined ? {} : { cookies: input.cookies };
-  const selected = await checkVideoFormat(ytDlp, input);
+  const selected = await checkVideoFormat(ytDlp, input, format);
   if (selected?.sizeBytes !== undefined && selected.sizeBytes > input.maxBytes) {
     throw tooLarge(selected.sizeBytes, input.maxBytes);
   }
@@ -410,7 +557,7 @@ export async function downloadVideo(
       });
     } catch (error) {
       if (oversize === undefined || input.signal.aborted) {
-        throw error;
+        throw tierFailure(input.target, error);
       }
     }
     if (oversize !== undefined) {

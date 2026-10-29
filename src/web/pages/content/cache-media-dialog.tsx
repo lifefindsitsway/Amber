@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -12,6 +13,7 @@ import {
   type CacheMediaInspectDto,
   type CacheMediaRequest,
   type CacheQualityStatus,
+  type CacheVideoQuality,
 } from "../../../shared/dto/media.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import { CACHE_MEDIA_QUALITIES } from "../../../shared/enums.ts";
@@ -28,6 +30,34 @@ import { Modal } from "../../ui/modal.tsx";
 import { contentKeys } from "./content-data.ts";
 
 const DEFAULT_QUALITY: CacheMediaQuality = CACHE_MEDIA_QUALITIES.find((quality) => quality === CACHE_MEDIA_MAX_HEIGHT) ?? CACHE_MEDIA_QUALITIES[0];
+/**
+ * How far a picture's short side may be from its tier and still read as a standard picture
+ * of that tier; the same slack the tier label itself allows (1280×714 is 720P).
+ */
+const STANDARD_PICTURE_TOLERANCE = 1.05;
+/** What an inspection fails with when the source no longer offers the chosen tier. */
+const QUALITY_UNAVAILABLE = "invalid_request.cache_quality_unavailable";
+
+/** A quality option: a tier, with the picture size of its stream when the source was probed. */
+type QualityOption = { tier: CacheMediaQuality } & Partial<Pick<CacheVideoQuality, "width" | "height">>;
+
+/**
+ * The option text of a tier: `720P`, and for a non-standard picture (ultra-wide, or a size
+ * whose short side is not about the tier) the real size as well, `720P（1280×410）`, so the
+ * user knows what the tier downloads. Portrait pictures whose short side is the tier read
+ * as standard.
+ */
+export function qualityOptionLabel(option: QualityOption, t: TFunction): string {
+  const { tier, width, height } = option;
+  if (width === undefined || height === undefined) {
+    return t("contentView.cache.qualityValue", { height: tier });
+  }
+  const short = Math.min(width, height);
+  const standard = short >= tier / STANDARD_PICTURE_TOLERANCE && short <= tier * STANDARD_PICTURE_TOLERANCE;
+  return standard
+    ? t("contentView.cache.qualityValue", { height: tier })
+    : t("contentView.cache.qualityValueSized", { height: tier, width, pixelHeight: height });
+}
 
 /**
  * The quality preselected among the source's own: the highest one not above
@@ -38,10 +68,13 @@ export function defaultCacheQuality(qualities: readonly CacheMediaQuality[]): Ca
   return sorted.filter((quality) => quality <= CACHE_MEDIA_MAX_HEIGHT).pop() ?? sorted.pop() ?? DEFAULT_QUALITY;
 }
 
-/** Where the probe of the source's qualities stands; one probe per opening of the dialog. */
-type QualityProbe = { kind: "loading" } | { kind: "ready"; status: CacheQualityStatus; qualities: CacheMediaQuality[] } | { kind: "failed" };
+/**
+ * Where the probe of the source's qualities stands: one probe per opening of the dialog, and
+ * another when an inspection finds the chosen tier gone.
+ */
+type QualityProbe = { kind: "loading" } | { kind: "ready"; status: CacheQualityStatus; qualities: CacheVideoQuality[] } | { kind: "failed" };
 
-/** The `POST /cache-media` (and `/inspect`) body for a choice; the height cap applies to a video only. */
+/** The `POST /cache-media` (and `/inspect`) body for a choice; the quality tier applies to a video only. */
 export function cacheMediaRequest(type: CacheMediaType, quality: CacheMediaQuality, fileName: string, overwriteAssetId?: string): CacheMediaRequest {
   const base: CacheMediaRequest = type === "video" ? { type, quality, fileName } : { type, fileName };
   return overwriteAssetId === undefined ? base : { ...base, overwriteAssetId };
@@ -121,10 +154,11 @@ function cacheRowsOfInspection(caches: CacheMediaInspectDto["caches"]): CacheRow
 }
 
 /**
- * 「缓存本视频」 (desktop client): the user picks a video (height cap) or audio only and
- * the file name, prefilled with the Content's display title. Each opening probes the
- * qualities the source currently offers once and lists only those; until the probe answers
- * a video cannot be started, and when it fails the general-purpose caps are offered instead.
+ * 「缓存本视频」 (desktop client): the user picks a video (the quality tier it is cached in)
+ * or audio only and the file name, prefilled with the Content's display title. Each opening
+ * probes the tiers the source currently offers once and lists only those; until the probe
+ * answers a video cannot be started, and when it fails the general-purpose tiers are offered
+ * instead. An inspection that finds the chosen tier gone probes the list again.
  * 「开始缓存」 first asks the server
  * what the request would produce: the expected file name, the caches it replaces, another
  * Content's cache it would overwrite (which needs a confirmation) and what blocks it. When
@@ -164,26 +198,37 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   const [reviewing, setReviewing] = useState(false);
   const path = `/api/contents/${encodeURIComponent(props.contentId)}/cache-media`;
   const [probe, setProbe] = useState<QualityProbe>({ kind: "loading" });
+  // Bumped to probe the list again; 0 is the probe of the opening.
+  const [probeSeq, setProbeSeq] = useState(0);
   // Not a cached query: every opening asks afresh, and an answer arriving after the dialog
-  // closed (or after a later opening started its own probe) must not touch the form.
+  // closed (or after a later probe started) must not touch the form.
   useEffect(() => {
     const controller = new AbortController();
+    const reprobe = probeSeq > 0;
     client.get(`${path}/qualities`, cacheMediaQualitiesDtoSchema, { signal: controller.signal }).then(
       (answer) => {
         if (controller.signal.aborted) return;
         setProbe({ kind: "ready", status: answer.status, qualities: answer.qualities });
-        // Only the cap changes: an audio inspection in flight is not about the cap, and no
-        // video inspection can be, since a video cannot be started before this answer.
-        if (answer.status === "available") setQuality(defaultCacheQuality(answer.qualities));
+        // Only the tier changes: an audio inspection in flight is not about the tier, and no
+        // video inspection can be, since a video cannot be started before this answer. A
+        // second probe keeps the user's tier while the source still offers it.
+        if (answer.status === "available") {
+          const tiers = answer.qualities.map((option) => option.tier);
+          setQuality((current) => (reprobe && tiers.includes(current) ? current : defaultCacheQuality(tiers)));
+        } else if (reprobe) {
+          setQuality((current) => (CACHE_MEDIA_QUALITIES.some((tier) => tier === current) ? current : DEFAULT_QUALITY));
+        }
       },
       () => {
-        if (!controller.signal.aborted) setProbe({ kind: "failed" });
+        if (controller.signal.aborted) return;
+        setProbe({ kind: "failed" });
+        if (reprobe) setQuality((current) => (CACHE_MEDIA_QUALITIES.some((tier) => tier === current) ? current : DEFAULT_QUALITY));
       },
     );
     return () => controller.abort();
-  }, [client, path]);
+  }, [client, path, probeSeq]);
   const listed = probe.kind === "ready" && probe.status === "available";
-  const qualityOptions: readonly CacheMediaQuality[] = listed ? probe.qualities : CACHE_MEDIA_QUALITIES;
+  const qualityOptions: readonly QualityOption[] = listed ? probe.qualities : CACHE_MEDIA_QUALITIES.map((tier) => ({ tier }));
   const videoBlocked = probe.kind === "loading" || (probe.kind === "ready" && probe.status === "audio_only");
   const inspect = useMutation({
     mutationFn: (body: CacheMediaRequest) => client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body }),
@@ -262,15 +307,15 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
               className="h-8 rounded border border-line bg-surface px-2"
               value={quality}
               onChange={(event) => {
-                const next = qualityOptions.find((value) => String(value) === event.target.value);
-                if (next !== undefined) edit(() => setQuality(next));
+                const next = qualityOptions.find((option) => String(option.tier) === event.target.value);
+                if (next !== undefined) edit(() => setQuality(next.tier));
               }}
               disabled={locked}
               data-testid="cache-quality"
             >
-              {qualityOptions.map((value) => (
-                <option key={value} value={value}>
-                  {t("contentView.cache.qualityValue", { height: value })}
+              {qualityOptions.map((option) => (
+                <option key={option.tier} value={option.tier}>
+                  {qualityOptionLabel(option, t)}
                 </option>
               ))}
             </select>
@@ -330,6 +375,14 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
                     setReviewing(true);
                   } else {
                     start.mutate(body);
+                  }
+                },
+                // The source no longer offers the chosen tier: the error stays on screen and
+                // the list is probed again for the user to choose from; nothing starts.
+                onError: (failure) => {
+                  if (failure instanceof ApiError && failure.error.code === QUALITY_UNAVAILABLE) {
+                    setProbe({ kind: "loading" });
+                    setProbeSeq((seq) => seq + 1);
                   }
                 },
               });

@@ -1,9 +1,11 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import i18next from "i18next";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MediaAssetDto } from "../../../../src/shared/dto/content.ts";
 import type { CacheMediaInspectDto } from "../../../../src/shared/dto/media.ts";
-import { CacheMediaDialog, cacheBlockers, cacheMediaRequest, cacheRowsOf, defaultCacheQuality, needsReview } from "../../../../src/web/pages/content/cache-media-dialog.tsx";
+import { CacheMediaDialog, cacheBlockers, cacheMediaRequest, cacheRowsOf, defaultCacheQuality, needsReview, qualityOptionLabel } from "../../../../src/web/pages/content/cache-media-dialog.tsx";
+import { zhCN } from "../../../../src/shared/i18n/zh-CN/index.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { task } from "../../../fixtures/web/shell-data.ts";
 
@@ -42,8 +44,16 @@ const INSPECT = "POST /api/contents/c1/cache-media/inspect";
 const START = "POST /api/contents/c1/cache-media";
 const QUALITIES = "GET /api/contents/c1/cache-media/qualities";
 const PROBING = "正在探测可用画质…";
-/** The probe answer that keeps the general-purpose caps and their default. */
-const GENERAL = { body: { status: "available", qualities: [360, 480, 720, 1080] } };
+/** Tiers of a standard 16:9 source, each with the picture size of its stream. */
+const tiers = (...values: number[]) => values.map((tier) => ({ tier, width: Math.round((tier * 16) / 9), height: tier }));
+/** An ultra-wide source: each tier's stream is lower than the tier by its pixel height. */
+const ULTRA_WIDE = [
+  { tier: 360, width: 640, height: 206 },
+  { tier: 480, width: 854, height: 274 },
+  { tier: 720, width: 1280, height: 410 },
+];
+/** The probe answer that keeps the general-purpose tiers and their default. */
+const GENERAL = { body: { status: "available", qualities: tiers(360, 480, 720, 1080) } };
 
 /**
  * Renders the dialog and waits until the quality probe has answered, unless `holdProbes`
@@ -171,6 +181,26 @@ describe("defaultCacheQuality", () => {
     expect(defaultCacheQuality([1440, 360, 2160])).toBe(360);
     expect(defaultCacheQuality([1440, 2160])).toBe(2160);
     expect(defaultCacheQuality([240])).toBe(240);
+  });
+});
+
+describe("qualityOptionLabel", () => {
+  const i18n = i18next.createInstance();
+  beforeAll(async () => {
+    await i18n.init({ lng: "zh-CN", resources: { "zh-CN": { translation: zhCN } }, interpolation: { escapeValue: false } });
+  });
+  it("names a standard picture by its tier alone and a non-standard one with its real size", () => {
+    const t = i18n.t.bind(i18n);
+    expect(qualityOptionLabel({ tier: 720 }, t)).toBe("720P");
+    expect(qualityOptionLabel({ tier: 720, width: 1280, height: 720 }, t)).toBe("720P");
+    // A few lines short of the tier is still a standard picture.
+    expect(qualityOptionLabel({ tier: 720, width: 1280, height: 714 }, t)).toBe("720P");
+    expect(qualityOptionLabel({ tier: 1080, width: 1920, height: 1072 }, t)).toBe("1080P");
+    // Portrait: the short side is the tier.
+    expect(qualityOptionLabel({ tier: 1080, width: 1080, height: 1920 }, t)).toBe("1080P");
+    expect(qualityOptionLabel({ tier: 720, width: 1280, height: 410 }, t)).toBe("720P（1280×410）");
+    expect(qualityOptionLabel({ tier: 720, width: 1280, height: 534 }, t)).toBe("720P（1280×534）");
+    expect(qualityOptionLabel({ tier: 360, width: 640, height: 206 }, t)).toBe("360P（640×206）");
   });
 });
 
@@ -445,14 +475,16 @@ describe("CacheMediaDialog, the source's qualities", () => {
   });
 
   it("lists only the source's qualities and preselects the highest up to the default cap", async () => {
-    const three = await show({ [QUALITIES]: { body: { status: "available", qualities: [360, 480, 720] } } });
+    const three = await show({ [QUALITIES]: { body: { status: "available", qualities: tiers(360, 480, 720) } } });
     expect(optionsOf(three.dialog)).toEqual(["360P", "480P", "720P"]);
     expect((within(three.dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("720");
-    expect(within(three.dialog).getByTestId("cache-qualities-hint").textContent).toBe("只列出这个视频当前能下载的画质；竖屏视频按短边计。");
+    expect(within(three.dialog).getByTestId("cache-qualities-hint").textContent).toBe(
+      "只列出这个视频当前能下载的画质，选哪档就缓存哪档；超宽或竖屏视频按等效画质标注，括号内为实际分辨率。",
+    );
     expect(within(three.dialog).queryByTestId("cache-qualities-unknown")).toBeNull();
     cleanup();
 
-    const four = await show({ [QUALITIES]: { body: { status: "available", qualities: [360, 720, 1080, 1440] } } });
+    const four = await show({ [QUALITIES]: { body: { status: "available", qualities: tiers(360, 720, 1080, 1440) } } });
     expect(optionsOf(four.dialog)).toEqual(["360P", "720P", "1080P", "1440P"]);
     expect((within(four.dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("1080");
   });
@@ -488,7 +520,7 @@ describe("CacheMediaDialog, the source's qualities", () => {
 
   it("inspects with the quality the user picked", async () => {
     const { dialog, calls, onStarted } = await show({
-      [QUALITIES]: { body: { status: "available", qualities: [360, 480, 720] } },
+      [QUALITIES]: { body: { status: "available", qualities: tiers(360, 480, 720) } },
       [INSPECT]: { body: inspection({ expected: { type: "video", height: 480, ext: "mp4" }, expectedFileName: "第一讲 [480P].mp4" }) },
     });
     fireEvent.change(within(dialog).getByTestId("cache-quality"), { target: { value: "480" } });
@@ -522,13 +554,82 @@ describe("CacheMediaDialog, the source's qualities", () => {
     fireEvent.click(screen.getByRole("button", { name: "reopen" }));
     const dialog = await screen.findByRole("dialog", { name: "缓存本视频" });
     await waitFor(() => expect(probes).toHaveLength(2));
-    probes[0]?.answer({ status: "available", qualities: [360, 480, 720] });
+    probes[0]?.answer({ status: "available", qualities: tiers(360, 480, 720) });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(optionsOf(dialog)).toEqual([PROBING]);
     expect((within(dialog).getByTestId("cache-inspect") as HTMLButtonElement).disabled).toBe(true);
-    probes[1]?.answer({ status: "available", qualities: [480, 1440] });
+    probes[1]?.answer({ status: "available", qualities: tiers(480, 1440) });
     await waitFor(() => expect(optionsOf(dialog)).toEqual(["480P", "1440P"]));
     expect((within(dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("480");
     expect(probes[1]?.signal?.aborted).toBe(false);
+  });
+
+  it("labels the choice 「画质」 and names the tiers of an ultra-wide source with their real size", async () => {
+    const wide = await show({ [QUALITIES]: { body: { status: "available", qualities: ULTRA_WIDE } } });
+    expect(within(wide.dialog).getByText("画质")).toBeTruthy();
+    expect(within(wide.dialog).queryByText("画质上限")).toBeNull();
+    expect(optionsOf(wide.dialog)).toEqual(["360P（640×206）", "480P（854×274）", "720P（1280×410）"]);
+    expect((within(wide.dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("720");
+    cleanup();
+
+    const standard = await show({ [QUALITIES]: { body: { status: "available", qualities: tiers(480, 720, 1080) } } });
+    expect(optionsOf(standard.dialog)).toEqual(["480P", "720P", "1080P"]);
+    cleanup();
+
+    const portrait = await show({ [QUALITIES]: { body: { status: "available", qualities: [{ tier: 720, width: 720, height: 1280 }, { tier: 1080, width: 1080, height: 1920 }] } } });
+    expect(optionsOf(portrait.dialog)).toEqual(["720P", "1080P"]);
+  });
+
+  it("shows a tier the source no longer offers, probes the list again and starts nothing", async () => {
+    const unavailable = {
+      class: "invalid_request",
+      code: "invalid_request.cache_quality_unavailable",
+      retryDisposition: "never",
+      userMessage: "这个视频当前没有 480P 画质可以缓存，请在缓存对话框中重新选择画质",
+    };
+    let probed = 0;
+    const { dialog, calls, onStarted } = await show({
+      [QUALITIES]: () => {
+        probed += 1;
+        // The second probe finds 480P gone.
+        return { body: { status: "available", qualities: probed === 1 ? ULTRA_WIDE : [ULTRA_WIDE[0], ULTRA_WIDE[2]] } };
+      },
+      [INSPECT]: { status: 400, body: { error: unavailable } },
+    });
+    fireEvent.change(within(dialog).getByTestId("cache-quality"), { target: { value: "480" } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await within(dialog).findByText(unavailable.userMessage);
+    await waitFor(() => expect(optionsOf(dialog)).toEqual(["360P（640×206）", "720P（1280×410）"]));
+    expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/qualities")).toHaveLength(2);
+    // The gone tier is replaced by the default among what is left; the error stays.
+    expect((within(dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("720");
+    expect(within(dialog).getByText(unavailable.userMessage)).toBeTruthy();
+    expect((within(dialog).getByTestId("cache-inspect") as HTMLButtonElement).disabled).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/contents/c1/cache-media")).toBe(false);
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("keeps the chosen tier when the probe after an unavailable tier still lists it", async () => {
+    const unavailable = { class: "invalid_request", code: "invalid_request.cache_quality_unavailable", retryDisposition: "never", userMessage: "这个视频当前没有 480P 画质可以缓存" };
+    const { dialog, calls } = await show({
+      [QUALITIES]: { body: { status: "available", qualities: ULTRA_WIDE } },
+      [INSPECT]: { status: 400, body: { error: unavailable } },
+    });
+    fireEvent.change(within(dialog).getByTestId("cache-quality"), { target: { value: "480" } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await within(dialog).findByText(unavailable.userMessage);
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/qualities")).toHaveLength(2));
+    await settled(dialog);
+    expect((within(dialog).getByTestId("cache-quality") as HTMLSelectElement).value).toBe("480");
+  });
+
+  it("does not probe again for another inspection failure", async () => {
+    const failure = { class: "source_unreachable", code: "source_unreachable", retryDisposition: "safe", userMessage: "无法访问来源" };
+    const { dialog, calls } = await show({ [INSPECT]: { status: 502, body: { error: failure } } });
+    fireEvent.click(within(dialog).getByTestId("cache-inspect"));
+    await within(dialog).findByText("无法访问来源");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.filter((call) => call.path === "/api/contents/c1/cache-media/qualities")).toHaveLength(1);
   });
 });

@@ -43,12 +43,21 @@ describe("cacheMediaInspectRequestSchema / cacheMediaRequestSchema", () => {
 });
 
 describe("cacheMediaQualitiesDtoSchema", () => {
-  it("holds only a status and quality tiers", () => {
-    expect(cacheMediaQualitiesDtoSchema.parse({ status: "available", qualities: [240, 720, 1440] })).toEqual({ status: "available", qualities: [240, 720, 1440] });
+  it("holds only a status and the tiers with the picture size of their stream", () => {
+    const qualities = [
+      { tier: 360, width: 640, height: 206 },
+      { tier: 720, width: 1280, height: 410 },
+      { tier: 1440, width: 2560, height: 1440 },
+    ];
+    expect(cacheMediaQualitiesDtoSchema.parse({ status: "available", qualities })).toEqual({ status: "available", qualities });
     expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "audio_only", qualities: [] }).success).toBe(true);
     expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "unknown", qualities: [] }).success).toBe(true);
     expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "probing", qualities: [] }).success).toBe(false);
-    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [700] }).success).toBe(false);
-    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [720], formats: [] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [{ tier: 700, width: 1244, height: 700 }] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [720] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [{ tier: 720, width: 0, height: 720 }] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [{ tier: 720, width: 1280.5, height: 720 }] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [{ tier: 720, width: 1280, height: 720, formatId: "30064" }] }).success).toBe(false);
+    expect(cacheMediaQualitiesDtoSchema.safeParse({ status: "available", qualities: [{ tier: 720, width: 1280, height: 720 }], formats: [] }).success).toBe(false);
   });
 });

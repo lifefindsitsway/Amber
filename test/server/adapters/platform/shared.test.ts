@@ -1,7 +1,21 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoFormats, moveFile, parseFormatLine, secondsToMs, videoFormat } from "../../../../src/server/adapters/platform/shared.ts";
+import {
+  availableTiers,
+  downloadAudio,
+  downloadVideo,
+  exactVideoFormat,
+  inspectAudio,
+  inspectVideo,
+  languageTag,
+  listVideoQualities,
+  moveFile,
+  parseFormatLine,
+  pickTierFormat,
+  secondsToMs,
+  videoFormat,
+} from "../../../../src/server/adapters/platform/shared.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
 import type { ProcessRunOptions, ProcessSpec } from "../../../../src/server/ports/process-runner.ts";
@@ -145,7 +159,7 @@ describe("downloadVideo", () => {
       url: URL,
       extractors: ["bilibili"],
       cookies: "# Netscape HTTP Cookie File\n",
-      maxHeight: 720,
+      target: { maxHeight: 720 },
       maxBytes: 1000,
       output: { path: output, scratchDir },
       onProgress: (value) => progress.push(value),
@@ -181,7 +195,7 @@ describe("downloadVideo", () => {
   it("refuses a format announced above the limit without downloading", async () => {
     const { ytDlp, runner, dataDir } = scripted("amber-format 5000 1080 mp4");
     const output = join(dataDir, "video.partial");
-    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 1080, maxBytes: 1000, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
+    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 1080 }, maxBytes: 1000, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
       (error: unknown) => error,
     );
     expect(isAmberError(failure) && failure.appError.class).toBe("media_too_large");
@@ -192,13 +206,13 @@ describe("downloadVideo", () => {
   it("downloads when the size is unknown, reports WebM, and refuses containers WebView2 cannot play", async () => {
     const webm = scripted("amber-format NA NA webm", "webm");
     const output = join(webm.dataDir, "video.partial");
-    const result = await downloadVideo(webm.ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 480, maxBytes: 1000, output: { path: output, scratchDir: scratchIn(webm.dataDir) }, onProgress: () => undefined, signal: signal() });
+    const result = await downloadVideo(webm.ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 480 }, maxBytes: 1000, output: { path: output, scratchDir: scratchIn(webm.dataDir) }, onProgress: () => undefined, signal: signal() });
     expect(result).toEqual({ sizeBytes: 140, mimeType: "video/webm" });
     expect(webm.runner.specs[0]?.args).not.toContain("--cookies");
 
     const flv = scripted("amber-format 10 360 flv", "flv");
     const flvScratch = scratchIn(flv.dataDir);
-    const failure = await downloadVideo(flv.ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 360, maxBytes: 1000, output: { path: join(flv.dataDir, "v.partial"), scratchDir: flvScratch }, onProgress: () => undefined, signal: signal() }).catch(
+    const failure = await downloadVideo(flv.ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 360 }, maxBytes: 1000, output: { path: join(flv.dataDir, "v.partial"), scratchDir: flvScratch }, onProgress: () => undefined, signal: signal() }).catch(
       (error: unknown) => error,
     );
     expect(isAmberError(failure) && failure.appError.class).toBe("media_unsupported_type");
@@ -208,7 +222,7 @@ describe("downloadVideo", () => {
   it("stops as soon as the bytes of both streams pass the caller's budget, leaving nothing behind", async () => {
     const { ytDlp, dataDir } = scripted("amber-format NA 720 mp4");
     const output = join(dataDir, "video.partial");
-    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 720, maxBytes: 130, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
+    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 720 }, maxBytes: 130, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
       (error: unknown) => error,
     );
     expect(isAmberError(failure) && failure.appError.class).toBe("media_too_large");
@@ -218,7 +232,7 @@ describe("downloadVideo", () => {
   it("refuses a finished file larger than the budget even without progress", async () => {
     const { ytDlp, dataDir } = scriptedYtDlpQuiet();
     const output = join(dataDir, "video.partial");
-    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 720, maxBytes: 139, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
+    const failure = await downloadVideo(ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 720 }, maxBytes: 139, output: { path: output, scratchDir: scratchIn(dataDir) }, onProgress: () => undefined, signal: signal() }).catch(
       (error: unknown) => error,
     );
     expect(isAmberError(failure) && failure.appError.class).toBe("media_too_large");
@@ -342,7 +356,7 @@ describe("inspectVideo", () => {
   const URL = "https://www.bilibili.com/video/BV1xx411c7mD";
   const inspect = (line: string) => {
     const io = scriptedYtDlp(() => ({ stdoutLines: [line] }));
-    return { ...io, result: inspectVideo(io.ytDlp, { url: URL, extractors: ["bilibili"], maxHeight: 720, signal: signal() }) };
+    return { ...io, result: inspectVideo(io.ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 720 }, signal: signal() }) };
   };
 
   it("runs the download's selection once with the codec printed, and reports the container to expect", async () => {
@@ -371,11 +385,212 @@ describe("inspectVideo", () => {
   });
 });
 
-describe("listVideoFormats", () => {
+/** yt-dlp's formats of a wide-screen bilibili lecture (640×206, 854×274, 1280×410), recorded as a guest. */
+const ULTRAWIDE = (
+  JSON.parse(readFileSync(new URL("../../../fixtures/platform/recorded/bilibili-ultrawide-formats.json", import.meta.url), "utf8")) as { formats: unknown[] }
+).formats;
+
+/** A video-only stream as yt-dlp lists it. */
+const stream = (format_id: string, width: number | undefined, height: number | undefined, vcodec = "avc1.640028", ext = "mp4", tbr?: number) => ({
+  format_id,
+  ext,
+  vcodec,
+  acodec: "none",
+  ...(width === undefined ? {} : { width }),
+  ...(height === undefined ? {} : { height }),
+  ...(tbr === undefined ? {} : { tbr }),
+});
+
+describe("pickTierFormat / availableTiers", () => {
+  it("picks the H.264 stream of each tier of the recorded wide-screen sample, and lists exactly those", () => {
+    expect(pickTierFormat(ULTRAWIDE, 360)).toEqual({ formatId: "30016", ext: "mp4", width: 640, height: 206 });
+    expect(pickTierFormat(ULTRAWIDE, 480)).toEqual({ formatId: "30032", ext: "mp4", width: 854, height: 274 });
+    expect(pickTierFormat(ULTRAWIDE, 720)).toEqual({ formatId: "30064", ext: "mp4", width: 1280, height: 410 });
+    expect(pickTierFormat(ULTRAWIDE, 240)).toBeUndefined();
+    expect(pickTierFormat(ULTRAWIDE, 1080)).toBeUndefined();
+    const tiers = availableTiers(ULTRAWIDE);
+    expect(tiers).toEqual([
+      { tier: 360, width: 640, height: 206 },
+      { tier: 480, width: 854, height: 274 },
+      { tier: 720, width: 1280, height: 410 },
+    ]);
+    for (const { tier, width, height } of tiers) {
+      expect(pickTierFormat(ULTRAWIDE, tier)).toMatchObject({ width, height });
+    }
+  });
+
+  it("places 16:9, portrait and slightly short pictures in their tiers", () => {
+    const formats = [stream("1", 640, 360), stream("2", 1280, 720), stream("3", 1920, 1080)];
+    expect(pickTierFormat(formats, 360)?.formatId).toBe("1");
+    expect(pickTierFormat(formats, 720)?.formatId).toBe("2");
+    expect(pickTierFormat(formats, 1080)?.formatId).toBe("3");
+    expect(availableTiers(formats).map((quality) => quality.tier)).toEqual([360, 720, 1080]);
+    expect(pickTierFormat([stream("p", 1080, 1920)], 1080)?.formatId).toBe("p");
+    expect(pickTierFormat([stream("s", 1920, 1072)], 1080)?.formatId).toBe("s");
+    expect(availableTiers([stream("p", 1080, 1920)])).toEqual([{ tier: 1080, width: 1080, height: 1920 }]);
+  });
+
+  it("prefers H.264, then the larger picture, then MP4, then the higher bitrate, then the later entry", () => {
+    expect(pickTierFormat([stream("hevc", 1280, 720, "hvc1.1.6.L120.90"), stream("avc", 1280, 720, "avc1.64001F"), stream("av1", 1280, 720, "av01.0.08M.08")], 720)?.formatId).toBe("avc");
+    expect(pickTierFormat([stream("av1", 1280, 720, "av01.0.08M.08"), stream("h264", 1280, 720, "h264")], 720)?.formatId).toBe("h264");
+    expect(pickTierFormat([stream("av1", 1280, 720, "av01.0.08M.08")], 720)?.formatId).toBe("av1");
+    // H.264 wins over a larger picture of another codec within the tier.
+    expect(pickTierFormat([stream("avc", 960, 540), stream("vp9", 1280, 720, "vp09.00.40.08", "webm")], 720)?.formatId).toBe("avc");
+    expect(pickTierFormat([stream("big", 1280, 720), stream("small", 960, 540)], 720)?.formatId).toBe("big");
+    expect(pickTierFormat([stream("webm", 1280, 720, "vp09.00.40.08", "webm"), stream("mp4", 1280, 720, "av01.0.08M.08")], 720)).toEqual({ formatId: "mp4", ext: "mp4", width: 1280, height: 720 });
+    expect(pickTierFormat([stream("fast", 1280, 720, "avc1", "mp4", 3000), stream("slow", 1280, 720, "avc1", "mp4", 1000), stream("none", 1280, 720)], 720)?.formatId).toBe("fast");
+    expect(pickTierFormat([stream("first", 1280, 720), stream("last", 1280, 720)], 720)?.formatId).toBe("last");
+    expect(pickTierFormat([stream("vp9", 1280, 720, "vp09.00.40.08", "WEBM")], 720)).toEqual({ formatId: "vp9", ext: "webm", width: 1280, height: 720 });
+  });
+
+  it("leaves out containers WebView2 cannot play, audio, streams without a width or height, and format ids unsafe in an expression", () => {
+    const excluded = [
+      stream("flv", 1280, 720, "avc1", "flv"),
+      stream("audio", 1280, 720, "none"),
+      { format_id: "nocodec", ext: "mp4", width: 1280, height: 720 },
+      stream("empty", 1280, 720, ""),
+      stream("nowidth", undefined, 720),
+      stream("noheight", 1280, undefined),
+      stream("zero", 0, 720),
+      stream("fraction", 1280, 719.5),
+      { ...stream("text", 1280, 720), height: "720" },
+      stream("a b", 1280, 720),
+      stream("1+2", 1280, 720),
+      stream("x/y", 1280, 720),
+      stream("v[height<=720]", 1280, 720),
+      { ...stream("", 1280, 720) },
+      { ext: "mp4", vcodec: "avc1", width: 1280, height: 720 },
+      { ...stream("proto", 1280, 720), ext: "constructor" },
+      null,
+      "720",
+    ];
+    for (const format of excluded) {
+      expect(pickTierFormat([format], 720)).toBeUndefined();
+    }
+    expect(availableTiers(excluded)).toEqual([]);
+    expect(availableTiers([])).toEqual([]);
+    expect(pickTierFormat([stream("dash-1_v.2", 1280, 720)], 720)?.formatId).toBe("dash-1_v.2");
+  });
+});
+
+describe("exactVideoFormat", () => {
+  it("names the stream with audio of its own container first, then any audio, then the stream alone", () => {
+    expect(exactVideoFormat({ formatId: "30064", ext: "mp4" })).toBe("30064+ba[ext=m4a]/30064+ba/30064");
+    expect(exactVideoFormat({ formatId: "248", ext: "webm" })).toBe("248+ba[ext=webm]/248+ba/248");
+  });
+});
+
+describe("inspectVideo / downloadVideo for a tier", () => {
+  const URL = "https://www.bilibili.com/video/BV1CQt365EzW";
+  const EXACT_480 = "30032+ba[ext=m4a]/30032+ba/30032";
+  const PRINT = "amber-format %(filesize,filesize_approx)s %(height)s %(ext)s %(vcodec)s %(width)s";
+  const selection = (format: string) => ["--no-playlist", "--format", format, "--format-sort", "vcodec:h264,res,acodec:aac", "--merge-output-format", "mp4/webm"];
+  const NOT_AVAILABLE = "ERROR: [BiliBili] 1CQt365EzW: Requested format is not available. Use --list-formats for a list of available formats";
+
+  /** Metadata from the recorded sample, a format check announcing 854×274, and a download writing `video.mp4` unless `download` says otherwise. */
+  function scripted(options: { formats?: unknown; download?: ScriptedProcess } = {}) {
+    return scriptedYtDlp((spec: ProcessSpec): ScriptedProcess => {
+      if (spec.args.includes("--dump-single-json")) {
+        return { stdout: `${JSON.stringify({ id: "BV1CQt365EzW", formats: options.formats ?? ULTRAWIDE })}\n` };
+      }
+      if (spec.args.includes("--print")) {
+        return { stdoutLines: ["amber-format 140 274 mp4 avc1.640033 854"] };
+      }
+      if (options.download !== undefined) {
+        return options.download;
+      }
+      writeFileSync((argAfter(spec.args, "--output") as string).replace("%(ext)s", "mp4"), Buffer.alloc(140));
+      return { stdoutLines: ["amber-progress 140 140 NA"] };
+    });
+  }
+
+  const scratchIn = (dir: string) => {
+    const scratchDir = join(dir, ".amber-tmp", "01ASSET");
+    mkdirSync(scratchDir, { recursive: true });
+    return scratchDir;
+  };
+  const download = (io: ReturnType<typeof scripted>, tier: number) =>
+    downloadVideo(io.ytDlp, {
+      url: URL,
+      extractors: ["bilibili"],
+      cookies: "# Netscape HTTP Cookie File\n",
+      target: { tier },
+      maxBytes: 1000,
+      output: { path: join(io.dataDir, "video.partial"), scratchDir: scratchIn(io.dataDir) },
+      onProgress: () => undefined,
+      signal: signal(),
+    });
+  const quality = (error: unknown) => (isAmberError(error) ? error.appError : undefined);
+
+  it("inspects the exact stream of the tier: metadata first, then the format check naming its format id", async () => {
+    const io = scripted();
+    const result = await inspectVideo(io.ytDlp, { url: URL, extractors: ["bilibili"], cookies: "# Netscape HTTP Cookie File\n", target: { tier: 480 }, signal: signal() });
+    expect(result).toEqual({ hasVideo: true, mimeType: "video/mp4", sizeBytes: 140, height: 274, width: 854 });
+    expect(io.runner.specs).toHaveLength(2);
+    const [dump, check] = io.runner.specs;
+    expect(dump?.args.slice(dump.args.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", URL]);
+    expect(dump?.timeoutMs).toBe(PLATFORM_METADATA_TIMEOUT_MS);
+    expect(check?.args.slice(check.args.indexOf("--no-playlist"))).toEqual([...selection(EXACT_480), "--print", PRINT, URL]);
+    expect(io.runner.specs.every((spec) => spec.args.includes("--cookies"))).toBe(true);
+  });
+
+  it("fails a tier the source does not offer after the metadata alone", async () => {
+    for (const formats of [ULTRAWIDE, null, []]) {
+      const io = scripted({ formats });
+      const failure = await inspectVideo(io.ytDlp, { url: URL, extractors: ["bilibili"], target: { tier: 1080 }, signal: signal() }).catch((error: unknown) => error);
+      expect(quality(failure)).toMatchObject({ class: "invalid_request", code: "invalid_request.cache_quality_unavailable" });
+      expect(quality(failure)?.userMessage).toContain("1080P");
+      expect(io.runner.specs).toHaveLength(1);
+    }
+    const io = scripted();
+    const failure = await download(io, 1080).catch((error: unknown) => error);
+    expect(quality(failure)?.code).toBe("invalid_request.cache_quality_unavailable");
+    expect(io.runner.specs).toHaveLength(1);
+    expect(readdirSync(join(io.dataDir, ".amber-tmp", "01ASSET"))).toEqual([]);
+  });
+
+  it("downloads with the same exact selection the format check used", async () => {
+    const io = scripted();
+    const output = join(io.dataDir, "video.partial");
+    expect(await download(io, 480)).toEqual({ sizeBytes: 140, mimeType: "video/mp4", height: 274 });
+    expect(readFileSync(output).length).toBe(140);
+    expect(io.runner.specs).toHaveLength(3);
+    const [dump, check, run] = io.runner.specs.map((spec) => spec.args);
+    expect(dump).toContain("--dump-single-json");
+    expect(check?.slice(check.indexOf("--no-playlist"))).toEqual([...selection(EXACT_480), "--print", PRINT, URL]);
+    expect(run?.slice(run.indexOf("--no-playlist"), run.indexOf("--no-part"))).toEqual(selection(EXACT_480));
+    expect(argAfter(run ?? [], "--format")).toBe(argAfter(check ?? [], "--format"));
+  });
+
+  it("turns a stream gone by the time yt-dlp selects it into an unavailable tier, and passes other failures on", async () => {
+    const gone = scripted({ download: { exitCode: 1, stderr: NOT_AVAILABLE } });
+    const failure = await download(gone, 720).catch((error: unknown) => error);
+    expect(quality(failure)).toMatchObject({ code: "invalid_request.cache_quality_unavailable" });
+    expect(quality(failure)?.userMessage).toContain("720P");
+    expect(argAfter(gone.runner.specs[2]?.args ?? [], "--format")).toBe("30064+ba[ext=m4a]/30064+ba/30064");
+
+    const checkGone = scriptedYtDlp((spec) =>
+      spec.args.includes("--dump-single-json") ? { stdout: `${JSON.stringify({ formats: ULTRAWIDE })}\n` } : { exitCode: 1, stderr: "ERROR: [BiliBili] 1CQt365EzW: requested format is NOT available" },
+    );
+    const inspected = await inspectVideo(checkGone.ytDlp, { url: URL, extractors: ["bilibili"], target: { tier: 360 }, signal: signal() }).catch((error: unknown) => error);
+    expect(quality(inspected)?.code).toBe("invalid_request.cache_quality_unavailable");
+
+    const blocked = scripted({ download: { exitCode: 1, stderr: "ERROR: [BiliBili] 1CQt365EzW: HTTP Error 412: Precondition Failed" } });
+    expect(quality(await download(blocked, 480).catch((error: unknown) => error))?.class).toBe("platform_blocked");
+
+    // A height cap keeps yt-dlp's own failure: its selection falls back to any format.
+    const capped = scriptedYtDlp(() => ({ exitCode: 1, stderr: NOT_AVAILABLE }));
+    const cappedFailure = await inspectVideo(capped.ytDlp, { url: URL, extractors: ["bilibili"], target: { maxHeight: 720 }, signal: signal() }).catch((error: unknown) => error);
+    expect(quality(cappedFailure)?.code).not.toBe("invalid_request.cache_quality_unavailable");
+    expect(capped.runner.specs).toHaveLength(1);
+  });
+});
+
+describe("listVideoQualities", () => {
   const URL = "https://www.bilibili.com/video/BV1xx411c7mD?p=2";
   const list = (document: unknown, cookies?: string) => {
     const io = scriptedYtDlp(() => ({ stdout: `${JSON.stringify(document)}\n` }));
-    return { ...io, result: listVideoFormats(io.ytDlp, { url: URL, extractors: ["bilibili"], ...(cookies === undefined ? {} : { cookies }), signal: signal() }) };
+    return { ...io, result: listVideoQualities(io.ytDlp, { url: URL, extractors: ["bilibili"], ...(cookies === undefined ? {} : { cookies }), signal: signal() }) };
   };
 
   it("dumps the metadata once without downloading, within the metadata timeout and with the given login", async () => {
@@ -392,33 +607,11 @@ describe("listVideoFormats", () => {
     expect(guest.runner.specs[0]?.args).not.toContain("--cookies");
   });
 
-  it("keeps only MP4 and WebM streams with a video codec and a positive integer height", async () => {
-    const { result } = list({
-      formats: [
-        { ext: "mp4", vcodec: "avc1.640032", height: 1080, width: 1920 },
-        { ext: "MP4", vcodec: "hev1.1.6.L120.90", height: 720, width: 1280 },
-        { ext: "webm", vcodec: "vp09.00.40.08", height: 480 },
-        { ext: "mp4", vcodec: "none", height: 720, width: 1280 },
-        { ext: "m4a", vcodec: "none" },
-        { ext: "mp4", height: 360, width: 640 },
-        { ext: "mp4", vcodec: "", height: 360 },
-        { ext: "flv", vcodec: "avc1", height: 1080, width: 1920 },
-        { ext: "mp4", vcodec: "avc1", height: 0, width: 640 },
-        { ext: "mp4", vcodec: "avc1", width: 640 },
-        { ext: "mp4", vcodec: "avc1", height: 359.5 },
-        { ext: "mp4", vcodec: "avc1", height: "360" },
-        { vcodec: "avc1", height: 360 },
-        { ext: "mp4", vcodec: "avc1", height: 1920, width: 1080 },
-        { ext: "mp4", vcodec: "avc1", height: 240, width: 0 },
-        null,
-      ],
-    });
-    expect(await result).toEqual([
-      { height: 1080, width: 1920 },
-      { height: 720, width: 1280 },
-      { height: 480 },
-      { height: 1920, width: 1080 },
-      { height: 240 },
+  it("lists each tier with the picture size of the stream a cache of it downloads", async () => {
+    expect(await list({ formats: ULTRAWIDE }).result).toEqual(availableTiers(ULTRAWIDE));
+    expect(await list({ formats: [stream("hi", 1920, 1080), stream("lo", 640, 360), stream("flv", 1280, 720, "avc1", "flv")] }).result).toEqual([
+      { tier: 360, width: 640, height: 360 },
+      { tier: 1080, width: 1920, height: 1080 },
     ]);
   });
 
@@ -426,12 +619,13 @@ describe("listVideoFormats", () => {
     expect(await list({ id: "BV1xx411c7mD" }).result).toBeUndefined();
     expect(await list({ formats: null }).result).toBeUndefined();
     expect(await list({ formats: "none" }).result).toBeUndefined();
-    expect(await list({ formats: [{ ext: "m4a", vcodec: "none", acodec: "mp4a.40.2" }] }).result).toEqual([]);
+    expect(await list(null).result).toBeUndefined();
+    expect(await list({ formats: [{ format_id: "30216", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2" }] }).result).toEqual([]);
   });
 
   it("passes a yt-dlp failure on", async () => {
     const io = scriptedYtDlp(() => ({ exitCode: 1, stderr: "ERROR: [BiliBili] unable to download JSON metadata" }));
-    const failure = await listVideoFormats(io.ytDlp, { url: URL, extractors: ["bilibili"], signal: signal() }).catch((error: unknown) => error);
+    const failure = await listVideoQualities(io.ytDlp, { url: URL, extractors: ["bilibili"], signal: signal() }).catch((error: unknown) => error);
     expect(isAmberError(failure)).toBe(true);
   });
 });

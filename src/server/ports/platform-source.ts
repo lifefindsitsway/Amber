@@ -82,6 +82,20 @@ export interface PlatformMetadata {
   rawLanguage?: string;
 }
 
+/**
+ * Which video stream a cache takes: exactly the stream of a quality tier (the tier of its
+ * picture by the equivalent-height rule of the cache file names), or, for a request that
+ * names no tier, the best stream at most `maxHeight` pixels high.
+ */
+export type VideoTarget = { tier: number } | { maxHeight: number };
+
+/** A tier a video cache can be made in, with the picture size of the stream it downloads. */
+export interface VideoQuality {
+  tier: number;
+  width: number;
+  height: number;
+}
+
 export interface PlatformCollectionItem {
   platformContentId: string;
   platformPartId?: string;
@@ -153,43 +167,47 @@ export interface PlatformSourceAdapter {
    */
   inspectAudio?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<{ sizeBytes?: number }>;
   /**
-   * Client only (`cache_media`): what `fetchVideo` would download for
-   * `maxHeight`, without downloading it. `hasVideo = false` when the selected format has no
-   * video stream (`vcodec` none or absent): the content is audio only. Otherwise
-   * `mimeType` is the container the merge is expected to produce (`video/mp4` or
-   * `video/webm`) and `height` / `width` the expected picture size: estimates only, since the
-   * cache file is named after the picture size and container ffprobe reads from the finished
-   * download.
+   * Client only (`cache_media`): what `fetchVideo` would download for `target`, without
+   * downloading it. `hasVideo = false` when the selected format has no video stream
+   * (`vcodec` none or absent): the content is audio only. Otherwise `mimeType` is the
+   * container the merge is expected to produce (`video/mp4` or `video/webm`) and `height` /
+   * `width` the expected picture size: estimates only, since the cache file is named after
+   * the picture size and container ffprobe reads from the finished download. With a `tier`
+   * the stream is the one `listVideoQualities` lists for it, and a tier the source no longer
+   * offers fails with `invalid_request.cache_quality_unavailable`.
    */
   inspectVideo?(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number },
+    target: VideoTarget,
     signal: AbortSignal,
   ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }>;
   /**
-   * Client only (`cache_media`): the video streams the source currently offers with the
-   * login this adapter would download with (the same login rule as `inspectVideo`), read
-   * from yt-dlp's metadata without downloading. Only streams in an MP4 or WebM container,
-   * with a video codec (a string other than `none`) and a positive integer height count;
-   * `width` is present when announced. `undefined` when the metadata holds no format list.
-   * Candidates only: the format selection of `fetchVideo` may still pick another stream.
+   * Client only (`cache_media`): the quality tiers a video cache of this source can be made
+   * in, with the login this adapter would download with (the same login rule as
+   * `inspectVideo`), read from the platform's metadata without downloading. Each entry is the
+   * stream `fetchVideo` selects for that tier and its picture size, so a listed tier is one
+   * that downloads as itself. Ascending by tier; `undefined` when the metadata holds no
+   * format list.
    */
-  listVideoFormats?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<Array<{ height: number; width?: number }> | undefined>;
+  listVideoQualities?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<VideoQuality[] | undefined>;
   /**
-   * Client only (`cache_media`): downloads the video, at most `maxHeight` pixels
-   * high and merged into an MP4 or WebM container both WebView2 builds play, to
-   * `output.path` inside the caller's scratch directory. The intermediate files go below
-   * `output.scratchDir`, a directory on the volume of `output.path` that the caller owns
-   * and removes, so the finished file is renamed into place without crossing volumes.
-   * `maxBytes` is the caller's budget on that volume: when the selected format's
-   * `filesize ?? filesize_approx` already exceeds it nothing is downloaded, and a download
-   * whose bytes pass it is stopped, both with `media_too_large`.
+   * Client only (`cache_media`): downloads the video for `target`, merged into an MP4 or
+   * WebM container both WebView2 builds play, to `output.path` inside the caller's scratch
+   * directory. With a `tier` the stream is selected again from the current metadata by the
+   * same rule as `listVideoQualities` (nothing else is downloaded in its place; a tier the
+   * source no longer offers fails with `invalid_request.cache_quality_unavailable`); with a
+   * `maxHeight` the best stream at most that high is taken, falling back to any. The
+   * intermediate files go below `output.scratchDir`, a directory on the volume of
+   * `output.path` that the caller owns and removes, so the finished file is renamed into
+   * place without crossing volumes. `maxBytes` is the caller's budget on that volume: when the
+   * selected format's `filesize ?? filesize_approx` already exceeds it nothing is downloaded,
+   * and a download whose bytes pass it is stopped, both with `media_too_large`.
    */
   fetchVideo?(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number; maxBytes: number; output: { path: string; scratchDir: string } },
+    options: VideoTarget & { maxBytes: number; output: { path: string; scratchDir: string } },
     onProgress: (progress: number) => void,
     signal: AbortSignal,
   ): Promise<{ sizeBytes: number; mimeType: string; height?: number; acquisition: "guest" | "authenticated" }>;

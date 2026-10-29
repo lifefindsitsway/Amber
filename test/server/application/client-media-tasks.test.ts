@@ -169,11 +169,14 @@ async function frozen(service: ClientMediaTaskService, h: Harness, contentId: st
   return JSON.parse(taskOf(h, accepted.body.taskId).requestJson) as Record<string, unknown>;
 }
 
-/** What the YouTube adapter's format checks answer: a video of `height`, or no picture with an audio track. */
+/**
+ * What the YouTube adapter's format checks answer: a video of `height`, or no picture with an
+ * audio track. Calls are recorded as `tier:<n>` for an exact tier, `video:<n>` for a cap.
+ */
 function videoFormat(h: Harness, video: { height?: number; sizeBytes?: number; hasVideo?: boolean; mimeType?: string }, audioBytes?: number): string[] {
   const calls: string[] = [];
   const inspectVideo: NonNullable<PlatformSourceAdapter["inspectVideo"]> = async (_ref, _auth, options) => {
-    calls.push(`video:${options.maxHeight}`);
+    calls.push("tier" in options ? `tier:${options.tier}` : `video:${options.maxHeight}`);
     return video.hasVideo === false
       ? { hasVideo: false }
       : {
@@ -197,7 +200,7 @@ function finishTasks(h: Harness, contentId: string): void {
 }
 
 describe("ClientMediaTaskService.cacheMedia", () => {
-  it("freezes a v3 request with the default type, height cap, stem and a fresh asset id, and replays by Idempotency-Key", async () => {
+  it("freezes a v4 request with the default type, no tier (the cap meaning), the stem and a fresh asset id, and replays by Idempotency-Key", async () => {
     const { h, service } = setup();
     const contentId = platformContent(h, { title: "Lecture: one" });
     const first = await service.cacheMedia(LOCAL, contentId, {}, "k-1");
@@ -205,7 +208,7 @@ describe("ClientMediaTaskService.cacheMedia", () => {
     const task = taskOf(h, first.body.taskId);
     expect(task).toMatchObject({ kind: "cache_media", contentId });
     const request = JSON.parse(task.requestJson) as Record<string, unknown>;
-    expect(request).toEqual({ requestSchemaVersion: 3, kind: "cache_media", type: "video", quality: CACHE_MEDIA_MAX_HEIGHT, stem: "Lecture one", assetId: expect.any(String) });
+    expect(request).toEqual({ requestSchemaVersion: 4, kind: "cache_media", type: "video", stem: "Lecture one", assetId: expect.any(String) });
     expect(request["assetId"]).not.toBe(task.id);
     expect(stageRunsOf(h, task.id).map((run) => run.stage)).toEqual(["cache_media"]);
 
@@ -214,11 +217,21 @@ describe("ClientMediaTaskService.cacheMedia", () => {
     expect(await codeOf(service.cacheMedia(LOCAL, contentId, { quality: 360 }, "k-1"))).toBe("idempotency_conflict");
   });
 
-  it("freezes an audio request without a height cap", async () => {
+  it("freezes the chosen tier of a video into a v4 request", async () => {
+    const { h, service } = setup();
+    for (const quality of [240, 480, 1440] as const) {
+      const contentId = platformContent(h, { title: `Lecture ${quality}` });
+      expect(await frozen(service, h, contentId, { quality }), String(quality)).toEqual({
+        requestSchemaVersion: 4, kind: "cache_media", type: "video", quality, stem: `Lecture ${quality}`, assetId: expect.any(String),
+      });
+    }
+  });
+
+  it("freezes an audio request without a tier", async () => {
     const { h, service } = setup();
     const contentId = platformContent(h, { title: "Talk" });
     expect(await frozen(service, h, contentId, { type: "audio" })).toEqual({
-      requestSchemaVersion: 3, kind: "cache_media", type: "audio", stem: "Talk", assetId: expect.any(String),
+      requestSchemaVersion: 4, kind: "cache_media", type: "audio", stem: "Talk", assetId: expect.any(String),
     });
   });
 
@@ -271,6 +284,17 @@ describe("ClientMediaTaskService.cacheMedia", () => {
     expect((await service.cacheMedia(LOCAL, platformContent(h, { title: "T" }), {})).status).toBe(202);
   });
 
+  it("refuses a stem another Content's unfinished v4 cache Task froze, and ignores v1 and v2 Tasks", async () => {
+    const { h, service } = setup();
+    const v4 = platformContent(h, { title: "x" });
+    createTaskOfKind(h, "cache_media", { requestSchemaVersion: 4, type: "video", quality: 480, stem: "T", expectedHeight: 480, assetId: h.newId() }, { contentId: v4 });
+    expect(await codeOf(service.cacheMedia(LOCAL, platformContent(h, { title: "T" }), {}))).toBe("conflict.cache_name_pending");
+    finishTasks(h, v4);
+    createTaskOfKind(h, "cache_media", { requestSchemaVersion: 2, type: "video", quality: 720, fileName: "T", assetId: h.newId() }, { contentId: platformContent(h, { title: "y" }) });
+    createTaskOfKind(h, "cache_media", { requestSchemaVersion: 1, quality: 720 }, { contentId: platformContent(h, { title: "z" }) });
+    expect((await service.cacheMedia(LOCAL, platformContent(h, { title: "T" }), {})).status).toBe(202);
+  });
+
   it("freezes the height the preceding inspection expected and checks the overwrite confirmation", async () => {
     const { h, service } = setup();
     videoFormat(h, { height: 720 });
@@ -294,6 +318,18 @@ describe("ClientMediaTaskService.cacheMedia", () => {
     expect(await codeOf(service.cacheMedia(LOCAL, contentId, { overwriteAssetId: held.id }))).toBe("conflict.cache_file_foreign");
     h.repository.withTransaction((scope) => scope.mediaAssets.update(LOCAL.userId, { ...held, availability: "evicted" }));
     expect(await codeOf(service.cacheMedia(LOCAL, contentId, { overwriteAssetId: held.id }))).toBe("conflict.cache_name_taken");
+  });
+
+  it("keeps the estimate of an omitted tier apart from that of the tier the default cap names", async () => {
+    const { h, service } = setup();
+    videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    // The cap selects the 720 stream; a request naming 1080 must not inherit that estimate.
+    await service.inspectCacheMedia(LOCAL, contentId, {}, new AbortController().signal);
+    expect(await frozen(service, h, contentId, { quality: 1080 })).not.toHaveProperty("expectedHeight");
+    finishTasks(h, contentId);
+    await service.inspectCacheMedia(LOCAL, contentId, {}, new AbortController().signal);
+    expect(await frozen(service, h, contentId)).toMatchObject({ requestSchemaVersion: 4, expectedHeight: 720 });
   });
 
   it("refuses an overwrite confirmation naming another user's cache, even at the expected name", async () => {
@@ -597,7 +633,8 @@ describe("ClientMediaTaskService.inspectCacheMedia", () => {
     const legacy = addCache(h, contentId, "media/T.mp4", { quality: "1080", sizeBytes: 8, createdAt: 2 });
     const audio = addCache(h, contentId, "media/T.mp3", { sizeBytes: 9, createdAt: 4 });
     const answer = await inspect(service, contentId, { quality: 720 });
-    expect(calls).toEqual(["video:720"]);
+    // A chosen tier is asked for exactly.
+    expect(calls).toEqual(["tier:720"]);
     expect(heavyRuns).toEqual([`foreground:${LOCAL.userId}`]);
     expect(inspected).toEqual([join(h.dir, "media", "T.mp4")]);
     expect(answer).toMatchObject({
@@ -641,6 +678,24 @@ describe("ClientMediaTaskService.inspectCacheMedia", () => {
     expect(audio.disk.data).toBeDefined();
   });
 
+  it("asks the format check for the chosen tier exactly, and for the default cap without one", async () => {
+    const { h, service } = setup();
+    const contentId = platformContent(h, { title: "T" });
+    const calls = videoFormat(h, { height: 480 });
+    await inspect(service, contentId, { quality: 480 });
+    await inspect(service, contentId, {});
+    await inspect(service, contentId, { quality: 1440 });
+    expect(calls).toEqual(["tier:480", `video:${CACHE_MEDIA_MAX_HEIGHT}`, "tier:1440"]);
+  });
+
+  it("reports a pending name held by another Content's unfinished v4 cache Task", async () => {
+    const { h, service } = setup();
+    videoFormat(h, { height: 480 });
+    const contentId = platformContent(h, { title: "T" });
+    createTaskOfKind(h, "cache_media", { requestSchemaVersion: 4, type: "video", quality: 480, stem: "T", assetId: h.newId() }, { contentId: platformContent(h, { title: "x" }) });
+    expect(await inspect(service, contentId, { quality: 480 })).toMatchObject({ pendingName: true });
+  });
+
   it("reports a foreign file, a pending name, a held path and a volume without room", async () => {
     const { h, service, cacheDir, holds, cache } = setup();
     videoFormat(h, { height: 1080 });
@@ -663,43 +718,67 @@ describe("ClientMediaTaskService.inspectCacheMedia", () => {
 });
 
 describe("ClientMediaTaskService.listCacheQualities", () => {
-  type Formats = Awaited<ReturnType<NonNullable<PlatformSourceAdapter["listVideoFormats"]>>>;
+  type Qualities = Awaited<ReturnType<NonNullable<PlatformSourceAdapter["listVideoQualities"]>>>;
   const list = (service: ClientMediaTaskService, contentId: string, signal = new AbortController().signal) => service.listCacheQualities(LOCAL, contentId, signal);
-  /** What the YouTube adapter's format list answers. */
-  const formats = (h: Harness, answer: Formats | (() => Promise<Formats>)): void => {
-    const listVideoFormats: NonNullable<PlatformSourceAdapter["listVideoFormats"]> = async () => (typeof answer === "function" ? answer() : answer);
-    Object.assign(h.platforms.youtube, { listVideoFormats });
+  /** What the YouTube adapter's quality list answers. */
+  const qualities = (h: Harness, answer: Qualities | (() => Promise<Qualities>)): void => {
+    const listVideoQualities: NonNullable<PlatformSourceAdapter["listVideoQualities"]> = async () => (typeof answer === "function" ? answer() : answer);
+    Object.assign(h.platforms.youtube, { listVideoQualities });
   };
 
-  it("labels the listed streams by equivalent height, without duplicates and ascending, in the foreground heavy slot", async () => {
+  it("answers the adapter's tiers with the picture size of their stream, in the foreground heavy slot", async () => {
     const { h, service, heavyRuns } = setup();
-    // The adapter already dropped `vcodec: none` and FLV streams; what reaches the service is labelled here.
-    formats(h, [
-      { height: 1080, width: 1920 },
-      { height: 720, width: 1280 },
-      { height: 720, width: 1280 },
-      { height: 720, width: 1280 },
-      { height: 360, width: 640 },
+    // An ultra-wide source: each tier downloads a picture lower than its name.
+    qualities(h, [
+      { tier: 360, width: 640, height: 206 },
+      { tier: 480, width: 854, height: 274 },
+      { tier: 720, width: 1280, height: 410 },
     ]);
     const answer = await list(service, platformContent(h));
-    expect(answer).toEqual({ status: "available", qualities: [360, 720, 1080] });
+    expect(answer).toEqual({
+      status: "available",
+      qualities: [
+        { tier: 360, width: 640, height: 206 },
+        { tier: 480, width: 854, height: 274 },
+        { tier: 720, width: 1280, height: 410 },
+      ],
+    });
     expect(Object.keys(answer).sort()).toEqual(["qualities", "status"]);
     expect(cacheMediaQualitiesDtoSchema.safeParse(answer).success).toBe(true);
     expect(heavyRuns).toEqual([`foreground:${LOCAL.userId}`]);
   });
 
-  it("labels a portrait stream by its short side and leaves out labels beyond the tiers", async () => {
+  it("sorts by tier, keeps one entry per tier and leaves out tiers beyond the set", async () => {
     const { h, service } = setup();
-    formats(h, [{ height: 1920, width: 1080 }, { height: 534, width: 1280 }, { height: 600 }, { height: 9000, width: 16000 }]);
-    expect(await list(service, platformContent(h))).toEqual({ status: "available", qualities: [720, 1080] });
+    qualities(h, [
+      { tier: 1080, width: 1080, height: 1920 },
+      { tier: 720, width: 1280, height: 720 },
+      { tier: 9000, width: 16000, height: 9000 },
+      { tier: 720, width: 1280, height: 714 },
+      { tier: 600, width: 600, height: 600 },
+      { tier: 240, width: 426, height: 240 },
+    ]);
+    const answer = await list(service, platformContent(h));
+    expect(answer).toEqual({
+      status: "available",
+      qualities: [
+        { tier: 240, width: 426, height: 240 },
+        { tier: 720, width: 1280, height: 720 },
+        { tier: 1080, width: 1080, height: 1920 },
+      ],
+    });
+    expect(cacheMediaQualitiesDtoSchema.safeParse(answer).success).toBe(true);
   });
 
   it("tells a source without usable video streams apart from one without a format list", async () => {
     const { h, service } = setup();
     const contentId = platformContent(h);
-    formats(h, []);
+    qualities(h, []);
     expect(await list(service, contentId)).toEqual({ status: "audio_only", qualities: [] });
-    formats(h, undefined);
+    // Only tiers beyond the set: nothing the dialog could offer.
+    qualities(h, [{ tier: 9000, width: 16000, height: 9000 }]);
+    expect(await list(service, contentId)).toEqual({ status: "audio_only", qualities: [] });
+    qualities(h, undefined);
     expect(await list(service, contentId)).toEqual({ status: "unknown", qualities: [] });
   });
 
@@ -707,18 +786,18 @@ describe("ClientMediaTaskService.listCacheQualities", () => {
     const { h, service, cache } = setup();
     cache.available = false;
     const contentId = platformContent(h);
-    formats(h, [{ height: 480, width: 854 }]);
-    expect(await list(service, contentId)).toEqual({ status: "available", qualities: [480] });
-    formats(h, () => Promise.reject(amberError("source_unreachable", "yt-dlp timed out")));
+    qualities(h, [{ tier: 480, width: 854, height: 480 }]);
+    expect(await list(service, contentId)).toEqual({ status: "available", qualities: [{ tier: 480, width: 854, height: 480 }] });
+    qualities(h, () => Promise.reject(amberError("source_unreachable", "yt-dlp timed out")));
     expect(await codeOf(list(service, contentId))).toBe("source_unreachable");
   });
 
-  it("refuses local, unknown and foreign Contents, and an adapter that cannot list formats", async () => {
+  it("refuses local, unknown and foreign Contents, and an adapter that cannot list qualities", async () => {
     const { h, service } = setup();
     expect(await codeOf(list(service, createLocalContent(h)))).toBe("invalid_request");
     expect(await codeOf(list(service, "nope"))).toBe("not_found");
     expect(await codeOf(list(service, platformContent(h, { userId: BOB.userId })))).toBe("not_found");
-    expect(typeof (h.platforms.youtube as Partial<PlatformSourceAdapter>).listVideoFormats).toBe("undefined");
+    expect(typeof (h.platforms.youtube as Partial<PlatformSourceAdapter>).listVideoQualities).toBe("undefined");
     expect(await codeOf(list(service, platformContent(h)))).toBe("internal");
   });
 
@@ -727,12 +806,12 @@ describe("ClientMediaTaskService.listCacheQualities", () => {
     const controller = new AbortController();
     let started!: () => void;
     const running = new Promise<void>((resolve) => (started = resolve));
-    const listVideoFormats: NonNullable<PlatformSourceAdapter["listVideoFormats"]> = (_ref, _auth, signal) =>
+    const listVideoQualities: NonNullable<PlatformSourceAdapter["listVideoQualities"]> = (_ref, _auth, signal) =>
       new Promise((_resolve, reject) => {
         started();
         signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });
-    Object.assign(h.platforms.youtube, { listVideoFormats });
+    Object.assign(h.platforms.youtube, { listVideoQualities });
     videoFormat(h, { height: 720 });
     const contentId = platformContent(h, { title: "T" });
     const probe = list(service, contentId, controller.signal);

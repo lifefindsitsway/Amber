@@ -114,6 +114,8 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "invalid_request.cookie_format": "无法识别的 cookie 格式",
   "invalid_request.cache_request_outdated": "这个缓存任务来自旧版本或源已变化，请重新缓存",
   "invalid_request.cache_probe_failed": "无法读取下载文件的画质，请重新缓存",
+  "invalid_request.cache_quality_unavailable": "这个视频当前没有 {{quality}}P 画质可以缓存，请在缓存对话框中重新选择画质",
+  "invalid_request.cache_quality_mismatch": "下载得到的画质是 {{actual}}P，与所选的 {{expected}}P 不同，这次缓存已放弃，已有缓存不受影响",
   "invalid_request.revision_kind_protected": "平台字幕和转录原稿只能归档，不能永久删除",
   "invalid_request.note_anchor": "选中的文字已无法定位，请重新选择",
   "invalid_request.note_span": "一条笔记最多跨 {{limit}} 句",

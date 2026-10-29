@@ -347,12 +347,18 @@ describe("BilibiliAdapter.inspectVideo / inspectAudio", () => {
   });
 });
 
-describe("BilibiliAdapter.listVideoFormats", () => {
-  const FORMATS = { formats: [{ ext: "mp4", vcodec: "avc1.640028", height: 720, width: 1280 }, { ext: "m4a", vcodec: "none" }] };
+describe("BilibiliAdapter.listVideoQualities", () => {
+  const FORMATS = {
+    formats: [
+      { format_id: "30216", ext: "m4a", vcodec: "none" },
+      { format_id: "30064", ext: "mp4", vcodec: "avc1.640028", height: 720, width: 1280 },
+      { format_id: "30066", ext: "mp4", vcodec: "hvc1.1.6.L120.90", height: 720, width: 1280 },
+    ],
+  };
 
   it("lists the part located by cid from its metadata, with the login, without downloading", async () => {
     const { adapter, runner } = setup({ process: () => ({ stdout: JSON.stringify(FORMATS) }) });
-    expect(await adapter.listVideoFormats({ platformContentId: BV, platformPartId: "1002" }, LOGIN, signal())).toEqual([{ height: 720, width: 1280 }]);
+    expect(await adapter.listVideoQualities({ platformContentId: BV, platformPartId: "1002" }, LOGIN, signal())).toEqual([{ tier: 720, width: 1280, height: 720 }]);
     expect(runner.specs).toHaveLength(1);
     const args = runner.specs[0]?.args ?? [];
     expect(args.slice(args.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", `https://www.bilibili.com/video/${BV}?p=2`]);
@@ -363,7 +369,7 @@ describe("BilibiliAdapter.listVideoFormats", () => {
 
   it("lists as a guest without a login, and reports a document without a format list", async () => {
     const { adapter, runner } = setup({ process: () => ({ stdout: JSON.stringify({ id: BV }) }) });
-    expect(await adapter.listVideoFormats({ platformContentId: BV }, undefined, signal())).toBeUndefined();
+    expect(await adapter.listVideoQualities({ platformContentId: BV }, undefined, signal())).toBeUndefined();
     expect(runner.specs[0]?.args).not.toContain("--cookies");
   });
 });
@@ -402,6 +408,52 @@ describe("BilibiliAdapter.fetchVideo", () => {
     const { adapter, runner, dataDir } = setup({ process: () => ({ stdoutLines: ["amber-format 9999 1080 mp4"] }) });
     const failure = await errorOf(adapter.fetchVideo({ platformContentId: BV }, undefined, { maxHeight: 1080, maxBytes: 100, output: { path: `${dataDir}/v.partial`, scratchDir: `${dataDir}/.amber-tmp/01ASSET` } }, () => undefined, signal()));
     expect(failure.class).toBe("media_too_large");
+    expect(runner.specs).toHaveLength(1);
+    expect(runner.specs[0]?.args).not.toContain("--cookies");
+  });
+
+  it("caches exactly the stream of a tier: metadata of the part first, with the login, then the same exact selection for the check and the download", async () => {
+    const formats = [
+      { format_id: "30032", ext: "mp4", vcodec: "avc1.640033", width: 854, height: 274 },
+      { format_id: "30033", ext: "mp4", vcodec: "hvc1.1.6.L120.90", width: 854, height: 274 },
+      { format_id: "30064", ext: "mp4", vcodec: "avc1.640033", width: 1280, height: 410 },
+    ];
+    const { adapter, runner, dataDir } = setup({
+      process: (spec) => {
+        if (spec.args.includes("--dump-single-json")) {
+          return { stdout: JSON.stringify({ id: BV, formats }) };
+        }
+        if (spec.args.includes("--print")) {
+          return { stdoutLines: ["amber-format 2048 274 mp4 avc1.640033 854"] };
+        }
+        writeFileSync((argAfter(spec.args, "--output") as string).replace("%(ext)s", "mp4"), "video");
+        return {};
+      },
+    });
+    const result = await adapter.fetchVideo(
+      { platformContentId: BV, platformPartId: "1002" },
+      LOGIN,
+      { tier: 480, maxBytes: 4096, output: { path: `${dataDir}/video.partial`, scratchDir: `${dataDir}/.amber-tmp/01ASSET` } },
+      () => undefined,
+      signal(),
+    );
+    expect(result).toEqual({ sizeBytes: 5, mimeType: "video/mp4", height: 274, acquisition: "authenticated" });
+    expect(runner.specs).toHaveLength(3);
+    const [dump, check, download] = runner.specs.map((spec) => spec.args);
+    expect(dump?.slice(dump.indexOf("--dump-single-json"))).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", `https://www.bilibili.com/video/${BV}?p=2`]);
+    expect(argAfter(check ?? [], "--format")).toBe("30032+ba[ext=m4a]/30032+ba/30032");
+    expect(argAfter(download ?? [], "--format")).toBe("30032+ba[ext=m4a]/30032+ba/30032");
+    for (const spec of runner.specs) {
+      expect(spec.args.at(-1)).toBe(`https://www.bilibili.com/video/${BV}?p=2`);
+      expect(argAfter(spec.args, "--use-extractors")).toBe(BILIBILI_EXTRACTORS.join(","));
+      expect(spec.args).toContain("--cookies");
+    }
+  });
+
+  it("refuses a tier the part does not offer without downloading", async () => {
+    const { adapter, runner, dataDir } = setup({ process: () => ({ stdout: JSON.stringify({ id: BV, formats: [{ format_id: "30064", ext: "mp4", vcodec: "avc1", width: 1280, height: 720 }] }) }) });
+    const failure = await errorOf(adapter.fetchVideo({ platformContentId: BV }, undefined, { tier: 1080, maxBytes: 4096, output: { path: `${dataDir}/v.partial`, scratchDir: `${dataDir}/.amber-tmp/01ASSET` } }, () => undefined, signal()));
+    expect(failure.code).toBe("invalid_request.cache_quality_unavailable");
     expect(runner.specs).toHaveLength(1);
     expect(runner.specs[0]?.args).not.toContain("--cookies");
   });

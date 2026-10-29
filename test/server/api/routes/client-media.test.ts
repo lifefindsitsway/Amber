@@ -418,31 +418,38 @@ describe("cache-media quality tiers [client]", () => {
 });
 
 describe("GET /api/contents/:id/cache-media/qualities [client]", () => {
-  it("answers the service's tiers with only status and qualities, and passes the request's signal", async () => {
+  it("answers the service's tiers with their picture sizes, only status and qualities, and passes the request's signal", async () => {
     const s = stack();
     const contentId = createLocalContent(s.h);
     const calls: Array<{ id: string; aborted: boolean }> = [];
+    const tiers = [
+      { tier: 360, width: 640, height: 206 },
+      { tier: 720, width: 1280, height: 410 },
+      { tier: 1440, width: 2560, height: 1440 },
+    ];
     const answering = {
       listCacheQualities: async (_principal: unknown, id: string, signal: AbortSignal) => {
         calls.push({ id, aborted: signal.aborted });
-        return { status: "available", qualities: [360, 720, 1440] };
+        return { status: "available", qualities: tiers };
       },
     } as unknown as ClientMediaTaskService;
     const { app } = await s.app("local", answering);
     const response = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities`, headers: auth });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "available", qualities: [360, 720, 1440] });
+    expect(response.json()).toEqual({ status: "available", qualities: tiers });
     expect(calls).toEqual([{ id: contentId, aborted: false }]);
     const anonymous = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities` });
     expect(anonymous.statusCode).toBe(401);
   });
 
-  it("refuses an answer outside the response schema rather than sending it", async () => {
+  it.each([
+    { name: "an extra top-level field", answer: { status: "available", qualities: [{ tier: 720, width: 1280, height: 720 }], formats: [{ url: "https://example.invalid/stream" }] } },
+    { name: "an extra field in a tier", answer: { status: "available", qualities: [{ tier: 720, width: 1280, height: 720, url: "https://example.invalid/stream" }] } },
+    { name: "a bare tier", answer: { status: "available", qualities: [720] } },
+  ])("refuses an answer with $name rather than sending it", async ({ answer }) => {
     const s = stack();
     const contentId = createLocalContent(s.h);
-    const leaking = {
-      listCacheQualities: async () => ({ status: "available", qualities: [720], formats: [{ url: "https://example.invalid/stream" }] }),
-    } as unknown as ClientMediaTaskService;
+    const leaking = { listCacheQualities: async () => answer } as unknown as ClientMediaTaskService;
     const { app } = await s.app("local", leaking);
     const response = await app.inject({ method: "GET", url: `/api/contents/${contentId}/cache-media/qualities`, headers: auth });
     expect(response.statusCode).toBe(500);

@@ -278,6 +278,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.schema": { detailsKeys: ["path"] },
   "invalid_request.cache_request_outdated": {},
   "invalid_request.cache_probe_failed": {},
+  "invalid_request.cache_quality_unavailable": {},
+  "invalid_request.cache_quality_mismatch": {},
   "invalid_request.revision_kind_protected": {},
   // A soft-subtitle MP4 export whose source has streams outside the MP4 policy.
   "invalid_request.container_unsupported": { detailsKeys: ["streams"] },

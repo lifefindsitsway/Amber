@@ -23,8 +23,9 @@ import { displayTitle, displayTitleOf, type Content } from "../domain/content.ts
 import { AmberError, amberError, appError } from "../domain/errors.ts";
 import { isVideoCache, verifiedCacheHeight, type MediaAsset } from "../domain/media-asset.ts";
 import { incompatibleStreamDetail, mp4IncompatibleStreams } from "../domain/export/container-policy.ts";
-import { burnTaskRequestSchema, cacheMediaTaskRequestSchema, cacheMediaTaskRequestV3Schema } from "../domain/task-request.ts";
+import { burnTaskRequestSchema, cacheMediaTaskRequestSchema, cacheMediaTaskRequestV4Schema } from "../domain/task-request.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
+import type { VideoTarget } from "../ports/platform-source.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { SubtitleMuxer } from "../ports/subtitle-muxer.ts";
 import { readCacheVolumes, type CacheDownloadLedger, type CacheReservation } from "../pipeline/cache-download-ledger.ts";
@@ -149,7 +150,7 @@ export class ClientMediaTaskService {
         this.options.repository.withTransaction((scope) => scope.mediaAssets.listByContent(owner, content.id)),
         signal,
       );
-      const estimate = await this.estimate(content, type, body.quality ?? CACHE_MEDIA_MAX_HEIGHT, signal);
+      const estimate = await this.estimate(content, type, videoTargetOf(body.quality), signal);
       const fileName = estimate.type === "audio" ? audioCacheFileName(stem) : videoCacheFileName(stem, estimate.height, estimate.ext as "mp4" | "webm");
       // A name with an unknown height is only shown; nothing can hold it yet.
       const nameKnown = estimate.type === "audio" || estimate.height !== undefined;
@@ -218,12 +219,13 @@ export class ClientMediaTaskService {
   /**
    * `GET /api/contents/:id/cache-media/qualities` [client]: the quality tiers the source
    * currently offers, read from the platform's metadata with the login the download would
-   * use, inside the owner's foreground slot of the heavy-job governor. Each listed video
-   * stream is labelled by its equivalent height, kept when that is a quality tier, and the
-   * tiers are returned ascending without duplicates: `available` when there are any,
-   * `audio_only` when the source lists no usable video stream, `unknown` when its metadata
-   * has no format list. Nothing is read from the cache directory, so an unmounted cache
-   * root does not stop the probe. A yt-dlp failure is passed on as is.
+   * use, inside the owner's foreground slot of the heavy-job governor. The adapter names
+   * each tier with the picture size of the stream a download in that tier selects; tiers
+   * outside `CACHE_QUALITY_TIERS` are dropped and the rest returned ascending, one entry per
+   * tier: `available` when there are any, `audio_only` when the source lists no usable video
+   * stream, `unknown` when its metadata has no format list. Nothing is read from the cache
+   * directory, so an unmounted cache root does not stop the probe. A yt-dlp failure is
+   * passed on as is.
    */
   async listCacheQualities(principal: RequestPrincipal, contentId: string, signal: AbortSignal): Promise<CacheMediaQualitiesDto> {
     const owner = principal.userId;
@@ -234,15 +236,17 @@ export class ClientMediaTaskService {
         throw amberError("invalid_request", "only platform contents have media to cache", { params: { detail: "contentId" } });
       }
       const { adapter, auth, ref } = target;
-      if (typeof adapter.listVideoFormats !== "function") {
-        throw amberError("internal", `the ${adapter.kind} adapter cannot list video formats`);
+      if (typeof adapter.listVideoQualities !== "function") {
+        throw amberError("internal", `the ${adapter.kind} adapter cannot list video qualities`);
       }
-      const formats = await adapter.listVideoFormats(ref, auth, signal);
-      if (formats === undefined) {
+      const listed = await adapter.listVideoQualities(ref, auth, signal);
+      if (listed === undefined) {
         return { status: "unknown", qualities: [] };
       }
-      const tiers = new Set(formats.map((format) => cacheQualityTier(format.height, format.width)));
-      const qualities = CACHE_QUALITY_TIERS.filter((tier) => tiers.has(tier));
+      const qualities = CACHE_QUALITY_TIERS.flatMap((tier) => {
+        const found = listed.find((quality) => quality.tier === tier);
+        return found === undefined ? [] : [{ tier, width: found.width, height: found.height }];
+      });
       return qualities.length === 0 ? { status: "audio_only", qualities: [] } : { status: "available", qualities };
     };
     const heavy = this.options.heavy;
@@ -251,13 +255,14 @@ export class ClientMediaTaskService {
 
   /**
    * Only a platform Content has media to download. `type` defaults to
-   * `video`, whose height cap defaults to `CACHE_MEDIA_MAX_HEIGHT`. The low-water probe
+   * `video`, downloaded in the requested tier exactly, or without one under the height cap
+   * `CACHE_MEDIA_MAX_HEIGHT`. The low-water probe
    * is the cache volume's for a video, and also the data volume's for audio, which is
    * downloaded into the data directory before it is transcoded into the cache; the stage
    * reserves the full budget once the sizes are known. An unmounted custom cache root
    * refuses the Task up front (`conflict.cache_unavailable`).
    *
-   * Frozen with the request (schema v3): the cleaned stem, the new asset's id, the cap, the
+   * Frozen with the request (schema v4): the cleaned stem, the new asset's id, the tier, the
    * height the preceding inspection expected and the user's confirmation to replace another
    * Content's cache (`overwriteAssetId`). That cache must still be available, the owner's,
    * hold the expected file name and have a fingerprint, and its Content must have no
@@ -292,11 +297,12 @@ export class ClientMediaTaskService {
       const overwrite = body.overwriteAssetId === undefined ? undefined : this.checkOverwrite(scope, owner, content, body.overwriteAssetId, type, expectedName);
       consumed = key;
       return canonicalJson(
-        cacheMediaTaskRequestV3Schema.parse({
-          requestSchemaVersion: 3,
+        cacheMediaTaskRequestV4Schema.parse({
+          requestSchemaVersion: 4,
           kind: "cache_media",
           type,
-          ...(type === "video" ? { quality: body.quality ?? CACHE_MEDIA_MAX_HEIGHT } : {}),
+          // Only a tier the user chose is frozen: without one the download keeps the cap meaning.
+          ...(type === "video" && body.quality !== undefined ? { quality: body.quality } : {}),
           stem,
           ...(expectedHeight === undefined ? {} : { expectedHeight }),
           assetId: this.newId(),
@@ -339,22 +345,24 @@ export class ClientMediaTaskService {
     return fitted;
   }
 
+  // A named tier and an omitted one select differently (exactly that tier, or the best under
+  // the default cap), so their estimates are kept apart even when the tier is the cap.
   private estimateKey(owner: string, contentId: string, type: string, quality: number | undefined, stem: string): string {
-    return [owner, contentId, type, String(type === "video" ? (quality ?? CACHE_MEDIA_MAX_HEIGHT) : ""), stem.toLowerCase()].join("\u0000");
+    return [owner, contentId, type, type === "video" ? (quality === undefined ? "cap" : String(quality)) : "", stem.toLowerCase()].join("\u0000");
   }
 
-  /** The format check: what the adapter would download for `type` and `maxHeight`. */
-  private async estimate(content: Content, type: "video" | "audio", maxHeight: number, signal: AbortSignal): Promise<CacheEstimate> {
-    const target = platformTarget(this.options.platforms, content);
-    if (target === undefined) {
+  /** The format check: what the adapter would download for `type` and the video `target`. */
+  private async estimate(content: Content, type: "video" | "audio", target: VideoTarget, signal: AbortSignal): Promise<CacheEstimate> {
+    const platform = platformTarget(this.options.platforms, content);
+    if (platform === undefined) {
       throw amberError("invalid_request", "only platform contents have media to cache", { params: { detail: "contentId" } });
     }
-    const { adapter, auth, ref } = target;
+    const { adapter, auth, ref } = platform;
     if (type === "video") {
       if (typeof adapter.inspectVideo !== "function") {
         throw amberError("internal", `the ${adapter.kind} adapter cannot download video`);
       }
-      const video = await adapter.inspectVideo(ref, auth, { maxHeight }, signal);
+      const video = await adapter.inspectVideo(ref, auth, target, signal);
       if (video.hasVideo) {
         return {
           type: "video",
@@ -399,7 +407,8 @@ export class ClientMediaTaskService {
         return false;
       }
       const request = cacheMediaTaskRequestSchema.safeParse(JSON.parse(task.requestJson));
-      if (!request.success || request.data.requestSchemaVersion !== 3 || request.data.type !== type || !sameCacheFileName(request.data.stem, stem)) {
+      // Only version 3 and later freeze a stem; older requests are refused by their stage.
+      if (!request.success || request.data.requestSchemaVersion === 1 || request.data.requestSchemaVersion === 2 || request.data.type !== type || !sameCacheFileName(request.data.stem, stem)) {
         return false;
       }
       return type === "audio" || height === undefined || request.data.expectedHeight === undefined || request.data.expectedHeight === height;
@@ -646,6 +655,11 @@ function contentCacheDto(asset: MediaAsset): ContentCacheDto {
     sizeBytes: asset.sizeBytes,
     createdAt: asset.createdAt,
   };
+}
+
+/** What an inspection asks the adapter for: the chosen tier exactly, or without one the default cap. */
+function videoTargetOf(quality: number | undefined): VideoTarget {
+  return quality === undefined ? { maxHeight: CACHE_MEDIA_MAX_HEIGHT } : { tier: quality };
 }
 
 /** Size of the file at `path`, or `undefined` when it cannot be read. */

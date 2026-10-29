@@ -100,6 +100,8 @@ export const EXPECTED_REFINED_CODES = [
   { code: "invalid_request.schema", detailsKeys: ["path"], retryDisposition: null, action: null },
   { code: "invalid_request.cache_request_outdated", detailsKeys: [], retryDisposition: null, action: null },
   { code: "invalid_request.cache_probe_failed", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "invalid_request.cache_quality_unavailable", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "invalid_request.cache_quality_mismatch", detailsKeys: [], retryDisposition: null, action: null },
   { code: "invalid_request.revision_kind_protected", detailsKeys: [], retryDisposition: null, action: null },
   { code: "invalid_request.container_unsupported", detailsKeys: ["streams"], retryDisposition: null, action: null },
   { code: "invalid_request.note_anchor", detailsKeys: [], retryDisposition: null, action: null },

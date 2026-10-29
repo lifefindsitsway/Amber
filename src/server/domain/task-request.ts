@@ -220,10 +220,31 @@ export const cacheMediaTaskRequestV3Schema = z
   .strict();
 export type CacheMediaTaskRequestV3 = z.infer<typeof cacheMediaTaskRequestV3Schema>;
 
+/**
+ * `Task.requestJson` of a `cache_media` Task, schema version 4 (client only): the fields of
+ * version 3, but `quality` is the target tier (one of `CACHE_QUALITY_TIERS`) the video is
+ * downloaded in exactly, not a cap. Without `quality` the video is selected under the cap
+ * `CACHE_MEDIA_MAX_HEIGHT`, as version 3 does. Version 3 requests keep their cap meaning.
+ */
+export const cacheMediaTaskRequestV4Schema = z
+  .object({
+    requestSchemaVersion: z.literal(4),
+    kind: z.literal("cache_media"),
+    type: z.enum(CACHE_MEDIA_TYPES),
+    quality: z.union(CACHE_QUALITY_TIERS.map((quality) => z.literal(quality))).exactOptional(),
+    stem: z.string().min(1),
+    expectedHeight: z.number().int().positive().exactOptional(),
+    assetId: z.string().min(1),
+    overwrite: z.object({ assetId: z.string().min(1), fileName: z.string().min(1) }).strict().exactOptional(),
+  })
+  .strict();
+export type CacheMediaTaskRequestV4 = z.infer<typeof cacheMediaTaskRequestV4Schema>;
+
 export const cacheMediaTaskRequestSchema = z.discriminatedUnion("requestSchemaVersion", [
   cacheMediaTaskRequestV1Schema,
   cacheMediaTaskRequestV2Schema,
   cacheMediaTaskRequestV3Schema,
+  cacheMediaTaskRequestV4Schema,
 ]);
 export type CacheMediaTaskRequest = z.infer<typeof cacheMediaTaskRequestSchema>;
 

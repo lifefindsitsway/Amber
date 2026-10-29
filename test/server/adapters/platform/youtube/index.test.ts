@@ -414,14 +414,20 @@ describe("YoutubeAdapter.inspectVideo / inspectAudio", () => {
   });
 });
 
-describe("YoutubeAdapter.listVideoFormats", () => {
-  const FORMATS = JSON.stringify({ formats: [{ ext: "webm", vcodec: "vp9", height: 2160, width: 3840 }, { ext: "mp4", vcodec: "avc1.4d401f", height: 720, width: 1280 }] });
+describe("YoutubeAdapter.listVideoQualities", () => {
+  const FORMATS = JSON.stringify({
+    formats: [
+      { format_id: "313", ext: "webm", vcodec: "vp9", height: 2160, width: 3840 },
+      { format_id: "136", ext: "mp4", vcodec: "avc1.4d401f", height: 720, width: 1280 },
+      { format_id: "247", ext: "webm", vcodec: "vp9", height: 720, width: 1280 },
+    ],
+  });
 
   it("lists as a guest and retries once with the login when refused", async () => {
     const { adapter, runner } = setup(sequence(BOT_CHECK, { stdout: FORMATS }));
-    expect(await adapter.listVideoFormats({ platformContentId: ID }, LOGIN, signal())).toEqual([
-      { height: 2160, width: 3840 },
-      { height: 720, width: 1280 },
+    expect(await adapter.listVideoQualities({ platformContentId: ID }, LOGIN, signal())).toEqual([
+      { tier: 720, width: 1280, height: 720 },
+      { tier: 2160, width: 3840, height: 2160 },
     ]);
     expect(runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false, true]);
     for (const spec of runner.specs) {
@@ -431,10 +437,10 @@ describe("YoutubeAdapter.listVideoFormats", () => {
 
   it("stays a guest when the guest run succeeds, and passes the refusal on without a login", async () => {
     const guest = setup(() => ({ stdout: FORMATS }));
-    await guest.adapter.listVideoFormats({ platformContentId: ID }, LOGIN, signal());
+    await guest.adapter.listVideoQualities({ platformContentId: ID }, LOGIN, signal());
     expect(guest.runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false]);
     const refused = setup(sequence(BOT_CHECK));
-    expect((await errorOf(refused.adapter.listVideoFormats({ platformContentId: ID }, undefined, signal()))).class).toBe("auth_required");
+    expect((await errorOf(refused.adapter.listVideoQualities({ platformContentId: ID }, undefined, signal()))).class).toBe("auth_required");
     expect(refused.runner.specs).toHaveLength(1);
   });
 });
@@ -468,5 +474,41 @@ describe("YoutubeAdapter.fetchVideo", () => {
     const result = await adapter.fetchVideo({ platformContentId: ID }, LOGIN, { maxHeight: 720, maxBytes: 4096, output: { path: join(dataDir, "video.partial"), scratchDir: join(dataDir, ".amber-tmp", "01ASSET") } }, () => undefined, signal());
     expect(result).toEqual({ sizeBytes: 3, mimeType: "video/mp4", height: 720, acquisition: "guest" });
     expect(runner.specs.some((spec) => spec.args.includes("--cookies"))).toBe(false);
+  });
+
+  it("caches exactly the stream of a tier, as a guest first, and repeats the metadata and the download with the login when refused", async () => {
+    const formats = JSON.stringify({
+      formats: [
+        { format_id: "247", ext: "webm", vcodec: "vp9", height: 720, width: 1280 },
+        { format_id: "135", ext: "mp4", vcodec: "avc1.4d401f", height: 480, width: 854 },
+        { format_id: "244", ext: "webm", vcodec: "vp9", height: 480, width: 854 },
+      ],
+    });
+    const { adapter, runner, dataDir } = setup(
+      sequence(BOT_CHECK, (spec) => {
+        if (spec.args.includes("--dump-single-json")) {
+          return { stdout: formats };
+        }
+        if (spec.args.includes("--print")) {
+          return { stdoutLines: ["amber-format 1024 480 mp4 avc1.4d401f 854"] };
+        }
+        writeFileSync((argAfter(spec.args, "--output") as string).replace("%(ext)s", "mp4"), "mp4!!");
+        return {};
+      }),
+    );
+    const result = await adapter.fetchVideo({ platformContentId: ID }, LOGIN, { tier: 480, maxBytes: 4096, output: { path: join(dataDir, "video.partial"), scratchDir: join(dataDir, ".amber-tmp", "01ASSET") } }, () => undefined, signal());
+    expect(result).toEqual({ sizeBytes: 5, mimeType: "video/mp4", height: 480, acquisition: "authenticated" });
+    expect(runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false, true, true, true]);
+    expect(runner.specs.map((spec) => spec.args.includes("--dump-single-json"))).toEqual([true, true, false, false]);
+    expect(runner.specs.map((spec) => spec.args.at(-1))).toEqual([WATCH, WATCH, WATCH, WATCH]);
+    expect(runner.specs.slice(2).map((spec) => argAfter(spec.args, "--format"))).toEqual(["135+ba[ext=m4a]/135+ba/135", "135+ba[ext=m4a]/135+ba/135"]);
+  });
+
+  it("does not retry with the login when the guest's metadata lacks the tier", async () => {
+    const { adapter, runner, dataDir } = setup(() => ({ stdout: JSON.stringify({ formats: [{ format_id: "135", ext: "mp4", vcodec: "avc1", height: 480, width: 854 }] }) }));
+    const failure = await errorOf(adapter.fetchVideo({ platformContentId: ID }, LOGIN, { tier: 1080, maxBytes: 4096, output: { path: join(dataDir, "video.partial"), scratchDir: join(dataDir, ".amber-tmp", "01ASSET") } }, () => undefined, signal()));
+    expect(failure.code).toBe("invalid_request.cache_quality_unavailable");
+    expect(runner.specs).toHaveLength(1);
+    expect(runner.specs[0]?.args).not.toContain("--cookies");
   });
 });

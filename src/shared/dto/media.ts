@@ -48,12 +48,23 @@ export const CACHE_QUALITY_STATUSES = ["available", "audio_only", "unknown"] as 
 export type CacheQualityStatus = (typeof CACHE_QUALITY_STATUSES)[number];
 
 /**
- * Response of `GET /api/contents/:id/cache-media/qualities` [client]: the quality tiers the
- * source currently offers with the login the download would use, ascending and without
- * duplicates. Only the tiers: never the format list, its URLs or cookies. A listed tier is
- * a candidate, not a promise; the inspect estimate tells what would really be downloaded.
+ * One tier a video cache can be made in, with the picture size of the stream a download in
+ * that tier selects; for a non-standard picture (ultra-wide, portrait) the size differs from
+ * the tier, which is named after the equivalent height.
  */
-export const cacheMediaQualitiesDtoSchema = z.object({ status: z.enum(CACHE_QUALITY_STATUSES), qualities: z.array(cacheQualitySchema) }).strict();
+export const cacheVideoQualitySchema = z
+  .object({ tier: cacheQualitySchema, width: z.number().int().positive(), height: z.number().int().positive() })
+  .strict();
+export type CacheVideoQuality = z.infer<typeof cacheVideoQualitySchema>;
+
+/**
+ * Response of `GET /api/contents/:id/cache-media/qualities` [client]: the quality tiers the
+ * source currently offers with the login the download would use, ascending by tier and
+ * without duplicates, each with the picture size of the stream that tier downloads. Never
+ * the format list, its URLs or cookies. A listed tier is a candidate, not a promise; the
+ * inspect estimate tells what would really be downloaded.
+ */
+export const cacheMediaQualitiesDtoSchema = z.object({ status: z.enum(CACHE_QUALITY_STATUSES), qualities: z.array(cacheVideoQualitySchema) }).strict();
 export type CacheMediaQualitiesDto = z.infer<typeof cacheMediaQualitiesDtoSchema>;
 
 const volumeSpaceSchema = z.object({ freeBytes: z.number().int().nonnegative(), lowWaterBytes: z.number().int().nonnegative() }).strict();

@@ -12,9 +12,11 @@ import type {
   PlatformPart,
   PlatformSourceAdapter,
   SubtitleTrackRef,
+  VideoQuality,
+  VideoTarget,
 } from "../../../ports/platform-source.ts";
 import { platformGet, platformGetJson } from "../http.ts";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoFormats, secondsToMs, type YtDlpChapter } from "../shared.ts";
+import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoQualities, secondsToMs, videoTargetOf, type YtDlpChapter } from "../shared.ts";
 import type { YtDlp } from "../yt-dlp.ts";
 import { collectionUrl, isShortLink, parseBilibiliUrl, videoUrl } from "./url.ts";
 
@@ -294,7 +296,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
   async inspectVideo(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number },
+    target: VideoTarget,
     signal: AbortSignal,
   ): Promise<{ hasVideo: false } | { hasVideo: true; mimeType: string; sizeBytes?: number; height?: number; width?: number }> {
     const part = await this.part(ref, auth, signal);
@@ -303,23 +305,23 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       url: part.canonicalUrl,
       extractors: BILIBILI_EXTRACTORS,
       ...(cookies === undefined ? {} : { cookies }),
-      maxHeight: options.maxHeight,
+      target,
       signal,
     });
   }
 
-  /** The part's downloadable video streams, with the login whenever the user has one, as the download would use. */
-  async listVideoFormats(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<Array<{ height: number; width?: number }> | undefined> {
+  /** The quality tiers a video cache of the part can be made in, with the login whenever the user has one, as the download would use. */
+  async listVideoQualities(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<VideoQuality[] | undefined> {
     const part = await this.part(ref, auth, signal);
     const cookies = await auth?.cookies();
-    return listVideoFormats(this.options.ytDlp, { url: part.canonicalUrl, extractors: BILIBILI_EXTRACTORS, ...(cookies === undefined ? {} : { cookies }), signal });
+    return listVideoQualities(this.options.ytDlp, { url: part.canonicalUrl, extractors: BILIBILI_EXTRACTORS, ...(cookies === undefined ? {} : { cookies }), signal });
   }
 
   /** The part's video for `cache_media`, with the login whenever the user has one, like every other bilibili call. */
   async fetchVideo(
     ref: PlatformContentRef,
     auth: PlatformCredential | undefined,
-    options: { maxHeight: number; maxBytes: number; output: { path: string; scratchDir: string } },
+    options: VideoTarget & { maxBytes: number; output: { path: string; scratchDir: string } },
     onProgress: (progress: number) => void,
     signal: AbortSignal,
   ): Promise<{ sizeBytes: number; mimeType: string; height?: number; acquisition: "guest" | "authenticated" }> {
@@ -329,7 +331,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       url: part.canonicalUrl,
       extractors: BILIBILI_EXTRACTORS,
       ...(cookies === undefined ? {} : { cookies }),
-      maxHeight: options.maxHeight,
+      target: videoTargetOf(options),
       maxBytes: options.maxBytes,
       output: options.output,
       onProgress,
