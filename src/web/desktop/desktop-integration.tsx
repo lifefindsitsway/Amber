@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { ShieldCheck, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { resolveEndpoint } from "../api/client.ts";
 import { useApi, useTaskHub } from "../api/context.tsx";
@@ -10,6 +11,7 @@ import { requestOpenTasks } from "../shell/task-panel.tsx";
 import { Button } from "../ui/button.tsx";
 import { Modal } from "../ui/modal.tsx";
 import { EVENT_SIDECAR_FAILED, EVENT_SIDECAR_RESTARTED, onShellEvent } from "./bridge.ts";
+import { parseUpdateNotes } from "./update-notes.ts";
 import { UpdateProvider, useBackupBusy, useUpdater, type UpdateController } from "./updater.ts";
 import { useDesktop } from "./use-desktop.ts";
 
@@ -149,54 +151,114 @@ function UpdatePrompt() {
   return (
     <>
       {visible ? (
-        <div className="fixed right-4 bottom-4 z-50 flex max-w-sm flex-col gap-2 rounded-lg border border-line bg-surface p-3 text-sm shadow-xl" role="status" data-testid="update-prompt">
-          <p className="font-medium">{t("shell.desktop.updateFound", { version: update.version ?? "" })}</p>
-          {update.notes === undefined || update.notes === "" ? null : (
-            <div className="max-h-32 overflow-auto text-xs whitespace-pre-wrap text-muted" data-testid="update-notes">
-              {update.notes}
-            </div>
-          )}
-          <p className="text-xs text-muted">{t("shell.desktop.updateBackupHint")}</p>
-          <UpdateProgressLine />
-          {update.status === "ready_to_install" ? <p className="text-xs text-muted">{t("shell.desktop.updateDownloaded")}</p> : null}
-          {update.status === "installing" ? <p className="text-xs text-muted">{t("shell.desktop.updateInstalling")}</p> : null}
-          {update.status === "failed" && update.error !== undefined ? (
-            <p className="text-xs text-danger" role="alert">
-              {t("shell.desktop.updateFailed", { reason: update.error.message })}{" "}
-              <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" data-testid="update-manual-download">
-                {t("shell.about.update.manualDownload")}
-              </a>
+        <div
+          className="fixed right-5 bottom-5 z-50 flex w-[26rem] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-xl border border-line bg-surface text-sm text-ink shadow-2xl"
+          role="status"
+          data-testid="update-prompt"
+        >
+          <div className="flex items-center gap-3 px-5 pt-4 pb-3">
+            <span aria-hidden="true" className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent">
+              <Sparkles size={16} />
+            </span>
+            <p className="min-w-0 flex-1 text-[15px] font-semibold">{t("shell.desktop.updateTitle")}</p>
+            <span className="shrink-0 rounded-full border border-accent/25 bg-accent-soft px-2 py-px text-[11px] font-semibold tracking-wide tabular-nums text-accent" data-testid="update-version">
+              v{update.version ?? ""}
+            </span>
+          </div>
+          {update.notes === undefined || update.notes.trim() === "" ? null : <UpdateNotes notes={update.notes} />}
+          <div className="flex flex-col gap-2.5 border-t border-line bg-panel px-5 py-3">
+            <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted">
+              <ShieldCheck aria-hidden="true" size={13} className="mt-[0.2em] shrink-0 text-ok" />
+              <span>{t("shell.desktop.updateBackupHint")}</span>
             </p>
-          ) : null}
-          <div className="flex flex-wrap justify-end gap-2">
-            <Link to="/settings/backup" className="inline-flex h-7 items-center rounded-md px-2 text-xs font-medium text-accent hover:bg-sunken" data-testid="update-backup-first">
-              {t("shell.desktop.updateBackupFirst")}
-            </Link>
-            {update.status === "available" ? (
-              <Button size="sm" variant="ghost" onClick={() => controller.later()}>
-                {t("shell.desktop.updateLater")}
-              </Button>
+            <UpdateProgressLine />
+            {update.status === "ready_to_install" ? <p className="text-xs text-muted">{t("shell.desktop.updateDownloaded")}</p> : null}
+            {update.status === "installing" ? <p className="text-xs text-muted">{t("shell.desktop.updateInstalling")}</p> : null}
+            {update.status === "failed" && update.error !== undefined ? (
+              <p className="text-xs text-danger" role="alert">
+                {t("shell.desktop.updateFailed", { reason: update.error.message })}{" "}
+                <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" data-testid="update-manual-download">
+                  {t("shell.about.update.manualDownload")}
+                </a>
+              </p>
             ) : null}
-            {update.status === "available" ? (
-              <Button size="sm" variant="primary" disabled={backupBusy} onClick={() => void controller.download()} data-testid="update-download">
-                {t("shell.desktop.updateDownload")}
-              </Button>
-            ) : null}
-            {update.status === "ready_to_install" ? (
-              <Button size="sm" variant="primary" disabled={backupBusy} onClick={() => void controller.install()} data-testid="update-install">
-                {t("shell.desktop.updateInstall")}
-              </Button>
-            ) : null}
-            {update.status === "failed" ? (
-              <Button size="sm" variant="primary" onClick={() => void controller.retry()} data-testid="update-retry">
-                {t("shell.desktop.updateRetry")}
-              </Button>
-            ) : null}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Link to="/settings/backup" className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-accent hover:bg-sunken" data-testid="update-backup-first">
+                {t("shell.desktop.updateBackupFirst")}
+              </Link>
+              {update.status === "available" ? (
+                <Button variant="ghost" onClick={() => controller.later()}>
+                  {t("shell.desktop.updateLater")}
+                </Button>
+              ) : null}
+              {update.status === "available" ? (
+                <Button variant="primary" disabled={backupBusy} onClick={() => void controller.download()} data-testid="update-download">
+                  {t("shell.desktop.updateDownload")}
+                </Button>
+              ) : null}
+              {update.status === "ready_to_install" ? (
+                <Button variant="primary" disabled={backupBusy} onClick={() => void controller.install()} data-testid="update-install">
+                  {t("shell.desktop.updateInstall")}
+                </Button>
+              ) : null}
+              {update.status === "failed" ? (
+                <Button variant="primary" onClick={() => void controller.retry()} data-testid="update-retry">
+                  {t("shell.desktop.updateRetry")}
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
       <UpdateBlockedDialog />
     </>
+  );
+}
+
+/**
+ * The notes of a found update, laid out as an opening paragraph and titled sections of items.
+ * They come from the update feed, so they are rendered as text only. A fade at the bottom shows
+ * there is more to scroll.
+ */
+function UpdateNotes(props: { notes: string }) {
+  const { t } = useTranslation();
+  const scroller = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  const measure = useCallback(() => {
+    const node = scroller.current;
+    if (node !== null) setMore(node.scrollTop + node.clientHeight < node.scrollHeight - 2);
+  }, []);
+  useEffect(measure, [measure, props.notes]);
+  return (
+    <div className="relative">
+      <div ref={scroller} onScroll={measure} className="max-h-72 overflow-y-auto px-5 pb-4 [scrollbar-color:var(--color-line)_transparent] [scrollbar-width:thin]" role="region" aria-label={t("shell.desktop.updateNotes")} data-testid="update-notes">
+        {parseUpdateNotes(props.notes).map((block, index) =>
+          block.kind === "paragraph" ? (
+            <p key={index} className="mt-3 text-[13px] leading-relaxed text-ink first:mt-0">
+              {block.text}
+            </p>
+          ) : (
+            <section key={index} className="mt-4 first:mt-0" data-testid="update-notes-section">
+              {block.title === undefined ? null : (
+                <h3 className="mb-2 flex items-center gap-2 text-[13px] font-semibold text-ink">
+                  <span aria-hidden="true" className="h-3 w-0.5 rounded-full bg-accent" />
+                  {block.title}
+                </h3>
+              )}
+              <ul className="flex flex-col gap-1.5">
+                {block.items.map((item, itemIndex) => (
+                  <li key={itemIndex} className="flex gap-2.5 text-[13px] leading-relaxed text-muted">
+                    <span aria-hidden="true" className="mt-[0.6em] size-1.5 shrink-0 rounded-full bg-accent" />
+                    <span className="min-w-0">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ),
+        )}
+      </div>
+      {more ? <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-surface to-transparent" data-testid="update-notes-fade" /> : null}
+    </div>
   );
 }
 

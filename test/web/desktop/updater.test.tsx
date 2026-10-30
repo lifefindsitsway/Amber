@@ -310,13 +310,14 @@ describe("update card", () => {
     return renderApp(<DesktopIntegration updateController={controller} />);
   }
 
-  it("offers a found update with plain-text notes and downloads only on request", async () => {
+  it("offers a found update with text-only notes and downloads only on request", async () => {
     const log: string[] = [];
     const update = fakeUpdate("0.2.0", log, { body: "修复 <b>若干</b> 问题" });
     const controller = new UpdateController(fakeDeps(async () => update, log));
     setup(controller);
     const card = await screen.findByTestId("update-prompt");
-    expect(card.textContent).toContain("发现新版本 0.2.0");
+    expect(card.textContent).toContain("发现新版本");
+    expect(screen.getByTestId("update-version").textContent).toBe("v0.2.0");
     expect(screen.getByTestId("update-notes").textContent).toBe("修复 <b>若干</b> 问题");
     expect(card.querySelector("b")).toBeNull();
     expect(screen.getByTestId("update-backup-first").getAttribute("href")).toBe("/settings/backup");
@@ -324,6 +325,19 @@ describe("update card", () => {
     fireEvent.click(screen.getByTestId("update-download"));
     fireEvent.click(await screen.findByTestId("update-install"));
     await waitFor(() => expect(log).toEqual(["check", "download", "maintenance", "begin", "install"]));
+  });
+
+  it("lays the notes out as an opening paragraph and titled sections, with no Markdown marks left", async () => {
+    const update = fakeUpdate("0.3.0", [], { body: "本次更新重点。\n\n### 新增\n\n- 一项 **重点**\n- [链接](https://example.com)\n\n修复\n• 三项" });
+    setup(new UpdateController(fakeDeps(async () => update, [])));
+    const notes = await screen.findByTestId("update-notes");
+    expect(notes.getAttribute("aria-label")).toBe("更新说明");
+    expect(notes.querySelector("p")?.textContent).toBe("本次更新重点。");
+    const sections = screen.getAllByTestId("update-notes-section");
+    expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual(["新增", "修复"]);
+    expect(Array.from(sections[0]?.querySelectorAll("li") ?? [], (item) => item.textContent)).toEqual(["一项 重点", "[链接](https://example.com)"]);
+    expect(notes.textContent).not.toMatch(/###|\*\*|^- /mu);
+    expect(notes.querySelector("a")).toBeNull();
   });
 
   it("checks once across remounts and sidecar restarts", async () => {

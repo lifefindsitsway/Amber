@@ -145,7 +145,7 @@ export const shell = {
   },
   desktop: {
     sidecarFailed: "后端已停止，请重启 Amber",
-    updateFound: "发现新版本 {{version}}",
+    updateTitle: "发现新版本",
     updateNotes: "更新说明",
     updateDownload: "下载并安装",
     updateInstall: "安装",

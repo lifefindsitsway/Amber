@@ -144,7 +144,8 @@ describe("update prompt", () => {
     tauri.check.mockResolvedValue({ version: "0.2.0", download, install: vi.fn(async () => undefined) });
     setup();
     const prompt = await screen.findByTestId("update-prompt");
-    expect(prompt.textContent).toContain("发现新版本 0.2.0");
+    expect(prompt.textContent).toContain("发现新版本");
+    expect(screen.getByTestId("update-version").textContent).toBe("v0.2.0");
     expect(download).not.toHaveBeenCalled();
     expect(tauri.check).toHaveBeenCalledTimes(1);
   });
