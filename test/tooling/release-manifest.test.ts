@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { changelogSection, findSignedInstaller, renderLatestJson, rfc3339 } from "../../src/tooling/release-manifest.ts";
+import { changelogSection, findSignedInstaller, plainNotes, renderLatestJson, rfc3339 } from "../../src/tooling/release-manifest.ts";
 
 const REPO_ROOT = join(import.meta.dirname, "../..");
 const CHANGELOG = "# 变更日志\n\n## [Unreleased]\n\n- 未发布\n\n## [0.1.0] - 2026-11-01\n\n### 新增\n\n- 首个公开版本\n\n## [0.0.9]\n\n- 旧\n";
@@ -31,7 +31,7 @@ describe("release manifest", () => {
     });
     expect(latest).toEqual({
       version: "0.1.0",
-      notes: "### 新增\n\n- 首个公开版本",
+      notes: "新增\n• 首个公开版本",
       pub_date: "2026-11-01T08:09:10Z",
       platforms: {
         "windows-x86_64": {
@@ -52,7 +52,7 @@ describe("release manifest", () => {
       now: new Date(0),
       localTest: "http://127.0.0.1:8787/rc2",
     });
-    expect(local.notes).toBe("### 新增\n\n- 首个公开版本");
+    expect(local.notes).toBe("新增\n• 首个公开版本");
     expect(local.platforms["windows-x86_64"]?.url).toBe("http://127.0.0.1:8787/rc2/Amber_0.1.0-rc.2_x64-setup.exe");
     expect(() =>
       renderLatestJson({ version: "0.1.0", changelog: "", installer: "a-setup.exe", signature: SIG, now: new Date(0), localTest: "http://10.0.0.2/" }),
@@ -61,9 +61,16 @@ describe("release manifest", () => {
 
   it("uses given release notes, trimmed, in place of the changelog section and refuses blank ones", () => {
     const base = { version: "0.1.0", changelog: CHANGELOG, installer: "Amber_0.1.0_x64-setup.exe", signature: SIG, now: new Date(0) };
-    expect(renderLatestJson({ ...base, notes: "\n公开说明\n\n- 重点\n\n" }).notes).toBe("公开说明\n\n- 重点");
-    expect(renderLatestJson(base).notes).toBe("### 新增\n\n- 首个公开版本");
+    expect(renderLatestJson({ ...base, notes: "\n公开说明\n\n- 重点\n\n" }).notes).toBe("公开说明\n\n• 重点");
+    expect(renderLatestJson(base).notes).toBe("新增\n• 首个公开版本");
     expect(() => renderLatestJson({ ...base, notes: " \n\t\n" })).toThrow(/--notes-file is empty/u);
+  });
+
+  it("lays Markdown notes out as plain text the installed clients show verbatim", () => {
+    expect(plainNotes("开头一句。\n\n### 新增\n\n- 一项 **重点** 与 `代码`\n* 二项\n\n\n\n## 修复 ##\n\n+ 三项  \n")).toBe(
+      "开头一句。\n\n新增\n• 一项 重点 与 代码\n• 二项\n\n修复\n• 三项",
+    );
+    expect(plainNotes("已是纯文本\n\n• 条目")).toBe("已是纯文本\n\n• 条目");
   });
 
   it("needs exactly one installer with its signature", () => {
@@ -93,7 +100,7 @@ describe("release manifest", () => {
     const ok = run(dir, join(dir, "notes.md"));
     expect(ok.stderr).toBe("");
     expect(ok.status).toBe(0);
-    expect((JSON.parse(readFileSync(join(dir, "latest.json"), "utf8")) as { notes: string }).notes).toBe("本次更新重点。\n\n### 新增\n\n- 一项");
+    expect((JSON.parse(readFileSync(join(dir, "latest.json"), "utf8")) as { notes: string }).notes).toBe("本次更新重点。\n\n新增\n• 一项");
 
     const missing = artifacts({ "Amber_0.0.22_x64-setup.exe": "x", "Amber_0.0.22_x64-setup.exe.sig": SIG });
     expect(run(missing, join(missing, "absent.md")).status).toBe(1);

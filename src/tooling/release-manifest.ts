@@ -12,10 +12,11 @@ import { localTestEndpoint } from "./updater-config.ts";
  *
  * The directory holds exactly one NSIS installer (`*-setup.exe`) and its `.sig`. `signature`
  * is the `.sig` content as written by the signer, and `url` the asset of the `v<version>` GitHub
- * Release. `notes` is what the update dialog shows: the text of `--notes-file`, trimmed, when
- * one is given (a published release uses the short public notes the maintainer reviewed,
- * while the local changelog keeps the full record); otherwise the changelog section of the
- * release version (empty when there is none). A notes file that is missing or empty is an
+ * Release. `notes` is what the update prompt shows: the text of `--notes-file` when one is
+ * given (a published release uses the short public notes the maintainer reviewed, while the
+ * local changelog keeps the full record); otherwise the changelog section of the release
+ * version (empty when there is none). Either way it is laid out as plain text, because the
+ * clients already installed show it verbatim. A notes file that is missing or empty is an
  * error, so a release never goes out with notes left blank by mistake. `--local-test <base URL>` points `url` at that loopback directory instead, for the
  * candidate upgrade test; it never names anything else.
  */
@@ -57,6 +58,33 @@ export function changelogSection(changelog: string, version: string): string {
   return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
 }
 
+/**
+ * Markdown notes laid out as plain text: a heading becomes a line of its own right above its
+ * items, a list item a line starting with a bullet, and emphasis and code marks are dropped; runs of blank lines
+ * collapse to one. Installed clients show the notes verbatim, where `### 新增` or `- item`
+ * would read as stray symbols.
+ */
+export function plainNotes(markdown: string): string {
+  const out: string[] = [];
+  let afterHeading = false;
+  for (const line of markdown.split(/\r?\n/u)) {
+    const heading = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/u.exec(line);
+    const item = /^\s*[-*+]\s+(.*)$/u.exec(line);
+    const text = heading !== null ? inline(heading[1] as string) : item !== null ? `${NOTES_BULLET}${inline(item[1] as string)}` : inline(line.trimEnd());
+    // A heading sits right on top of its items.
+    if (text.trim() === "" && afterHeading) continue;
+    out.push(text);
+    afterHeading = heading !== null;
+  }
+  return out.join("\n").replace(/\n{3,}/gu, "\n\n").trim();
+}
+
+const NOTES_BULLET = "• ";
+
+function inline(text: string): string {
+  return text.replace(/\*\*(.+?)\*\*/gu, "$1").replace(/`([^`]+)`/gu, "$1");
+}
+
 /** RFC 3339 in UTC to the second, the form the updater parses. */
 export function rfc3339(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/u, "Z");
@@ -75,7 +103,7 @@ export function renderLatestJson(input: {
   const base = input.localTest === undefined ? `${RELEASES_PAGE_URL}/download/v${input.version}/` : appendSlash(localTestEndpoint(input.localTest));
   return {
     version: input.version,
-    notes: input.notes === undefined ? changelogSection(input.changelog, releaseVersionOf(input.version)) : nonBlankNotes(input.notes),
+    notes: plainNotes(input.notes === undefined ? changelogSection(input.changelog, releaseVersionOf(input.version)) : nonBlankNotes(input.notes)),
     pub_date: rfc3339(input.now),
     platforms: { [WINDOWS_PLATFORM]: { signature: input.signature, url: `${base}${encodeURIComponent(input.installer)}` } },
   };
