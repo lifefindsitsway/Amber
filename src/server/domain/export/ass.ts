@@ -1,5 +1,5 @@
 import { SUBTITLE_WRAP_RATIO } from "../../../shared/defaults.ts";
-import { assColor, sliceCues, type TimedSubtitle } from "../../../shared/subtitle-geometry.ts";
+import { assColor, sliceCues, subtitleGlyphText, type TimedSubtitle } from "../../../shared/subtitle-geometry.ts";
 import type { BurnMode } from "../../../shared/enums.ts";
 import { BASIS_POINTS, boxedLines, lineBoxPadding, type SubtitleStyle } from "../../../shared/subtitle-style.ts";
 import type { TranscriptWord } from "../transcript.ts";
@@ -47,8 +47,8 @@ export function assText(text: string): string {
  * timing to the original line only; callers enable it for `exact_words` revisions alone.
  */
 export function assDialogue(cue: ExportCue, options: { karaoke: boolean }): string {
-  const original = options.karaoke && cue.words !== undefined && cue.words.length > 0 ? karaokeText(cue) : assText(cue.text);
-  const text = cue.translation === undefined ? original : `${original}\\N{\\rTranslation}${assText(cue.translation)}`;
+  const original = options.karaoke && cue.words !== undefined && cue.words.length > 0 ? karaokeText(cue) : assText(subtitleGlyphText(cue.text));
+  const text = cue.translation === undefined ? original : `${original}\\N{\\rTranslation}${assText(subtitleGlyphText(cue.translation))}`;
   return `Dialogue: 0,${assTime(cue.startMs)},${assTime(cue.endMs)},Default,,0,0,0,,${text}\n`;
 }
 
@@ -63,18 +63,20 @@ export function assDialogue(cue: ExportCue, options: { karaoke: boolean }): stri
 function karaokeText(cue: ExportCue): string {
   const words = cue.words as readonly TranscriptWord[];
   const at = (ms: number): number => Math.round((ms - cue.startMs) / 10);
-  const source = cue.text.replace(/\r\n|\r|\n/g, " ");
+  const source = subtitleGlyphText(cue.text.replace(/\r\n|\r|\n/g, " "));
   let cursor = 0;
   let previousEnd = cue.startMs;
   let out = "";
   words.forEach((word, index) => {
-    const found = source.indexOf(word.text, cursor);
+    // Words are matched in the same drawn form as the sentence they are cut from.
+    const wordText = subtitleGlyphText(word.text, cue.text);
+    const found = source.indexOf(wordText, cursor);
     let piece: string;
     if (found === -1) {
-      piece = cursor > 0 && /\w$/u.test(source.slice(0, cursor)) ? ` ${word.text}` : word.text;
+      piece = cursor > 0 && /\w$/u.test(source.slice(0, cursor)) ? ` ${wordText}` : wordText;
     } else {
-      piece = source.slice(cursor, found + word.text.length);
-      cursor = found + word.text.length;
+      piece = source.slice(cursor, found + wordText.length);
+      cursor = found + wordText.length;
     }
     if (index === words.length - 1) {
       piece += source.slice(cursor);
@@ -256,7 +258,7 @@ function eventText(cue: TimedSubtitle, order: SubtitleStyle["appearance"]["bilin
   if (first === undefined) {
     return undefined;
   }
-  const text = present.map((line, index) => (index === 0 ? "" : `\\N{\\r${styles[line]}}`) + assText(cue[line] as string)).join("");
+  const text = present.map((line, index) => (index === 0 ? "" : `\\N{\\r${styles[line]}}`) + assText(subtitleGlyphText(cue[line] as string))).join("");
   return { style: styles[first], text };
 }
 

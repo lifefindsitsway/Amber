@@ -50,6 +50,31 @@ describe("ASS", () => {
     expect(assDialogue(cue, { karaoke: false })).not.toContain("{\\k");
   });
 
+  it("draws curly quotes of Latin lines straight, line by line, and leaves everything else as it was", () => {
+    expect(assDialogue({ startMs: 0, endMs: 1000, text: "They’re here." }, { karaoke: false })).toBe("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,They're here.\n");
+    // The original is Latin and the translation is Chinese: each line is judged on its own.
+    expect(assDialogue({ startMs: 0, endMs: 1000, text: "“Hello,” he said.", translation: "他说“你好”" }, { karaoke: false })).toBe(
+      'Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,"Hello," he said.\\N{\\rTranslation}他说“你好”\n',
+    );
+    expect(assDialogue({ startMs: 0, endMs: 1000, text: "Hello", translation: "你好" }, { karaoke: false })).toBe("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Hello\\N{\\rTranslation}你好\n");
+  });
+
+  it("keeps karaoke words matching the sentence once its quotes are drawn straight", () => {
+    const cue = {
+      startMs: 0,
+      endMs: 1500,
+      text: "They’re “here”.",
+      words: [
+        { text: "They’re", startMs: 0, endMs: 500 },
+        { text: "“here”.", startMs: 600, endMs: 1500 },
+      ],
+    };
+    expect(assDialogue(cue, { karaoke: true })).toBe('Dialogue: 0,0:00:00.00,0:00:01.50,Default,,0,0,0,,{\\k50}They\'re{\\k10}{\\k90} "here".\n');
+    // A Chinese sentence keeps its quote pair; only the Latin apostrophe changes.
+    const mixed = { startMs: 0, endMs: 1000, text: "他说“don’t”", words: [{ text: "他说“don’t”", startMs: 0, endMs: 1000 }] };
+    expect(assDialogue(mixed, { karaoke: true })).toBe("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\k100}他说“don't”\n");
+  });
+
   it("gives a zero-length word {\\k0} and keeps CJK text as spoken", () => {
     const line = assDialogue(
       {
@@ -236,6 +261,31 @@ describe("styled ASS", () => {
     expect(dialogues(document)).toEqual([
       "Dialogue: 1,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\an2\\pos(960,994)}a｛＼b1｝b＼Nc\\Nd\\N{\\rTranslation}｛＼rDefault｝x",
     ]);
+  });
+});
+
+describe("styled ASS glyphs", () => {
+  it("draws each line of a slice straight or curly on its own before joining them", () => {
+    const document = styledAssDocument(
+      [
+        { startMs: 0, endMs: 2000, original: "They’re here", translation: "他说“来了”" },
+        { startMs: 1000, endMs: 3000, original: "“Hi,” she said", translation: "她说“嗨”" },
+      ],
+      { ...FILE, style: style() },
+    );
+    const texts = dialogues(document)
+      .filter((line) => line.startsWith("Dialogue: 1,"))
+      .map((line) => line.split("{\\an2\\pos(960,994)}")[1]);
+    expect(texts).toEqual([
+      "They're here\\N{\\rTranslation}他说“来了”",
+      'They\'re here\\N"Hi," she said\\N{\\rTranslation}他说“来了”\\N她说“嗨”',
+      '"Hi," she said\\N{\\rTranslation}她说“嗨”',
+    ]);
+  });
+
+  it("is unchanged for text without curly quotes", () => {
+    const document = styledAssDocument([{ startMs: 0, endMs: 1500, original: "a 'b' \"c\"", translation: "原文" }], { ...FILE, style: style() });
+    expect(dialogues(document).at(-1)).toBe("Dialogue: 1,0:00:00.00,0:00:01.50,Default,,0,0,0,,{\\an2\\pos(960,994)}a 'b' \"c\"\\N{\\rTranslation}原文");
   });
 });
 

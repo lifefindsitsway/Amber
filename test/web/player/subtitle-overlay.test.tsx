@@ -134,6 +134,20 @@ describe("subtitle overlay", () => {
     expect([overlay.style.left, overlay.style.width, overlay.style.height]).toEqual(["0px", "640px", "360px"]);
   });
 
+  it("draws Latin lines with straight quotes and keeps the curly quotes of a CJK line", () => {
+    const { video } = show({
+      slices: [
+        { startMs: 0, endMs: 1_000, original: "They’re “here”", translation: "他说“来了”" },
+        { startMs: 1_000, endMs: 2_000, original: "他说“Hello”。", translation: "dogs’ bowls" },
+      ],
+      mode: "bilingual",
+    });
+    expect(lines()).toEqual(['original:They\'re "here"', "translation:他说“来了”"]);
+    video.currentTime = 1.5;
+    fireEvent.seeked(video);
+    expect(lines()).toEqual(["original:他说“Hello”。", "translation:dogs' bowls"]);
+  });
+
   it("follows playback once per video frame and re-reads the time at once on a paused seek", async () => {
     const { video } = show({ slices: SLICES });
     const frames: Array<() => void> = [];

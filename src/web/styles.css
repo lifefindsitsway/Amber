@@ -107,14 +107,27 @@ body {
 }
 
 /*
+ * Curly quotes only. CJK fonts draw ‘ ’ “ ” full-width, hugging the left of the cell, so an
+ * English apostrophe in a button reads "They’ re". This alias covers just those four characters
+ * with the Latin UI font; when it is not installed the face fails to load and the stack below
+ * falls through to the CJK font as before.
+ */
+@font-face {
+  font-family: "Amber Latin Quotes";
+  src: local("Segoe UI"), local("SegoeUI");
+  unicode-range: U+2018-2019, U+201C-201D;
+}
+
+/*
  * Button labels are mostly CJK. With a Latin font first in the stack (Segoe UI on Windows) the
  * line metrics are that font's and the borrowed CJK glyphs sit visibly below the middle of a
  * button; a CJK font first sets metrics made for CJK glyphs, so labels centre vertically.
  * Microsoft YaHei's Latin glyphs derive from Segoe UI, so Latin labels look the same.
+ * Buttons also hold English content (subtitle rows, highlights), hence the quote alias first.
  */
 @layer base {
   button {
-    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
+    font-family: "Amber Latin Quotes", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
   }
 }
 

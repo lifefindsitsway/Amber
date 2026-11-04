@@ -8,6 +8,7 @@ import {
   sliceCues,
   sliceIndexAt,
   subtitleCues,
+  subtitleGlyphText,
   type SubtitleSentence,
 } from "../../src/shared/subtitle-geometry.ts";
 
@@ -183,5 +184,57 @@ describe("sliceIndexAt", () => {
     expect(sliceIndexAt(slices, 2500)).toBe(1);
     expect(sliceIndexAt(slices, 3000)).toBe(-1);
     expect(sliceIndexAt([], 0)).toBe(-1);
+  });
+});
+
+describe("subtitleGlyphText", () => {
+  it("straightens every curly quote of a line without CJK", () => {
+    expect(subtitleGlyphText("They’re taking a make-up day off today.")).toBe("They're taking a make-up day off today.");
+    expect(subtitleGlyphText("“Hello,” he said.")).toBe('"Hello," he said.');
+    expect(subtitleGlyphText("rock ’n’ roll")).toBe("rock 'n' roll");
+    expect(subtitleGlyphText("dogs’ bowls")).toBe("dogs' bowls");
+    expect(subtitleGlyphText("‘x’ and “y”")).toBe("'x' and \"y\"");
+  });
+
+  it("leaves the curly quote pairs of a CJK line alone", () => {
+    expect(subtitleGlyphText("这是“老秦”")).toBe("这是“老秦”");
+    expect(subtitleGlyphText("他说“Hello”。")).toBe("他说“Hello”。");
+    expect(subtitleGlyphText("こんにちは“Hello”")).toBe("こんにちは“Hello”");
+  });
+
+  it("still straightens an apostrophe between Latin letters or digits in a CJK line", () => {
+    expect(subtitleGlyphText("我喜欢 don’t")).toBe("我喜欢 don't");
+    expect(subtitleGlyphText("我喜欢 ‘x’ 和 don’t")).toBe("我喜欢 ‘x’ 和 don't");
+    expect(subtitleGlyphText("’90s 的 rock’n’roll 和 90’s")).toBe("’90s 的 rock'n'roll 和 90's");
+  });
+
+  it("keeps an apostrophe with CJK on either side", () => {
+    expect(subtitleGlyphText("日本語’s")).toBe("日本語’s");
+    expect(subtitleGlyphText("a’日本語")).toBe("a’日本語");
+  });
+
+  it("returns text without curly quotes unchanged", () => {
+    for (const text of ["", "plain 'text' and \"more\"", "你好，世界"]) {
+      expect(subtitleGlyphText(text)).toBe(text);
+    }
+  });
+
+  it("judges a piece of a line by the whole line", () => {
+    expect(subtitleGlyphText("It’s", "我喜欢 It’s")).toBe("It's");
+    expect(subtitleGlyphText("dogs’", "the dogs’ bowls")).toBe("dogs'");
+    expect(subtitleGlyphText("dogs’", "我喜欢 dogs’ bowls")).toBe("dogs’");
+    expect(subtitleGlyphText("“Hello”", "他说 “Hello”")).toBe("“Hello”");
+  });
+});
+
+describe("sliceCues glyphs", () => {
+  it("draws each cue's line on its own before joining overlapping cues", () => {
+    const [first, second, third] = sliceCues([
+      { startMs: 0, endMs: 2000, original: "It’s fine", translation: "他说“好”" },
+      { startMs: 1000, endMs: 3000, original: "“Hi”", translation: "“嗨”" },
+    ]);
+    expect(first?.original).toBe("It's fine");
+    expect(second).toMatchObject({ original: 'It\'s fine\n"Hi"', translation: "他说“好”\n“嗨”" });
+    expect(third).toMatchObject({ original: '"Hi"', translation: "“嗨”" });
   });
 });

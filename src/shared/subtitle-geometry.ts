@@ -116,17 +116,18 @@ export function subtitleCues(mode: BurnMode, original: readonly SubtitleSentence
   }
 }
 
+/** The drawn form of each cue's own line (see `subtitleGlyphText`), joined: a line is judged alone, never together with the cues it overlaps. */
 function joined(parts: readonly (string | undefined)[]): string | undefined {
-  const present = parts.filter((part): part is string => part !== undefined);
+  const present = parts.filter((part): part is string => part !== undefined).map((part) => subtitleGlyphText(part));
   return present.length === 0 ? undefined : present.join("\n");
 }
 
 /**
  * Cuts overlapping cues into non-overlapping slices: every start and end
  * splits the timeline, and each slice shows all cues active then, in input order, original
- * lines joined and translation lines joined. Cues that never overlap come back unchanged;
- * gaps stay empty. Styled subtitles carry fixed positions, so overlapping events would be
- * drawn over each other instead of stacked.
+ * lines joined and translation lines joined, each cue's line in its drawn form. Gaps stay
+ * empty. Styled subtitles carry fixed positions, so overlapping events would be drawn over
+ * each other instead of stacked.
  */
 export function sliceCues(cues: readonly TimedSubtitle[]): TimedSubtitle[] {
   const points = [...new Set(cues.flatMap((cue) => [cue.startMs, cue.endMs]))].sort((a, b) => a - b);
@@ -176,4 +177,26 @@ export function sliceIndexAt(slices: readonly TimedSubtitle[], ms: number): numb
     }
   }
   return found >= 0 && ms < (slices[found] as TimedSubtitle).endMs ? found : -1;
+}
+
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}　-〿＀-￯]/u;
+const LATIN_APOSTROPHE = /(?<=[\p{Script=Latin}\p{N}])’(?=[\p{Script=Latin}\p{N}])/gu;
+
+/**
+ * The text a subtitle is drawn with. The bundled subtitle font is CJK-first, so it
+ * draws curly quotes at full em width with the glyph hugging the left side: "They’re"
+ * reads as "They’ re". Latin text is therefore drawn with straight quotes. An apostrophe
+ * between two Latin letters or digits is always straightened. In a line without any CJK
+ * character (judged on `context`) every curly quote is straightened; in a line with CJK the
+ * remaining quotes stay curly, so a pair such as “老秦” is never left half straight. The
+ * stored text never changes: the player overlay and the ASS output both draw through this
+ * one rule, so a preview and an export look the same. `context` is the whole line when
+ * `text` is only a piece of it, such as one karaoke word.
+ */
+export function subtitleGlyphText(text: string, context: string = text): string {
+  const apostrophes = text.replace(LATIN_APOSTROPHE, "'");
+  if (CJK.test(context)) {
+    return apostrophes;
+  }
+  return apostrophes.replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
 }

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useTranslation } from "react-i18next";
 import { SUBTITLE_ASS_EM_RATIO, SUBTITLE_NUDGE_BP, SUBTITLE_NUDGE_FAST_BP, SUBTITLE_WRAP_RATIO } from "../../shared/defaults.ts";
 import type { BurnMode } from "../../shared/enums.ts";
-import { pictureRect, placementFromBlock, sliceIndexAt, type Rect, type Size, type TimedSubtitle } from "../../shared/subtitle-geometry.ts";
+import { pictureRect, placementFromBlock, sliceIndexAt, subtitleGlyphText, type Rect, type Size, type TimedSubtitle } from "../../shared/subtitle-geometry.ts";
 import { BASIS_POINTS, boxedLines, lineBoxPadding, type SubtitleAppearance, type SubtitlePlacement } from "../../shared/subtitle-style.ts";
 import { hasCommandModifier } from "../shortcut-registry.tsx";
 import { SUBTITLE_FONT_STACK } from "./subtitle-font.ts";
@@ -189,7 +189,7 @@ function linesOf(slice: TimedSubtitle, appearance: SubtitleAppearance): Array<{ 
   const order: LineKind[] = appearance.bilingualOrder === "original_first" ? ["original", "translation"] : ["translation", "original"];
   return order.flatMap((kind) => {
     const text = slice[kind];
-    return text === undefined || text === "" ? [] : [{ kind, text }];
+    return text === undefined || text === "" ? [] : [{ kind, text: subtitleGlyphText(text) }];
   });
 }
 
