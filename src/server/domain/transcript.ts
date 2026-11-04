@@ -13,7 +13,20 @@ export type TranscriptGeneration =
    * revisions stored before it was recorded.
    */
   | { kind: "llm"; modelRef: ModelRefSnapshot; promptRef: PromptRef; promptRefs?: PromptRef[]; promptSnapshot: string }
-  | { kind: "manual" };
+  /** `origin` only on a hand-edited translation. */
+  | { kind: "manual"; origin?: ManualTranslationOrigin };
+
+/**
+ * Where a hand-edited translation came from: the machine translation it was first edited
+ * from, with that translation's model and prompt snapshot. Editing a hand-edited translation
+ * again carries its origin over. Informational only, not a reference: it still explains the
+ * text after that machine translation is deleted, and it does not record each edit.
+ */
+export interface ManualTranslationOrigin {
+  revisionId: string;
+  modelRef: ModelRefSnapshot;
+  promptRef?: PromptRef;
+}
 
 /**
  * Invariant: a committed revision and its segments are immutable. Edits create a new
@@ -72,11 +85,20 @@ export interface TranscriptSegmentSource {
   position: number;
 }
 
-/** Edit-time state of a manual revision; autosaved, and turned into an immutable `manual` revision on commit. */
+/**
+ * Edit-time state of a manual revision; autosaved, and turned into an immutable revision on
+ * commit. Without `targetLanguage` it is the Content's transcript draft (at most one), whose
+ * commit becomes the primary; with it, the draft of that translation language (at most one
+ * per language), whose commit becomes the language's current translation.
+ */
 export interface TranscriptDraft {
   id: string;
   contentId: string;
   baseRevisionId: string;
+  /** Canonical BCP-47 tag of a translation draft; absent on the transcript draft. */
+  targetLanguage?: string;
+  /** Raised by one on every successful write; saves, discards and commits name the version they expect. */
+  version: number;
   segments: Array<{
     /** The client's handle for the sentence across autosaves; commit always mints new segment ids. */
     id?: string;
@@ -190,8 +212,13 @@ export function checkTranscriptInvariants(
  * The paragraph marks a manual revision inherits from its base: a sentence
  * takes the mark of its first source sentence; when one source was split into several
  * sentences only the first of them may open a paragraph; a sentence without sources opens
- * none; the first sentence always does. A base without marks yields none, so an edit never
- * invents paragraphs the model did not see.
+ * none; the first sentence always does. When the draft dropped a sentence that opened a
+ * paragraph, the next base sentence the draft still uses opens it instead, so deleting a
+ * paragraph's first sentence does not merge the rest into the paragraph before (several
+ * dropped openers in a row still open one paragraph). A base without marks yields none, so
+ * an edit never invents paragraphs the model did not see.
+ *
+ * `base` must iterate in sentence order: "the next base sentence" is taken from it.
  */
 export function inheritedParagraphStarts(
   base: ReadonlyMap<string, Pick<TranscriptSegment, "paragraphStart">>,
@@ -204,10 +231,24 @@ export function inheritedParagraphStarts(
   if (!marked) {
     return drafted.map(() => undefined);
   }
+  const kept = new Set(drafted.flatMap((segment) => segment.sourceSegmentIds));
+  const opens = new Set<string>();
+  let carried = false;
+  for (const [id, segment] of base) {
+    const start = segment.paragraphStart === true;
+    if (kept.has(id)) {
+      if (start || carried) {
+        opens.add(id);
+      }
+      carried = false;
+    } else {
+      carried ||= start;
+    }
+  }
   let previousFirst: string | undefined;
   return drafted.map((segment, index) => {
     const first = segment.sourceSegmentIds[0];
-    const inherited = first !== undefined && first !== previousFirst && base.get(first)?.paragraphStart === true;
+    const inherited = first !== undefined && first !== previousFirst && opens.has(first);
     previousFirst = first;
     return index === 0 || inherited;
   });

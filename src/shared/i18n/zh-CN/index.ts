@@ -9,6 +9,7 @@ import { auth } from "./ui-auth.ts";
 import { chat } from "./ui-chat.ts";
 import { common } from "./ui-common.ts";
 import { contentView } from "./ui-content.ts";
+import { editor } from "./ui-editor.ts";
 import { library } from "./ui-library.ts";
 import { notes } from "./ui-notes.ts";
 import { search } from "./ui-search.ts";
@@ -26,6 +27,7 @@ export const zhCN = {
   common,
   shell,
   contentView,
+  editor,
   library,
   settings,
   search,

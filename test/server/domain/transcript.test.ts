@@ -133,6 +133,42 @@ describe("inheritedParagraphStarts", () => {
     const plain = new Map<string, { paragraphStart?: boolean }>([["a", {}], ["b", {}]]);
     expect(inheritedParagraphStarts(plain, drafted(["a"], ["b"], []))).toEqual([undefined, undefined, undefined]);
   });
+
+  describe("when the draft drops sentences", () => {
+    // a b | c d | e f
+    const six = new Map<string, { paragraphStart?: boolean }>([
+      ["a", { paragraphStart: true }],
+      ["b", { paragraphStart: false }],
+      ["c", { paragraphStart: true }],
+      ["d", { paragraphStart: false }],
+      ["e", { paragraphStart: true }],
+      ["f", { paragraphStart: false }],
+    ]);
+    // a b | c | d e
+    const consecutive = new Map<string, { paragraphStart?: boolean }>([
+      ["a", { paragraphStart: true }],
+      ["b", { paragraphStart: false }],
+      ["c", { paragraphStart: true }],
+      ["d", { paragraphStart: true }],
+      ["e", { paragraphStart: false }],
+    ]);
+    const plain = new Map<string, { paragraphStart?: boolean }>([["a", {}], ["b", {}], ["c", {}]]);
+
+    it.each([
+      ["one to one", six, [["a"], ["b"], ["c"], ["d"], ["e"], ["f"]], [true, false, true, false, true, false]],
+      ["the first sentence deleted", six, [["b"], ["c"], ["d"], ["e"], ["f"]], [true, true, false, true, false]],
+      ["the last sentence deleted", six, [["a"], ["b"], ["c"], ["d"], ["e"]], [true, false, true, false, true]],
+      ["a paragraph's first sentence deleted", six, [["a"], ["b"], ["d"], ["e"], ["f"]], [true, false, true, true, false]],
+      ["several paragraph starts in a row deleted", consecutive, [["a"], ["b"], ["e"]], [true, false, true]],
+      ["a whole paragraph of filler deleted", six, [["a"], ["b"], ["e"], ["f"]], [true, false, true, false]],
+      ["every sentence deleted", six, [], []],
+      ["a split after a deleted start", six, [["a"], ["b"], ["d"], ["d"], ["e"], ["f"]], [true, false, true, false, true, false]],
+      ["a merge after a deleted start", six, [["a"], ["b"], ["d", "e"], ["f"]], [true, false, true, false]],
+      ["a base without marks", plain, [["b"], ["c"]], [undefined, undefined]],
+    ] as const)("%s", (_name, base, sources, expected) => {
+      expect(inheritedParagraphStarts(base, drafted(...sources.map((list) => [...list])))).toEqual(expected);
+    });
+  });
 });
 
 describe("rootRevisionTakesPrimary", () => {

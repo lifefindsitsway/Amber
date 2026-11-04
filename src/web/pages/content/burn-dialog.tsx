@@ -19,12 +19,12 @@ import { useApi } from "../../api/context.tsx";
 import { queryKeys, useMe } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { burnFileName, burnOutputsKey, fetchBurnOutputs, saveBurnProduct } from "../../desktop/burn-outputs.ts";
-import { useSubtitlePrefs, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
+import { upgradeTrackPref, useSubtitlePrefs, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, visibleRevisions } from "./content-data.ts";
+import { contentKeys, pickTranslation, translationCurrents, useTranslations, visibleRevisions, type TranslationCurrents } from "./content-data.ts";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
 import { cacheHeight, compareCacheQuality, qualityLabel } from "../../player/media-url.ts";
 import { revisionLabel } from "./labels.ts";
@@ -48,28 +48,35 @@ export function burnSources(selected: TranscriptRevisionDto, all: readonly Trans
   return { original, translations: translationsOf(original, all) };
 }
 
-function translationsOf(original: TranscriptRevisionDto, all: readonly TranscriptRevisionDto[]): TranscriptRevisionDto[] {
-  return all.filter((item) => item.kind === "translated" && item.parentRevisionId === original.id);
+/** Archived translations stay out of the choices and the defaults, as in every version picker. */
+function translationsOf(original: TranscriptRevisionDto, all: ReadonlyArray<TranscriptRevisionDto & { archived?: boolean }>): TranscriptRevisionDto[] {
+  return all.filter((item) => item.kind === "translated" && item.parentRevisionId === original.id && item.archived !== true);
 }
+
+/** A revision as the dialog receives it: list items also say whether they are archived. */
+type BurnRevision = TranscriptRevisionDto & { archived?: boolean };
 
 /**
  * The dialog's starting choice. While the local player shows subtitles, the export starts
  * from exactly what is on screen: its mode, its original (absent = the primary) and its
- * translation (absent = the first of that original). Otherwise it starts from the version
- * open in the subtitles tab.
+ * translation, picked by the player's own rule. Otherwise it starts from the version open in
+ * the subtitles tab: a translation open there is exported over its parent, and an original
+ * gets the translation the player would pair with it.
  */
 export function burnDefaults(
-  selected: TranscriptRevisionDto,
-  all: readonly TranscriptRevisionDto[],
+  selected: BurnRevision,
+  all: readonly BurnRevision[],
   primaryId: string | undefined,
   track: SubtitleTrackPref,
+  currents: TranslationCurrents,
 ): { originalId: string; mode: BurnMode; translationId: string | undefined } {
+  const pick = (originalId: string): string | undefined =>
+    pickTranslation({ originalId, language: track.translation?.language, lockedRevisionId: track.translation?.lockedRevisionId, revisions: all, currents })?.id;
   if (track.mode !== "off") {
     const wanted = track.revisionId ?? primaryId;
     const original = all.find((item) => item.id === wanted && item.kind !== "translated");
     if (original !== undefined) {
-      const translations = translationsOf(original, all);
-      const translationId = (translations.find((item) => item.id === track.translationRevisionId) ?? translations[0])?.id;
+      const translationId = pick(original.id);
       return { originalId: original.id, mode: translationId === undefined ? "original" : track.mode, translationId };
     }
   }
@@ -78,7 +85,7 @@ export function burnDefaults(
   return {
     originalId: original.id,
     mode: fromSelected === undefined ? "original" : "bilingual",
-    translationId: (fromSelected ?? translations[0])?.id,
+    translationId: fromSelected?.id ?? pick(original.id),
   };
 }
 
@@ -183,8 +190,8 @@ export function unsupportedStreams(error: unknown): string[] | undefined {
  */
 export function BurnDialog(props: {
   contentId: string;
-  selected: TranscriptRevisionDto;
-  revisions: readonly TranscriptRevisionDto[];
+  selected: BurnRevision;
+  revisions: readonly BurnRevision[];
   primaryId: string | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -199,7 +206,10 @@ export function BurnDialog(props: {
   const userId = me.data?.userId;
   // Read with a placeholder until the account is known; nothing is sent before then.
   const prefs = useSubtitlePrefs(userId ?? "", props.contentId);
-  const defaults = burnDefaults(props.selected, props.revisions, props.primaryId, userId === undefined ? { version: 1, mode: "off" } : prefs.track);
+  const translationList = useTranslations(props.contentId);
+  const track: SubtitleTrackPref = userId === undefined ? { version: 2, mode: "off" } : upgradeTrackPref(prefs.track, props.revisions);
+  const currents = translationCurrents(translationList.data?.translations);
+  const defaults = burnDefaults(props.selected, props.revisions, props.primaryId, track, currents);
   const originals = visibleRevisions(
     props.revisions.filter((item) => item.kind !== "translated"),
     props.primaryId,
@@ -211,9 +221,11 @@ export function BurnDialog(props: {
   const [pickedMode, setPickedMode] = useState<BurnMode | undefined>(undefined);
   const [pickedTranslation, setPickedTranslation] = useState<string | undefined>(undefined);
   const mode = translations.length === 0 ? "original" : (pickedMode ?? defaults.mode);
+  // Another original picked in the dialog gets the translation the same rule picks for it.
   const translationId = (
     translations.find((item) => item.id === pickedTranslation) ??
     translations.find((item) => item.id === defaults.translationId) ??
+    pickTranslation({ originalId: original.id, language: track.translation?.language, lockedRevisionId: track.translation?.lockedRevisionId, revisions: props.revisions, currents }) ??
     translations[0]
   )?.id;
   const [delivery, setDelivery] = useState<SubtitleDelivery>("hard");

@@ -65,6 +65,7 @@ function draftDto(draft: TranscriptDraft): TranscriptDraftDto {
     id: draft.id,
     contentId: draft.contentId,
     baseRevisionId: draft.baseRevisionId,
+    version: draft.version,
     segments: draft.segments.map((segment) => ({
       ...(segment.id === undefined ? {} : { id: segment.id }),
       startMs: segment.startMs,
@@ -90,6 +91,19 @@ function decodeCursor(cursor: string): number {
     // Fall through to the uniform error below.
   }
   throw amberError("invalid_request", "malformed cursor", { params: { detail: "cursor" } });
+}
+
+/**
+ * A draft write, discard or commit named a version that is not the stored one: another window
+ * saved since, or the draft was committed or discarded (`currentVersion` null, sent as no
+ * `details.currentVersion` since error details carry no nulls). Nothing is overwritten or
+ * recreated.
+ */
+export function draftChanged(currentVersion: number | null): never {
+  throw amberError("conflict", "the draft changed since this version", {
+    code: "conflict.draft_changed",
+    ...(currentVersion === null ? {} : { details: { currentVersion } }),
+  });
 }
 
 function invalidDraft(detail: string, reason: string): never {
@@ -148,20 +162,22 @@ export class TranscriptService {
   }
 
   /**
-   * Autosave: replaces the Content's single draft. Only the shape and the base revision
-   * are checked here; timing and sources are checked when the draft is committed, so a
-   * draft may pass through intermediate states while it is being edited.
+   * Autosave: replaces the Content's single draft, but only at the version the editor last
+   * saw (`null`: there must be no draft yet), so a second window or a save arriving after a
+   * commit or discard is refused instead of overwriting or reviving the draft. Only the shape
+   * and the base revision are checked here; timing and sources are checked when the draft is
+   * committed, so a draft may pass through intermediate states while it is being edited.
    */
   putDraft(principal: RequestPrincipal, contentId: string, body: TranscriptDraftRequest): TranscriptDraftDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
       ownedContent(scope, owner, contentId);
       editableBase(scope, owner, contentId, body.baseRevisionId);
-      const existing = scope.transcripts.getDraft(owner, contentId);
       const draft: TranscriptDraft = {
-        id: existing?.id ?? this.newId(),
+        id: this.newId(),
         contentId,
         baseRevisionId: body.baseRevisionId,
+        version: (body.expectedVersion ?? 0) + 1,
         segments: body.segments.map((segment) => ({
           ...(segment.id === undefined ? {} : { id: segment.id }),
           startMs: segment.startMs,
@@ -171,8 +187,11 @@ export class TranscriptService {
         })),
         updatedAt: this.now(),
       };
-      scope.transcripts.putDraft(owner, draft);
-      return draftDto(draft);
+      const result = scope.transcripts.putDraft(owner, draft, body.expectedVersion);
+      if (!("written" in result)) {
+        draftChanged(result.currentVersion);
+      }
+      return draftDto(result.written);
     });
   }
 
@@ -181,15 +200,16 @@ export class TranscriptService {
    * parent is the draft's base, and the new primary — but only when the client saw the
    * primary that is current now. A different primary means someone switched it after the
    * editor was opened; that is a conflict for the user to resolve, never a silent
-   * overwrite. Revision, primary pointer and draft removal commit together.
+   * overwrite. The draft must still be at `draftVersion`, so what is committed is what the
+   * editor last saved. Revision, primary pointer and draft removal commit together.
    */
   commitDraft(principal: RequestPrincipal, contentId: string, body: DraftCommitRequest): TranscriptRevisionDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
       const content = ownedContent(scope, owner, contentId);
       const draft = scope.transcripts.getDraft(owner, contentId);
-      if (draft === undefined) {
-        throw amberError("not_found", "no draft for this content");
+      if (draft?.version !== body.draftVersion) {
+        draftChanged(draft?.version ?? null);
       }
       const current = content.primaryTranscriptRevisionId;
       if (body.expectedPrimaryRevisionId !== current) {
@@ -270,7 +290,7 @@ export class TranscriptService {
       };
       scope.transcripts.insertRevision(owner, revision, segments);
       scope.contents.setPrimaryTranscript(owner, contentId, revisionId, now);
-      scope.transcripts.deleteDraft(owner, contentId);
+      scope.transcripts.deleteDraft(owner, contentId, undefined);
       // Base first: each folded revision is a leaf once the one below it is gone.
       for (const id of chain) {
         scope.transcripts.deleteRevision(owner, id);
@@ -282,22 +302,22 @@ export class TranscriptService {
   }
 
   /**
-   * `DELETE /contents/:id/transcript/draft`: the user's explicit "discard draft". The draft
-   * is the only thing lost; its base revision is untouched.
+   * `DELETE /contents/:id/transcript/draft`: "discard draft". The draft is the only thing
+   * lost; its base revision is untouched. The editor names the version it last saw; without
+   * one (the revision dialog's explicit discard) the draft goes whatever its version.
    */
-  discardDraft(principal: RequestPrincipal, contentId: string): void {
+  discardDraft(principal: RequestPrincipal, contentId: string, version?: number): void {
     const owner = principal.userId;
     this.options.repository.withTransaction((scope) => {
       ownedContent(scope, owner, contentId);
-      if (!scope.transcripts.deleteDraft(owner, contentId)) {
-        throw amberError("not_found", "no draft for this content");
-      }
+      discardStoredDraft(scope, owner, contentId, undefined, version);
     });
   }
 
   /**
    * Archives or restores one revision; only the mark changes, never the revision. The
-   * current transcript cannot be archived, nor a revision a draft is being edited from.
+   * current transcript cannot be archived, nor a revision any draft (the transcript draft or a
+   * translation draft) is being edited from. A current translation itself may be archived.
    */
   setArchived(principal: RequestPrincipal, revisionId: string, archived: boolean): TranscriptRevisionListItemDto {
     const owner = principal.userId;
@@ -307,7 +327,7 @@ export class TranscriptService {
         if (content.primaryTranscriptRevisionId === revision.id) {
           throw amberError("conflict", "the primary transcript cannot be archived", { code: "conflict.revision_is_primary" });
         }
-        if (scope.transcripts.getDraft(owner, content.id)?.baseRevisionId === revision.id) {
+        if (scope.transcripts.listDrafts(owner, content.id).some((draft) => draft.baseRevisionId === revision.id)) {
           throw amberError("conflict", "a draft is based on this revision", {
             code: "conflict.revision_referenced",
             details: { ...emptyRevisionBlockers(), draft: 1 },
@@ -401,7 +421,25 @@ export class TranscriptService {
   }
 }
 
-function ownedContent(scope: RepositoryScope, owner: string, contentId: string): Content {
+/**
+ * Removes a stored draft for a discard request: with `version`, only at that version (a draft
+ * that is gone or newer is `conflict.draft_changed`); without, whatever it is (none is
+ * `not_found`).
+ */
+export function discardStoredDraft(scope: RepositoryScope, owner: string, contentId: string, targetLanguage: string | undefined, version: number | undefined): void {
+  const result = scope.transcripts.deleteDraft(owner, contentId, targetLanguage, version);
+  if ("currentVersion" in result) {
+    draftChanged(result.currentVersion);
+  }
+  if (!result.deleted) {
+    if (version !== undefined) {
+      draftChanged(null);
+    }
+    throw amberError("not_found", "no draft for this content");
+  }
+}
+
+export function ownedContent(scope: RepositoryScope, owner: string, contentId: string): Content {
   const content = scope.contents.get(owner, contentId);
   if (content === undefined) {
     throw amberError("not_found", "content not found");

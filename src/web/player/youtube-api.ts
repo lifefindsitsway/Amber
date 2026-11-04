@@ -2,13 +2,15 @@
 export interface YoutubePlayer {
   seekTo(seconds: number, allowSeekAhead: boolean): void;
   getCurrentTime(): number;
+  getDuration(): number;
+  playVideo(): void;
   destroy(): void;
 }
 
 export interface YoutubeNamespace {
   Player: new (
     element: HTMLIFrameElement,
-    options: { events?: { onReady?: () => void; onError?: (event: { data: number }) => void } },
+    options: { events?: { onReady?: () => void; onError?: (event: { data: number }) => void; onStateChange?: (event: { data: number }) => void } },
   ) => YoutubePlayer;
 }
 

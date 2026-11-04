@@ -128,6 +128,8 @@ export const SIDEBAR_RECENT_ITEMS = 10;
 export const LIST_PAGE_SIZE_DEFAULT = 10;
 /** Finished Tasks the task panel's history loads per page. */
 export const TASK_HISTORY_PAGE_SIZE = 20;
+/** Most Task ids one "remove from history" request may carry. */
+export const TASK_HISTORY_HIDE_MAX = 100;
 
 /** Below this width the right pane collapses into a drawer, in px. */
 export const BREAKPOINT_DRAWER_PX = 1100;
@@ -181,6 +183,12 @@ export const CACHE_MEDIA_MAX_HEIGHT = 1080;
 export const CACHE_FILE_NAME_MAX_CHARS = 100;
 /** Bitrate of audio caches transcoded to MP3, in kbit/s. */
 export const CACHE_AUDIO_MP3_KBPS = 128;
+/** Quiet time after the cache dialog's file name changes before it checks the request again. */
+export const CACHE_INSPECT_DEBOUNCE_MS = 400;
+/** How long a cache check (`inspectionId`) can still be submitted. */
+export const CACHE_INSPECTION_TTL_MS = 600000;
+/** Cache checks the server keeps at once; the oldest goes first. */
+export const CACHE_INSPECTION_MAX_ENTRIES = 64;
 /** Polling interval of the QR login status endpoint. */
 export const QR_POLL_INTERVAL_MS = 2000;
 /** How often the storage page re-reads a cache move in progress. */
@@ -264,6 +272,10 @@ export const PARAGRAPH_GAP_MS = 2000;
  * ends before the next sentence. A segment is never split.
  */
 export const PARAGRAPH_MAX_CHARS = 200;
+/** Filler words the editor offers to remove from a Chinese transcript, space-separated, in display order. */
+export const TRANSCRIPT_FILLER_WORDS_ZH = "嗯 呃 额 啊 呢 吧 嘛 呀 哦 哈";
+/** Batch edits (replace all, delete selected, filler cleanup) the editor can undo. */
+export const DRAFT_BATCH_UNDO_DEPTH = 20;
 
 /** Default shortcut of the shortcut help sheet. */
 export const SHORTCUT_HELP_DEFAULT = "Ctrl+/";
@@ -306,6 +318,16 @@ export const OUTBOUND_MAX_REDIRECTS = 5;
 export const QR_ATTEMPT_TTL_MS = 180000;
 /** Seek accuracy tolerance of the local player. */
 export const PLAYER_SEEK_TOLERANCE_MS = 500;
+/** A playback position earlier than this is not remembered. */
+export const PLAYBACK_RESUME_MIN_MS = 30000;
+/** Reaching this close to the end counts as watched: the remembered position is dropped. */
+export const PLAYBACK_RESUME_END_MARGIN_MS = 30000;
+/** Interval at which the playing position is saved. */
+export const PLAYBACK_RESUME_SAVE_MS = 5000;
+/** Remembered positions kept per user in this browser, least recently used dropped first. */
+export const PLAYBACK_RESUME_MAX_ENTRIES = 200;
+/** How long the "resumed at" notice stays before fading. */
+export const PLAYBACK_RESUME_NOTICE_MS = 6000;
 /** Space a video cache download reserves on the cache volume, as a multiple of its estimated size (separate streams plus the merge). */
 export const CACHE_DOWNLOAD_PEAK_FACTOR = 2;
 /** Per-volume reservation of a cache download whose size or duration is unknown, in GB. */

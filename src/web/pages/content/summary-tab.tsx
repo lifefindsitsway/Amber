@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { ChapterRevisionDto } from "../../../shared/dto/chapter.ts";
@@ -9,19 +9,19 @@ import { taskAcceptedDtoSchema, type TaskDetailDto } from "../../../shared/dto/t
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { isMarked, joinReading, readingParagraphs } from "../../../shared/reading.ts";
 import { z } from "zod";
-import { useApi, useTask } from "../../api/context.tsx";
+import { useApi, useTask, useTaskHub } from "../../api/context.tsx";
 import { useOptionalChatComposer } from "../../chat/chat-composer.tsx";
 import { useProviders, useSettings } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { plainText } from "../../components/plain-text.ts";
 import { RichText } from "../../components/rich-text.tsx";
-import { ContentTaskFlow, TaskFlow, type RedoStage } from "../../components/task-flow.tsx";
+import { ContentTaskFlow, latestStageRuns, TaskFlow, type RedoStage } from "../../components/task-flow.tsx";
 import { formatDuration } from "../../format.ts";
 import { usePlayerController } from "../../player/player-controller.tsx";
 import { Button } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
-import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { EmptyState, Loading, Spinner } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { ApiError } from "../../api/client.ts";
 import { useContentPage } from "./content-context.tsx";
@@ -380,12 +380,17 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
 }
 
 /**
- * Chapters in timeline order under the summary: title, one-line gist, timestamp, original text.
- * Regenerating writes AI chapters from the current primary transcript, also over platform chapters.
+ * The chapter area under the summary, always shown: its action is 「生成章节」 while there are
+ * none and 「重新生成」 once there are, and the button says what the chapter work is doing
+ * (`activeStage`) and stays off meanwhile. A failed last attempt gets a line that opens the
+ * reason. Only the summary's own header carries the Task's stage flow, so it never shows twice.
+ * With chapters: title, one-line gist, timestamp, original text. Regenerating writes AI chapters
+ * from the current primary transcript, also over platform chapters.
  */
 function ChapterSection(props: { onSeek: (ms: number) => void }) {
   const { t } = useTranslation();
   const client = useApi();
+  const hub = useTaskHub();
   const queryClient = useQueryClient();
   const page = useContentPage();
   const settings = useSettings();
@@ -393,6 +398,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
   const contentId = page.content.id;
   const chapters = useChapters(contentId);
   const primary = useSegments(page.primaryRevisionId);
+  const loaded = chapters.data !== undefined;
   const list = chapters.data?.current?.chapters ?? [];
   const explainEntries = useExplainEntries();
   const regenerate = useMutation({
@@ -406,56 +412,129 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
     },
   });
   const activeTaskId = chapters.data?.activeTaskId;
-  const running = activeTaskId !== undefined;
+  const activeStage = chapters.data?.activeStage;
+  const lastFailedTaskId = chapters.data?.lastFailedTaskId;
+  // The state of the Task's stages decides whether the chapters are queued, running or waiting,
+  // so every stage change of that Task is a reason to read them again.
+  useEffect(() => {
+    if (activeTaskId === undefined) return undefined;
+    return hub.onEvent((event) => {
+      if (event.type === "stage.updated" && event.stageRun.taskId === activeTaskId) {
+        void queryClient.invalidateQueries({ queryKey: contentKeys.chapters(contentId) });
+      }
+    });
+  }, [hub, queryClient, contentId, activeTaskId]);
   // Without a model the Task would only wait for configuration, so offer the way there instead.
   const configured = (providers.data?.items.length ?? 0) > 0;
   // The server freezes the primary transcript into the Task, so there is nothing to regenerate from without one.
   const hasTranscript = page.primaryRevisionId !== undefined;
+  const hasChapters = list.length > 0;
   // Only a selection in the expanded chapter text has something to offer; elsewhere the
   // browser keeps its own menu.
   const menuTarget = useContextMenuTarget<HTMLElement>((hit) => {
     const selectionEntries = explainEntries(hit);
     return selectionEntries.length === 0 ? undefined : { kind: "text", selectionEntries, entries: [] };
   });
-  if (list.length === 0) return null;
+  let label: string;
+  if (activeStage === "queued") label = t("contentView.chapters.queued");
+  else if (activeStage === "running") label = hasChapters ? t("contentView.chapters.regenerating") : t("contentView.chapters.generating");
+  else if (activeStage === "waiting") label = t("contentView.chapters.waiting");
+  else label = hasChapters ? t("contentView.chapters.regenerate") : t("contentView.chapters.generate");
+  const busy = activeStage !== undefined || regenerate.isPending;
+  const showConfigure = !configured && hasTranscript && !busy;
   return (
     <section ref={menuTarget} className="mt-2 border-t border-line pt-3" data-testid="chapter-section" data-explainable>
       <div className="mb-2 flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">{t("contentView.chapters.title")}</h2>
-        {configured ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={running || !hasTranscript || regenerate.isPending}
-            onClick={() => regenerate.mutate()}
-            data-testid="chapters-regenerate"
-          >
-            <RefreshCw size={14} />
-            {running ? t("contentView.chapters.regenerating") : t("contentView.chapters.regenerate")}
-          </Button>
-        ) : (
+        {showConfigure ? (
           <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="chapters-configure">
             {t("common.action.goConfigure")}
           </Link>
+        ) : (
+          // A disabled button shows no tooltip of its own, so the wrapper carries it.
+          <span title={activeStage === "waiting" ? t("contentView.chapters.waitingHint") : undefined}>
+            <Button
+              size="sm"
+              variant={hasChapters || !hasTranscript ? "ghost" : "secondary"}
+              disabled={!loaded || busy || !hasTranscript}
+              onClick={() => regenerate.mutate()}
+              data-testid="chapters-regenerate"
+            >
+              {busy ? <Spinner size={14} /> : <RefreshCw size={14} />}
+              {label}
+            </Button>
+          </span>
         )}
       </div>
-      {activeTaskId === undefined ? null : (
-        <div className="mb-2">
-          <TaskFlow taskId={activeTaskId} />
-        </div>
+      {hasTranscript ? null : (
+        <p className="mb-2 text-xs text-muted" data-testid="chapters-needs-transcript">
+          {t("contentView.chapters.needsTranscript")}
+        </p>
       )}
+      {/* A retry under way answers the last failure; the line comes back if it fails too. */}
+      {lastFailedTaskId === undefined || busy ? null : <ChapterFailure taskId={lastFailedTaskId} />}
       {regenerate.error instanceof ApiError ? (
         <div className="mb-2">
           <ErrorView error={regenerate.error.error} />
         </div>
       ) : null}
+      {chapters.error instanceof ApiError ? (
+        <div className="mb-2">
+          <ErrorView error={chapters.error.error} />
+        </div>
+      ) : null}
       {chapters.data?.current?.stale === true ? <p className="mb-2 text-xs text-muted">{t("contentView.chapters.stale")}</p> : null}
-      <ol className="flex flex-col gap-1">
-        {list.map((chapter, index) => (
-          <ChapterItem key={`${chapter.startMs}-${index}`} chapter={chapter} segments={primary.data ?? []} onSeek={props.onSeek} />
-        ))}
-      </ol>
+      {hasChapters ? (
+        <ol className="flex flex-col gap-1">
+          {list.map((chapter, index) => (
+            <ChapterItem key={`${chapter.startMs}-${index}`} chapter={chapter} segments={primary.data ?? []} onSeek={props.onSeek} />
+          ))}
+        </ol>
+      ) : loaded && hasTranscript ? (
+        <div className="rounded-md bg-sunken px-3 py-2.5" data-testid="chapters-empty">
+          <p className="text-sm">{t("contentView.chapters.empty")}</p>
+          <p className="mt-0.5 text-xs text-muted">{t("contentView.chapters.emptyHint")}</p>
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+/**
+ * 「上次生成章节失败 · 查看原因」: a line that opens the chapter stage's error of the failed
+ * Task. The Task is read only once opened.
+ */
+function ChapterFailure(props: { taskId: string }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const task = useTask(open ? props.taskId : undefined);
+  const run = task.detail === undefined ? undefined : latestStageRuns(task.detail).find((item) => item.stage === "chapter");
+  return (
+    <div className="mb-2" data-testid="chapters-failed">
+      <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-danger">
+        <span>{t("contentView.chapters.lastFailed")}</span>
+        <span aria-hidden="true">·</span>
+        <button type="button" className="underline" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chapters-failed-toggle">
+          {open ? t("contentView.chapters.hideReason") : t("contentView.chapters.showReason")}
+        </button>
+      </p>
+      {!open ? null : (
+        <div className="mt-1.5">
+          {run?.error !== undefined ? (
+            <ErrorView error={run.error} stage="chapter" {...(run.engine === undefined ? {} : { engine: run.engine })} />
+          ) : task.detail !== undefined || task.gone === true ? (
+            <p className="text-xs text-muted">{t("contentView.chapters.reasonUnavailable")}</p>
+          ) : task.error instanceof ApiError ? (
+            <ErrorView error={task.error.error} />
+          ) : (
+            <p className="flex items-center gap-1.5 text-xs text-muted" role="status">
+              <Spinner size={14} />
+              {t("common.state.loading")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

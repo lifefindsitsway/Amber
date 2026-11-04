@@ -107,13 +107,13 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
       { startMs: s2.startMs, endMs: s2.endMs, text: "首先看一下 Embedding 模型的工作方式。", sourceSegmentIds: [s2.id] },
       { startMs: s3.startMs, endMs: s3.endMs, text: s3.text, sourceSegmentIds: [s3.id] },
     ];
-    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: base.revision.id, segments } });
+    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: base.revision.id, expectedVersion: null, segments } });
     expect(saved.statusCode).toBe(200);
-    expect(saved.json()).toMatchObject({ contentId, baseRevisionId: base.revision.id, segments: [{ id: "client-1" }, {}, {}] });
+    expect(saved.json()).toMatchObject({ contentId, baseRevisionId: base.revision.id, version: 1, segments: [{ id: "client-1" }, {}, {}] });
     expect((await app.inject({ method: "GET", url: draftUrl, headers: auth })).json().segments).toHaveLength(3);
     expect((await app.inject({ method: "GET", url: draftUrl, headers: bob })).statusCode).toBe(404);
 
-    const committed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: base.revision.id } });
+    const committed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: base.revision.id, draftVersion: 1 } });
     expect(committed.statusCode).toBe(201);
     const manual = committed.json() as { id: string };
     expect(committed.json()).toMatchObject({ kind: "manual", parentRevisionId: base.revision.id, language: "zh-CN", timingFidelity: "inherited_segment", segmentCount: 3 });
@@ -132,13 +132,13 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
       method: "PUT",
       url: draftUrl,
       headers: auth,
-      payload: { baseRevisionId: manual.id, segments: [{ startMs: 0, endMs: 1000, text: "x", sourceSegmentIds: [] }] },
+      payload: { baseRevisionId: manual.id, expectedVersion: null, segments: [{ startMs: 0, endMs: 1000, text: "x", sourceSegmentIds: [] }] },
     });
     expect(second.statusCode).toBe(200);
     const switched = await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.asr.revision.id } });
     expect(switched.statusCode).toBe(200);
     const revisions = countRows(h.db, "transcript_revision");
-    const stale = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: manual.id } });
+    const stale = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: manual.id, draftVersion: 1 } });
     expect(stale.statusCode).toBe(409);
     expect(stale.json().error).toMatchObject({ code: "conflict.primary_changed", details: { currentPrimaryRevisionId: fixture.asr.revision.id } });
     expect(primaryOf(h, contentId)).toBe(fixture.asr.revision.id);
@@ -147,7 +147,7 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
 
     // Confirmed against the primary that is current now, the same draft commits. Nothing else
     // uses the earlier manual revision, so it is folded into the new one.
-    const confirmed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: fixture.asr.revision.id } });
+    const confirmed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedPrimaryRevisionId: fixture.asr.revision.id, draftVersion: 1 } });
     expect(confirmed.statusCode).toBe(201);
     expect(confirmed.json()).toMatchObject({ kind: "manual", parentRevisionId: base.revision.id });
     expect(h.repository.withTransaction((scope) => scope.transcripts.getRevision(LOCAL.userId, manual.id))).toBeUndefined();
@@ -156,12 +156,21 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
   it("refuses drafts that break the revision invariants and bases that cannot be edited", async () => {
     const { h, app, contentId, fixture } = await setup();
     const draftUrl = `/api/contents/${contentId}/transcript/draft`;
-    const commit = () => app.inject({ method: "POST", url: `${draftUrl}/commit`, headers: auth, payload: { expectedPrimaryRevisionId: fixture.corrected.revision.id } });
-    const put = (segments: unknown[], baseRevisionId = fixture.corrected.revision.id) =>
-      app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId, segments } });
+    let version: number | null = null;
+    const commit = () =>
+      app.inject({ method: "POST", url: `${draftUrl}/commit`, headers: auth, payload: { expectedPrimaryRevisionId: fixture.corrected.revision.id, draftVersion: version ?? 1 } });
+    const put = async (segments: unknown[], baseRevisionId = fixture.corrected.revision.id) => {
+      const response = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId, expectedVersion: version, segments } });
+      if (response.statusCode === 200) version = (response.json() as { version: number }).version;
+      return response;
+    };
     const [c0, c1] = fixture.corrected.segments as [TranscriptSegment, TranscriptSegment];
 
-    expect((await commit()).statusCode).toBe(404);
+    // Without a draft there is nothing at the expected version.
+    const missing = await commit();
+    expect(missing.statusCode).toBe(409);
+    expect(missing.json().error.code).toBe("conflict.draft_changed");
+    expect(missing.json().error.details).toBeUndefined();
     for (const segments of [
       [],
       [{ startMs: 1000, endMs: 1000, text: "a", sourceSegmentIds: [] }],
@@ -205,9 +214,9 @@ describe("Draft → Commit and a concurrent switch of the primary", () => {
     expect((await put([], translatedId)).statusCode).toBe(400);
     expect((await put([], "unknown")).statusCode).toBe(404);
     const otherContent = createLocalContent(h);
-    expect((await app.inject({ method: "PUT", url: `/api/contents/${otherContent}/transcript/draft`, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments: [] } })).statusCode).toBe(404);
-    expect((await app.inject({ method: "PUT", url: draftUrl, headers: bob, payload: { baseRevisionId: fixture.corrected.revision.id, segments: [] } })).statusCode).toBe(404);
-    expect((await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments: [], extra: 1 } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "PUT", url: `/api/contents/${otherContent}/transcript/draft`, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: null, segments: [] } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "PUT", url: draftUrl, headers: bob, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: null, segments: [] } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: version, segments: [], extra: 1 } })).statusCode).toBe(400);
   });
 });
 
@@ -301,8 +310,8 @@ describe("revision archive, delete and draft discard routes", () => {
     // A manual revision with a translation child: refused alone, deleted with its descendants.
     const draftUrl = `/api/contents/${contentId}/transcript/draft`;
     const segments = fixture.corrected.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] }));
-    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments } });
-    const manual = (await app.inject({ method: "POST", url: `${draftUrl}/commit`, headers: auth, payload: { expectedPrimaryRevisionId: fixture.corrected.revision.id } })).json() as { id: string };
+    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: null, segments } });
+    const manual = (await app.inject({ method: "POST", url: `${draftUrl}/commit`, headers: auth, payload: { expectedPrimaryRevisionId: fixture.corrected.revision.id, draftVersion: 1 } })).json() as { id: string };
     await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId: fixture.corrected.revision.id } });
     const translationId = h.newId();
     const manualSegments = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, manual.id));
@@ -335,9 +344,17 @@ describe("revision archive, delete and draft discard routes", () => {
     expect(protectedDelete.statusCode).toBe(400);
     expect(protectedDelete.json().error.code).toBe("invalid_request.revision_kind_protected");
 
-    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, segments } });
+    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: null, segments } });
+    await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: fixture.corrected.revision.id, expectedVersion: 1, segments } });
     expect((await app.inject({ method: "DELETE", url: draftUrl, headers: bob })).statusCode).toBe(404);
-    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(204);
+    expect((await app.inject({ method: "DELETE", url: `${draftUrl}?version=0`, headers: auth })).statusCode).toBe(400);
+    const stale = await app.inject({ method: "DELETE", url: `${draftUrl}?version=1`, headers: auth });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error).toMatchObject({ code: "conflict.draft_changed", details: { currentVersion: 2 } });
+    expect((await app.inject({ method: "DELETE", url: `${draftUrl}?version=2`, headers: auth })).statusCode).toBe(204);
+    const gone = await app.inject({ method: "DELETE", url: `${draftUrl}?version=2`, headers: auth });
+    expect(gone.statusCode).toBe(409);
+    expect(gone.json().error.code).toBe("conflict.draft_changed");
     expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(404);
     expect(h.db.pragma("foreign_key_check")).toEqual([]);
   });
@@ -421,7 +438,7 @@ describe("revision archive, delete and draft discard routes", () => {
     const { h, app, contentId, fixture } = await setup();
     const manual = insertManual(h, contentId, fixture.corrected.revision.id);
     const draftUrl = `/api/contents/${contentId}/transcript/draft`;
-    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: manual.revision.id, segments: [] } });
+    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: manual.revision.id, expectedVersion: null, segments: [] } });
     expect(saved.statusCode).toBe(200);
     const deletion = { method: "DELETE" as const, url: `/api/transcript/revisions/${manual.revision.id}?withDescendants=true`, headers: auth };
 

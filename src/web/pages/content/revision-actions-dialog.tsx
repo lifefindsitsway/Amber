@@ -19,7 +19,10 @@ import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import type { ContentSummariesDto } from "../../../shared/dto/summary.ts";
-import { useSummaries } from "./content-data.ts";
+import { transcriptDraftDtoSchema } from "../../../shared/dto/transcript.ts";
+import { translationsDtoSchema } from "../../../shared/dto/translation.ts";
+import type { ApiClient } from "../../api/client.ts";
+import { contentKeys, useSummaries } from "./content-data.ts";
 import { revisionLabel, revisionTimeLabel, templateName } from "./labels.ts";
 
 /** Kinds kept as evidence: they can be archived but never permanently deleted. */
@@ -78,6 +81,36 @@ function refusedBlockers(error: unknown): RevisionBlockersDto | undefined {
   const details = error.error.details ?? {};
   const counts = Object.fromEntries(BLOCKER_CATEGORIES.map((category) => [category, typeof details[category] === "number" ? (details[category] as number) : 0]));
   return counts as RevisionBlockersDto;
+}
+
+/**
+ * 「放弃草稿」 in the delete dialog: discards exactly the drafts that block deleting `ids` — the
+ * transcript draft and each language's translation draft whose base is in the set — and no
+ * other. Each DELETE names the version just read, so another window saving between the read
+ * and the confirmed discard is refused instead of silently losing its newer text.
+ */
+export async function discardBlockingDrafts(client: ApiClient, contentId: string, ids: readonly string[]): Promise<void> {
+  const inSet = new Set(ids);
+  const content = `/api/contents/${encodeURIComponent(contentId)}`;
+  const transcriptDraft = await client.get(`${content}/transcript/draft`, transcriptDraftDtoSchema).catch((error: unknown) => {
+    if (error instanceof ApiError && error.status === 404) return undefined;
+    throw error;
+  });
+  const translations = await client.get(`${content}/translations`, translationsDtoSchema);
+  const targets = [
+    ...(transcriptDraft !== undefined && inSet.has(transcriptDraft.baseRevisionId) ? [`${content}/transcript/draft?version=${transcriptDraft.version}`] : []),
+    ...translations.translations.flatMap((entry) =>
+      entry.draft !== undefined && inSet.has(entry.draft.baseRevisionId)
+        ? [`${content}/translations/${encodeURIComponent(entry.targetLanguage)}/draft?version=${entry.draft.version}`]
+        : [],
+    ),
+  ];
+  for (const target of targets) {
+    await client.delete(target, z.undefined()).catch((error: unknown) => {
+      // Gone already (discarded in another window): nothing left to do.
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    });
+  }
 }
 
 /** After any change to a revision every view of the Content reads its revisions, outputs and primary again. */
@@ -215,11 +248,12 @@ export function RevisionDeleteDialog(props: {
     },
   });
   const discard = useMutation({
-    mutationFn: () => client.delete(`/api/contents/${encodeURIComponent(props.contentId)}/transcript/draft`, z.undefined()),
+    mutationFn: () => discardBlockingDrafts(client, props.contentId, ids),
     onSuccess: async () => {
       setConfirmDiscard(false);
       remove.reset();
       await refresh();
+      await queryClient.invalidateQueries({ queryKey: contentKeys.translations(props.contentId) });
     },
   });
 

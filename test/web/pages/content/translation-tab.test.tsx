@@ -210,3 +210,71 @@ function taskStream() {
     },
   };
 }
+
+describe("TranslationTab edit entries", () => {
+  const revisionsRoute = (archived: boolean) => ({
+    body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), { ...TRANSLATED, archived }] },
+  });
+  const enSegments = { body: { revision: TRANSLATED, items: [{ id: "e1", revisionId: "t-en", ordinal: 0, startMs: 0, endMs: 4_000, text: "Today.", sourceSegmentIds: ["s1"] }] } };
+
+  it("labels the entry by the language's state and opens the editor in place", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": revisionsRoute(false),
+      "GET /api/contents/c1/translations": translations(),
+      "GET /api/transcript/revisions/t-en/segments": enSegments,
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    const edit = await screen.findByTestId("translation-edit");
+    expect(edit.textContent).toBe("编辑译文");
+    fireEvent.click(edit);
+    expect(await screen.findByTestId("translation-draft-editor")).toBeTruthy();
+    expect(screen.queryByTestId("translation-tab")).toBeNull();
+    fireEvent.click(screen.getByTestId("draft-exit"));
+    expect(await screen.findByTestId("translation-tab")).toBeTruthy();
+  });
+
+  it("says 「继续编辑 •」 while a draft exists", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/translations": translations({
+        translations: [{ artifactId: "ta1", targetLanguage: "en", current: TRANSLATED, revisions: [TRANSLATED], stale: false, draft: { baseRevisionId: "t-en", version: 2, updatedAt: 1 } }],
+      }),
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    expect((await screen.findByTestId("translation-edit")).textContent).toBe("继续编辑 •");
+  });
+
+  it("restores an archived current translation before editing it", async () => {
+    let archived = true;
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": () => revisionsRoute(archived),
+      "GET /api/contents/c1/translations": translations(),
+      "PUT /api/transcript/revisions/t-en/archived": () => {
+        archived = false;
+        return { body: { ...TRANSLATED, archived: false } };
+      },
+      "GET /api/transcript/revisions/t-en/segments": enSegments,
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    await waitFor(() => expect(screen.getByTestId("translation-edit").textContent).toBe("取消归档并编辑"));
+    fireEvent.click(screen.getByTestId("translation-edit"));
+    expect(await screen.findByTestId("translation-draft-editor")).toBeTruthy();
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ archived: false });
+  });
+
+  it("warns that a new translation replaces a hand-edited current one, which stays in history", async () => {
+    const manual = { ...TRANSLATED, id: "t-man", generation: { kind: "manual" } };
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/translations": translations({ translations: [{ artifactId: "ta1", targetLanguage: "en", current: manual, revisions: [manual], stale: false }] }),
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    await screen.findByTestId("translation-start");
+    expect(screen.queryByTestId("translation-replaces-manual")).toBeNull();
+    fireEvent.click(screen.getByTestId("translation-language-en"));
+    expect((await screen.findByTestId("translation-replaces-manual")).textContent).toBe("新译文会设为当前，你手改的版本保留在历史中");
+  });
+});

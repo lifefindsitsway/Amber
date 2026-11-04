@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { cacheDismissedStorageKey } from "../../cache-dismissed.ts";
 import {
   ArrowLeftRight,
@@ -26,10 +26,11 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { BREAKPOINT_DRAWER_PX, BREAKPOINT_SINGLE_PX, HIGHLIGHT_THRESHOLD_DEFAULT } from "../../../shared/defaults.ts";
 import type { ContentDetailDto } from "../../../shared/dto/content.ts";
+import type { AuthMeDto } from "../../../shared/dto/system.ts";
 import type { TaskDetailDto } from "../../../shared/dto/task.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
-import { usePlatformAccounts } from "../../api/queries.ts";
+import { queryKeys, usePlatformAccounts } from "../../api/queries.ts";
 import { ChatComposer, ChatComposerProvider, useChatComposer } from "../../chat/chat-composer.tsx";
 import { ChatPanel, type ChatPlacement } from "../../chat/chat-panel.tsx";
 import { SelectionToolbar } from "../../chat/selection-toolbar.tsx";
@@ -48,6 +49,8 @@ import { allPlayableCaches, cacheHeight, isAudioOnly, playableCache, playableVid
 import { useListLoopEntry, useLoopCollectionChoice, usePlaylistAdvance, type AdvanceResult, type LoopCollectionChoice } from "../../player/list-loop.ts";
 import { PlayerController, PlayerControllerProvider, usePlayerCapabilities } from "../../player/player-controller.tsx";
 import { PlayerView, type ActivePlayer } from "../../player/player-view.tsx";
+import { ResumeNotice } from "../../player/resume-notice.tsx";
+import { rememberedPosition, usePlaybackResume } from "../../player/use-playback-resume.ts";
 import type { SubtitleTrackModel } from "../../player/subtitle-overlay.tsx";
 import { HighlightsBelowPlayer, Timeline } from "../../player/timeline.tsx";
 import { Button } from "../../ui/button.tsx";
@@ -108,7 +111,21 @@ function ContentLayout(props: { content: ContentDetailDto }) {
   const { content } = props;
   useDocumentTitle(content.title);
   const [params, setParams] = useSearchParams();
-  const [controller] = useState(() => new PlayerController());
+  const queryClient = useQueryClient();
+  const listLoopEntry = useListLoopEntry();
+  // Read once from the cache the sign-in gate filled before this page rendered; without a user
+  // there is no key to remember positions under, so nothing is resumed or written.
+  const [userId] = useState(() => queryClient.getQueryData<AuthMeDto>(queryKeys.me)?.userId);
+  const [controller] = useState(() => {
+    const created = new PlayerController();
+    // A deep link to a segment, and a list loop that plays every item from its start, decide
+    // where to be, so nothing is resumed. The remembered position goes only to the local player.
+    if (params.has("segment") || listLoopEntry.autoplayLocal) created.suppressResume();
+    const remembered = userId === undefined ? undefined : rememberedPosition(userId, content.id, content.durationMs);
+    if (remembered !== undefined) created.offerResume(remembered);
+    return created;
+  });
+  usePlaybackResume(controller, { userId, contentId: content.id, durationMs: content.durationMs });
   const [composer] = useState(() => new ChatComposer());
   const [selection, setSelection] = useState<SegmentSelection | undefined>(() => {
     const segmentId = params.get("segment");
@@ -1022,7 +1039,7 @@ function MiddleColumn(props: {
       {props.toolbar}
       {props.desktop ? <RelinkBanner content={content} /> : null}
       {props.playerHidden ? null : (
-        <div>
+        <div className="relative">
           <PlayerView
             source={source}
             preferLocal={playback.preferLocal}
@@ -1055,6 +1072,7 @@ function MiddleColumn(props: {
               )
             }
           />
+          <ResumeNotice />
         </div>
       )}
       {playback.qualityNotice === undefined ? null : (

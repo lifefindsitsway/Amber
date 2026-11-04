@@ -394,6 +394,23 @@ describe("POST /api/contents/:id/cache-media/inspect [client]", () => {
     expect(refused.statusCode).toBe(400);
     const unknownField = await app.inject({ method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, headers: auth, payload: { overwriteAssetId: "x" } });
     expect(unknownField.statusCode).toBe(400);
+    // The inspection id belongs to the submission only.
+    const withToken = await app.inject({ method: "POST", url: `/api/contents/${contentId}/cache-media/inspect`, headers: auth, payload: { inspectionId: "x" } });
+    expect(withToken.statusCode).toBe(400);
+  });
+
+  it("passes a submission's inspection id on to the service", async () => {
+    const s = stack();
+    const contentId = createLocalContent(s.h);
+    const seen: unknown[] = [];
+    const recording = {
+      cacheMedia: async (_principal: unknown, _id: string, body: unknown) => (seen.push(body), Promise.reject(amberError("conflict", "recorded", { code: "conflict.cache_inspection_expired" }))),
+    } as unknown as ClientMediaTaskService;
+    const { app } = await s.app("local", recording);
+    const response = await app.inject({ method: "POST", url: `/api/contents/${contentId}/cache-media`, headers: auth, payload: { quality: 720, inspectionId: "01JINSPECTION0000000000000" } });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("conflict.cache_inspection_expired");
+    expect(seen).toEqual([{ quality: 720, inspectionId: "01JINSPECTION0000000000000" }]);
   });
 });
 

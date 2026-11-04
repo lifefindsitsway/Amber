@@ -1,5 +1,5 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { Link, Route, Routes } from "react-router";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Link, MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX, BREAKPOINT_SINGLE_PX, SAVE_NOTICE_DISMISS_MS } from "../../../../src/shared/defaults.ts";
 import { ContentPage, defaultChatRect, parseChatRect } from "../../../../src/web/pages/content/content-page.tsx";
@@ -9,6 +9,11 @@ import { fakeShell, pickedFile } from "../../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { provider, stageRun, task, taskDetail } from "../../../fixtures/web/shell-data.ts";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
+import { ApiClient } from "../../../../src/web/api/client.ts";
+import { ApiProvider, createQueryClient } from "../../../../src/web/api/context.tsx";
+import { queryKeys } from "../../../../src/web/api/queries.ts";
+import { playbackStorageKey, readPlaybackPosition, writePlaybackPosition } from "../../../../src/web/player/playback-positions.ts";
+import { ShortcutProvider } from "../../../../src/web/shortcut-registry.tsx";
 
 vi.mock("../../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -62,6 +67,7 @@ const DISK = { cache: { freeBytes: 100 * 1024 ** 3, lowWaterBytes: 10 * 1024 ** 
 /** An inspection answer: nothing replaced, overwritten or blocking. */
 function inspection(overrides: Record<string, unknown> = {}) {
   return {
+    inspectionId: "01JINSPECTION0000000000000",
     expected: { type: "video", height: 720, ext: "mp4" },
     expectedFileName: "第一讲 [720P].mp4",
     replaces: [],
@@ -442,14 +448,14 @@ describe("ContentPage in the desktop client", () => {
     expect(quality.value).toBe("1080");
     expect([...quality.options].map((option) => option.textContent)).toEqual(["360P", "480P", "720P", "1080P"]);
     fireEvent.change(quality, { target: { value: "720" } });
-    // Nothing in the answer needs the user, so one click inspects and starts the Task.
+    // Nothing in the answer needs the user, so the click submits the check made for the choice.
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "缓存本视频" })).toBeNull();
     expect(calls.find((call) => call.path === "/api/contents/c1/cache-media/inspect")?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
     expect(await screen.findByTestId("stage-cache_media")).toBeTruthy();
     const post = calls.find((call) => call.path === "/api/contents/c1/cache-media");
-    expect(post?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲" });
+    expect(post?.body).toEqual({ type: "video", quality: 720, fileName: "第一讲", inspectionId: "01JINSPECTION0000000000000" });
     expect(post?.headers["idempotency-key"]).toBeTruthy();
   });
 
@@ -481,7 +487,7 @@ describe("ContentPage in the desktop client", () => {
     fireEvent.click(within(dialog).getByTestId("cache-type-audio"));
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
     expect(await screen.findByTestId("tracked-task")).toBeTruthy();
-    expect(calls.find((call) => call.path === "/api/contents/c1/cache-media")?.body).toEqual({ type: "audio", fileName: "课程:第 1 讲?.mp3" });
+    expect(calls.find((call) => call.path === "/api/contents/c1/cache-media")?.body).toEqual({ type: "audio", fileName: "课程:第 1 讲?.mp3", inspectionId: "01JINSPECTION0000000000000" });
   });
 
   it("says so when a video was asked for but the Content has no picture", async () => {
@@ -1357,5 +1363,210 @@ describe("ContentPage chat panel across layouts", () => {
     await waitFor(() => expect(chatInput().value).toBe("解释一下「重排序」"));
     expect(floatingNow()).toBe(true);
     expect(document.activeElement).toBe(chatInput());
+  });
+});
+
+// A stand-in for the YouTube IFrame API: what the embed reports, so the page's recorder has something to write.
+const embed = vi.hoisted(() => ({ onReady: undefined as (() => void) | undefined, time: 0 }));
+vi.mock("../../../../src/web/player/youtube-api.ts", () => ({
+  loadYoutubeApi: () =>
+    Promise.resolve({
+      Player: class {
+        constructor(_element: unknown, options: { events?: { onReady?: () => void } }) {
+          embed.onReady = options.events?.onReady;
+        }
+        seekTo = () => undefined;
+        playVideo = () => undefined;
+        getDuration = () => 600;
+        getCurrentTime = () => embed.time;
+        destroy = () => undefined;
+      },
+    }),
+}));
+
+describe("ContentPage remembered position", () => {
+  const YOUTUBE_DETAIL = contentDetail({ source: { kind: "youtube", platformContentId: "UF8uR6Z6KLc" } });
+  const YOUTUBE_CACHED = contentDetail({ source: { kind: "youtube", platformContentId: "UF8uR6Z6KLc" }, media: [VIDEO_CACHE] });
+
+  beforeEach(() => {
+    // Only the desktop client can play a cached copy.
+    fakeShell.desktop = true;
+    embed.onReady = undefined;
+    embed.time = 0;
+  });
+  afterEach(() => vi.useRealTimers());
+
+  /** The page as the sign-in gate leaves it: the signed-in user is already in the query cache. */
+  function renderResumePage(route: string, userId: string | null = "u1") {
+    const queryClient = createQueryClient();
+    if (userId !== null) queryClient.setQueryData(queryKeys.me, { userId, role: "admin", mode: "local", mustChangePassword: false });
+    return render(
+      <ApiProvider client={new ApiClient({ baseUrl: "" }, "local")} queryClient={queryClient}>
+        <ShortcutProvider overrides={{}}>
+          <MemoryRouter initialEntries={[route]}>
+            <Routes>
+              <Route path="/contents/:id" element={<ContentPage />} />
+            </Routes>
+          </MemoryRouter>
+        </ShortcutProvider>
+      </ApiProvider>,
+    );
+  }
+  const embedParams = async (): Promise<URLSearchParams> => new URL((await screen.findByTestId("player-youtube")).getAttribute("src") ?? "").searchParams;
+  /** Switches the page from the online embed to the cached copy and returns its `<video>`. */
+  async function switchToLocal(): Promise<HTMLVideoElement> {
+    const local = (await screen.findByTestId("switch-player-local")) as HTMLButtonElement;
+    await waitFor(() => expect(local.disabled).toBe(false));
+    fireEvent.click(local);
+    return (await screen.findByTestId("player-local")).querySelector("video") as HTMLVideoElement;
+  }
+  const RECORD = { positionMs: 300_000, durationMs: 600_000, updatedAt: 1 };
+
+  it("leaves the YouTube embed at the start, without autoplay, no card and the record untouched", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", { ...RECORD, positionMs: 300_400 });
+    renderResumePage("/contents/c1");
+    const params = await embedParams();
+    expect(params.has("start")).toBe(false);
+    expect(params.has("autoplay")).toBe(false);
+    await vi.waitFor(() => expect(embed.onReady).toBeDefined());
+    act(() => embed.onReady?.());
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+    expect(readPlaybackPosition("u1", "c1")).toEqual({ ...RECORD, positionMs: 300_400 });
+  });
+
+  it("resumes the cached copy at the remembered position once the user switches to it, and shows the card", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    await embedParams();
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+    const video = await switchToLocal();
+    expect(video.currentTime).toBe(300);
+    expect(video.autoplay).toBe(false);
+    expect((await screen.findByTestId("resume-notice")).textContent).toContain("已从 5:00 继续播放");
+  });
+
+  it("lets a deep link to a segment decide where to be", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1?tab=transcript&segment=01JSEGMENT0000000000000000");
+    await embedParams();
+    const video = await switchToLocal();
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("resumes nothing without a signed-in user in the cache", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1", null);
+    await embedParams();
+    const video = await switchToLocal();
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("never reads another user's record", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u2", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    await embedParams();
+    const video = await switchToLocal();
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("does not resume a record inside the end region", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", { ...RECORD, positionMs: 590_000 });
+    renderResumePage("/contents/c1");
+    await embedParams();
+    const video = await switchToLocal();
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("does not resume when the list loop brought the page, which plays every item from its start", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    loop.entry = { autoplayLocal: true };
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    const video = ((await screen.findByTestId("player-local")).querySelector("video")) as HTMLVideoElement;
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("shows nothing about the remembered position under a Bilibili embed and leaves the record alone", async () => {
+    mockApi(contentRoutes());
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    const frame = await screen.findByTestId("player-bilibili");
+    expect(new URL(frame.getAttribute("src") ?? "").searchParams.has("t")).toBe(false);
+    expect(screen.queryByTestId("bili-resume")).toBeNull();
+    expect(screen.queryByRole("button", { name: "继续播放" })).toBeNull();
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+    expect(readPlaybackPosition("u1", "c1")).toEqual(RECORD);
+  });
+
+  it("writes nothing while the YouTube embed plays, not even when the page is left", async () => {
+    mockApi(contentRoutes(YOUTUBE_DETAIL));
+    const view = renderResumePage("/contents/c1");
+    await screen.findByTestId("player-youtube");
+    await vi.waitFor(() => expect(embed.onReady).toBeDefined());
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    act(() => embed.onReady?.());
+    embed.time = 200.4;
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(readPlaybackPosition("u1", "c1")).toBeUndefined();
+    view.unmount();
+    expect(readPlaybackPosition("u1", "c1")).toBeUndefined();
+    expect(localStorage.getItem(playbackStorageKey("u1"))).toBeNull();
+  });
+
+  it("remembers where the cached copy is while it plays, and again when the page is left", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    const view = renderResumePage("/contents/c1");
+    await embedParams();
+    const video = await switchToLocal();
+    video.currentTime = 200.4;
+    fireEvent.timeUpdate(video);
+    expect(readPlaybackPosition("u1", "c1")).toMatchObject({ positionMs: 200_400 });
+    video.currentTime = 205;
+    fireEvent.timeUpdate(video);
+    // Inside the save interval: still the first write.
+    expect(readPlaybackPosition("u1", "c1")?.positionMs).toBe(200_400);
+    view.unmount();
+    expect(readPlaybackPosition("u1", "c1")?.positionMs).toBe(205_000);
+  });
+
+  it("restarts the cached copy from the beginning and forgets the position on 「从头播放」", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(() => Promise.resolve());
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    await embedParams();
+    const video = await switchToLocal();
+    fireEvent.click(await screen.findByRole("button", { name: "从头播放" }));
+    await waitFor(() => expect(readPlaybackPosition("u1", "c1")).toBeUndefined());
+    expect(video.currentTime).toBe(0);
+    expect(screen.queryByTestId("resume-notice")).toBeNull();
+  });
+
+  it("keeps the record when the user plays the embed after the cached copy was left", async () => {
+    mockApi(contentRoutes(YOUTUBE_CACHED));
+    writePlaybackPosition("u1", "c1", RECORD);
+    renderResumePage("/contents/c1");
+    await embedParams();
+    const video = await switchToLocal();
+    video.currentTime = 310;
+    fireEvent.timeUpdate(video);
+    fireEvent.click(screen.getByTestId("switch-player-online"));
+    await embedParams();
+    await vi.waitFor(() => expect(embed.onReady).toBeDefined());
+    act(() => embed.onReady?.());
+    expect(readPlaybackPosition("u1", "c1")).toMatchObject({ positionMs: 310_000 });
   });
 });

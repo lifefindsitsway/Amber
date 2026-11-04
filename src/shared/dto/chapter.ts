@@ -36,14 +36,26 @@ export const chapterRevisionDtoSchema = z.object({
 export type ChapterRevisionDto = z.infer<typeof chapterRevisionDtoSchema>;
 
 /**
+ * Where the unfinished chapter work stands: `queued` while a chapter regeneration waits to
+ * start, `running` while chapters are being generated (by a regeneration or the processing
+ * Task's chapter stage), `waiting` while the chapters wait on other unfinished work.
+ */
+export const CHAPTER_ACTIVE_STAGES = ["queued", "running", "waiting"] as const;
+export type ChapterActiveStage = (typeof CHAPTER_ACTIVE_STAGES)[number];
+
+/**
  * `GET /api/contents/:id/chapters`: the current revision, every revision to switch to
- * (oldest first) and the unfinished Task working on chapters, if any.
+ * (oldest first) and the unfinished Task working on chapters, if any. `lastFailedTaskId`
+ * names the latest Task whose chapter stage failed after the current revision was made;
+ * a chapter stage skipped or cancelled because an earlier stage failed does not count.
  */
 export const chaptersDtoSchema = z.object({
   artifactId: idSchema.exactOptional(),
   current: chapterRevisionDtoSchema.exactOptional(),
   revisions: z.array(chapterRevisionDtoSchema),
   activeTaskId: idSchema.exactOptional(),
+  activeStage: z.enum(CHAPTER_ACTIVE_STAGES).exactOptional(),
+  lastFailedTaskId: idSchema.exactOptional(),
 });
 export type ChaptersDto = z.infer<typeof chaptersDtoSchema>;
 

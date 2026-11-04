@@ -41,6 +41,9 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/tasks/:id/cancel", modes: BOTH },
   { method: "POST", path: "/tasks/:id/retry-stage", modes: BOTH },
   { method: "POST", path: "/tasks/:id/work-units/:wid/confirm-resend", modes: BOTH },
+  { method: "POST", path: "/tasks/history/hide", modes: BOTH },
+  { method: "POST", path: "/tasks/history/clear", modes: BOTH },
+  { method: "POST", path: "/tasks/history/restore", modes: BOTH },
   { method: "GET", path: "/tasks/events", modes: BOTH },
   // transcripts
   { method: "GET", path: "/contents/:id/transcript/revisions", modes: BOTH },
@@ -70,6 +73,10 @@ export const API_ROUTES: readonly ApiRoute[] = [
   // translations
   { method: "POST", path: "/contents/:id/translations", modes: BOTH },
   { method: "GET", path: "/contents/:id/translations", modes: BOTH },
+  { method: "GET", path: "/contents/:id/translations/:language/draft", modes: BOTH },
+  { method: "PUT", path: "/contents/:id/translations/:language/draft", modes: BOTH },
+  { method: "DELETE", path: "/contents/:id/translations/:language/draft", modes: BOTH },
+  { method: "POST", path: "/contents/:id/translations/:language/draft/commit", modes: BOTH },
   // collections
   { method: "GET", path: "/collections", modes: BOTH },
   { method: "POST", path: "/collections", modes: BOTH },

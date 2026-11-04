@@ -427,3 +427,26 @@ describe("SubtitlesTab version list", () => {
     expect(((await screen.findByTestId("subtitles-version")) as HTMLSelectElement).value).toBe("m1");
   });
 });
+
+describe("SubtitlesTab translation editing", () => {
+  it("offers 「编辑译文」 while a translation is shown, and opens its editor in place", async () => {
+    const translated = revision("t-en", { kind: "translated", language: "en", parentRevisionId: "r1" });
+    const enRow = { id: "e1", revisionId: "t-en", ordinal: 0, startMs: 0, endMs: 4_000, text: "Today.", sourceSegmentIds: ["s1"] };
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), translated] } },
+      "GET /api/contents/c1/translations": {
+        body: { activeTasks: [], translations: [{ artifactId: "a-en", targetLanguage: "en", current: translated, revisions: [translated], stale: false }] },
+      },
+      "GET /api/transcript/revisions/t-en/segments": { body: { revision: translated, items: [enRow] } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const version = (await screen.findByTestId("subtitles-version")) as HTMLSelectElement;
+    expect(screen.queryByTestId("translation-edit")).toBeNull();
+    fireEvent.change(version, { target: { value: "t-en" } });
+    const edit = await screen.findByTestId("translation-edit");
+    expect(edit.textContent).toBe("编辑译文");
+    fireEvent.click(edit);
+    expect(await screen.findByTestId("translation-draft-editor")).toBeTruthy();
+  });
+});

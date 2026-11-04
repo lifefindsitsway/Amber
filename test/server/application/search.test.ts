@@ -166,7 +166,7 @@ describe("incremental projection equals a rebuild", () => {
     const base = imported.transcriptRevisionId as string;
     const baseSegments = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, base));
     h.transcripts.putDraft(LOCAL, first, {
-      baseRevisionId: base,
+      baseRevisionId: base, expectedVersion: null,
       segments: baseSegments.map((segment, index) => ({
         startMs: segment.startMs,
         endMs: segment.endMs,
@@ -174,7 +174,7 @@ describe("incremental projection equals a rebuild", () => {
         sourceSegmentIds: [segment.id],
       })),
     });
-    h.transcripts.commitDraft(LOCAL, first, { expectedPrimaryRevisionId: base });
+    h.transcripts.commitDraft(LOCAL, first, { expectedPrimaryRevisionId: base, draftVersion: 1 });
     expect(h.search.search(LOCAL, { q: "手工修订" }).segments).toHaveLength(1);
     expectConsistent();
     // Switching back to the platform revision, renaming and deleting.

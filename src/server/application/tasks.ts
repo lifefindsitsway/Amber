@@ -1,5 +1,12 @@
 import { monotonicFactory } from "ulid";
-import type { RetryStageRequest, TaskAcceptedDto, TaskDetailDto, TaskListDto } from "../../shared/dto/task.ts";
+import type {
+  RetryStageRequest,
+  TaskAcceptedDto,
+  TaskDetailDto,
+  TaskHistoryHiddenDto,
+  TaskHistoryRestoredDto,
+  TaskListDto,
+} from "../../shared/dto/task.ts";
 import type { TaskKind } from "../../shared/enums.ts";
 import { ASR_AWAIT_UNIT_KEY, ASR_SUBMIT_UNIT_KEY } from "../../shared/work-steps.ts";
 import { asrJobHandleSchema } from "../domain/asr.ts";
@@ -47,6 +54,8 @@ export interface TaskListRequest {
   cursor?: string;
   unfinished?: boolean;
   finished?: boolean;
+  /** Finished Tasks not removed from the task panel's history. */
+  history?: boolean;
   contentId?: string;
   collectionId?: string;
   kind?: TaskKind;
@@ -94,7 +103,7 @@ export class TaskService {
   }
 
   /**
-   * Newest first; `unfinished`, `finished`, `contentId`, `collectionId` and `kind` narrow
+   * Newest first; `unfinished`, `finished`, `history`, `contentId`, `collectionId` and `kind` narrow
    * the list. Tasks of trashed Contents are never listed, and naming one of the principal's
    * trashed Contents is `not_found` like its other sub-resources.
    */
@@ -111,6 +120,7 @@ export class TaskService {
         ...(after === undefined ? {} : { after }),
         ...(page.unfinished === true ? { unfinished: true } : {}),
         ...(page.finished === true ? { finished: true } : {}),
+        ...(page.history === true ? { history: true } : {}),
         ...(page.contentId === undefined ? {} : { contentId: page.contentId }),
         ...(page.collectionId === undefined ? {} : { collectionId: page.collectionId }),
         ...(page.kind === undefined ? {} : { kind: page.kind }),
@@ -140,6 +150,31 @@ export class TaskService {
       ...(tasks.length > page.limit && last !== undefined ? { nextCursor: encodeCursor(last) } : {}),
       eventSeq,
     };
+  }
+
+  /**
+   * Removes the principal's finished Tasks among `taskIds` from the task panel's history.
+   * Only a display mark changes: the Tasks, their stages and results stay. Ids that are not
+   * the principal's finished, still shown Tasks are skipped, and the answer looks the same
+   * either way, so it reveals nothing about them.
+   */
+  hideHistory(principal: RequestPrincipal, taskIds: readonly string[]): TaskHistoryHiddenDto {
+    const batchId = this.newId();
+    const hidden = this.options.repository.withTransaction((scope) => scope.tasks.hideHistory(principal.userId, taskIds, batchId, this.now()));
+    return { hidden, batchId };
+  }
+
+  /** Removes everything the principal's history list shows; Tasks of trashed Contents stay untouched. */
+  clearHistory(principal: RequestPrincipal): TaskHistoryHiddenDto {
+    const batchId = this.newId();
+    const hidden = this.options.repository.withTransaction((scope) => scope.tasks.clearHistory(principal.userId, batchId, this.now()));
+    return { hidden, batchId };
+  }
+
+  /** Undoes one removal: shows again exactly the Tasks it hid. An unknown batch restores nothing. */
+  restoreHistory(principal: RequestPrincipal, batchId: string): TaskHistoryRestoredDto {
+    const restored = this.options.repository.withTransaction((scope) => scope.tasks.restoreHistory(principal.userId, batchId));
+    return { restored };
   }
 
   /** The event sequence is read before the snapshot so clients can merge live events. */

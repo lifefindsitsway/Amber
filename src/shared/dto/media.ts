@@ -32,9 +32,13 @@ export type CacheMediaInspectRequest = z.infer<typeof cacheMediaInspectRequestSc
  * `POST /api/contents/:id/cache-media` [client]. The fields of the inspect request plus
  * `overwriteAssetId`: the user's confirmation that another Content's cache holding the same
  * file name may be replaced. The file name's quality label is decided by the finished file.
+ * `inspectionId` submits exactly that check: the request then reuses its estimate instead of
+ * probing again, and is refused with `conflict.cache_inspection_expired` when the check has
+ * expired, is unknown, or was for another type, quality or file name. Without it the request
+ * probes on its own, as before.
  */
 export const cacheMediaRequestSchema = z
-  .object({ ...cacheMediaFields, overwriteAssetId: idSchema.exactOptional() })
+  .object({ ...cacheMediaFields, overwriteAssetId: idSchema.exactOptional(), inspectionId: idSchema.exactOptional() })
   .strict()
   .refine(audioHasNoQuality.check, audioHasNoQuality.params);
 export type CacheMediaRequest = z.infer<typeof cacheMediaRequestSchema>;
@@ -93,6 +97,8 @@ export type ContentCacheDto = z.infer<typeof contentCacheDtoSchema>;
  */
 export const cacheMediaInspectDtoSchema = z
   .object({
+    /** Names this check for the submission; valid for `CACHE_INSPECTION_TTL_MS`. */
+    inspectionId: idSchema,
     expected: z
       .object({
         type: z.enum(CACHE_MEDIA_TYPES),

@@ -4,12 +4,11 @@ import type { ContentDetailDto, TranscriptRevisionDto } from "../../../shared/dt
 import { sliceCues, subtitleCues } from "../../../shared/subtitle-geometry.ts";
 import { useMe } from "../../api/queries.ts";
 import { useSubtitleFontFallback } from "../../player/subtitle-font.ts";
-import type { SubtitleStatus, SubtitleTrackModel } from "../../player/subtitle-overlay.tsx";
-import { useSubtitlePrefs, type SubtitleDisplayMode, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
+import type { SubtitleStatus, SubtitleTrackModel, SubtitleTranslationLanguage } from "../../player/subtitle-overlay.tsx";
+import { upgradeTrackPref, useSubtitlePrefs, type SubtitleDisplayMode, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
 import { useContentPage } from "./content-context.tsx";
-import { readableRevisions, useRevisions, useSegments, visibleRevisions } from "./content-data.ts";
-import { translationsOf } from "./export-dialog.tsx";
-import { revisionLabel } from "./labels.ts";
+import { pickTranslation, readableRevisions, translationCurrents, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
+import { languageLabel, revisionLabel } from "./labels.ts";
 
 const usesOriginal = (mode: SubtitleDisplayMode): boolean => mode === "original" || mode === "bilingual";
 const usesTranslation = (mode: SubtitleDisplayMode): boolean => mode === "translation" || mode === "bilingual";
@@ -18,16 +17,12 @@ function present(id: string | undefined, revisions: readonly TranscriptRevisionD
   return id !== undefined && revisions.some((revision) => revision.id === id) ? id : undefined;
 }
 
-function latest(revisions: readonly TranscriptRevisionDto[]): TranscriptRevisionDto | undefined {
-  return revisions.reduce<TranscriptRevisionDto | undefined>((best, revision) => (best === undefined || revision.createdAt > best.createdAt ? revision : best), undefined);
-}
-
 /**
  * The local player's subtitles for a Content, assembled here so the player
  * never reads Content data. The original is the remembered revision while it still exists,
- * else the primary; the translation is the remembered one while it still translates that
- * original, else its newest translation. A mode needing a translation the original lacks
- * shows the original. Only the revisions the mode shows are read; switching revisions
+ * else the primary; the translation is `pickTranslation`'s choice for that original under the
+ * remembered language or lock. A mode needing a translation the original lacks shows the
+ * original. Only the revisions the mode shows are read; switching revisions
  * abandons the old read. Each `editRequest` bump (the page's 「样式与位置」 entry) turns
  * subtitles on if needed and opens the editor. Undefined until the user is known, since
  * every preference is per user.
@@ -42,13 +37,23 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   const all = useMemo(() => revisions.data?.revisions ?? [], [revisions.data]);
   const primaryId = revisions.data?.primaryTranscriptRevisionId;
   const readable = useMemo(() => readableRevisions(all), [all]);
-  const track = prefs.track;
+  const track = useMemo(() => upgradeTrackPref(prefs.track, all), [prefs.track, all]);
+  const translationList = useTranslations(content.id);
+  // A failed list only loses the currents: each language then shows its newest translation.
+  const currents = useMemo(() => translationCurrents(translationList.data?.translations), [translationList.data]);
   const originalId = present(track.revisionId, readable) ?? present(primaryId, readable) ?? readable.at(-1)?.id;
   // The picker lists what the version pickers list, plus the original being shown.
   const pickable = useMemo(() => visibleRevisions(readable, primaryId, { include: [originalId] }), [readable, primaryId, originalId]);
-  const translations = useMemo(() => translationsOf(originalId, all), [originalId, all]);
-  const translationId = present(track.translationRevisionId, translations) ?? latest(translations)?.id;
-  const mode: SubtitleDisplayMode = usesTranslation(track.mode) && translationId === undefined ? "original" : track.mode;
+  // Until the currents are known the pick could still move, so no translation is read yet.
+  const currentsKnown = !translationList.isPending;
+  const picked = currentsKnown
+    ? pickTranslation({ originalId, language: track.translation?.language, lockedRevisionId: track.translation?.lockedRevisionId, revisions: all, currents })
+    : undefined;
+  const translationId = picked?.id;
+  const translationLocked = picked !== undefined && picked.id === track.translation?.lockedRevisionId;
+  const lockedId = translationLocked ? translationId : undefined;
+  const languages = useMemo(() => translationLanguages(originalId, all, currents, lockedId), [originalId, all, currents, lockedId]);
+  const mode: SubtitleDisplayMode = usesTranslation(track.mode) && currentsKnown && translationId === undefined ? "original" : track.mode;
   const on = mode !== "off";
   const [editing, setEditing] = useState(false);
 
@@ -66,19 +71,22 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   else if (revisions.isError) status = "error";
   else if (revisions.isPending) status = "loading";
   else if (originalId === undefined) status = "empty";
+  else if (usesTranslation(mode) && !currentsKnown) status = "loading";
   else if (reads.some((read) => read.isError)) status = "error";
   else if (reads.some((read) => read.isPending)) status = "loading";
   else status = slices.length === 0 ? "empty" : "ready";
 
   const remembered = (next: Partial<Omit<SubtitleTrackPref, "version">>): SubtitleTrackPref => {
-    const merged = { mode: track.mode, revisionId: track.revisionId, translationRevisionId: track.translationRevisionId, ...next };
+    const merged = { mode: track.mode, revisionId: track.revisionId, translation: track.translation, ...next };
     return {
-      version: 1,
+      version: 2,
       mode: merged.mode,
       ...(merged.revisionId === undefined ? {} : { revisionId: merged.revisionId }),
-      ...(merged.translationRevisionId === undefined ? {} : { translationRevisionId: merged.translationRevisionId }),
+      ...(merged.translation === undefined ? {} : { translation: merged.translation }),
     };
   };
+  // A translation belongs to its original, so the original being shown is remembered with it.
+  const shownOriginal = originalId === undefined ? {} : { revisionId: originalId };
   const setMode = (next: SubtitleDisplayMode): void => {
     prefs.setTrack(remembered({ mode: next }));
     if (next === "off") setEditing(false);
@@ -103,11 +111,22 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
     setMode,
     originals: pickable.map((revision) => ({ id: revision.id, label: revisionLabel(revision, primaryId, t, i18n, readable) })),
     originalId,
-    // A translation belongs to its original, so picking another original forgets it.
-    setOriginal: (id) => prefs.setTrack({ version: 1, mode: track.mode, revisionId: id }),
-    translations: translations.map((revision) => ({ id: revision.id, label: revisionLabel(revision, primaryId, t, i18n, translations) })),
+    // A locked version belongs to its original, so picking another original keeps only the language.
+    setOriginal: (id) =>
+      prefs.setTrack({ version: 2, mode: track.mode, revisionId: id, ...(track.translation === undefined ? {} : { translation: { language: track.translation.language } }) }),
+    translations: languages.map((entry) => ({
+      language: entry.language,
+      label: languageLabel(entry.language, t, i18n),
+      currentId: entry.currentId,
+      history: entry.history.map((revision) => ({ id: revision.id, label: revisionLabel(revision, undefined, t, i18n, entry.history) })),
+    })),
     translationId,
-    setTranslation: (id) => prefs.setTrack(remembered({ translationRevisionId: id, ...(originalId === undefined ? {} : { revisionId: originalId }) })),
+    translationLocked,
+    followTranslation: (language) => prefs.setTrack(remembered({ translation: { language }, ...shownOriginal })),
+    lockTranslation: (id) => {
+      const revision = all.find((item) => item.id === id && item.kind === "translated");
+      if (revision !== undefined) prefs.setTrack(remembered({ translation: { language: revision.language, lockedRevisionId: id }, ...shownOriginal }));
+    },
     goTranslate: () => openTab("translation"),
     status,
     retry: () => {
@@ -131,4 +150,28 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
     startEditing,
     stopEditing: () => setEditing(false),
   };
+}
+
+/**
+ * The menu's languages for an original: each language with a candidate translation, the
+ * version following it shows, and its other versions (newest first) to lock. A locked version
+ * that is also its language's current one is listed among them too, so the menu shows the lock
+ * apart from following. Languages keep the order their first candidate was made in.
+ */
+export function translationLanguages<T extends TranscriptRevisionDto & { archived?: boolean }>(
+  originalId: string | undefined,
+  revisions: readonly T[],
+  currents: Readonly<Record<string, string | undefined>>,
+  lockedId?: string,
+): Array<Omit<SubtitleTranslationLanguage, "label" | "history"> & { history: T[] }> {
+  const candidates = revisions
+    .filter((revision) => revision.kind === "translated" && revision.archived !== true && originalId !== undefined && revision.parentRevisionId === originalId)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const languages = [...new Set(candidates.map((revision) => revision.language))];
+  return languages.flatMap((language) => {
+    const current = pickTranslation({ originalId, language, revisions: candidates, currents });
+    if (current === undefined) return [];
+    const history = candidates.filter((revision) => revision.language === language && (revision.id !== current.id || revision.id === lockedId)).reverse();
+    return [{ language, currentId: current.id, history }];
+  });
 }

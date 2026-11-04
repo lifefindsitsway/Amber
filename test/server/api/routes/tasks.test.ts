@@ -1,7 +1,8 @@
 import { request } from "node:http";
 import type { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { taskDetailDtoSchema, taskListDtoSchema } from "../../../../src/shared/dto/task.ts";
+import { TASK_HISTORY_HIDE_MAX } from "../../../../src/shared/defaults.ts";
+import { taskDetailDtoSchema, taskHistoryHiddenDtoSchema, taskHistoryRestoredDtoSchema, taskListDtoSchema } from "../../../../src/shared/dto/task.ts";
 import { BOB_TOKEN, configureLlm, createHarness, LOCAL_TOKEN, taskOf, waitFor, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
 const LINK = "https://www.bilibili.com/video/BV1xx411c7mD";
@@ -189,5 +190,83 @@ describe("GET /api/tasks filters", () => {
     const badKind = await app.inject({ method: "GET", url: "/api/tasks?kind=nope", headers: auth });
     expect(badKind.statusCode).toBe(400);
     expect(badKind.json().error).toMatchObject({ class: "invalid_request", userMessage: expect.stringContaining("query.kind") });
+  });
+});
+
+describe("task history routes", () => {
+  const bobAuth = { authorization: `Bearer ${BOB_TOKEN}` };
+
+  /** Two cancelled (finished) Tasks and one still queued, on separate Contents. */
+  async function seeded() {
+    const { h, app } = await setup();
+    const finished: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const created = await app.inject({ method: "POST", url: "/api/contents/import", headers: auth, payload: { items: [{ url: `https://www.bilibili.com/video/BV1xx411c7m${"ABC"[index]}` }], settings: {} } });
+      expect(created.statusCode).toBe(202);
+      const taskId = created.json().taskIds[0] as string;
+      if (index < 2) {
+        expect((await app.inject({ method: "POST", url: `/api/tasks/${taskId}/cancel`, headers: auth })).statusCode).toBe(200);
+        finished.push(taskId);
+      }
+    }
+    const ids = async (query: string, headers: Record<string, string> = auth) =>
+      taskListDtoSchema.parse((await app.inject({ method: "GET", url: `/api/tasks?${query}`, headers })).json()).items.map((task) => task.id);
+    return { h, app, finished, ids };
+  }
+
+  it("lists history=1 as finished and shown, exclusive with finished=1 and unfinished=1", async () => {
+    const { app, finished, ids } = await seeded();
+    expect(await ids("history=1")).toEqual([...finished].reverse());
+    for (const query of ["history=1&finished=1", "history=1&unfinished=1", "history=1&finished=1&unfinished=1"]) {
+      const refused = await app.inject({ method: "GET", url: `/api/tasks?${query}`, headers: auth });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().error.class).toBe("invalid_request");
+    }
+    expect((await app.inject({ method: "GET", url: "/api/tasks?history=yes", headers: auth })).statusCode).toBe(400);
+    expect(await ids("history=0&finished=1")).toEqual([...finished].reverse());
+  });
+
+  it("hides, clears and restores by batch without touching finished=1, details or other users", async () => {
+    const { app, finished, ids } = await seeded();
+    const [first, second] = finished as [string, string];
+    const hide = await app.inject({ method: "POST", url: "/api/tasks/history/hide", headers: auth, payload: { taskIds: [first, first, "01JUNKNOWNTASKID000000000"] } });
+    expect(hide.statusCode).toBe(200);
+    const hideBody = taskHistoryHiddenDtoSchema.parse(hide.json());
+    expect(hideBody.hidden).toBe(1);
+    expect(await ids("history=1")).toEqual([second]);
+    expect(await ids("finished=1")).toEqual([second, first]);
+    expect((await app.inject({ method: "GET", url: `/api/tasks/${first}`, headers: auth })).statusCode).toBe(200);
+
+    // Another user's attempt looks like a removal of nothing.
+    const foreign = await app.inject({ method: "POST", url: "/api/tasks/history/hide", headers: bobAuth, payload: { taskIds: [second] } });
+    expect(foreign.statusCode).toBe(200);
+    expect(foreign.json()).toMatchObject({ hidden: 0 });
+    expect(await ids("history=1")).toEqual([second]);
+
+    for (const payload of [undefined, {}]) {
+      const clear = await app.inject({ method: "POST", url: "/api/tasks/history/clear", headers: auth, ...(payload === undefined ? {} : { payload }) });
+      expect(clear.statusCode).toBe(200);
+      expect(taskHistoryHiddenDtoSchema.parse(clear.json()).hidden).toBe(payload === undefined ? 1 : 0);
+      if (payload === undefined) {
+        const restore = await app.inject({ method: "POST", url: "/api/tasks/history/restore", headers: auth, payload: { batchId: clear.json().batchId } });
+        expect(restore.statusCode).toBe(200);
+        expect(taskHistoryRestoredDtoSchema.parse(restore.json())).toEqual({ restored: 1 });
+        expect(await ids("history=1")).toEqual([second]);
+        expect((await app.inject({ method: "POST", url: "/api/tasks/history/clear", headers: auth, payload: {} })).json().hidden).toBe(1);
+      }
+    }
+    expect(await ids("history=1")).toEqual([]);
+    expect((await app.inject({ method: "POST", url: "/api/tasks/history/restore", headers: auth, payload: { batchId: hideBody.batchId } })).json()).toEqual({ restored: 1 });
+    expect(await ids("history=1")).toEqual([first]);
+  });
+
+  it("validates the history bodies", async () => {
+    const { app } = await seeded();
+    const post = (url: string, payload: unknown) => app.inject({ method: "POST", url, headers: auth, payload: payload as object });
+    expect((await post("/api/tasks/history/hide", { taskIds: [] })).statusCode).toBe(400);
+    expect((await post("/api/tasks/history/hide", { taskIds: Array.from({ length: TASK_HISTORY_HIDE_MAX + 1 }, (_, i) => `t${i}`) })).statusCode).toBe(400);
+    expect((await post("/api/tasks/history/hide", {})).statusCode).toBe(400);
+    expect((await post("/api/tasks/history/clear", { all: true })).statusCode).toBe(400);
+    expect((await post("/api/tasks/history/restore", {})).statusCode).toBe(400);
   });
 });

@@ -140,3 +140,57 @@ describe("POST /api/contents/:id/translations", () => {
     expect((await app.inject({ method: "POST", url, headers: auth, payload: { targetLanguages: ["de"] } })).statusCode).toBe(202);
   });
 });
+
+describe("/api/contents/:id/translations/:language/draft", () => {
+  it("saves, reads, discards and commits a language's draft, naming the language in any BCP-47 spelling", async () => {
+    const { h, app, url, translatedId, contentId } = await setup();
+    const draftUrl = `${url}/EN/draft`;
+    const base = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, translatedId));
+    const segments = base.map((segment) => ({ id: segment.id, text: `${segment.text} (edited)` }));
+
+    expect((await app.inject({ method: "GET", url: draftUrl, headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `${url}/fr/draft`, headers: auth })).statusCode).toBe(404);
+    const saved = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: translatedId, expectedVersion: null, segments } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({ contentId, targetLanguage: "en", baseRevisionId: translatedId, version: 1, segments });
+    expect((await app.inject({ method: "GET", url: `${url}/en/draft`, headers: auth })).json()).toMatchObject({ version: 1 });
+    expect((await app.inject({ method: "GET", url: draftUrl, headers: bob })).statusCode).toBe(404);
+    const listed = translationsDtoSchema.parse((await app.inject({ method: "GET", url, headers: auth })).json());
+    expect(listed.translations[0]?.draft).toMatchObject({ baseRevisionId: translatedId, version: 1 });
+
+    const stale = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: translatedId, expectedVersion: null, segments } });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error).toMatchObject({ code: "conflict.draft_changed", details: { currentVersion: 1 } });
+    const extra = await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: translatedId, expectedVersion: 1, segments, startMs: 0 } });
+    expect(extra.statusCode).toBe(400);
+    const timed = segments.map((segment) => ({ ...segment, startMs: 0 }));
+    expect((await app.inject({ method: "PUT", url: draftUrl, headers: auth, payload: { baseRevisionId: translatedId, expectedVersion: 1, segments: timed } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `${draftUrl}?version=2`, headers: auth })).statusCode).toBe(409);
+
+    const commitUrl = `${draftUrl}/commit`;
+    expect((await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedRevisionId: translatedId, draftVersion: 1, allowOutdatedBase: false } })).statusCode).toBe(400);
+    const committed = await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedRevisionId: translatedId, draftVersion: 1 } });
+    expect(committed.statusCode).toBe(201);
+    expect(committed.json()).toMatchObject({ kind: "translated", language: "en", generation: { kind: "manual", origin: { revisionId: translatedId } } });
+    const after = translationsDtoSchema.parse((await app.inject({ method: "GET", url, headers: auth })).json());
+    expect(after.translations[0]).toMatchObject({ current: { id: committed.json().id } });
+    expect(after.translations[0]?.draft).toBeUndefined();
+    expect((await app.inject({ method: "POST", url: commitUrl, headers: auth, payload: { expectedRevisionId: committed.json().id, draftVersion: 1 } })).statusCode).toBe(409);
+
+    const editedId = (committed.json() as { id: string }).id;
+    const reopened = await app.inject({
+      method: "PUT",
+      url: draftUrl,
+      headers: auth,
+      payload: { baseRevisionId: editedId, expectedVersion: null, segments: segmentIdsOf(h, editedId).map((id) => ({ id, text: "again" })) },
+    });
+    expect(reopened.statusCode).toBe(200);
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: bob })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `${draftUrl}?version=1`, headers: auth })).statusCode).toBe(204);
+    expect((await app.inject({ method: "DELETE", url: draftUrl, headers: auth })).statusCode).toBe(404);
+  });
+});
+
+function segmentIdsOf(h: Harness, revisionId: string): string[] {
+  return h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, revisionId)).map((segment) => segment.id);
+}

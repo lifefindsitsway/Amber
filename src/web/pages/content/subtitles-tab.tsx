@@ -28,12 +28,14 @@ import { FilePicker } from "../../ui/file-picker.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { BurnDialog, BurnTracker } from "./burn-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, revisionGroups, segmentAt, useRevisions, useSegments, visibleRevisions } from "./content-data.ts";
+import { contentKeys, revisionGroups, segmentAt, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
 import { subtitleExportBody } from "./export-dialog.tsx";
 import { revisionBasis, revisionLabel } from "./labels.ts";
 import { AsrBanner } from "./asr-banner.tsx";
 import { RevisionActions } from "./revision-actions-dialog.tsx";
 import { RevisionToggleBar, type RevisionToggles } from "./transcript-tab.tsx";
+import { TranslationDraftEditor } from "./translation-draft-editor.tsx";
+import { TranslationEditButton, useUnarchiveAndEdit } from "./translation-tab.tsx";
 import { useLocatedSegment } from "./same-sentence.ts";
 import { useSentenceMenu } from "./sentence-menu.tsx";
 import { VirtualRows } from "./virtual-rows.tsx";
@@ -84,6 +86,9 @@ export function SubtitlesTab() {
   const [burnTaskId, setBurnTaskId] = useState<string | undefined>(undefined);
   const [showHistory, setShowHistory] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [editingLanguage, setEditingLanguage] = useState<string | undefined>(undefined);
+  const translations = useTranslations(page.content.id);
+  const unarchiveAndEdit = useUnarchiveAndEdit(page.content.id, setEditingLanguage);
 
   const all = revisions.data?.revisions ?? [];
   const primaryId = revisions.data?.primaryTranscriptRevisionId;
@@ -158,6 +163,13 @@ export function SubtitlesTab() {
     return revisions.error instanceof ApiError ? <ErrorView error={revisions.error.error} /> : <EmptyState title={t("common.state.loadFailed")} />;
   }
 
+  if (editingLanguage !== undefined) {
+    return <TranslationDraftEditor key={editingLanguage} language={editingLanguage} onClose={() => setEditingLanguage(undefined)} />;
+  }
+  // Viewing a translation offers to edit that language's current translation, as the translation tab does.
+  const translationEntry =
+    revision?.kind === "translated" ? translations.data?.translations.find((entry) => entry.targetLanguage === revision.language) : undefined;
+
   const onRow = (segment: TranscriptSegmentDto): void => {
     if (revision !== undefined) page.select({ revisionId: revision.id, segmentId: segment.id }, segment.startMs);
   };
@@ -205,6 +217,15 @@ export function SubtitlesTab() {
               {t("contentView.subtitles.follow")}
             </label>
           ) : null}
+          {translationEntry === undefined ? null : (
+            <TranslationEditButton
+              entry={translationEntry}
+              archived={all.some((item) => item.id === translationEntry.current?.id && item.archived)}
+              busy={unarchiveAndEdit.isPending}
+              onEdit={() => setEditingLanguage(translationEntry.targetLanguage)}
+              onUnarchiveAndEdit={(revisionId) => unarchiveAndEdit.mutate({ revisionId, language: translationEntry.targetLanguage })}
+            />
+          )}
           <Button size="sm" variant="ghost" onClick={() => setImporting(true)}>
             <FileUp size={14} />
             {t("contentView.subtitles.import")}
@@ -282,6 +303,7 @@ export function SubtitlesTab() {
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
       {download.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={download.error.error} /></div> : null}
       {retranscribe.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={retranscribe.error.error} /></div> : null}
+      {unarchiveAndEdit.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={unarchiveAndEdit.error.error} /></div> : null}
       {burnTaskId === undefined ? null : (
         <div className="px-4 pt-2">
           <BurnTracker taskId={burnTaskId} title={page.content.title ?? t("contentView.untitled")} onClose={() => setBurnTaskId(undefined)} />

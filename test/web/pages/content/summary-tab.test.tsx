@@ -108,13 +108,13 @@ describe("ChapterSection", () => {
     fireEvent.click(await within(section).findByTestId("chapters-regenerate"));
     expect((await within(section).findByRole("alert")).textContent).toContain("另一个任务正在处理");
   });
-  it("disables regeneration while a Task works on chapters", async () => {
+  it("disables regeneration while a Task works on chapters, with the Task's flow shown once above", async () => {
     const routes = contentRoutes();
     const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
     mockApi({
       ...routes,
       "GET /api/providers": PROVIDERS,
-      "GET /api/contents/c1/chapters": { body: { ...chapters, activeTaskId: "t5" } },
+      "GET /api/contents/c1/chapters": { body: { ...chapters, activeTaskId: "t5", activeStage: "running" } },
       "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "chapter", "running")], { kind: "regenerate_chapters", contentId: "c1" }) },
     });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
@@ -122,8 +122,8 @@ describe("ChapterSection", () => {
     const button = (await within(section).findByTestId("chapters-regenerate")) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.textContent).toBe("正在重新生成…");
-    // The Task's progress shows under the title, so waiting is never silent.
-    expect(await within(section).findByTestId("task-flow")).toBeTruthy();
+    // The chapter area carries no stage flow of its own.
+    expect(within(section).queryByTestId("task-flow")).toBeNull();
   });
   it("points to model configuration instead of regenerating without a model", async () => {
     mockApi({ ...contentRoutes(), "GET /api/providers": { body: { items: [] } } });
@@ -132,12 +132,134 @@ describe("ChapterSection", () => {
     expect((await within(section).findByTestId("chapters-configure")).getAttribute("href")).toBe("/settings/models");
     expect(within(section).queryByTestId("chapters-regenerate")).toBeNull();
   });
-  it("offers no regeneration without chapters", async () => {
-    mockApi({ ...contentRoutes(), "GET /api/contents/c1/chapters": { body: { revisions: [] } } });
+  it("stays in place without chapters: an empty state and a button to generate them", async () => {
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { revisions: [] } },
+      "POST /api/contents/c1/chapters/regenerate": { status: 202, body: { taskId: "t9" } },
+    });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
-    await screen.findByTestId("summary-body");
-    expect(screen.queryByTestId("chapter-section")).toBeNull();
-    expect(screen.queryByTestId("chapters-regenerate")).toBeNull();
+    const section = await screen.findByTestId("chapter-section");
+    expect(await within(section).findByTestId("chapters-empty")).toBeTruthy();
+    expect(within(section).queryByTestId("chapters-needs-transcript")).toBeNull();
+    const button = (await within(section).findByTestId("chapters-regenerate")) as HTMLButtonElement;
+    expect(button.textContent).toBe("生成章节");
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/contents/c1/chapters/regenerate")).toBe(true));
+  });
+  it("disables the button and says why when there is no transcript to generate from", async () => {
+    const { primaryTranscriptRevisionId: _primary, ...withoutPrimary } = contentDetail();
+    mockApi({
+      ...contentRoutes(withoutPrimary),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { revisions: [] } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    expect((await within(section).findByTestId("chapters-needs-transcript")).textContent).toBe("需要先有字幕或转录稿");
+    expect((within(section).getByTestId("chapters-regenerate") as HTMLButtonElement).disabled).toBe(true);
+    expect(within(section).queryByTestId("chapters-empty")).toBeNull();
+  });
+  it.each([
+    ["queued", true, "排队中…"],
+    ["running", true, "正在重新生成…"],
+    ["running", false, "正在生成…"],
+    ["waiting", true, "等待处理完成"],
+  ] as const)("labels chapter work that is %s (chapters present: %s) and keeps the button off", async (activeStage, withChapters, label) => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...(withChapters ? chapters : { revisions: [] }), activeTaskId: "t5", activeStage } },
+      "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "chapter", "running")], { kind: "regenerate_chapters", contentId: "c1" }) },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const button = (await within(section).findByTestId("chapters-regenerate")) as HTMLButtonElement;
+    expect(button.textContent).toBe(label);
+    expect(button.disabled).toBe(true);
+    // Only waiting explains itself in a tooltip.
+    expect(button.parentElement?.getAttribute("title")).toBe(activeStage === "waiting" ? "章节要等当前的处理任务完成后才会生成" : null);
+  });
+  it("offers a line for a failed last attempt that opens the chapter stage's error, with the button still ready to retry", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    const failure = { class: "llm_failed", code: "llm_failed", retryDisposition: "policy", userMessage: "章节模型调用失败" } as const;
+    const { calls } = mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...chapters, lastFailedTaskId: "t7" } },
+      "GET /api/tasks/t7": {
+        body: taskDetail("t7", [stageRun("t7", "source", "succeeded"), stageRun("t7", "chapter", "failed", { error: failure })], { kind: "regenerate_chapters", contentId: "c1" }),
+      },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const line = await within(section).findByTestId("chapters-failed");
+    expect(line.textContent).toContain("上次生成章节失败");
+    // The failed Task is read only once the reason is asked for.
+    expect(calls.some((call) => call.path === "/api/tasks/t7")).toBe(false);
+    const toggle = within(line).getByRole("button", { name: "查看原因" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect((await within(line).findByRole("alert")).textContent).toContain("章节模型调用失败");
+    expect(within(line).getByRole("button", { name: "收起原因" }).getAttribute("aria-expanded")).toBe("true");
+    expect((within(section).getByTestId("chapters-regenerate") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(line).getByRole("button", { name: "收起原因" }));
+    expect(within(line).queryByRole("alert")).toBeNull();
+  });
+  it("hides the failed-attempt line while a retry is under way", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...chapters, lastFailedTaskId: "t7", activeTaskId: "t8", activeStage: "running" } },
+      "GET /api/tasks/t8": { body: taskDetail("t8", [stageRun("t8", "chapter", "running")], { kind: "regenerate_chapters", contentId: "c1" }) },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    expect((await within(section).findByTestId("chapters-regenerate")).textContent).toBe("正在重新生成…");
+    expect(within(section).queryByTestId("chapters-failed")).toBeNull();
+  });
+  it("reads the chapters again on a stage event of the Task working on them, and on no other", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    const api = mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...chapters, activeTaskId: "t5", activeStage: "waiting" } },
+    });
+    const stream = taskStream();
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const reads = (): number => api.calls.filter((call) => call.path === "/api/contents/c1/chapters").length;
+    await screen.findByTestId("chapter-section");
+    await waitFor(() => expect(stream.opened()).toBe(true));
+    await waitFor(() => expect(reads()).toBe(1));
+    stream.frame("stage.updated", { stageRun: stageRun("other", "chapter", "running") });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(reads()).toBe(1);
+    stream.frame("stage.updated", { stageRun: stageRun("t5", "summary", "succeeded") });
+    await waitFor(() => expect(reads()).toBe(2));
+  });
+  it("shows one stage flow for a Task that both the template and the chapters wait on", async () => {
+    const routes = contentRoutes();
+    const chapters = routes["GET /api/contents/c1/chapters"]?.body as Record<string, unknown>;
+    const summaries = routes["GET /api/contents/c1/summaries"]?.body as { templates: Array<Record<string, unknown>> };
+    mockApi({
+      ...routes,
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...chapters, activeTaskId: "t5", activeStage: "running" } },
+      "GET /api/contents/c1/summaries": { body: { templates: summaries.templates.map((entry, index) => (index === 0 ? { ...entry, activeTaskId: "t5" } : entry)) } },
+      "GET /api/tasks/t5": { body: taskDetail("t5", [stageRun("t5", "chapter", "running"), stageRun("t5", "summary", "pending")], { contentId: "c1" }) },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    await screen.findByTestId("task-flow");
+    await within(await screen.findByTestId("chapter-section")).findByTestId("chapters-regenerate");
+    expect(screen.getAllByTestId("task-flow")).toHaveLength(1);
   });
   it("words stale chapters as built on an older transcript", async () => {
     const routes = contentRoutes();
@@ -473,3 +595,28 @@ describe("summary history", () => {
     expect(row("sr-old")).toBeTruthy();
   });
 });
+
+/** Answers the task stream with one the test writes frames into; other calls keep the route table. */
+function taskStream() {
+  const routed = globalThis.fetch;
+  let push: ((text: string) => void) | undefined;
+  let seq = 0;
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/api/tasks/events")) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          push = (text) => controller.enqueue(new TextEncoder().encode(text));
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    return routed(input, init);
+  });
+  return {
+    opened: () => push !== undefined,
+    frame: (type: string, data: object) => {
+      seq += 1;
+      push?.(`event: ${type}\ndata: ${JSON.stringify(data)}\nid: ${seq}\n\n`);
+    },
+  };
+}

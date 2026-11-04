@@ -26,6 +26,8 @@ const pageQuerySchema = z
     cursor: z.string().min(1).exactOptional(),
   })
   .strict();
+/** `?version=` of a draft discard; absent only for the revision dialog's explicit discard. */
+export const draftDiscardQuerySchema = z.object({ version: z.coerce.number().int().min(1).safe().exactOptional() }).strict();
 const mapQuerySchema = z.object({ targetRevision: z.string().min(1) }).strict();
 const deleteRevisionQuerySchema = z
   .object({
@@ -63,7 +65,8 @@ export function registerTranscriptRoutes(app: FastifyInstance, deps: TranscriptR
 
     app.delete("/api/contents/:id/transcript/draft", async (request, reply) => {
       const { id } = parseInput(idParamsSchema, request.params, "params");
-      transcripts.discardDraft(principalOf(request), id);
+      const { version } = parseInput(draftDiscardQuerySchema, request.query, "query");
+      transcripts.discardDraft(principalOf(request), id, version);
       return reply.code(204).send();
     });
 

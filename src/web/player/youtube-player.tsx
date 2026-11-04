@@ -5,9 +5,15 @@ import { loadYoutubeApi, type YoutubePlayer as YtPlayer } from "./youtube-api.ts
 
 const TIME_POLL_MS = 250;
 
+/** `onStateChange` codes of the IFrame API. */
+const STATE_ENDED = 0;
+const STATE_PLAYING = 1;
+const STATE_PAUSED = 2;
+
 /**
  * YouTube iframe driven through the IFrame API: direct seeking and polled
  * current time. The iframe is ours so its Referer policy is set before the first request.
+ * The position remembered from an earlier visit is not applied here: only the local player takes it.
  */
 export function YoutubePlayer(props: { videoId: string; onFailure: () => void }) {
   const controller = usePlayerController();
@@ -24,6 +30,10 @@ export function YoutubePlayer(props: { videoId: string; onFailure: () => void })
     let poll: ReturnType<typeof setInterval> | undefined;
     let cancelled = false;
     let pendingSeek: number | undefined;
+    const reportDuration = (target: YtPlayer): void => {
+      const seconds = target.getDuration();
+      if (Number.isFinite(seconds) && seconds > 0) controller.reportDuration(Math.round(seconds * 1000));
+    };
     const detach = controller.attach({
       capabilities: CAPABILITIES.youtube,
       seek: (ms) => {
@@ -33,6 +43,7 @@ export function YoutubePlayer(props: { videoId: string; onFailure: () => void })
           player.seekTo(ms / 1000, true);
         }
       },
+      play: () => player?.playVideo(),
     });
     loadYoutubeApi()
       .then((YT) => {
@@ -41,11 +52,23 @@ export function YoutubePlayer(props: { videoId: string; onFailure: () => void })
           events: {
             onReady: () => {
               player = created;
+              reportDuration(created);
               if (pendingSeek !== undefined) {
                 created.seekTo(pendingSeek / 1000, true);
                 pendingSeek = undefined;
               }
               poll = setInterval(() => controller.reportTime(Math.round(created.getCurrentTime() * 1000)), TIME_POLL_MS);
+            },
+            onStateChange: (event) => {
+              if (event.data === STATE_PLAYING) {
+                // The length is often still unknown at onReady.
+                if (player !== undefined) reportDuration(player);
+                controller.reportPlayback("play");
+              } else if (event.data === STATE_PAUSED) {
+                controller.reportPlayback("pause");
+              } else if (event.data === STATE_ENDED) {
+                controller.reportPlayback("ended");
+              }
             },
             onError: () => onFailure(),
           },

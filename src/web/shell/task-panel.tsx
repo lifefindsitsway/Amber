@@ -1,15 +1,27 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
-import { ArrowRight, X } from "lucide-react";
+import { ArrowRight, EyeOff, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import { taskDetailDtoSchema, type TaskDto } from "../../shared/dto/task.ts";
 import type { StageId } from "../../shared/enums.ts";
 import { useApi, useContentEvents, useTask, useTaskHub } from "../api/context.tsx";
-import { queryKeys, useInstanceSettings, useTaskHistory, useUnfinishedTasks, useVersion } from "../api/queries.ts";
+import {
+  queryKeys,
+  useClearTaskHistory,
+  useHideTaskHistory,
+  useInstanceSettings,
+  useRestoreTaskHistory,
+  useTaskHistory,
+  useUnfinishedTasks,
+  useVersion,
+  type HistoryRemoval,
+} from "../api/queries.ts";
 import { formatDateTime, formatTime, sameLocalDay } from "../format.ts";
 import { useIsServerAdmin } from "../auth/auth-gate.tsx";
+import { ConfirmDialog, appErrorOf } from "../components/confirm-dialog.tsx";
+import { ErrorView } from "../components/error-view.tsx";
 import { latestStageRuns, ResendPrompt, runningStep, waitingUnits } from "../components/task-flow.tsx";
 import { Button } from "../ui/button.tsx";
 import { keepOpenForContextMenu, useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
@@ -128,6 +140,14 @@ function TaskLists(props: { onNavigate: () => void }) {
   const queryClient = useQueryClient();
   const unfinished = useUnfinishedTasks();
   const history = useTaskHistory();
+  const hide = useHideTaskHistory();
+  const clear = useClearTaskHistory();
+  const restore = useRestoreTaskHistory();
+  // Picking history cards to remove, and the removal that can still be undone.
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [removal, setRemoval] = useState<HistoryRemoval | undefined>(undefined);
   // A task whose snapshot read finds it gone (its Content trashed in another tab before this
   // tab heard of it) means the lists are out of date.
   const refresh = useCallback(() => void queryClient.invalidateQueries({ queryKey: queryKeys.tasksAll }), [queryClient]);
@@ -144,47 +164,145 @@ function TaskLists(props: { onNavigate: () => void }) {
     }
   }
   const loading = unfinished.isPending || history.isPending;
+  // A card that left the list (removed elsewhere, or reopened by a rerun) is no longer picked.
+  const picked = finished.filter((task) => selected.has(task.id)).map((task) => task.id);
+  const selectingNow = selecting && finished.length > 0;
+  useEffect(() => {
+    if (selecting && finished.length === 0 && !history.isPending) setSelecting(false);
+  }, [selecting, finished.length, history.isPending]);
+  const busy = hide.isPending || clear.isPending || restore.isPending;
+
+  const endSelecting = (): void => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
+  const removeTasks = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    hide.mutate(ids, { onSuccess: (done) => setRemoval(done.hidden > 0 ? done : undefined) });
+    endSelecting();
+  };
+  const toggle = (id: string, checked: boolean): void =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const allPicked = finished.length > 0 && picked.length === finished.length;
+  const failure = hide.error ?? restore.error;
 
   return (
-    <div className="flex-1 overflow-auto p-3">
-      {active.length === 0 && finished.length === 0 ? (
-        loading ? null : <EmptyState title={t("shell.tasks.empty")} />
-      ) : (
-        <div className="flex flex-col gap-4">
-          {active.length === 0 ? null : (
-            <section data-testid="task-active" className="flex flex-col gap-2">
-              <h3 className="text-xs font-medium text-muted">{t("shell.tasks.active")}</h3>
-              <ul className="flex flex-col gap-2">
-                {active.map((task) => (
-                  <TaskCard key={task.id} task={task} onNavigate={props.onNavigate} onGone={refresh} />
-                ))}
-              </ul>
-            </section>
-          )}
-          {finished.length === 0 ? null : (
-            <section data-testid="task-history" className="flex flex-col gap-2">
-              <h3 className="text-xs font-medium text-muted">{t("shell.tasks.history")}</h3>
-              <ul className="flex flex-col gap-2">
-                {finished.map((task) => (
-                  <HistoryCard key={task.id} task={task} onNavigate={props.onNavigate} />
-                ))}
-              </ul>
-              {history.hasNextPage ? (
-                <Button
-                  data-testid="task-history-more"
-                  size="sm"
-                  variant="ghost"
-                  disabled={history.isFetchingNextPage}
-                  onClick={() => void history.fetchNextPage()}
-                >
-                  {t("shell.tasks.loadMore")}
-                </Button>
-              ) : null}
-            </section>
-          )}
+    <>
+      <div className="flex-1 overflow-auto p-3">
+        {active.length === 0 && finished.length === 0 ? (
+          loading ? null : <EmptyState title={t("shell.tasks.empty")} />
+        ) : (
+          <div className="flex flex-col gap-4">
+            {active.length === 0 ? null : (
+              <section data-testid="task-active" className="flex flex-col gap-2">
+                <h3 className="text-xs font-medium text-muted">{t("shell.tasks.active")}</h3>
+                <ul className="flex flex-col gap-2">
+                  {active.map((task) => (
+                    <TaskCard key={task.id} task={task} onNavigate={props.onNavigate} onGone={refresh} />
+                  ))}
+                </ul>
+              </section>
+            )}
+            {finished.length === 0 ? null : (
+              <section data-testid="task-history" className="flex flex-col gap-2">
+                <div className="flex min-h-7 flex-wrap items-center justify-between gap-1">
+                  <h3 className="text-xs font-medium text-muted">{t("shell.tasks.history")}</h3>
+                  <div className="flex items-center gap-1" data-testid="task-history-actions">
+                    {selectingNow ? (
+                      <>
+                        <Button size="sm" onClick={() => setSelected(allPicked ? new Set() : new Set(finished.map((task) => task.id)))} data-testid="task-history-select-all">
+                          {allPicked ? t("shell.tasks.historyActions.unselectAll") : t("shell.tasks.historyActions.selectAll")}
+                        </Button>
+                        <Button size="sm" disabled={picked.length === 0 || busy} onClick={() => removeTasks(picked)} data-testid="task-history-remove-selected">
+                          {t("shell.tasks.historyActions.removeSelected", { count: picked.length })}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={endSelecting} data-testid="task-history-done">
+                          {t("shell.tasks.historyActions.done")}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" disabled={busy} onClick={() => setSelecting(true)} data-testid="task-history-select">
+                          {t("shell.tasks.historyActions.select")}
+                        </Button>
+                        <Button size="sm" disabled={busy} onClick={() => setConfirmingClear(true)} data-testid="task-history-clear">
+                          {t("shell.tasks.historyActions.clear")}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <ul className="flex flex-col gap-2">
+                  {finished.map((task) => (
+                    <HistoryCard
+                      key={task.id}
+                      task={task}
+                      onNavigate={props.onNavigate}
+                      onRemove={() => removeTasks([task.id])}
+                      {...(selectingNow ? { checked: selected.has(task.id), onCheckedChange: (checked: boolean) => toggle(task.id, checked) } : {})}
+                    />
+                  ))}
+                </ul>
+                {history.hasNextPage ? (
+                  <Button
+                    data-testid="task-history-more"
+                    size="sm"
+                    variant="ghost"
+                    disabled={history.isFetchingNextPage}
+                    onClick={() => void history.fetchNextPage()}
+                  >
+                    {t("shell.tasks.loadMore")}
+                  </Button>
+                ) : null}
+              </section>
+            )}
+          </div>
+        )}
+      </div>
+      {failure === null ? null : (
+        <div className="border-t border-line px-4 py-2">
+          <ErrorView error={appErrorOf(failure)} />
         </div>
       )}
-    </div>
+      {removal === undefined ? null : (
+        <div role="status" data-testid="task-history-removed" className="flex items-center gap-2 border-t border-line bg-sunken px-4 py-2 text-xs">
+          <span className="min-w-0 flex-1">{t("shell.tasks.historyActions.removed", { count: removal.hidden })}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-accent"
+            disabled={restore.isPending}
+            onClick={() => {
+              restore.mutate(removal.batchIds);
+              setRemoval(undefined);
+            }}
+            data-testid="task-history-undo"
+          >
+            {t("shell.tasks.historyActions.undo")}
+          </Button>
+          <button type="button" className="rounded p-1 text-muted hover:bg-surface" aria-label={t("common.action.close")} onClick={() => setRemoval(undefined)}>
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmingClear}
+        onOpenChange={setConfirmingClear}
+        title={t("shell.tasks.historyActions.clearTitle")}
+        description={t("shell.tasks.historyActions.clearHint")}
+        confirmLabel={t("shell.tasks.historyActions.clearConfirm")}
+        onConfirm={async () => {
+          const done = await clear.mutateAsync();
+          endSelecting();
+          setRemoval(done.hidden > 0 ? done : undefined);
+        }}
+      />
+    </>
   );
 }
 
@@ -347,35 +465,52 @@ function TaskCard(props: { task: TaskDto; onNavigate: () => void; onGone: () => 
 /**
  * A finished task from the history: what it was, how it ended and when it ran. It shows the
  * listed fields only and reads no snapshot, so a long history costs one request per page.
+ * While cards are being picked (`checked` given) each one carries a checkbox.
  */
-function HistoryCard(props: { task: TaskDto; onNavigate: () => void }) {
+function HistoryCard(props: { task: TaskDto; onNavigate: () => void; onRemove: () => void; checked?: boolean; onCheckedChange?: (checked: boolean) => void }) {
   const { t, i18n } = useTranslation();
   const { task } = props;
   const target = taskTarget(task);
   const navigate = useNavigate();
-  const menuTarget = useContextMenuTarget<HTMLLIElement>(() =>
-    target === undefined ? undefined : { kind: "object", entries: [viewEntry(t("shell.tasks.view"), target, props.onNavigate, navigate)] },
-  );
+  const title = task.targetTitle ?? t(`common.taskKind.${task.kind}`);
+  const menuTarget = useContextMenuTarget<HTMLLIElement>(() => {
+    const entries: MenuAction[] = [];
+    if (target !== undefined) entries.push(viewEntry(t("shell.tasks.view"), target, props.onNavigate, navigate));
+    entries.push({ id: "remove-from-history", label: t("shell.tasks.historyActions.remove"), icon: <EyeOff size={14} aria-hidden="true" />, onSelect: props.onRemove });
+    return { kind: "object", entries };
+  });
   return (
-    <li ref={menuTarget} data-testid="task-history-card" className="rounded-md border border-line p-3 text-sm">
-      <p className="truncate font-medium">{task.targetTitle ?? t(`common.taskKind.${task.kind}`)}</p>
-      <p className="mt-0.5 text-xs text-muted">
-        {t(`common.taskKind.${task.kind}`)} · {t(`common.status.${task.statusProjection}`)}
-      </p>
-      <p className="mt-0.5 text-xs text-muted">
-        {t("shell.tasks.startedAt", { time: formatDateTime(task.createdAt, i18n.language) })}
-        {task.finishedAt === undefined
-          ? null
-          : ` · ${t("shell.tasks.finishedAt", {
-              // An end on the start's date repeats only the time.
-              time: sameLocalDay(task.createdAt, task.finishedAt) ? formatTime(task.finishedAt, i18n.language) : formatDateTime(task.finishedAt, i18n.language),
-            })}`}
-      </p>
-      {target === undefined ? null : (
-        <div className="mt-2 flex gap-2">
-          <ViewLink target={target} onNavigate={props.onNavigate} />
-        </div>
+    <li ref={menuTarget} data-testid="task-history-card" className="flex gap-2 rounded-md border border-line p-3 text-sm">
+      {props.onCheckedChange === undefined ? null : (
+        <input
+          type="checkbox"
+          className="mt-0.5 size-4 shrink-0 accent-accent"
+          checked={props.checked === true}
+          aria-label={t("shell.tasks.historyActions.selectCard", { title })}
+          data-testid="task-history-check"
+          onChange={(event) => props.onCheckedChange?.(event.target.checked)}
+        />
       )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium">{title}</p>
+        <p className="mt-0.5 text-xs text-muted">
+          {t(`common.taskKind.${task.kind}`)} · {t(`common.status.${task.statusProjection}`)}
+        </p>
+        <p className="mt-0.5 text-xs text-muted">
+          {t("shell.tasks.startedAt", { time: formatDateTime(task.createdAt, i18n.language) })}
+          {task.finishedAt === undefined
+            ? null
+            : ` · ${t("shell.tasks.finishedAt", {
+                // An end on the start's date repeats only the time.
+                time: sameLocalDay(task.createdAt, task.finishedAt) ? formatTime(task.finishedAt, i18n.language) : formatDateTime(task.finishedAt, i18n.language),
+              })}`}
+        </p>
+        {target === undefined ? null : (
+          <div className="mt-2 flex gap-2">
+            <ViewLink target={target} onNavigate={props.onNavigate} />
+          </div>
+        )}
+      </div>
     </li>
   );
 }

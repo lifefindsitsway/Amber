@@ -1,5 +1,6 @@
-import { Captions } from "lucide-react";
+import { Captions, ChevronRight, Lock } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
+import { Fragment, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PLAYER_MENU_CONTENT_CLASS, PLAYER_MENU_ITEM_CLASS } from "./player-menus.tsx";
 import type { SubtitleTrackModel } from "./subtitle-overlay.tsx";
@@ -14,7 +15,8 @@ const NOTE_CLASS = "max-w-56 px-4 py-1 text-xs text-white/60";
 /**
  * The 「字幕」 menu of the local player's control bar: display mode, original
  * revision, translation (or 「去翻译」 without one) and 「样式与位置…」, which enters the
- * editor. Non-modal and portalled into the player like the other control-bar menus.
+ * editor. A translation is chosen by language (following its current version) or, under
+ * 「历史版本」, by locking one version. Non-modal and portalled into the player like the other control-bar menus.
  */
 export function SubtitleMenu(props: { model: SubtitleTrackModel; container: HTMLElement | null; onOpenChange?: (open: boolean) => void }) {
   const { t } = useTranslation();
@@ -79,15 +81,7 @@ export function SubtitleMenu(props: { model: SubtitleTrackModel; container: HTML
               </DropdownMenu.Item>
             </>
           ) : (
-            <DropdownMenu.RadioGroup value={model.translationId ?? ""} onValueChange={model.setTranslation}>
-              {model.translations.map((option) => (
-                <DropdownMenu.RadioItem key={option.id} value={option.id} className={PLAYER_MENU_ITEM_CLASS} data-testid={`player-subtitles-translation-${option.id}`}>
-                  <span className="max-w-56 truncate" title={option.label}>
-                    {option.label}
-                  </span>
-                </DropdownMenu.RadioItem>
-              ))}
-            </DropdownMenu.RadioGroup>
+            <TranslationChoices model={model} />
           )}
           <DropdownMenu.Separator className={SEPARATOR_CLASS} />
           <DropdownMenu.Item className={PLAYER_MENU_ITEM_CLASS} onSelect={model.startEditing} data-testid="player-subtitles-edit">
@@ -97,5 +91,94 @@ export function SubtitleMenu(props: { model: SubtitleTrackModel; container: HTML
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+const FOLLOW = "follow:";
+const LOCK = "lock:";
+
+/**
+ * The translation radio items: one 「<language>（当前）」 per language, which follows it, and
+ * a 「历史版本」 toggle that lists the language's other versions inline to lock one. Inline
+ * rather than a submenu, so the list stays inside the portalled menu and arrow keys reach it.
+ * A language whose history holds the locked version starts expanded.
+ */
+function TranslationChoices(props: { model: SubtitleTrackModel }) {
+  const { t } = useTranslation();
+  const { model } = props;
+  const lockedId = model.translationLocked ? model.translationId : undefined;
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+    () => new Set(model.translations.filter((entry) => entry.history.some((option) => option.id === lockedId)).map((entry) => entry.language)),
+  );
+  const following = lockedId === undefined ? model.translations.find((entry) => entry.currentId === model.translationId)?.language : undefined;
+  const value = lockedId !== undefined ? `${LOCK}${lockedId}` : following === undefined ? "" : `${FOLLOW}${following}`;
+  const toggle = (language: string): void =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (!next.delete(language)) next.add(language);
+      return next;
+    });
+  return (
+    <DropdownMenu.RadioGroup
+      value={value}
+      onValueChange={(next) => {
+        if (next.startsWith(FOLLOW)) model.followTranslation(next.slice(FOLLOW.length));
+        else if (next.startsWith(LOCK)) model.lockTranslation(next.slice(LOCK.length));
+      }}
+    >
+      {model.translations.map((entry) => {
+        const open = expanded.has(entry.language);
+        const historyId = `player-subtitles-history-list-${entry.language}`;
+        return (
+          <Fragment key={entry.language}>
+            <DropdownMenu.RadioItem value={`${FOLLOW}${entry.language}`} className={PLAYER_MENU_ITEM_CLASS} data-testid={`player-subtitles-follow-${entry.language}`}>
+              <span className="max-w-56 truncate">{t("contentView.player.subtitles.followLanguage", { language: entry.label })}</span>
+            </DropdownMenu.RadioItem>
+            {entry.history.length === 0 ? null : (
+              <DropdownMenu.Item
+                className={`${PLAYER_MENU_ITEM_CLASS} gap-1 pl-6 text-xs text-white/70`}
+                aria-expanded={open}
+                aria-controls={open ? historyId : undefined}
+                aria-label={t("contentView.player.subtitles.historyOf", { language: entry.label })}
+                // Keeps the menu open: the toggle only shows or hides the versions below.
+                onSelect={(event) => {
+                  event.preventDefault();
+                  toggle(entry.language);
+                }}
+                data-testid={`player-subtitles-history-${entry.language}`}
+              >
+                <ChevronRight size={14} aria-hidden="true" className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+                {t("contentView.player.subtitles.history", { count: entry.history.length })}
+              </DropdownMenu.Item>
+            )}
+            {open ? (
+              <div id={historyId} role="group" aria-label={t("contentView.player.subtitles.historyOf", { language: entry.label })}>
+                {entry.history.map((option) => {
+                  const locked = option.id === lockedId;
+                  return (
+                    <DropdownMenu.RadioItem
+                      key={option.id}
+                      value={`${LOCK}${option.id}`}
+                      className={`${PLAYER_MENU_ITEM_CLASS} gap-1.5 pl-10 text-xs`}
+                      data-testid={`player-subtitles-translation-${option.id}`}
+                    >
+                      <span className="max-w-56 truncate" title={option.label}>
+                        {option.label}
+                      </span>
+                      {locked ? (
+                        <span className="inline-flex shrink-0 items-center gap-0.5" data-testid="player-subtitles-locked">
+                          <Lock size={12} aria-hidden="true" />
+                          <span className="sr-only">{t("contentView.player.subtitles.locked")}</span>
+                        </span>
+                      ) : null}
+                    </DropdownMenu.RadioItem>
+                  );
+                })}
+              </div>
+            ) : null}
+          </Fragment>
+        );
+      })}
+    </DropdownMenu.RadioGroup>
   );
 }

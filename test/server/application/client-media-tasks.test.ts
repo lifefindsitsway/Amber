@@ -9,7 +9,7 @@ import { BYTES_PER_GB } from "../../../src/shared/units.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import { cacheFileNameOf } from "../../../src/shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_HEIGHT } from "../../../src/shared/defaults.ts";
+import { CACHE_INSPECTION_MAX_ENTRIES, CACHE_INSPECTION_TTL_MS, CACHE_MEDIA_MAX_HEIGHT } from "../../../src/shared/defaults.ts";
 import { cacheMediaInspectDtoSchema, cacheMediaQualitiesDtoSchema } from "../../../src/shared/dto/media.ts";
 import { cacheFile } from "../../../src/shared/i18n/zh-CN/cache-file.ts";
 import { CacheDownloadLedger } from "../../../src/server/pipeline/cache-download-ledger.ts";
@@ -65,6 +65,7 @@ function setup() {
   const heavy = new FairSemaphore(() => 1);
   const sameVolume = { value: true };
   const recoveries = { count: 0, refuse: false };
+  const clock = { now: Date.now() };
   const source = {
     inspection: {
       container: "mov,mp4,m4a,3gp,3g2,mj2",
@@ -100,8 +101,9 @@ function setup() {
     heavy: { run: (ref, signal, work) => (heavyRuns.push(ref.key), heavy.run(ref, signal, work)) },
     settings: h.settings,
     newId: h.newId,
+    now: () => clock.now,
   });
-  return { h, service, cache, cacheDir, probed, inspected, source, ledger, holds, heavyRuns, sameVolume, recoveries };
+  return { h, service, cache, cacheDir, probed, inspected, source, ledger, holds, heavyRuns, sameVolume, recoveries, clock };
 }
 
 /** The user message of the error the promise rejects with. */
@@ -887,5 +889,106 @@ describe("ClientMediaTaskService.burn, source video", () => {
     expect(await codeOf(service.burn(LOCAL, fixture.contentId, { ...body, sourceAssetId: "nope" }))).toBe("invalid_request");
     h.repository.withTransaction((scope) => scope.mediaAssets.update(LOCAL.userId, { ...p720, availability: "evicted" }));
     expect(await codeOf(service.burn(LOCAL, fixture.contentId, { ...body, sourceAssetId: p720.id }))).toBe("media_missing");
+  });
+});
+
+describe("ClientMediaTaskService cache inspections", () => {
+  const signal = () => new AbortController().signal;
+  const tasksOf = (h: Harness, contentId: string) => h.repository.withTransaction((scope) => scope.tasks.listByContent(LOCAL.userId, contentId));
+
+  it("answers an inspection id, and a changed file name alone reuses the estimate without probing", async () => {
+    const { h, service, cacheDir } = setup();
+    const calls = videoFormat(h, { height: 720, sizeBytes: 5_000 });
+    const contentId = platformContent(h, { title: "T" });
+    const first = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720 }, signal());
+    expect(first.inspectionId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/u);
+    expect(calls).toEqual(["tier:720"]);
+    // The local checks still run for the new name: a foreign file holds it.
+    writeFileSync(join(cacheDir, "Renamed [720P].mp4"), "x");
+    const renamed = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "Renamed" }, signal());
+    expect(calls).toEqual(["tier:720"]);
+    expect(renamed).toMatchObject({ expected: { type: "video", height: 720, ext: "mp4", sizeBytes: 5_000 }, expectedFileName: "Renamed [720P].mp4", foreignFile: true });
+    expect(renamed.inspectionId).not.toBe(first.inspectionId);
+    // Another tier, another type, or the same name again probe anew.
+    await service.inspectCacheMedia(LOCAL, contentId, { quality: 1080, fileName: "Renamed" }, signal());
+    await service.inspectCacheMedia(LOCAL, contentId, { type: "audio", fileName: "Renamed" }, signal());
+    await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "Renamed" }, signal());
+    expect(calls).toEqual(["tier:720", "tier:1080", "audio", "tier:720"]);
+  });
+
+  it("submits with an inspection id by consuming only that one, without probing", async () => {
+    const { h, service } = setup();
+    const calls = videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    const windowA = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "A" }, signal());
+    const windowB = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "B" }, signal());
+    expect(await frozen(service, h, contentId, { quality: 720, fileName: "A", inspectionId: windowA.inspectionId })).toMatchObject({ stem: "A", expectedHeight: 720 });
+    expect(calls).toEqual(["tier:720"]);
+    finishTasks(h, contentId);
+    // Consumed: the same id again is refused, while the other window's still holds.
+    expect(await codeOf(service.cacheMedia(LOCAL, contentId, { quality: 720, fileName: "A", inspectionId: windowA.inspectionId }))).toBe("conflict.cache_inspection_expired");
+    expect(await frozen(service, h, contentId, { quality: 720, fileName: "B", inspectionId: windowB.inspectionId })).toMatchObject({ stem: "B", expectedHeight: 720 });
+  });
+
+  it("refuses an expired, unknown or mismatched inspection id without creating a Task", async () => {
+    const { h, service, clock } = setup();
+    videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    const other = platformContent(h, { title: "Other" });
+    const inspection = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "Name" }, signal());
+    const refused = [
+      { quality: 1080 as const, fileName: "Name", inspectionId: inspection.inspectionId },
+      { type: "audio" as const, fileName: "Name", inspectionId: inspection.inspectionId },
+      { fileName: "Name", inspectionId: inspection.inspectionId },
+      { quality: 720 as const, fileName: "Other name", inspectionId: inspection.inspectionId },
+      { quality: 720 as const, fileName: "Name", inspectionId: h.newId() },
+    ];
+    for (const body of refused) {
+      expect(await codeOf(service.cacheMedia(LOCAL, contentId, body)), JSON.stringify(body)).toBe("conflict.cache_inspection_expired");
+    }
+    expect(await codeOf(service.cacheMedia(LOCAL, other, { quality: 720, fileName: "Name", inspectionId: inspection.inspectionId }))).toBe("conflict.cache_inspection_expired");
+    const otherUser = platformContent(h, { userId: BOB.userId, title: "T" });
+    expect(await codeOf(service.cacheMedia(BOB, otherUser, { quality: 720, fileName: "Name", inspectionId: inspection.inspectionId }))).toBe("conflict.cache_inspection_expired");
+    expect(tasksOf(h, contentId)).toEqual([]);
+    // Still valid until it expires; the file name compares cleaned and case-insensitively.
+    clock.now += CACHE_INSPECTION_TTL_MS;
+    expect(await codeOf(service.cacheMedia(LOCAL, contentId, { quality: 720, fileName: "name", inspectionId: inspection.inspectionId }))).toBe("conflict.cache_inspection_expired");
+    expect(tasksOf(h, contentId)).toEqual([]);
+    const fresh = await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "Name" }, signal());
+    clock.now += CACHE_INSPECTION_TTL_MS - 1;
+    expect(await frozen(service, h, contentId, { quality: 720, fileName: "name", inspectionId: fresh.inspectionId })).toMatchObject({ expectedHeight: 720 });
+  });
+
+  it("does not reuse an expired inspection's estimate for a renamed check", async () => {
+    const { h, service, clock } = setup();
+    const calls = videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    await service.inspectCacheMedia(LOCAL, contentId, { quality: 720 }, signal());
+    clock.now += CACHE_INSPECTION_TTL_MS;
+    await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: "Renamed" }, signal());
+    expect(calls).toEqual(["tier:720", "tier:720"]);
+  });
+
+  it("keeps at most CACHE_INSPECTION_MAX_ENTRIES inspections, dropping the oldest", async () => {
+    const { h, service } = setup();
+    videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    const ids: string[] = [];
+    for (let index = 0; index <= CACHE_INSPECTION_MAX_ENTRIES; index += 1) {
+      ids.push((await service.inspectCacheMedia(LOCAL, contentId, { quality: 720, fileName: `N${index}` }, signal())).inspectionId);
+    }
+    expect(await codeOf(service.cacheMedia(LOCAL, contentId, { quality: 720, fileName: "N0", inspectionId: ids[0] as string }))).toBe("conflict.cache_inspection_expired");
+    expect(await frozen(service, h, contentId, { quality: 720, fileName: "N1", inspectionId: ids[1] as string })).toMatchObject({ stem: "N1", expectedHeight: 720 });
+  });
+
+  it("keeps the old meaning without an inspection id", async () => {
+    const { h, service } = setup();
+    const calls = videoFormat(h, { height: 720 });
+    const contentId = platformContent(h, { title: "T" });
+    expect(await frozen(service, h, contentId, { quality: 720 })).not.toHaveProperty("expectedHeight");
+    finishTasks(h, contentId);
+    await service.inspectCacheMedia(LOCAL, contentId, { quality: 720 }, signal());
+    expect(await frozen(service, h, contentId, { quality: 720 })).toMatchObject({ expectedHeight: 720 });
+    expect(calls).toEqual(["tier:720"]);
   });
 });

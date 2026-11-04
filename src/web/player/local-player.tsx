@@ -142,7 +142,11 @@ export function LocalPlayer(props: {
   const position = scrubMs ?? time ?? 0;
   const audioOnly = props.audioOnly === true;
   const picture = usePictureRect(subtitles === undefined ? null : videoElement, audioOnly);
-  const onDuration = (seconds: number): void => setDurationMs(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : undefined);
+  const onDuration = (seconds: number): void => {
+    const ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : undefined;
+    setDurationMs(ms);
+    controller.reportDuration(ms);
+  };
   // A seek while a quality switch is under way is where the user wants the new file to be,
   // so it replaces the position taken at the switch instead of being overwritten by it.
   const seekTo = (ms: number): void => {
@@ -164,6 +168,9 @@ export function LocalPlayer(props: {
           const element = video.current;
           if (element !== null) element.currentTime = ms / 1000;
           setSwap((current) => (current === undefined ? current : { ...current, timeMs: ms }));
+        },
+        play: () => {
+          video.current?.play().catch(() => undefined);
         },
       }),
     [controller],
@@ -296,6 +303,7 @@ export function LocalPlayer(props: {
   const onEnded = (): void => {
     // The old file ending while the new one loads is not the end of the video.
     if (swap !== undefined) return;
+    controller.reportPlayback("ended");
     if (settings.endBehavior !== "loop_list" || props.onEndedAdvance === undefined) return;
     void props
       .onEndedAdvance()
@@ -385,8 +393,14 @@ export function LocalPlayer(props: {
         className={`absolute inset-0 h-full w-full object-contain ${!shown && fullscreen ? "cursor-none" : "cursor-pointer"}`}
         onClick={toggle}
         onDoubleClick={toggleFullscreen}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
+        onPlay={() => {
+          setPlaying(true);
+          controller.reportPlayback("play");
+        }}
+        onPause={() => {
+          setPlaying(false);
+          controller.reportPlayback("pause");
+        }}
         onEnded={onEnded}
         onTimeUpdate={(event) => controller.reportTime(Math.round(event.currentTarget.currentTime * 1000))}
         onSeeked={(event) => controller.reportTime(Math.round(event.currentTarget.currentTime * 1000))}

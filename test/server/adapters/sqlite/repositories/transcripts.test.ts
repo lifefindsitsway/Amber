@@ -55,43 +55,86 @@ describe("transcript segments", () => {
 });
 
 describe("transcript drafts", () => {
-  const draft = (id: string, baseRevisionId: string, updatedAt: number, text = "改动"): TranscriptDraft => ({
+  const draft = (id: string, baseRevisionId: string, updatedAt: number, text = "改动", targetLanguage?: string): TranscriptDraft => ({
     id,
     contentId: "c",
     baseRevisionId,
+    ...(targetLanguage === undefined ? {} : { targetLanguage }),
+    version: 1,
     segments: [{ id: "client-1", startMs: 0, endMs: 1000, text, sourceSegmentIds: [] }],
     updatedAt,
   });
+  const put = (owner: string, value: TranscriptDraft, expected: number | null) => repository.withTransaction((scope) => scope.transcripts.putDraft(owner, value, expected));
+  const get = (owner: string, language?: string) => repository.withTransaction((scope) => scope.transcripts.getDraft(owner, "c", language));
+  const remove = (owner: string, language: string | undefined, expected?: number) =>
+    repository.withTransaction((scope) => scope.transcripts.deleteDraft(owner, "c", language, expected));
 
   it("keeps exactly one draft per Content and replaces it whole", () => {
-    expect(repository.withTransaction((scope) => scope.transcripts.getDraft("alice", "c"))).toBeUndefined();
-    repository.withTransaction((scope) => scope.transcripts.putDraft("alice", draft("d1", lecture.asr.revision.id, T0)));
+    expect(get("alice")).toBeUndefined();
+    put("alice", draft("d1", lecture.asr.revision.id, T0), null);
     const replacement = { ...draft("d2", lecture.corrected.revision.id, T0 + 1, "再改"), segments: [] };
-    repository.withTransaction((scope) => scope.transcripts.putDraft("alice", replacement));
-    expect(repository.withTransaction((scope) => scope.transcripts.getDraft("alice", "c"))).toEqual(replacement);
+    expect(put("alice", replacement, 1)).toEqual({ written: { ...replacement, id: "d1", version: 2 } });
+    expect(get("alice")).toEqual({ ...replacement, id: "d1", version: 2 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_draft").get()).toEqual({ n: 1 });
-    expect(repository.withTransaction((scope) => scope.transcripts.getDraft("bob", "c"))).toBeUndefined();
+    expect(get("bob")).toBeUndefined();
   });
 
   it("enforces one draft per Content in the schema", () => {
-    repository.withTransaction((scope) => scope.transcripts.putDraft("alice", draft("d1", lecture.asr.revision.id, T0)));
+    put("alice", draft("d1", lecture.asr.revision.id, T0), null);
     expect(() =>
       insertRow(db, "transcript_draft", { id: "d2", content_id: "c", base_revision_id: lecture.asr.revision.id, segments_json: "[]", updated_at: T0 }),
     ).toThrow(/UNIQUE/);
   });
 
   it("refuses a base revision of another Content or owner, and another owner's Content", () => {
-    expect(() => repository.withTransaction((scope) => scope.transcripts.putDraft("alice", { ...draft("d1", lecture.asr.revision.id, T0), contentId: "other" }))).toThrow();
-    expect(() => repository.withTransaction((scope) => scope.transcripts.putDraft("alice", draft("d1", "missing", T0)))).toThrow();
-    expect(() => repository.withTransaction((scope) => scope.transcripts.putDraft("bob", draft("d1", lecture.asr.revision.id, T0)))).toThrow();
+    expect(() => put("alice", { ...draft("d1", lecture.asr.revision.id, T0), contentId: "other" }, null)).toThrow();
+    expect(() => put("alice", draft("d1", "missing", T0), null)).toThrow();
+    expect(() => put("bob", draft("d1", lecture.asr.revision.id, T0), null)).toThrow();
     expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_draft").get()).toEqual({ n: 0 });
   });
 
   it("deletes the owner's draft only", () => {
-    repository.withTransaction((scope) => scope.transcripts.putDraft("alice", draft("d1", lecture.asr.revision.id, T0)));
-    expect(repository.withTransaction((scope) => scope.transcripts.deleteDraft("bob", "c"))).toBe(false);
-    expect(repository.withTransaction((scope) => scope.transcripts.deleteDraft("alice", "c"))).toBe(true);
-    expect(repository.withTransaction((scope) => scope.transcripts.deleteDraft("alice", "c"))).toBe(false);
-    expect(repository.withTransaction((scope) => scope.transcripts.getDraft("alice", "c"))).toBeUndefined();
+    put("alice", draft("d1", lecture.asr.revision.id, T0), null);
+    expect(remove("bob", undefined)).toEqual({ deleted: false });
+    expect(remove("bob", undefined, 1)).toEqual({ deleted: false });
+    expect(remove("alice", undefined)).toEqual({ deleted: true });
+    expect(remove("alice", undefined)).toEqual({ deleted: false });
+    expect(get("alice")).toBeUndefined();
+  });
+
+  it("keeps the transcript draft and each language's draft apart: reads, writes and deletes touch only their own", () => {
+    put("alice", draft("o", lecture.asr.revision.id, T0, "原文"), null);
+    put("alice", draft("en", lecture.corrected.revision.id, T0, "english", "en"), null);
+    put("alice", draft("ja", lecture.corrected.revision.id, T0, "japanese", "ja"), null);
+    expect(put("alice", draft("x", lecture.corrected.revision.id, T0 + 1, "english 2", "en"), 1)).toMatchObject({ written: { id: "en", version: 2 } });
+    expect(get("alice")).toMatchObject({ id: "o", version: 1, segments: [{ text: "原文" }] });
+    expect(get("alice")?.targetLanguage).toBeUndefined();
+    expect(get("alice", "en")).toMatchObject({ id: "en", targetLanguage: "en", version: 2, segments: [{ text: "english 2" }] });
+    expect(get("alice", "ja")).toMatchObject({ id: "ja", targetLanguage: "ja", version: 1 });
+    expect(get("alice", "fr")).toBeUndefined();
+    expect(repository.withTransaction((scope) => scope.transcripts.listDrafts("alice", "c")).map((entry) => entry.targetLanguage)).toEqual([undefined, "en", "ja"]);
+    expect(repository.withTransaction((scope) => scope.transcripts.listDrafts("bob", "c"))).toEqual([]);
+    expect(remove("alice", "en", 2)).toEqual({ deleted: true });
+    expect(get("alice")).toMatchObject({ id: "o" });
+    expect(get("alice", "ja")).toMatchObject({ id: "ja" });
+    expect(remove("alice", undefined, 1)).toEqual({ deleted: true });
+    expect(get("alice", "ja")).toMatchObject({ id: "ja" });
+    expect(() =>
+      insertRow(db, "transcript_draft", { id: "ja2", content_id: "c", base_revision_id: lecture.asr.revision.id, target_language: "ja", segments_json: "[]", updated_at: T0 }),
+    ).toThrow(/UNIQUE/);
+  });
+
+  it("writes and deletes only at the expected version, and never recreates a deleted draft", () => {
+    put("alice", draft("d1", lecture.asr.revision.id, T0), null);
+    expect(put("alice", draft("d2", lecture.asr.revision.id, T0, "抢先"), null)).toEqual({ currentVersion: 1 });
+    expect(put("alice", draft("d1", lecture.asr.revision.id, T0, "第二"), 1)).toMatchObject({ written: { version: 2 } });
+    expect(put("alice", draft("d1", lecture.asr.revision.id, T0, "旧窗口"), 1)).toEqual({ currentVersion: 2 });
+    expect(get("alice")).toMatchObject({ version: 2, segments: [{ text: "第二" }] });
+    expect(remove("alice", undefined, 1)).toEqual({ currentVersion: 2 });
+    expect(remove("alice", undefined, 2)).toEqual({ deleted: true });
+    expect(put("alice", draft("d1", lecture.asr.revision.id, T0, "晚到"), 2)).toEqual({ currentVersion: null });
+    expect(get("alice")).toBeUndefined();
+    expect(put("alice", draft("d3", lecture.asr.revision.id, T0, "en", "en"), 4)).toEqual({ currentVersion: null });
+    expect(get("alice", "en")).toBeUndefined();
   });
 });

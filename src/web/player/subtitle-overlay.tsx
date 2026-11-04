@@ -16,6 +16,17 @@ export interface SubtitleOption {
   label: string;
 }
 
+/** One translation language of the chosen original. */
+export interface SubtitleTranslationLanguage {
+  language: string;
+  /** The language's display name. */
+  label: string;
+  /** The version following this language shows. */
+  currentId: string;
+  /** The language's other versions, newest first, each of which can be locked. */
+  history: readonly SubtitleOption[];
+}
+
 /**
  * Everything the local player needs to overlay and edit subtitles. The
  * Content page assembles it; the player only times and draws it and never reads Content data.
@@ -27,10 +38,16 @@ export interface SubtitleTrackModel {
   originals: readonly SubtitleOption[];
   originalId: string | undefined;
   setOriginal(id: string): void;
-  /** The translations of the chosen original. */
-  translations: readonly SubtitleOption[];
+  /** The translations of the chosen original, one entry per language. */
+  translations: readonly SubtitleTranslationLanguage[];
+  /** The translation shown with the original. */
   translationId: string | undefined;
-  setTranslation(id: string): void;
+  /** Whether `translationId` is a version the user locked, rather than the one its language follows. */
+  translationLocked: boolean;
+  /** Follows a language: always its current translation, including a hand edit committed later. */
+  followTranslation(language: string): void;
+  /** Locks one version of a translation. */
+  lockTranslation(id: string): void;
   /** Opens the translation tab, offered when the chosen original has no translation. */
   goTranslate(): void;
   status: SubtitleStatus;

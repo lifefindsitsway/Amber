@@ -1,12 +1,13 @@
-import type { ChapterRevisionDto, ChaptersDto } from "../../shared/dto/chapter.ts";
+import type { ChapterActiveStage, ChapterRevisionDto, ChaptersDto } from "../../shared/dto/chapter.ts";
 import type { ChapterRevision } from "../domain/artifact.ts";
 import type { Content } from "../domain/content.ts";
+import type { StageRun, Task } from "../domain/task.ts";
 import { amberError } from "../domain/errors.ts";
 import { deriveFreshness, transcriptAncestors } from "../domain/freshness.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { laneKeys } from "../pipeline/lane.ts";
-import { isTerminalProjection } from "../pipeline/projection.ts";
+import { isTerminalProjection, latestAttempts } from "../pipeline/projection.ts";
 
 export interface ChapterServiceOptions {
   repository: Repository;
@@ -78,16 +79,67 @@ export class ChapterService {
     const revisions = scope.chapters.listRevisions(owner, content.id);
     const current = revisions.find((revision) => revision.id === artifact?.currentRevisionId);
     const ancestors = transcriptAncestors(content.primaryTranscriptRevisionId, scope.transcripts.listRevisions(owner, content.id));
-    const active = scope.tasks
-      .listByContent(owner, content.id)
-      .find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
+    const tasks = scope.tasks.listByContent(owner, content.id);
+    const active = tasks.find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
+    const activeStage = active === undefined ? undefined : activeStageOf(active, chapterRun(scope, owner, active));
+    const failed = lastFailedTask(scope, owner, tasks, current?.provenance.createdAt);
     return {
       ...(artifact === undefined ? {} : { artifactId: artifact.id }),
       ...(current === undefined ? {} : { current: chapterRevisionDto(current, content, ancestors) }),
       revisions: revisions.map((revision) => chapterRevisionDto(revision, content, ancestors)),
       ...(active === undefined ? {} : { activeTaskId: active.id }),
+      ...(activeStage === undefined ? {} : { activeStage }),
+      ...(failed === undefined ? {} : { lastFailedTaskId: failed.id }),
     };
   }
+}
+
+/** Task kinds whose graph has a chapter stage. */
+const CHAPTER_TASK_KINDS: ReadonlySet<Task["kind"]> = new Set(["process_content", "regenerate_chapters"]);
+
+/** The latest attempt of the Task's chapter stage, if its graph has one. */
+function chapterRun(scope: RepositoryScope, owner: string, task: Task): StageRun | undefined {
+  if (!CHAPTER_TASK_KINDS.has(task.kind)) {
+    return undefined;
+  }
+  return latestAttempts(scope.stageRuns.listByTask(owner, task.id)).find((run) => run.stage === "chapter");
+}
+
+/**
+ * Where the unfinished Task holding the chapter lane stands for the chapter section. A
+ * regeneration is `queued` or `running` by its projection; the processing Task is `running`
+ * only while its chapter stage runs. Anything else (the processing Task before or after its
+ * chapter stage, a regeneration waiting for configuration or for the user) keeps the
+ * chapters `waiting`.
+ */
+function activeStageOf(task: Task, run: StageRun | undefined): ChapterActiveStage {
+  if (task.kind === "regenerate_chapters" && (task.statusProjection === "queued" || task.statusProjection === "running")) {
+    return task.statusProjection;
+  }
+  if (task.kind === "process_content" && run?.status === "running") {
+    return "running";
+  }
+  return "waiting";
+}
+
+/**
+ * The latest Task with a chapter stage, when that stage itself failed after the current
+ * revision was made (any time without a current revision). A chapter stage skipped or
+ * cancelled because an earlier stage failed is not a chapter failure, and a later Task
+ * that did not fail there hides an older failure.
+ */
+function lastFailedTask(scope: RepositoryScope, owner: string, tasks: readonly Task[], currentCreatedAt: number | undefined): Task | undefined {
+  // Oldest first; the latest with a chapter stage decides.
+  const latest = tasks.filter((task) => CHAPTER_TASK_KINDS.has(task.kind)).at(-1);
+  if (latest === undefined) {
+    return undefined;
+  }
+  const run = chapterRun(scope, owner, latest);
+  if (run?.status !== "failed") {
+    return undefined;
+  }
+  const failedAt = run.finishedAt ?? latest.finishedAt ?? latest.createdAt;
+  return currentCreatedAt === undefined || failedAt > currentCreatedAt ? latest : undefined;
 }
 
 function ownedContent(scope: RepositoryScope, owner: string, contentId: string): Content {

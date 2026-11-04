@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { z } from "zod";
 import {
   asrModelTestResultDtoSchema,
@@ -22,8 +22,15 @@ import { providerListDtoSchema, providerProfileDtoSchema } from "../../shared/dt
 import { instanceSettingsDtoSchema } from "../../shared/dto/instance-settings.ts";
 import { userSettingsDtoSchema, type UserSettingsDto, type UserSettingsPatch } from "../../shared/dto/settings.ts";
 import { authMeDtoSchema, setupStatusDtoSchema, versionDtoSchema } from "../../shared/dto/system.ts";
-import { TASK_HISTORY_PAGE_SIZE } from "../../shared/defaults.ts";
-import { taskListDtoSchema } from "../../shared/dto/task.ts";
+import { TASK_HISTORY_HIDE_MAX, TASK_HISTORY_PAGE_SIZE } from "../../shared/defaults.ts";
+import {
+  taskHistoryHiddenDtoSchema,
+  taskHistoryRestoredDtoSchema,
+  taskListDtoSchema,
+  type TaskHistoryHideRequest,
+  type TaskHistoryRestoreRequest,
+  type TaskListDto,
+} from "../../shared/dto/task.ts";
 import { webSearchProfileDtoSchema, webSearchTestResultSchema, type WebSearchProfilePut } from "../../shared/dto/web-search.ts";
 import { noteKeys } from "../notes/note-keys.ts";
 import { useApi } from "./context.tsx";
@@ -269,16 +276,111 @@ export function useUnfinishedTasks() {
   });
 }
 
-/** Finished tasks, newest first, one page of `TASK_HISTORY_PAGE_SIZE` at a time. */
+/**
+ * The task panel's history: finished tasks the user has not removed from it, newest first,
+ * one page of `TASK_HISTORY_PAGE_SIZE` at a time.
+ */
 export function useTaskHistory() {
   const client = useApi();
   return useInfiniteQuery({
     queryKey: queryKeys.taskHistory,
     queryFn: ({ pageParam, signal }) =>
-      client.get(`/api/tasks${queryString({ finished: true, limit: TASK_HISTORY_PAGE_SIZE, cursor: pageParam })}`, taskListDtoSchema, { signal }),
+      client.get(`/api/tasks${queryString({ history: true, limit: TASK_HISTORY_PAGE_SIZE, cursor: pageParam })}`, taskListDtoSchema, { signal }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor,
   });
+}
+
+/** What removing tasks from the history did: how many were hidden and the batches that undo it. */
+export interface HistoryRemoval {
+  hidden: number;
+  batchIds: string[];
+}
+
+type HistoryPages = InfiniteData<TaskListDto, string | undefined>;
+
+/** Applies `edit` to every loaded history page; `undefined` data (nothing loaded) stays so. */
+function editHistory(data: HistoryPages | undefined, edit: (page: TaskListDto) => TaskListDto): HistoryPages | undefined {
+  return data === undefined ? undefined : { ...data, pages: data.pages.map(edit) };
+}
+
+/**
+ * The shared shape of the history mutations: the visible list is changed at once, put back
+ * when the call fails, and read again from the server either way (the server alone knows
+ * which tasks a removal really hid).
+ */
+function useHistoryMutation<TInput, TResult>(
+  mutationFn: (input: TInput) => Promise<TResult>,
+  optimistic: (data: HistoryPages | undefined, input: TInput) => HistoryPages | undefined,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<TResult, Error, TInput, { previous: HistoryPages | undefined }>({
+    mutationFn,
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.taskHistory });
+      const previous = queryClient.getQueryData<HistoryPages>(queryKeys.taskHistory);
+      queryClient.setQueryData<HistoryPages | undefined>(queryKeys.taskHistory, optimistic(previous, input));
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      queryClient.setQueryData(queryKeys.taskHistory, context?.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.taskHistory }),
+  });
+}
+
+/**
+ * Removes finished tasks from the task panel's history; the tasks and their results stay.
+ * One request takes at most `TASK_HISTORY_HIDE_MAX` ids, so a longer selection goes out in
+ * several, each with its own undo batch.
+ */
+export function useHideTaskHistory() {
+  const client = useApi();
+  return useHistoryMutation<string[], HistoryRemoval>(
+    async (taskIds) => {
+      const removal: HistoryRemoval = { hidden: 0, batchIds: [] };
+      for (let from = 0; from < taskIds.length; from += TASK_HISTORY_HIDE_MAX) {
+        const body: TaskHistoryHideRequest = { taskIds: taskIds.slice(from, from + TASK_HISTORY_HIDE_MAX) };
+        const answer = await client.post("/api/tasks/history/hide", taskHistoryHiddenDtoSchema, { body });
+        removal.hidden += answer.hidden;
+        if (answer.hidden > 0) removal.batchIds.push(answer.batchId);
+      }
+      return removal;
+    },
+    (data, taskIds) => {
+      const gone = new Set(taskIds);
+      return editHistory(data, (page) => ({ ...page, items: page.items.filter((task) => !gone.has(task.id)) }));
+    },
+  );
+}
+
+/** Removes every task the history lists from it (the server decides the range). */
+export function useClearTaskHistory() {
+  const client = useApi();
+  return useHistoryMutation<void, HistoryRemoval>(
+    async () => {
+      const answer = await client.post("/api/tasks/history/clear", taskHistoryHiddenDtoSchema);
+      return { hidden: answer.hidden, batchIds: answer.hidden > 0 ? [answer.batchId] : [] };
+    },
+    // Nothing is left to page through, so the cursor goes with the items.
+    (data) => editHistory(data, ({ nextCursor: _cursor, ...page }) => ({ ...page, items: [] })),
+  );
+}
+
+/** Puts back exactly the tasks the given removals hid. */
+export function useRestoreTaskHistory() {
+  const client = useApi();
+  return useHistoryMutation<string[], number>(
+    async (batchIds) => {
+      let restored = 0;
+      for (const batchId of batchIds) {
+        const body: TaskHistoryRestoreRequest = { batchId };
+        restored += (await client.post("/api/tasks/history/restore", taskHistoryRestoredDtoSchema, { body })).restored;
+      }
+      return restored;
+    },
+    (data) => data,
+  );
 }
 
 /**

@@ -13,7 +13,8 @@ export interface TranslationServiceOptions {
 /**
  * Reading a Content's translations: one entry per target
  * language with its current `translated` revision and the history in that language. A
- * translation is stale when its parent is no longer the primary.
+ * translation is stale when its parent is no longer the primary. An unfinished hand edit of a
+ * language is announced with its base and version.
  */
 export class TranslationService {
   private readonly options: TranslationServiceOptions;
@@ -30,15 +31,22 @@ export class TranslationService {
         throw amberError("not_found", "content not found");
       }
       const translated = scope.transcripts.listRevisions(owner, contentId).filter((revision) => revision.kind === "translated");
+      const drafts = new Map(
+        scope.transcripts
+          .listDrafts(owner, contentId)
+          .flatMap((draft) => (draft.targetLanguage === undefined ? [] : [[draft.targetLanguage, draft] as const])),
+      );
       const translations = scope.translations.listArtifacts(owner, contentId).map((artifact): TranslationEntryDto => {
         const current = translated.find((revision) => revision.id === artifact.currentRevisionId);
         const stale = current !== undefined && current.parentRevisionId !== content.primaryTranscriptRevisionId;
+        const draft = drafts.get(artifact.targetLanguage);
         return {
           artifactId: artifact.id,
           targetLanguage: artifact.targetLanguage,
           ...(current === undefined ? {} : { current: transcriptRevisionDto(current) }),
           revisions: translated.filter((revision) => revision.language === artifact.targetLanguage).map(transcriptRevisionDto),
           ...(stale ? { stale: true, staleReason: "transcript_changed" as const } : { stale: false }),
+          ...(draft === undefined ? {} : { draft: { baseRevisionId: draft.baseRevisionId, version: draft.version, updatedAt: draft.updatedAt } }),
         };
       });
       const activeTasks = scope.tasks

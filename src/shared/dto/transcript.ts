@@ -44,10 +44,18 @@ export const transcriptDraftSegmentSchema = z
   })
   .strict();
 
-/** `PUT /api/contents/:id/transcript/draft`: replaces the Content's single draft. */
+/**
+ * A draft version a write expects: the one last read or written, `null` when there must be
+ * no draft yet. A mismatch is `conflict.draft_changed`.
+ */
+export const draftVersionSchema = z.number().int().positive();
+export const expectedDraftVersionSchema = draftVersionSchema.nullable();
+
+/** `PUT /api/contents/:id/transcript/draft`: replaces the Content's single transcript draft. */
 export const transcriptDraftRequestSchema = z
   .object({
     baseRevisionId: idSchema,
+    expectedVersion: expectedDraftVersionSchema,
     segments: z.array(transcriptDraftSegmentSchema),
   })
   .strict();
@@ -57,6 +65,7 @@ export const transcriptDraftDtoSchema = z.object({
   id: idSchema,
   contentId: idSchema,
   baseRevisionId: idSchema,
+  version: draftVersionSchema,
   segments: z.array(transcriptDraftSegmentSchema),
   updatedAt: msSchema,
 });
@@ -64,10 +73,11 @@ export type TranscriptDraftDto = z.infer<typeof transcriptDraftDtoSchema>;
 
 /**
  * `POST /api/contents/:id/transcript/draft/commit`: commits the draft as a `manual` revision
- * that becomes the primary transcript. Refused with `conflict.primary_changed` when the
- * primary is no longer `expectedPrimaryRevisionId`; never a silent overwrite.
+ * that becomes the primary transcript. Refused with `conflict.draft_changed` when the draft is
+ * no longer at `draftVersion`, and with `conflict.primary_changed` when the primary is no
+ * longer `expectedPrimaryRevisionId`; never a silent overwrite.
  */
-export const draftCommitRequestSchema = z.object({ expectedPrimaryRevisionId: idSchema }).strict();
+export const draftCommitRequestSchema = z.object({ expectedPrimaryRevisionId: idSchema, draftVersion: draftVersionSchema }).strict();
 export type DraftCommitRequest = z.infer<typeof draftCommitRequestSchema>;
 
 export const SEGMENT_MAP_METHODS = ["lineage", "overlap", "nearest", "none"] as const;

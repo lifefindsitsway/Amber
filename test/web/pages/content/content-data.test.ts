@@ -9,12 +9,14 @@ import {
   currentManualId,
   newerAsrRevision,
   paragraphsOf,
+  pickTranslation,
   readableRevisions,
   readerRows,
   revisionGroups,
   rootOf,
   rootsOf,
   segmentAt,
+  translationCurrents,
   useContentTaskRefresh,
   useLatestRedos,
   useSegments,
@@ -262,5 +264,49 @@ describe("version picker rules", () => {
     expect(ids(visibleRevisions(none, "c1"))).toEqual(["p0", "c1", "imp", "en"]);
     expect(ids(visibleRevisions(none, "c1", { showHistory: true }))).toEqual(["p0", "c1", "imp", "en"]);
     expect(ids(visibleRevisions(none, "imp"))).toEqual(["p0", "c1", "imp", "en"]);
+  });
+});
+
+describe("pickTranslation", () => {
+  // r1 and r2 are originals. en: e1 (r1) < e2 (r1, the language's current) < e3 (r1) ; e9 (r2).
+  // ja: j1 (r1) < j2 (r1, archived) ; fr: f9 (r2) only, newest of all.
+  const translated = (id: string, language: string, parent: string, createdAt: number, archived = false) =>
+    revision(id, { kind: "translated", language, parentRevisionId: parent, createdAt, archived });
+  const revisions = [
+    revision("r1", { createdAt: 1 }),
+    revision("r2", { kind: "corrected", parentRevisionId: "r1", createdAt: 2 }),
+    translated("e1", "en", "r1", 3),
+    translated("e2", "en", "r1", 4),
+    translated("j1", "ja", "r1", 5),
+    translated("e3", "en", "r1", 6),
+    translated("j2", "ja", "r1", 7, true),
+    translated("e9", "en", "r2", 8),
+    translated("f9", "fr", "r2", 9),
+  ];
+  const currents = { en: "e2", ja: "j2", fr: "f9" };
+  const cases: Array<{ name: string; originalId: string | undefined; language?: string; lockedRevisionId?: string; currents?: Record<string, string>; expected: string | undefined }> = [
+    { name: "follows the language's current version", originalId: "r1", language: "en", expected: "e2" },
+    { name: "another language of the same original", originalId: "r1", language: "ja", expected: "j1" },
+    { name: "a locked version among the candidates wins", originalId: "r1", language: "en", lockedRevisionId: "e1", expected: "e1" },
+    { name: "a lock on another language's version still wins", originalId: "r1", language: "en", lockedRevisionId: "j1", expected: "j1" },
+    { name: "a deleted locked version falls back to following", originalId: "r1", language: "en", lockedRevisionId: "gone", expected: "e2" },
+    { name: "an archived locked version falls back to following", originalId: "r1", language: "ja", lockedRevisionId: "j2", expected: "j1" },
+    { name: "a lock on another original's translation is ignored", originalId: "r1", language: "en", lockedRevisionId: "e9", expected: "e2" },
+    { name: "a current made from another original gives the newest candidate", originalId: "r2", language: "en", expected: "e9" },
+    { name: "a current no longer listed gives the newest candidate", originalId: "r1", language: "en", currents: {}, expected: "e3" },
+    { name: "another original filters the candidates", originalId: "r2", language: "ja", expected: undefined },
+    { name: "a language without candidates shows the original only", originalId: "r1", language: "de", expected: undefined },
+    { name: "without a language, the newest candidate's language", originalId: "r1", expected: "e2" },
+    { name: "without a language on another original", originalId: "r2", expected: "f9" },
+    { name: "an original without translations", originalId: "e1", expected: undefined },
+    { name: "no original", originalId: undefined, language: "en", expected: undefined },
+  ];
+  it.each(cases)("$name", ({ originalId, language, lockedRevisionId, expected, ...rest }) => {
+    expect(pickTranslation({ originalId, language, lockedRevisionId, revisions, currents: rest.currents ?? currents })?.id).toBe(expected);
+  });
+
+  it("reads each language's current version off the translations list", () => {
+    expect(translationCurrents(undefined)).toEqual({});
+    expect(translationCurrents([{ targetLanguage: "en", current: { id: "e2" } }, { targetLanguage: "ja" }])).toEqual({ en: "e2" });
   });
 });

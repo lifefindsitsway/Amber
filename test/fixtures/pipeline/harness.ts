@@ -14,6 +14,7 @@ import { NoteService } from "../../../src/server/application/notes.ts";
 import { ExportService } from "../../../src/server/application/export.ts";
 import { HighlightService } from "../../../src/server/application/highlights.ts";
 import { TranslationService } from "../../../src/server/application/translations.ts";
+import { TranslationDraftService } from "../../../src/server/application/translation-drafts.ts";
 import { CollectionService } from "../../../src/server/application/collections.ts";
 import { ContentService } from "../../../src/server/application/contents.ts";
 import { DeleteContentService } from "../../../src/server/application/delete-content.ts";
@@ -159,6 +160,7 @@ export interface Harness {
   chapters: ChapterService;
   highlights: HighlightService;
   translations: TranslationService;
+  translationDrafts: TranslationDraftService;
   exports: ExportService;
   derivedTasks: DerivedTaskService;
   summaryTemplates: SummaryTemplateService;
@@ -297,6 +299,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const chapters = new ChapterService({ repository });
   const highlights = new HighlightService({ repository });
   const translations = new TranslationService({ repository });
+  const translationDrafts = new TranslationDraftService({ repository, newId });
   const exports = new ExportService({ repository, version: "0.0.0-test" });
   const derivedTasks = new DerivedTaskService({ repository, bus, control, disk, settings, newId });
   const summaryTemplates = new SummaryTemplateService({ repository, newId });
@@ -350,6 +353,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     chapters,
     highlights,
     translations,
+    translationDrafts,
     exports,
     derivedTasks,
     summaryTemplates,
@@ -394,6 +398,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
               chapters,
               highlights,
               translations,
+              translationDrafts,
               exports,
               derivedTasks,
               summaryTemplates,

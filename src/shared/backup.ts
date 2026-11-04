@@ -106,7 +106,8 @@ export const backupManifestSchema = z
 export type BackupManifest = z.infer<typeof backupManifestSchema>;
 
 // UI preferences a backup may carry: subtitle appearance / placement / track,
-// player and note colours. Each key pattern names the parser its value must pass.
+// player and note colours. Each key pattern names the parser its value must pass; the
+// subtitle track accepts every stored format, since the player reads older ones too.
 
 const USER_ID = "[0-9A-Za-z_-]{1,64}";
 const CONTENT_ID = "[0-9A-HJKMNP-TV-Z]{26}";

@@ -215,3 +215,76 @@ describe("task listing and the trash", () => {
     expect(repository.withTransaction((scope) => scope.tasks.get("alice", "tt"))?.id).toBe("tt");
   });
 });
+
+describe("task history in the task panel", () => {
+  const ids = (owner = "alice") => repository.withTransaction((scope) => scope.tasks.list(owner, { limit: 50, history: true })).map((t) => t.id);
+  const hidden = (id: string) => db.prepare("SELECT history_hidden_at AS at, history_hide_batch AS batch FROM task WHERE id = ?").get(id);
+
+  beforeEach(() => {
+    repository.withTransaction((scope) => {
+      scope.tasks.insert(task("a", "alice", 1, { statusProjection: "succeeded", finishedAt: 2 }));
+      scope.tasks.insert(task("b", "alice", 3, { statusProjection: "failed", finishedAt: 4 }));
+      scope.tasks.insert(task("c", "alice", 5, { statusProjection: "cancelled", finishedAt: 6 }));
+      scope.tasks.insert(task("open", "alice", 7));
+      scope.tasks.insert(task("bobs", "bob", 8, { statusProjection: "succeeded", finishedAt: 9 }));
+    });
+  });
+
+  it("lists finished Tasks not hidden, while finished, unfinished and the Task's state stay as they were", () => {
+    expect(ids()).toEqual(["c", "b", "a"]);
+    expect(repository.withTransaction((scope) => scope.tasks.hideHistory("alice", ["b"], "batch-1", 10))).toBe(1);
+    expect(ids()).toEqual(["c", "a"]);
+    expect(repository.withTransaction((scope) => scope.tasks.list("alice", { limit: 50, finished: true })).map((t) => t.id)).toEqual(["c", "b", "a"]);
+    expect(repository.withTransaction((scope) => scope.tasks.list("alice", { limit: 50, unfinished: true })).map((t) => t.id)).toEqual(["open"]);
+    expect(repository.withTransaction((scope) => scope.tasks.get("alice", "b"))).toEqual(
+      task("b", "alice", 3, { statusProjection: "failed", finishedAt: 4, historyHiddenAt: 10, historyHideBatch: "batch-1" }),
+    );
+    expect(hidden("b")).toEqual({ at: 10, batch: "batch-1" });
+  });
+
+  it("hides only the owner's finished, shown Tasks and counts only the rows it changed", () => {
+    repository.withTransaction((scope) => scope.tasks.hideHistory("alice", ["a"], "earlier", 10));
+    const changed = repository.withTransaction((scope) => scope.tasks.hideHistory("alice", ["a", "b", "b", "open", "bobs", "missing"], "batch-2", 11));
+    expect(changed).toBe(1);
+    expect(hidden("a")).toEqual({ at: 10, batch: "earlier" });
+    expect(hidden("b")).toEqual({ at: 11, batch: "batch-2" });
+    expect(hidden("open")).toEqual({ at: null, batch: null });
+    expect(hidden("bobs")).toEqual({ at: null, batch: null });
+    expect(ids("bob")).toEqual(["bobs"]);
+  });
+
+  it("clears exactly what the history lists; a trashed Content's Tasks stay and return with it", () => {
+    insertRow(db, "content", { id: "tc", user_id: "alice", source_kind: "local", processing_status: "succeeded", created_at: T0, updated_at: T0 });
+    repository.withTransaction((scope) => scope.tasks.insert(task("trashed", "alice", 9, { contentId: "tc", statusProjection: "succeeded", finishedAt: 10 })));
+    repository.withTransaction((scope) => scope.contents.trash("alice", "tc", T0 + 1));
+    expect(repository.withTransaction((scope) => scope.tasks.clearHistory("alice", "clear-1", 20))).toBe(3);
+    expect(ids()).toEqual([]);
+    expect(hidden("trashed")).toEqual({ at: null, batch: null });
+    expect(hidden("open")).toEqual({ at: null, batch: null });
+    expect(ids("bob")).toEqual(["bobs"]);
+    repository.withTransaction((scope) => scope.contents.restore("alice", "tc"));
+    expect(ids()).toEqual(["trashed"]);
+  });
+
+  it("restores only the rows one batch changed", () => {
+    repository.withTransaction((scope) => scope.tasks.hideHistory("alice", ["a"], "manual", 10));
+    repository.withTransaction((scope) => scope.tasks.clearHistory("alice", "clear", 11));
+    expect(ids()).toEqual([]);
+    expect(repository.withTransaction((scope) => scope.tasks.restoreHistory("bob", "clear"))).toBe(0);
+    expect(repository.withTransaction((scope) => scope.tasks.restoreHistory("alice", "clear"))).toBe(2);
+    expect(ids()).toEqual(["c", "b"]);
+    expect(hidden("a")).toEqual({ at: 10, batch: "manual" });
+    expect(repository.withTransaction((scope) => scope.tasks.restoreHistory("alice", "unknown"))).toBe(0);
+  });
+
+  it("shows a restarted Task again once it finishes", () => {
+    repository.withTransaction((scope) => scope.tasks.hideHistory("alice", ["b"], "batch", 10));
+    repository.withTransaction((scope) => scope.tasks.setProjection("alice", "b", "succeeded", 12));
+    expect(hidden("b")).toEqual({ at: 10, batch: "batch" });
+    repository.withTransaction((scope) => scope.tasks.setProjection("alice", "b", "queued", undefined));
+    expect(hidden("b")).toEqual({ at: null, batch: null });
+    expect(ids()).toEqual(["c", "a"]);
+    repository.withTransaction((scope) => scope.tasks.setProjection("alice", "b", "succeeded", 13));
+    expect(ids()).toEqual(["c", "b", "a"]);
+  });
+});

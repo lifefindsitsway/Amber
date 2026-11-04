@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX } from "../../../../src/shared/defaults.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { markdownExportBody, subtitleExportBody, translationsOf } from "../../../../src/web/pages/content/export-dialog.tsx";
+import { resetSubtitlePrefsMemory, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
 import { contentRoutes, revision } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
@@ -45,6 +46,12 @@ describe("export request bodies", () => {
     const revisions = [revision("r1"), revision("r2", { kind: "corrected", parentRevisionId: "r1" }), revision("t1", { kind: "translated", parentRevisionId: "r2" })];
     expect(translationsOf("r2", revisions).map((item) => item.id)).toEqual(["t1"]);
     expect(translationsOf("r1", revisions)).toEqual([]);
+  });
+
+  it("never pairs with an archived translation, so no default falls back to one", () => {
+    const revisions = [revision("r1"), { ...revision("t1", { kind: "translated", parentRevisionId: "r1" }), archived: true }, revision("t2", { kind: "translated", parentRevisionId: "r1" })];
+    expect(translationsOf("r1", revisions).map((item) => item.id)).toEqual(["t2"]);
+    expect(translationsOf("r1", revisions.slice(0, 2))).toEqual([]);
   });
 });
 
@@ -102,5 +109,36 @@ describe("ExportDialog", () => {
     expect(subtitles.value).toBe("r1");
     const transcript = screen.getByTestId("export-transcript-revision") as HTMLSelectElement;
     expect([...transcript.options].map((option) => option.value)).not.toContain("m0");
+  });
+
+  it("starts the bilingual files from the translation the player would show", async () => {
+    resetSubtitlePrefsMemory();
+    // en: t1 is current although t3 is newer; ja: t2.
+    const enCurrent = revision("t1", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 2 });
+    const ja = revision("t2", { kind: "translated", language: "ja", parentRevisionId: "r1", createdAt: 3 });
+    const enNewer = revision("t3", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 4 });
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), enCurrent, ja, enNewer] } },
+      "GET /api/contents/c1/translations": {
+        body: {
+          translations: [
+            { artifactId: "a-en", targetLanguage: "en", current: enCurrent, revisions: [enCurrent, enNewer], stale: false },
+            { artifactId: "a-ja", targetLanguage: "ja", current: ja, revisions: [ja], stale: false },
+          ],
+          activeTasks: [],
+        },
+      },
+    });
+    const { unmount } = renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    await waitFor(() => expect((screen.getByTestId("export-translation") as HTMLSelectElement).value).toBe("t1"));
+    unmount();
+
+    writeTrack("u1", "c1", { version: 2, mode: "off", translation: { language: "en", lockedRevisionId: "t3" } });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    await waitFor(() => expect((screen.getByTestId("export-translation") as HTMLSelectElement).value).toBe("t3"));
   });
 });

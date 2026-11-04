@@ -6,7 +6,7 @@ import { ApiProvider, createQueryClient } from "../../../../src/web/api/context.
 import { ContentPageProvider, type ContentPageState } from "../../../../src/web/pages/content/content-context.tsx";
 import { useContentSubtitles } from "../../../../src/web/pages/content/content-subtitles.ts";
 import { resetSubtitleFont } from "../../../../src/web/player/subtitle-font.ts";
-import { readTrack, resetSubtitlePrefsMemory, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
+import { readTrack, resetSubtitlePrefsMemory, subtitlePrefKeys, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
 import { contentDetail, revision, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi } from "../../../fixtures/web/render.tsx";
 
@@ -21,6 +21,15 @@ const REVISIONS = {
   ],
 };
 
+// en's current translation was made from r2, so r1's English falls to r1's newest English one.
+const TRANSLATIONS = {
+  translations: [
+    { artifactId: "a-en", targetLanguage: "en", current: REVISIONS.revisions[4], revisions: [REVISIONS.revisions[2], REVISIONS.revisions[4]], stale: true },
+    { artifactId: "a-ja", targetLanguage: "ja", current: REVISIONS.revisions[3], revisions: [REVISIONS.revisions[3]], stale: false },
+  ],
+  activeTasks: [],
+};
+
 const page = (id: string, items: unknown[]) => ({ body: { revision: revision(id), items } });
 const ORIGINAL = page("r1", [segment("a", 0, 0, 1_000, "一"), segment("b", 1, 1_000, 2_000, "二")]);
 const TRANSLATION = page("t2", [segment("x", 0, 0, 1_000, "ichi", { revisionId: "t2", sourceSegmentIds: ["a"] })]);
@@ -29,6 +38,7 @@ function routes(overrides: Record<string, unknown> = {}) {
   return mockApi({
     "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
     "GET /api/contents/c1/transcript/revisions": { body: REVISIONS },
+    "GET /api/contents/c1/translations": { body: TRANSLATIONS },
     "GET /api/transcript/revisions/r1/segments": ORIGINAL,
     "GET /api/transcript/revisions/t2/segments": TRANSLATION,
     ...(overrides as Record<string, never>),
@@ -62,7 +72,7 @@ beforeEach(() => {
 });
 
 describe("useContentSubtitles", () => {
-  it("starts off, reading nothing, with the primary original and its newest translation picked", async () => {
+  it("starts off, reading nothing, with the primary original and the current translation of its newest translation's language", async () => {
     const { calls } = routes();
     const { result } = setup();
     await waitFor(() => expect(result.current?.originals).toHaveLength(2));
@@ -70,8 +80,12 @@ describe("useContentSubtitles", () => {
     expect(model?.mode).toBe("off");
     expect(model?.status).toBe("off");
     expect(model?.originalId).toBe("r1");
-    expect(model?.translations.map((item) => item.id)).toEqual(["t1", "t2"]);
-    expect(model?.translationId).toBe("t2");
+    expect(model?.translations.map((item) => [item.language, item.label, item.currentId])).toEqual([
+      ["en", "英语", "t1"],
+      ["ja", "日语", "t2"],
+    ]);
+    await waitFor(() => expect(result.current?.translationId).toBe("t2"));
+    expect(result.current?.translationLocked).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(segmentReads(calls)).toEqual([]);
     expect(calls.some((call) => call.path.includes("/fonts/"))).toBe(false);
@@ -98,23 +112,84 @@ describe("useContentSubtitles", () => {
     expect(result.current?.mode).toBe("off");
   });
 
-  it("follows remembered revisions while they exist and falls back to the primary and its newest translation", async () => {
+  it("follows remembered revisions while they exist and falls back to the primary and the default translation", async () => {
     routes({ "GET /api/transcript/revisions/r2/segments": page("r2", [segment("c", 0, 0, 500, "改")]) });
-    writeTrack("u1", "c1", { version: 1, mode: "original", revisionId: "r2" });
+    writeTrack("u1", "c1", { version: 2, mode: "original", revisionId: "r2" });
     const { result } = setup();
     await waitFor(() => expect(result.current?.status).toBe("ready"));
     expect(result.current?.originalId).toBe("r2");
-    expect(result.current?.translations.map((item) => item.id)).toEqual(["t3"]);
+    expect(result.current?.translations.map((item) => item.currentId)).toEqual(["t3"]);
     expect(result.current?.slices).toEqual([{ startMs: 0, endMs: 500, original: "改" }]);
 
-    act(() => writeTrack("u1", "c1", { version: 1, mode: "original", revisionId: "gone", translationRevisionId: "t3" }));
+    act(() => writeTrack("u1", "c1", { version: 2, mode: "original", revisionId: "gone" }));
     expect(result.current?.originalId).toBe("r1");
     expect(result.current?.translationId).toBe("t2");
-    act(() => result.current?.setTranslation("t1"));
-    expect(readTrack("u1", "c1")).toEqual({ version: 1, mode: "original", revisionId: "r1", translationRevisionId: "t1" });
+  });
+
+  it("reads a first-format translation as following its language, and writes only the current format", async () => {
+    routes();
+    // t3 is English made from r2; shown over r1 it follows English there, which is t1.
+    localStorage.setItem(subtitlePrefKeys.track("u1", "c1"), JSON.stringify({ version: 1, mode: "original", translationRevisionId: "t3" }));
+    const { result } = setup();
+    await waitFor(() => expect(result.current?.translationId).toBe("t1"));
+    expect(result.current?.translationLocked).toBe(false);
+
+    act(() => result.current?.lockTranslation("t1"));
+    expect(readTrack("u1", "c1")).toEqual({ version: 2, mode: "original", revisionId: "r1", translation: { language: "en", lockedRevisionId: "t1" } });
     expect(result.current?.translationId).toBe("t1");
+    expect(result.current?.translationLocked).toBe(true);
+    act(() => result.current?.followTranslation("ja"));
+    expect(readTrack("u1", "c1")).toEqual({ version: 2, mode: "original", revisionId: "r1", translation: { language: "ja" } });
+    expect(result.current?.translationId).toBe("t2");
+    // A lock belongs to its original; another original keeps only the language.
+    act(() => result.current?.lockTranslation("t1"));
     act(() => result.current?.setOriginal("r2"));
-    expect(readTrack("u1", "c1")).toEqual({ version: 1, mode: "original", revisionId: "r2" });
+    expect(readTrack("u1", "c1")).toEqual({ version: 2, mode: "original", revisionId: "r2", translation: { language: "en" } });
+    expect(result.current?.translationId).toBe("t3");
+  });
+
+  it("drops back to following when the locked version is archived, and lists a locked current version under its history", async () => {
+    const archived = { ...REVISIONS, revisions: REVISIONS.revisions.map((item) => (item.id === "t1" ? { ...item, archived: true } : item)) };
+    const extra = revision("t4", { kind: "translated", language: "ja", parentRevisionId: "r1", createdAt: 6 });
+    routes({ "GET /api/contents/c1/transcript/revisions": { body: { ...archived, revisions: [...archived.revisions, extra] } } });
+    writeTrack("u1", "c1", { version: 2, mode: "off", translation: { language: "en", lockedRevisionId: "t1" } });
+    const { result } = setup();
+    // English has no candidate left for r1, so nothing is shown in its place.
+    await waitFor(() => expect(result.current?.translations.map((item) => item.language)).toEqual(["ja"]));
+    expect(result.current?.translationId).toBeUndefined();
+
+    act(() => result.current?.lockTranslation("t2"));
+    expect(result.current?.translationId).toBe("t2");
+    expect(result.current?.translationLocked).toBe(true);
+    expect(result.current?.translations[0]?.currentId).toBe("t2");
+    expect(result.current?.translations[0]?.history.map((item) => item.id)).toEqual(["t4", "t2"]);
+  });
+
+  it("picks the same default translation as the export dialogs: the current one of the newest translation's language, or the locked one", async () => {
+    // The scenario the export and subtitle-video dialogs are tested with: en t1 is current although t3 is newer.
+    const enCurrent = revision("t1", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 2 });
+    const ja = revision("t2", { kind: "translated", language: "ja", parentRevisionId: "r1", createdAt: 3 });
+    const enNewer = revision("t3", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 4 });
+    routes({
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), enCurrent, ja, enNewer] } },
+      "GET /api/contents/c1/translations": {
+        body: {
+          translations: [
+            { artifactId: "a-en", targetLanguage: "en", current: enCurrent, revisions: [enCurrent, enNewer], stale: false },
+            { artifactId: "a-ja", targetLanguage: "ja", current: ja, revisions: [ja], stale: false },
+          ],
+          activeTasks: [],
+        },
+      },
+    });
+    const { result } = setup();
+    await waitFor(() => expect(result.current?.translationId).toBe("t1"));
+    expect(result.current?.translations.map((item) => [item.language, item.currentId, item.history.map((option) => option.id)])).toEqual([
+      ["en", "t1", ["t3"]],
+      ["ja", "t2", []],
+    ]);
+    act(() => writeTrack("u1", "c1", { version: 2, mode: "off", translation: { language: "en", lockedRevisionId: "t3" } }));
+    expect(result.current?.translationId).toBe("t3");
   });
 
   it("offers one manual original: the one the corrected primary descends from, unless another is the one shown", async () => {
@@ -136,7 +211,7 @@ describe("useContentSubtitles", () => {
     await waitFor(() => expect(result.current?.originals.map((item) => item.id)).toEqual(["r0", "m1", "r1"]));
     expect(result.current?.originalId).toBe("r1");
     // A remembered earlier edit stays listed so the picker keeps showing its own value.
-    act(() => writeTrack("u1", "c1", { version: 1, mode: "off", revisionId: "m0" }));
+    act(() => writeTrack("u1", "c1", { version: 2, mode: "off", revisionId: "m0" }));
     expect(result.current?.originals.map((item) => item.id)).toEqual(["r0", "m0", "m1", "r1"]);
   });
 
@@ -152,7 +227,7 @@ describe("useContentSubtitles", () => {
     });
     const answer = globalThis.fetch;
     vi.stubGlobal("fetch", (url: string, init?: RequestInit) => (url.includes("/segments") ? gate.then(() => answer(url, init)) : answer(url, init)));
-    writeTrack("u1", "c1", { version: 1, mode: "original" });
+    writeTrack("u1", "c1", { version: 2, mode: "original" });
     const { result } = setup();
     await waitFor(() => expect(result.current?.originalId).toBe("r1"));
     expect(result.current?.status).toBe("loading");
@@ -166,7 +241,7 @@ describe("useContentSubtitles", () => {
     routes({
       "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1")] } },
     });
-    writeTrack("u1", "c1", { version: 1, mode: "translation" });
+    writeTrack("u1", "c1", { version: 2, mode: "translation" });
     const openTab = vi.fn();
     const { result } = setup(openTab);
     await waitFor(() => expect(result.current?.status).toBe("ready"));

@@ -15,7 +15,7 @@ import {
   videoFormat,
 } from "../../../../src/web/pages/content/burn-dialog.tsx";
 import { ContentPageProvider, type ContentPageState } from "../../../../src/web/pages/content/content-context.tsx";
-import { resetSubtitlePrefsMemory, writeAppearance, writePlacement, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
+import { resetSubtitlePrefsMemory, subtitlePrefKeys, writeAppearance, writePlacement, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
 import { contentDetail, revision } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
@@ -41,6 +41,8 @@ describe("burn sources", () => {
   it("exports a translation over its parent and offers only the original's translations", () => {
     expect(burnSources(english, all)).toEqual({ original, translations: [english] });
     expect(burnSources(original, all)).toEqual({ original, translations: [english] });
+    // An archived translation is no choice, and nothing falls back to it.
+    expect(burnSources(original, [original, { ...english, archived: true }])).toEqual({ original, translations: [] });
   });
 
   it("always sends the full output choice and names the translation only for the translation modes", () => {
@@ -61,18 +63,25 @@ describe("burn sources", () => {
 
   it("starts from what the player shows, else from the version open in the tab", () => {
     const all2 = [original, proofread, english, japanese];
-    const off = { version: 1, mode: "off" } as const;
-    expect(burnDefaults(original, all2, "r1", off)).toEqual({ originalId: "r1", mode: "original", translationId: "t1" });
-    expect(burnDefaults(japanese, all2, "r1", off)).toEqual({ originalId: "r1", mode: "bilingual", translationId: "t2" });
-    expect(burnDefaults(proofread, all2, "r1", { version: 1, mode: "translation", translationRevisionId: "t2" })).toEqual({
+    const off = { version: 2, mode: "off" } as const;
+    const currents = { en: "t1", ja: "t2" };
+    expect(burnDefaults(original, all2, "r1", off, currents)).toEqual({ originalId: "r1", mode: "original", translationId: "t1" });
+    expect(burnDefaults(japanese, all2, "r1", off, currents)).toEqual({ originalId: "r1", mode: "bilingual", translationId: "t2" });
+    expect(burnDefaults(proofread, all2, "r1", { version: 2, mode: "translation", translation: { language: "ja" } }, currents)).toEqual({
       originalId: "r1",
       mode: "translation",
       translationId: "t2",
     });
+    // With subtitles off, an original open in the tab still pairs with the player's language.
+    expect(burnDefaults(original, all2, "r1", { version: 2, mode: "off", translation: { language: "ja" } }, currents)).toEqual({
+      originalId: "r1",
+      mode: "original",
+      translationId: "t2",
+    });
     // The player's original without translations falls back to the original only.
-    expect(burnDefaults(original, all2, "r1", { version: 1, mode: "bilingual", revisionId: "r2" })).toEqual({ originalId: "r2", mode: "original", translationId: undefined });
+    expect(burnDefaults(original, all2, "r1", { version: 2, mode: "bilingual", revisionId: "r2" }, currents)).toEqual({ originalId: "r2", mode: "original", translationId: undefined });
     // A version the player remembers that no longer exists is ignored.
-    expect(burnDefaults(original, all2, "r1", { version: 1, mode: "bilingual", revisionId: "gone" })).toEqual({ originalId: "r1", mode: "original", translationId: "t1" });
+    expect(burnDefaults(original, all2, "r1", { version: 2, mode: "bilingual", revisionId: "gone" }, currents)).toEqual({ originalId: "r1", mode: "original", translationId: "t1" });
   });
 
   it("picks the source video the way the server does", () => {
@@ -118,9 +127,19 @@ describe("BurnDialog", () => {
   const SOURCE = asset("a1", { kind: "external_local", localPath: "D:\\Videos\\第一讲.mp4", sizeBytes: 3 * 1024 * 1024 });
 
   function renderDialog(
-    options: { media?: MediaAssetDto[]; revisions?: TranscriptRevisionDto[]; burn?: Parameters<typeof mockApi>[0][string]; playingAssetId?: string } = {},
+    options: {
+      media?: MediaAssetDto[];
+      revisions?: TranscriptRevisionDto[];
+      burn?: Parameters<typeof mockApi>[0][string];
+      playingAssetId?: string;
+      translations?: Parameters<typeof mockApi>[0][string];
+    } = {},
   ) {
-    const api = mockApi({ "GET /api/auth/me": ME, "POST /api/contents/c1/burn": options.burn ?? { status: 202, body: { taskId: "t7" } } });
+    const api = mockApi({
+      "GET /api/auth/me": ME,
+      "POST /api/contents/c1/burn": options.burn ?? { status: 202, body: { taskId: "t7" } },
+      ...(options.translations === undefined ? {} : { "GET /api/contents/c1/translations": options.translations }),
+    });
     const page: ContentPageState = {
       content: contentDetail({ media: options.media ?? [SOURCE] }) as ContentDetailDto,
       primaryRevisionId: "r1",
@@ -161,7 +180,8 @@ describe("BurnDialog", () => {
     const placement = { version: 1, xBp: 5000, yBp: 500, anchor: "top" } as const;
     writeAppearance("u1", appearance);
     writePlacement("u1", "c1", placement);
-    writeTrack("u1", "c1", { version: 1, mode: "translation", translationRevisionId: "t2" });
+    // A first-format preference: its translation is read as following Japanese.
+    localStorage.setItem(subtitlePrefKeys.track("u1", "c1"), JSON.stringify({ version: 1, mode: "translation", translationRevisionId: "t2" }));
     const { dialog, calls, onStarted } = renderDialog();
     await waitFor(() => expect((within(dialog).getByLabelText("仅译文") as HTMLInputElement).checked).toBe(true));
     expect((within(dialog).getByTestId("burn-translation") as HTMLSelectElement).value).toBe("t2");
@@ -181,6 +201,31 @@ describe("BurnDialog", () => {
       style: { appearance, placement },
       sourceAssetId: "a1",
     });
+  });
+
+  it("starts from the translation the player would show: the language's current version, or the locked one", async () => {
+    // en: t1 is current although t3 is newer; ja: t2.
+    const enCurrent = revision("t1", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 2 });
+    const ja = revision("t2", { kind: "translated", language: "ja", parentRevisionId: "r1", createdAt: 3 });
+    const enNewer = revision("t3", { kind: "translated", language: "en", parentRevisionId: "r1", createdAt: 4 });
+    const revisions = [original, enCurrent, ja, enNewer];
+    const translations = {
+      body: {
+        translations: [
+          { artifactId: "a-en", targetLanguage: "en", current: enCurrent, revisions: [enCurrent, enNewer], stale: false },
+          { artifactId: "a-ja", targetLanguage: "ja", current: ja, revisions: [ja], stale: false },
+        ],
+        activeTasks: [],
+      },
+    };
+    const first = renderDialog({ revisions, translations });
+    fireEvent.click(within(first.dialog).getByLabelText("双语"));
+    await waitFor(() => expect((within(first.dialog).getByTestId("burn-translation") as HTMLSelectElement).value).toBe("t1"));
+    first.unmount();
+
+    writeTrack("u1", "c1", { version: 2, mode: "bilingual", translation: { language: "en", lockedRevisionId: "t3" } });
+    const second = renderDialog({ revisions, translations });
+    await waitFor(() => expect((within(second.dialog).getByTestId("burn-translation") as HTMLSelectElement).value).toBe("t3"));
   });
 
   it("asks for a container only for soft subtitles, MKV first", async () => {

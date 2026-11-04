@@ -8,6 +8,7 @@ import {
   WORK_UNIT_STATUSES,
 } from "../enums.ts";
 import { appErrorSchema } from "../errors.ts";
+import { TASK_HISTORY_HIDE_MAX } from "../defaults.ts";
 import { WORK_STEP_NAMES } from "../work-steps.ts";
 import { asrModelRefSchema, modelRefSchema } from "./model-ref.ts";
 
@@ -129,3 +130,22 @@ export type RetryStageRequest = z.infer<typeof retryStageRequestSchema>;
 /** Body of the 202 answers that (re)start work on a Task. */
 export const taskAcceptedDtoSchema = z.object({ taskId: idSchema });
 export type TaskAcceptedDto = z.infer<typeof taskAcceptedDtoSchema>;
+
+/**
+ * `POST /api/tasks/history/hide`: removes the owner's finished Tasks among `taskIds` from the
+ * task panel's history. Nothing is deleted; ids that are not the owner's finished, shown Tasks
+ * are skipped without telling them apart.
+ */
+export const taskHistoryHideRequestSchema = z.object({ taskIds: z.array(idSchema).min(1).max(TASK_HISTORY_HIDE_MAX) }).strict();
+export type TaskHistoryHideRequest = z.infer<typeof taskHistoryHideRequestSchema>;
+
+/** Answer of `POST /api/tasks/history/hide` and `/clear`: how many Tasks this removal hid, and its id for the undo. */
+export const taskHistoryHiddenDtoSchema = z.object({ hidden: z.number().int().nonnegative(), batchId: idSchema });
+export type TaskHistoryHiddenDto = z.infer<typeof taskHistoryHiddenDtoSchema>;
+
+/** `POST /api/tasks/history/restore`: shows again exactly the Tasks one removal hid. */
+export const taskHistoryRestoreRequestSchema = z.object({ batchId: idSchema }).strict();
+export type TaskHistoryRestoreRequest = z.infer<typeof taskHistoryRestoreRequestSchema>;
+
+export const taskHistoryRestoredDtoSchema = z.object({ restored: z.number().int().nonnegative() });
+export type TaskHistoryRestoredDto = z.infer<typeof taskHistoryRestoredDtoSchema>;

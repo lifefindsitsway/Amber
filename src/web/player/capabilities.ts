@@ -4,6 +4,11 @@ import type { ContentDto } from "../../shared/dto/content.ts";
 export interface PlayerCapabilities {
   seekMode: "direct" | "reload" | "unsupported";
   timeTracking: "supported" | "unsupported";
+  /**
+   * Whether the position remembered from an earlier visit is written and applied here: true
+   * only for a player that can be placed at it and whose playback the user controls (the local one).
+   */
+  remembersPosition: boolean;
 }
 
 export type PlayerSource =
@@ -13,11 +18,11 @@ export type PlayerSource =
   | { kind: "none" };
 
 export const CAPABILITIES: Readonly<Record<PlayerSource["kind"], PlayerCapabilities>> = {
-  youtube: { seekMode: "direct", timeTracking: "supported" },
+  youtube: { seekMode: "direct", timeTracking: "supported", remembersPosition: false },
   // The embedded Bilibili player has URL parameters only: no postMessage or JS API.
-  bilibili: { seekMode: "reload", timeTracking: "unsupported" },
-  local: { seekMode: "direct", timeTracking: "supported" },
-  none: { seekMode: "unsupported", timeTracking: "unsupported" },
+  bilibili: { seekMode: "reload", timeTracking: "unsupported", remembersPosition: false },
+  local: { seekMode: "direct", timeTracking: "supported", remembersPosition: true },
+  none: { seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false },
 };
 
 /** Which player a Content plays in, from its source identifiers. */

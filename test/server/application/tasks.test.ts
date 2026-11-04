@@ -827,3 +827,25 @@ async function errorOf(work: () => unknown) {
   }
   return undefined;
 }
+
+describe("task history removal", () => {
+  it("marks the removal with a new batch id , restoring by that batch", () => {
+    const h = harness();
+    const service = new TaskService({ repository: h.repository, bus: h.bus, control: { kick: () => undefined, abortTask: () => undefined }, secrets: h.secrets, now: () => 4242 });
+    const taskId = createTaskOfKind(h, "regenerate_summary", {});
+    h.repository.withTransaction((scope) => scope.tasks.setProjection(LOCAL.userId, taskId, "succeeded", 10));
+    const first = service.hideHistory(LOCAL, [taskId]);
+    expect(first.hidden).toBe(1);
+    expect(first.batchId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/u);
+    const shown = () => h.repository.withTransaction((scope) => scope.tasks.list(LOCAL.userId, { limit: 10, history: true })).length;
+    expect(shown()).toBe(0);
+    expect(service.hideHistory(BOB, [taskId]).hidden).toBe(0);
+    expect(service.restoreHistory(BOB, first.batchId)).toEqual({ restored: 0 });
+    const cleared = service.clearHistory(LOCAL);
+    expect(cleared).toMatchObject({ hidden: 0 });
+    expect(cleared.batchId).not.toBe(first.batchId);
+    expect(service.restoreHistory(LOCAL, first.batchId)).toEqual({ restored: 1 });
+    expect(shown()).toBe(1);
+    expect(service.clearHistory(LOCAL).hidden).toBe(1);
+  });
+});

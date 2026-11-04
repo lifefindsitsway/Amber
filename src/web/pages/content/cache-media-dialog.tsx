@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { CACHE_MEDIA_TYPES, type CacheMediaQuality, type CacheMediaType } from "../../../shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_HEIGHT, DISPLAY_NAME_MAX_CHARS } from "../../../shared/defaults.ts";
+import { CACHE_INSPECT_DEBOUNCE_MS, CACHE_MEDIA_MAX_HEIGHT, DISPLAY_NAME_MAX_CHARS } from "../../../shared/defaults.ts";
 import type { MediaAssetDto } from "../../../shared/dto/content.ts";
 import {
   cacheMediaInspectDtoSchema,
@@ -37,6 +37,8 @@ const DEFAULT_QUALITY: CacheMediaQuality = CACHE_MEDIA_QUALITIES.find((quality) 
 const STANDARD_PICTURE_TOLERANCE = 1.05;
 /** What an inspection fails with when the source no longer offers the chosen tier. */
 const QUALITY_UNAVAILABLE = "invalid_request.cache_quality_unavailable";
+/** What a submission fails with when the check it names is gone, or was for another choice. */
+const INSPECTION_EXPIRED = "conflict.cache_inspection_expired";
 
 /** A quality option: a tier, with the picture size of its stream when the source was probed. */
 type QualityOption = { tier: CacheMediaQuality } & Partial<Pick<CacheVideoQuality, "width" | "height">>;
@@ -159,12 +161,16 @@ function cacheRowsOfInspection(caches: CacheMediaInspectDto["caches"]): CacheRow
  * probes the tiers the source currently offers once and lists only those; until the probe
  * answers a video cannot be started, and when it fails the general-purpose tiers are offered
  * instead. An inspection that finds the chosen tier gone probes the list again.
- * 「开始缓存」 first asks the server
- * what the request would produce: the expected file name, the caches it replaces, another
- * Content's cache it would overwrite (which needs a confirmation) and what blocks it. When
- * none of that needs the user (`needsReview`), the `cache_media` Task starts right away;
- * otherwise the dialog shows the answer and 「确认缓存」 starts it. The caller follows the
- * Task's progress through `onStarted`.
+ * Once the choice is complete (the name after typing pauses) the dialog checks it in the
+ * background: the expected file name and size, the caches it replaces, another Content's
+ * cache it would overwrite (which needs a confirmation) and what blocks it, answered with a
+ * token that names the check. A change to the choice aborts the check and drops its answer.
+ * 「开始缓存」 locks the form and starts the `cache_media` Task with that token as soon as the
+ * check is answered and needs nothing from the user (`needsReview`); a check still running is
+ * waited for, and the wait can be cancelled. When the answer needs the user, the dialog shows
+ * it and 「确认缓存」 starts the Task. A token the server no longer knows makes the dialog
+ * check again once and submit the same intent. The caller follows the Task's progress
+ * through `onStarted`.
  * Below, the Content's caches can be deleted one by one, except while it has unfinished Tasks.
  */
 export function CacheMediaDialog(props: {
@@ -186,6 +192,60 @@ export function CacheMediaDialog(props: {
   );
 }
 
+/** What a check is about: the three things the user chooses. */
+interface CheckParams {
+  type: CacheMediaType;
+  quality: CacheMediaQuality;
+  fileName: string;
+}
+
+/** Two choices are the same check when this is equal; the quality tier only counts for a video. */
+function checkKey(params: CheckParams): string {
+  return params.type === "video" ? `video|${params.quality}|${params.fileName}` : `audio||${params.fileName}`;
+}
+
+/** The latest check of the choice `key` stands for: running, answered or failed. */
+type Check = { key: string; params: CheckParams } & (
+  | { status: "checking" }
+  | { status: "ready"; answer: CacheMediaInspectDto }
+  | { status: "failed"; error: unknown }
+);
+
+/**
+ * What the user asked for by clicking 「开始缓存」: the Task starts as soon as the check of
+ * this choice is answered and needs nothing from the user. `retried` is set once the check
+ * was redone because its token had expired; `confirmed` carries what the user had reviewed
+ * when it was.
+ */
+interface StartIntent {
+  key: string;
+  retried: boolean;
+  confirmed?: { answer: CacheMediaInspectDto; overwriteAssetId?: string };
+}
+
+/** One submission of the Task, with what is needed to judge its failure. */
+interface StartRequest {
+  request: CacheMediaRequest;
+  params: CheckParams;
+  answer: CacheMediaInspectDto;
+  overwriteAssetId?: string;
+  /** The user reviewed the answer (or confirmed it) rather than it needing nothing. */
+  confirmed: boolean;
+  retried: boolean;
+}
+
+/** Whether two answers show the user the same decision: the same estimate, replacements and overwrite. */
+function sameReview(a: CacheMediaInspectDto, b: CacheMediaInspectDto): boolean {
+  const replaced = (answer: CacheMediaInspectDto): string => answer.replaces.map((item) => item.assetId).join(",");
+  return (
+    a.expected.type === b.expected.type &&
+    a.expected.height === b.expected.height &&
+    a.expectedFileName === b.expectedFileName &&
+    a.overwrite?.assetId === b.overwrite?.assetId &&
+    replaced(a) === replaced(b)
+  );
+}
+
 function CacheMediaForm(props: { contentId: string; title: string | undefined; media: readonly MediaAssetDto[]; onClose: () => void; onStarted: (taskId: string) => void }) {
   const { t } = useTranslation();
   const client = useApi();
@@ -193,8 +253,10 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   const [type, setType] = useState<CacheMediaType>("video");
   const [quality, setQuality] = useState<CacheMediaQuality>(DEFAULT_QUALITY);
   const [fileName, setFileName] = useState(props.title ?? "");
+  // The name the background check works on: it follows the typed name once typing pauses.
+  const [settledName, setSettledName] = useState(fileName);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
-  // Set once an inspection found something for the user to decide (or its automatic start failed).
+  // Set when a submission failed with the answer still good, so 「确认缓存」 can retry it.
   const [reviewing, setReviewing] = useState(false);
   const path = `/api/contents/${encodeURIComponent(props.contentId)}/cache-media`;
   const [probe, setProbe] = useState<QualityProbe>({ kind: "loading" });
@@ -209,9 +271,9 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
       (answer) => {
         if (controller.signal.aborted) return;
         setProbe({ kind: "ready", status: answer.status, qualities: answer.qualities });
-        // Only the tier changes: an audio inspection in flight is not about the tier, and no
-        // video inspection can be, since a video cannot be started before this answer. A
-        // second probe keeps the user's tier while the source still offers it.
+        // Only the tier changes: an audio check in flight is not about the tier, and no
+        // video check can be, since none starts before this answer. A second probe keeps the
+        // user's tier while the source still offers it.
         if (answer.status === "available") {
           const tiers = answer.qualities.map((option) => option.tier);
           setQuality((current) => (reprobe && tiers.includes(current) ? current : defaultCacheQuality(tiers)));
@@ -230,48 +292,203 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   const listed = probe.kind === "ready" && probe.status === "available";
   const qualityOptions: readonly QualityOption[] = listed ? probe.qualities : CACHE_MEDIA_QUALITIES.map((tier) => ({ tier }));
   const videoBlocked = probe.kind === "loading" || (probe.kind === "ready" && probe.status === "audio_only");
-  const inspect = useMutation({
-    mutationFn: (body: CacheMediaRequest) => client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body }),
-    // The inspection reads the quality of older caches from their files; show it.
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.content(props.contentId) }),
-  });
+
+  // The check of the current choice runs on its own once the choice is complete; a choice
+  // that changes meanwhile aborts it, and an answer arriving late is dropped by the abort.
+  const [check, setCheck] = useState<Check | undefined>(undefined);
+  const running = useRef<{ key: string; controller: AbortController } | undefined>(undefined);
+  // Set after a check found its tier gone or a submission was refused: nothing then starts
+  // by itself until the user edits the choice or clicks, or a bad answer would loop.
+  const [autoPaused, setAutoPaused] = useState(false);
+  const [intent, setIntentState] = useState<StartIntent | undefined>(undefined);
+  // Read by the answers of requests in flight, which would otherwise see the intent of their own render.
+  const intentRef = useRef<StartIntent | undefined>(undefined);
+  const setIntent = (next: StartIntent | undefined): void => {
+    intentRef.current = next;
+    setIntentState(next);
+  };
+  const closed = useRef(false);
+  const abortRunning = useCallback((): void => {
+    const current = running.current;
+    if (current === undefined) return;
+    current.controller.abort();
+    running.current = undefined;
+    setCheck((now) => (now?.status === "checking" ? undefined : now));
+  }, []);
+  // Closing the dialog drops whatever is in flight, including a wait for a Task to start.
+  useEffect(() => {
+    closed.current = false;
+    return () => {
+      closed.current = true;
+      abortRunning();
+    };
+  }, [abortRunning]);
+
+  const liveKey = checkKey({ type, quality, fileName });
+  const settled = settledName === fileName;
+  useEffect(() => {
+    const flying = running.current;
+    if (!(type === "audio" || (probe.kind === "ready" && probe.status !== "audio_only"))) {
+      // Without a quality list there is nothing to check, unless a click is waiting on a check.
+      if (intentRef.current === undefined) abortRunning();
+      return;
+    }
+    if (flying !== undefined && flying.key !== liveKey) abortRunning();
+    if (!settled || autoPaused) return;
+    if (running.current?.key === liveKey || check?.key === liveKey) return;
+    startCheck({ type, quality, fileName });
+    // `startCheck` only reads refs and stable setters, so it is not a dependency.
+  }, [type, quality, fileName, probe, liveKey, settled, autoPaused, check?.key]);
+
+  const invalidateCheck = (): void => {
+    abortRunning();
+    setCheck(undefined);
+    setIntent(undefined);
+    setReviewing(false);
+    setOverwriteConfirmed(false);
+  };
+
   const start = useMutation({
-    mutationFn: (body: CacheMediaRequest) => client.post(path, taskAcceptedDtoSchema, { body, idempotent: true }),
+    mutationFn: (submission: StartRequest) => client.post(path, taskAcceptedDtoSchema, { body: submission.request, idempotent: true }),
     onSuccess: (accepted) => {
       void queryClient.invalidateQueries({ queryKey: contentKeys.cacheTask(props.contentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
       props.onClose();
       props.onStarted(accepted.taskId);
     },
-    // A conflict means the inspection is out of date: the next click inspects again. Any other
-    // failure leaves the answer on screen, so 「确认缓存」 can retry it.
-    onError: (error) => {
+    onError: (error, submission) => {
+      if (closed.current) return;
+      if (error instanceof ApiError && error.error.code === INSPECTION_EXPIRED) {
+        if (submission.retried) {
+          // Twice is enough: the error stays on screen and the next click checks again.
+          invalidateCheck();
+          setAutoPaused(true);
+        } else {
+          // The token is gone, not the request: check again and submit the same intent.
+          start.reset();
+          setOverwriteConfirmed(false);
+          setIntent({
+            key: checkKey(submission.params),
+            retried: true,
+            ...(submission.confirmed ? { confirmed: { answer: submission.answer, ...(submission.overwriteAssetId === undefined ? {} : { overwriteAssetId: submission.overwriteAssetId }) } } : {}),
+          });
+          startCheck(submission.params);
+        }
+        return;
+      }
+      // Another conflict means the answer is out of date; the next click checks again. Any
+      // other failure leaves the answer on screen, so 「确认缓存」 can retry it.
       if (error instanceof ApiError && error.status === 409) {
-        inspect.reset();
-        setOverwriteConfirmed(false);
-        setReviewing(false);
+        invalidateCheck();
+        setAutoPaused(true);
       } else {
         setReviewing(true);
       }
     },
   });
-  // Any change to the choice makes the inspection stale.
-  const edit = (apply: () => void): void => {
+
+  function submit(answer: CacheMediaInspectDto, params: CheckParams, options: { overwriteAssetId?: string; confirmed: boolean; retried: boolean }): void {
+    const request: CacheMediaRequest = { ...cacheMediaRequest(params.type, params.quality, params.fileName, options.overwriteAssetId), inspectionId: answer.inspectionId };
+    setIntent(undefined);
+    start.mutate({ request, params, answer, confirmed: options.confirmed, retried: options.retried, ...(options.overwriteAssetId === undefined ? {} : { overwriteAssetId: options.overwriteAssetId }) });
+  }
+
+  /** What follows an answer the user is waiting for: submit it, or stop where the user has to decide. */
+  function settle(answer: CacheMediaInspectDto, params: CheckParams, wanted: StartIntent): void {
+    if (wanted.confirmed !== undefined) {
+      // The check was redone behind a decision the user had already made: it stands if the
+      // new answer shows the same thing, else the user decides again.
+      if (cacheBlockers(answer).length === 0 && sameReview(answer, wanted.confirmed.answer)) {
+        submit(answer, params, { ...(wanted.confirmed.overwriteAssetId === undefined ? {} : { overwriteAssetId: wanted.confirmed.overwriteAssetId }), confirmed: true, retried: true });
+      } else {
+        setOverwriteConfirmed(false);
+        setIntent(undefined);
+      }
+      return;
+    }
+    if (needsReview(answer, params.type, params.quality)) {
+      setIntent(undefined);
+      return;
+    }
+    submit(answer, params, { confirmed: false, retried: wanted.retried });
+  }
+
+  function startCheck(params: CheckParams): void {
+    const key = checkKey(params);
+    abortRunning();
+    const controller = new AbortController();
+    running.current = { key, controller };
+    setCheck({ key, params, status: "checking" });
+    const body = cacheMediaRequest(params.type, params.quality, params.fileName);
+    client.post(`${path}/inspect`, cacheMediaInspectDtoSchema, { body, signal: controller.signal }).then(
+      (answer) => {
+        if (controller.signal.aborted) return;
+        running.current = undefined;
+        setCheck({ key, params, status: "ready", answer });
+        // The inspection reads the quality of older caches from their files; show it.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.content(props.contentId) });
+        const wanted = intentRef.current;
+        if (wanted?.key === key) settle(answer, params, wanted);
+      },
+      (failure) => {
+        if (controller.signal.aborted) return;
+        running.current = undefined;
+        setCheck({ key, params, status: "failed", error: failure });
+        if (intentRef.current?.key === key) setIntent(undefined);
+        // The source no longer offers the chosen tier: the error stays on screen and the
+        // list is probed again for the user to choose from; nothing starts.
+        if (failure instanceof ApiError && failure.error.code === QUALITY_UNAVAILABLE) {
+          setAutoPaused(true);
+          setProbe({ kind: "loading" });
+          setProbeSeq((seq) => seq + 1);
+        }
+      },
+    );
+  }
+
+  // Any change to the choice makes the check stale. A tier or type change is not typing, so
+  // it needs no pause before the new check.
+  const edit = (apply: () => void, options: { settleName?: boolean } = {}): void => {
     apply();
-    inspect.reset();
+    if (options.settleName === true) setSettledName(fileName);
     start.reset();
-    setOverwriteConfirmed(false);
-    setReviewing(false);
+    setAutoPaused(false);
+    invalidateCheck();
   };
-  const inspection = inspect.data;
-  const shown = reviewing ? inspection : undefined;
-  // The form stays put while a Task is being started from it.
-  const locked = start.isPending;
-  const blockers = inspection === undefined ? [] : cacheBlockers(inspection);
-  const overwrite = inspection?.overwrite;
-  const canConfirm = inspection !== undefined && blockers.length === 0 && (overwrite === undefined || overwriteConfirmed) && !start.isPending;
-  const rows = inspection === undefined ? cacheRowsOf(props.media) : cacheRowsOfInspection(inspection.caches);
-  const error = start.error ?? inspect.error;
+  useEffect(() => {
+    if (settled) return;
+    const timer = setTimeout(() => setSettledName(fileName), CACHE_INSPECT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [settled, fileName]);
+
+  const begin = (): void => {
+    start.reset();
+    setAutoPaused(false);
+    setSettledName(fileName);
+    const params: CheckParams = { type, quality, fileName };
+    const wanted: StartIntent = { key: liveKey, retried: false };
+    setIntent(wanted);
+    if (check?.key === liveKey && check.status === "ready") {
+      settle(check.answer, params, wanted);
+    } else if (running.current?.key !== liveKey) {
+      startCheck(params);
+    }
+  };
+
+  const current = check?.key === liveKey ? check : undefined;
+  const answer = current?.status === "ready" ? current.answer : undefined;
+  const shown = answer !== undefined && (reviewing || needsReview(answer, type, quality)) ? answer : undefined;
+  // The form stays put while a Task is being started from it or a click waits for the check.
+  const locked = start.isPending || intent !== undefined;
+  const blockers = answer === undefined ? [] : cacheBlockers(answer);
+  const overwrite = answer?.overwrite;
+  const canConfirm = answer !== undefined && blockers.length === 0 && (overwrite === undefined || overwriteConfirmed) && !locked;
+  // The list follows the latest answer, even one for a choice since changed: its caches are the Content's.
+  const latest = check?.status === "ready" ? check.answer : undefined;
+  const rows = latest === undefined ? cacheRowsOf(props.media) : cacheRowsOfInspection(latest.caches);
+  const checkable = type === "audio" || (probe.kind === "ready" && probe.status !== "audio_only");
+  const phase = !checkable ? undefined : current !== undefined ? current.status : autoPaused ? undefined : "checking";
+  const error = start.error ?? (check?.status === "failed" ? check.error : undefined);
   return (
     <div className="flex flex-col gap-3 text-sm">
       <fieldset className="flex flex-col gap-1">
@@ -283,7 +500,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
               name="cache-type"
               value={value}
               checked={type === value}
-              onChange={() => edit(() => setType(value))}
+              onChange={() => edit(() => setType(value), { settleName: true })}
               disabled={locked}
               data-testid={`cache-type-${value}`}
             />
@@ -308,7 +525,7 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
               value={quality}
               onChange={(event) => {
                 const next = qualityOptions.find((option) => String(option.tier) === event.target.value);
-                if (next !== undefined) edit(() => setQuality(next.tier));
+                if (next !== undefined) edit(() => setQuality(next.tier), { settleName: true });
               }}
               disabled={locked}
               data-testid="cache-quality"
@@ -345,6 +562,11 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
           data-testid="cache-file-name"
         />
       </label>
+      {phase === undefined || phase === "failed" ? null : (
+        <p className={`text-xs ${answer !== undefined && !answer.disk.ok ? "text-danger" : "text-muted"}`} role="status" data-testid="cache-preflight">
+          {answer === undefined ? t("contentView.cache.preflightChecking") : preflightText(answer, t)}
+        </p>
+      )}
       {shown === undefined ? null : (
         <InspectionPanel
           inspection={shown}
@@ -359,59 +581,40 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
       <div className="flex justify-end gap-2">
         <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
         {shown === undefined ? (
-          <Button
-            variant="primary"
-            disabled={inspect.isPending || start.isPending || (type === "video" && videoBlocked)}
-            onClick={() => {
-              start.reset();
-              const body = cacheMediaRequest(type, quality, fileName);
-              const requestedType = type;
-              const requestedQuality = quality;
-              inspect.mutate(body, {
-                // Passed to this call rather than to `useMutation`: it is dropped once the dialog
-                // closes or the choice changes (`inspect.reset()`), so neither starts a Task.
-                onSuccess: (answer) => {
-                  if (needsReview(answer, requestedType, requestedQuality)) {
-                    setReviewing(true);
-                  } else {
-                    start.mutate(body);
-                  }
-                },
-                // The source no longer offers the chosen tier: the error stays on screen and
-                // the list is probed again for the user to choose from; nothing starts.
-                onError: (failure) => {
-                  if (failure instanceof ApiError && failure.error.code === QUALITY_UNAVAILABLE) {
-                    setProbe({ kind: "loading" });
-                    setProbeSeq((seq) => seq + 1);
-                  }
-                },
-              });
-            }}
-            data-testid="cache-inspect"
-          >
-            {inspect.isPending ? t("contentView.cache.inspecting") : start.isPending ? t("contentView.cache.starting") : t("contentView.cache.start")}
-          </Button>
+          <>
+            {intent === undefined || start.isPending ? null : (
+              <Button onClick={() => setIntent(undefined)} data-testid="cache-cancel-wait">
+                {t("contentView.cache.cancelWaiting")}
+              </Button>
+            )}
+            <Button variant="primary" disabled={locked || (type === "video" && videoBlocked)} onClick={begin} data-testid="cache-inspect">
+              {start.isPending ? t("contentView.cache.starting") : intent !== undefined ? t("contentView.cache.waiting") : t("contentView.cache.start")}
+            </Button>
+          </>
         ) : (
           <Button
             variant="primary"
             disabled={!canConfirm}
-            onClick={() => start.mutate(cacheMediaRequest(type, quality, fileName, overwriteConfirmed ? overwrite?.assetId : undefined))}
+            onClick={() => submit(shown, { type, quality, fileName }, { ...(overwriteConfirmed && overwrite !== undefined ? { overwriteAssetId: overwrite.assetId } : {}), confirmed: true, retried: false })}
             data-testid="cache-confirm"
           >
-            {t("contentView.cache.confirm")}
+            {start.isPending ? t("contentView.cache.starting") : t("contentView.cache.confirm")}
           </Button>
         )}
       </div>
-      <CacheList
-        contentId={props.contentId}
-        rows={rows}
-        onDeleted={() => {
-          inspect.reset();
-          setReviewing(false);
-        }}
-      />
+      <CacheList contentId={props.contentId} rows={rows} onDeleted={invalidateCheck} />
     </div>
   );
+}
+
+/** 「预计 1.2 GB · 保存为 «名称»」, with the low disk named after it. */
+function preflightText(answer: CacheMediaInspectDto, t: TFunction): string {
+  const name = answer.expectedFileName;
+  const preview =
+    answer.expected.sizeBytes === undefined
+      ? t("contentView.cache.preflightPreviewNoSize", { name })
+      : t("contentView.cache.preflightPreview", { size: formatBytes(answer.expected.sizeBytes), name });
+  return answer.disk.ok ? preview : `${preview} · ${t("contentView.cache.preflightDiskLow")}`;
 }
 
 function InspectionPanel(props: {

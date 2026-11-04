@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TASK_HISTORY_PAGE_SIZE } from "../../../src/shared/defaults.ts";
+import { TASK_HISTORY_HIDE_MAX, TASK_HISTORY_PAGE_SIZE } from "../../../src/shared/defaults.ts";
 import { collectionDetailDtoSchema } from "../../../src/shared/dto/collection.ts";
 import type { ContentEventBus } from "../../../src/web/api/content-events.ts";
 import { useApi, useContentEvents } from "../../../src/web/api/context.tsx";
@@ -14,7 +14,7 @@ import { baseRoutes, collectionDetail, stageRun, task, taskDetail } from "../../
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 
 /** The first history page the panel reads. */
-const HISTORY_PATH = `/api/tasks?finished=1&limit=${TASK_HISTORY_PAGE_SIZE}`;
+const HISTORY_PATH = `/api/tasks?history=1&limit=${TASK_HISTORY_PAGE_SIZE}`;
 const HISTORY = `GET ${HISTORY_PATH}`;
 
 const INSTANCE = {
@@ -551,7 +551,7 @@ describe("task card context menu", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  it("offers only viewing on a history card", async () => {
+  it("offers viewing and removing on a history card", async () => {
     mockApi({
       ...baseRoutes(),
       "GET /api/tasks?unfinished=1": { body: { items: [], eventSeq: 0 } },
@@ -561,7 +561,7 @@ describe("task card context menu", () => {
     renderPanel(onOpenChange);
     const card = (await screen.findByText("第二讲")).closest("[data-testid='task-history-card']") as HTMLElement;
     expect(rightClick(card)).toBe(true);
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["查看"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["查看", "从历史移除"]);
     fireEvent.click(screen.getByTestId("context-menu-item-view"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/content-h1"));
@@ -578,5 +578,221 @@ describe("task card context menu", () => {
     const card = (await screen.findByText("导出")).closest("[data-testid='task-card']") as HTMLElement;
     expect(rightClick(card)).toBe(false);
     expect(screen.queryByTestId("context-menu")).toBeNull();
+  });
+});
+
+/** A history the test controls: hidden tasks leave `GET`, a restore brings back the batch. */
+function historyApi(initial: ReturnType<typeof task>[], extra: Record<string, Parameters<typeof mockApi>[0][string]> = {}) {
+  const hidden = new Map<string, string[]>();
+  const hiddenIds = (): Set<string> => new Set([...hidden.values()].flat());
+  let batches = 0;
+  const hide = (ids: string[]): { body: { hidden: number; batchId: string } } => {
+    const fresh = ids.filter((id) => !hiddenIds().has(id));
+    const batchId = `b${(batches += 1)}`;
+    hidden.set(batchId, fresh);
+    return { body: { hidden: fresh.length, batchId } };
+  };
+  const api = mockApi({
+    ...baseRoutes(),
+    "GET /api/tasks?unfinished=1": { body: { items: [], eventSeq: 0 } },
+    [HISTORY]: () => ({ body: { items: initial.filter((item) => !hiddenIds().has(item.id)), eventSeq: 0 } }),
+    "POST /api/tasks/history/hide": (call) => hide((call.body as { taskIds: string[] }).taskIds),
+    "POST /api/tasks/history/clear": () => hide(initial.filter((item) => !hiddenIds().has(item.id)).map((item) => item.id)),
+    "POST /api/tasks/history/restore": (call) => {
+      const batch = hidden.get((call.body as { batchId: string }).batchId) ?? [];
+      hidden.delete((call.body as { batchId: string }).batchId);
+      return { body: { restored: batch.length } };
+    },
+    ...extra,
+  });
+  return { ...api, posts: () => api.calls.filter((call) => call.method === "POST").map((call) => [call.path, call.body]), reads: () => api.calls.filter((call) => call.path === HISTORY_PATH).length };
+}
+
+const finishedTask = (id: string, title: string) => task(id, { targetTitle: title, statusProjection: "succeeded", finishedAt: 2 });
+const titles = () => screen.queryAllByTestId("task-history-card").map((card) => card.querySelector("p")?.textContent);
+
+describe("removing tasks from the history", () => {
+  it("lists the history with history=1, never finished=1", async () => {
+    const { calls } = historyApi([finishedTask("h1", "第一讲")]);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    expect(calls.filter((call) => call.method === "GET" && call.path.startsWith("/api/tasks?") && call.path.includes("limit=")).map((call) => call.path)).toEqual([HISTORY_PATH]);
+    // Two secondary actions in the heading row, none in the danger colour.
+    const actions = screen.getByTestId("task-history-actions");
+    expect([...actions.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["选择", "清空历史"]);
+    expect(actions.innerHTML).not.toContain("text-danger");
+  });
+
+  it("removes the picked cards, with an undo that puts the same batch back", async () => {
+    const { posts, reads } = historyApi([finishedTask("h1", "第一讲"), finishedTask("h2", "第二讲"), finishedTask("h3", "第三讲")]);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    expect(screen.queryAllByTestId("task-history-check")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("task-history-select"));
+    const checks = screen.getAllByTestId("task-history-check") as HTMLInputElement[];
+    expect(checks).toHaveLength(3);
+    expect(checks[0]?.getAttribute("aria-label")).toBe("选择任务记录「第一讲」");
+    const removeButton = screen.getByTestId("task-history-remove-selected") as HTMLButtonElement;
+    expect(removeButton.textContent).toBe("从历史移除（0）");
+    expect(removeButton.disabled).toBe(true);
+    fireEvent.click(checks[0] as HTMLElement);
+    fireEvent.click(checks[2] as HTMLElement);
+    expect(removeButton.textContent).toBe("从历史移除（2）");
+    const readsBefore = reads();
+    fireEvent.click(removeButton);
+    await waitFor(() => expect(posts()).toEqual([["/api/tasks/history/hide", { taskIds: ["h1", "h3"] }]]));
+    await waitFor(() => expect(titles()).toEqual(["第二讲"]));
+    // The mode ends, the notice offers the undo, and the list is read again.
+    expect(screen.queryByTestId("task-history-check")).toBeNull();
+    expect(screen.getByTestId("task-history-removed").textContent).toContain("已从任务栏移除 2 项");
+    await waitFor(() => expect(reads()).toBeGreaterThan(readsBefore));
+
+    fireEvent.click(screen.getByTestId("task-history-undo"));
+    await waitFor(() => expect(posts().at(-1)).toEqual(["/api/tasks/history/restore", { batchId: "b1" }]));
+    await waitFor(() => expect(titles()).toEqual(["第一讲", "第二讲", "第三讲"]));
+    expect(screen.queryByTestId("task-history-removed")).toBeNull();
+  });
+
+  it("selects all cards and toggles back, and leaves the mode with no request", async () => {
+    const { posts } = historyApi([finishedTask("h1", "第一讲"), finishedTask("h2", "第二讲")]);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    fireEvent.click(screen.getByTestId("task-history-select"));
+    fireEvent.click(screen.getByTestId("task-history-select-all"));
+    expect(screen.getByTestId("task-history-remove-selected").textContent).toBe("从历史移除（2）");
+    expect(screen.getByTestId("task-history-select-all").textContent).toBe("取消全选");
+    fireEvent.click(screen.getByTestId("task-history-select-all"));
+    expect(screen.getByTestId("task-history-remove-selected").textContent).toBe("从历史移除（0）");
+    fireEvent.click(screen.getByTestId("task-history-done"));
+    expect(screen.queryByTestId("task-history-check")).toBeNull();
+    expect(screen.getByTestId("task-history-select")).toBeTruthy();
+    expect(posts()).toEqual([]);
+  });
+
+  it("sends a long selection in requests of at most TASK_HISTORY_HIDE_MAX ids, and undoes every batch", async () => {
+    const total = TASK_HISTORY_HIDE_MAX + 5;
+    const all = Array.from({ length: total }, (_, index) => finishedTask(`h${index}`, `讲 ${index}`));
+    const { posts } = historyApi(all);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("讲 0");
+    fireEvent.click(screen.getByTestId("task-history-select"));
+    fireEvent.click(screen.getByTestId("task-history-select-all"));
+    fireEvent.click(screen.getByTestId("task-history-remove-selected"));
+    await waitFor(() => expect(screen.getByTestId("task-history-removed").textContent).toContain(`已从任务栏移除 ${total} 项`));
+    const hides = posts().filter(([path]) => path === "/api/tasks/history/hide");
+    expect(hides.map(([, body]) => (body as { taskIds: string[] }).taskIds.length)).toEqual([TASK_HISTORY_HIDE_MAX, 5]);
+    fireEvent.click(screen.getByTestId("task-history-undo"));
+    await waitFor(() => expect(posts().filter(([path]) => path === "/api/tasks/history/restore").map(([, body]) => body)).toEqual([{ batchId: "b1" }, { batchId: "b2" }]));
+  });
+
+  it("clears the history only after a confirmation that says nothing is deleted", async () => {
+    const { posts } = historyApi([finishedTask("h1", "第一讲"), finishedTask("h2", "第二讲")]);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    fireEvent.click(screen.getByTestId("task-history-clear"));
+    const dialog = await screen.findByRole("dialog", { name: "清空历史？" });
+    expect(dialog.textContent).toContain("只从任务栏移除，任务记录与已生成的内容都保留");
+    // Not the danger colour: nothing is deleted.
+    expect(within(dialog).getByRole("button", { name: "清空" }).className).not.toContain("text-danger");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "清空历史？" })).toBeNull());
+    expect(posts()).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("task-history-clear"));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "清空历史？" })).getByRole("button", { name: "清空" }));
+    await waitFor(() => expect(posts()).toEqual([["/api/tasks/history/clear", undefined]]));
+    await waitFor(() => expect(titles()).toEqual([]));
+    expect(screen.queryByTestId("task-history")).toBeNull();
+    expect((await screen.findByTestId("task-history-removed")).textContent).toContain("已从任务栏移除 2 项");
+  });
+
+  it("removes one card from its context menu", async () => {
+    const { posts } = historyApi([finishedTask("h1", "第一讲"), finishedTask("h2", "第二讲")]);
+    renderApp(
+      <ContextMenuHost blockNative={false}>
+        <TaskPanel open onOpenChange={() => undefined} />
+      </ContextMenuHost>,
+    );
+    const card = (await screen.findByText("第二讲")).closest("[data-testid='task-history-card']") as HTMLElement;
+    expect(rightClick(card)).toBe(true);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+    const item = screen.getByTestId("context-menu-item-remove-from-history");
+    fireEvent.pointerDown(item);
+    fireEvent.click(item);
+    await waitFor(() => expect(posts()).toEqual([["/api/tasks/history/hide", { taskIds: ["h2"] }]]));
+    await waitFor(() => expect(titles()).toEqual(["第一讲"]));
+    expect(screen.getByTestId("task-history-removed").textContent).toContain("已从任务栏移除 1 项");
+  });
+
+  it("hides the card before the server answers, and puts it back when the request fails", async () => {
+    let answer: (reply: { status: number; body: unknown }) => void = () => undefined;
+    const pending = new Promise<{ status: number; body: unknown }>((resolve) => {
+      answer = resolve;
+    });
+    const failure = { class: "internal", code: "internal", retryDisposition: "safe", userMessage: "移除失败" };
+    historyApi([finishedTask("h1", "第一讲"), finishedTask("h2", "第二讲")]);
+    // The held answer: the route table answers synchronously, so the hide request is held in `fetch`.
+    const routed = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input) === "/api/tasks/history/hide") {
+        const reply = await pending;
+        return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { "content-type": "application/json" } });
+      }
+      return routed(input, init);
+    });
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    fireEvent.click(screen.getByTestId("task-history-select"));
+    fireEvent.click(screen.getAllByTestId("task-history-check")[0] as HTMLElement);
+    fireEvent.click(screen.getByTestId("task-history-remove-selected"));
+    await waitFor(() => expect(titles()).toEqual(["第二讲"]));
+    answer({ status: 500, body: { error: failure } });
+    await waitFor(() => expect(titles()).toEqual(["第一讲", "第二讲"]));
+    expect(await screen.findByText("移除失败")).toBeTruthy();
+    expect(screen.queryByTestId("task-history-removed")).toBeNull();
+  });
+
+  it("leaves the picking mode once the picked cards are removed, with no pick left over", async () => {
+    historyApi([finishedTask("h1", "第一讲")]);
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findByText("第一讲");
+    fireEvent.click(screen.getByTestId("task-history-select"));
+    fireEvent.click(screen.getByTestId("task-history-select-all"));
+    fireEvent.click(screen.getByTestId("task-history-remove-selected"));
+    await waitFor(() => expect(screen.queryByTestId("task-history")).toBeNull());
+    fireEvent.click(screen.getByTestId("task-history-undo"));
+    // Back in the plain mode, with no leftover pick.
+    await screen.findByText("第一讲");
+    expect(screen.queryByTestId("task-history-check")).toBeNull();
+    expect(screen.getByTestId("task-history-select")).toBeTruthy();
+  });
+
+  it("reads the history again when a task event arrives", async () => {
+    const { reads } = historyApi([finishedTask("h1", "第一讲")]);
+    const routed = globalThis.fetch;
+    let push: (text: string) => void = () => undefined;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input).endsWith("/api/tasks/events")) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            push = (text) => controller.enqueue(new TextEncoder().encode(text));
+          },
+        });
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return routed(input, init);
+    });
+    function Panel() {
+      useTaskListRefresh();
+      return <TaskPanel open onOpenChange={() => undefined} />;
+    }
+    renderApp(<Panel />);
+    await screen.findByText("第一讲");
+    await waitFor(() => expect(reads()).toBe(1));
+    // A finished task that is run again leaves the unfinished state and later returns to the history.
+    push(`event: task.updated\ndata: ${JSON.stringify({ task: task("h1", { statusProjection: "running" }) })}\nid: 1\n\n`);
+    await waitFor(() => expect(reads()).toBe(2));
+    push(`event: task.finished\ndata: ${JSON.stringify({ task: task("h1", { statusProjection: "succeeded" }) })}\nid: 2\n\n`);
+    await waitFor(() => expect(reads()).toBe(3));
   });
 });

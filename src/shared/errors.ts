@@ -152,6 +152,12 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.duplicate_file": { detailsKeys: ["duplicateOfContentId", "trashed"] },
   // The primary transcript changed since the draft was opened.
   "conflict.primary_changed": { detailsKeys: ["currentPrimaryRevisionId"] },
+  // The language's current translation is no longer the one the editor expected, or the draft's base is outdated.
+  "conflict.translation_changed": { detailsKeys: ["currentRevisionId"] },
+  // The draft was saved, committed or discarded elsewhere since this version; `currentVersion` is absent when it is gone.
+  "conflict.draft_changed": { detailsKeys: ["currentVersion"] },
+  // The cache check the request refers to has expired, is unknown or no longer matches the request.
+  "conflict.cache_inspection_expired": {},
   "conflict.last_admin": {},
   "conflict.username_taken": {},
   // Deleting a user while its Tasks still shut down.

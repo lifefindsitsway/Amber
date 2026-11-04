@@ -45,6 +45,8 @@ interface DraftRow {
   id: string;
   content_id: string;
   base_revision_id: string;
+  target_language: string | null;
+  version: number;
   segments_json: string;
   updated_at: number;
 }
@@ -69,6 +71,8 @@ function toDraft(row: DraftRow): TranscriptDraft {
     id: row.id,
     contentId: row.content_id,
     baseRevisionId: row.base_revision_id,
+    ...(row.target_language === null ? {} : { targetLanguage: row.target_language }),
+    version: row.version,
     segments: parseJson<TranscriptDraft["segments"]>(row.segments_json),
     updatedAt: row.updated_at,
   };
@@ -126,23 +130,40 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
   const sourcesOfSegment = db.prepare(
     "SELECT parent_segment_id FROM transcript_segment_source WHERE child_segment_id = ? ORDER BY position",
   );
-  const draftOfContent = db.prepare(
-    `SELECT draft.* FROM transcript_draft AS draft
+  // Transcript drafts and translation drafts share the table; every transcript draft
+  // statement names `target_language IS NULL` so it can never touch a translation draft.
+  const draftSelect = `SELECT draft.* FROM transcript_draft AS draft
      JOIN content ON content.id = draft.content_id
-     WHERE draft.content_id = ? AND content.user_id = ?`,
+     WHERE draft.content_id = @contentId AND content.user_id = @owner`;
+  const transcriptDraft = db.prepare(`${draftSelect} AND draft.target_language IS NULL`);
+  const translationDraft = db.prepare(`${draftSelect} AND draft.target_language = @targetLanguage`);
+  const draftsOfContent = db.prepare(`${draftSelect} ORDER BY draft.target_language IS NOT NULL, draft.target_language`);
+  // A new draft is only inserted when none exists; an existing one is only replaced at the
+  // version the writer saw. Either way the comparison happens in the writing statement.
+  const insertTranscriptDraft = db.prepare(
+    `INSERT INTO transcript_draft (id, content_id, base_revision_id, target_language, version, segments_json, updated_at)
+     VALUES (@id, @contentId, @baseRevisionId, NULL, 1, @segmentsJson, @updatedAt)
+     ON CONFLICT (content_id) WHERE target_language IS NULL DO NOTHING`,
   );
-  const upsertDraft = db.prepare(
-    `INSERT INTO transcript_draft (id, content_id, base_revision_id, segments_json, updated_at)
-     VALUES (@id, @contentId, @baseRevisionId, @segmentsJson, @updatedAt)
-     ON CONFLICT (content_id) DO UPDATE SET
-       id = excluded.id,
-       base_revision_id = excluded.base_revision_id,
-       segments_json = excluded.segments_json,
-       updated_at = excluded.updated_at`,
+  const insertTranslationDraft = db.prepare(
+    `INSERT INTO transcript_draft (id, content_id, base_revision_id, target_language, version, segments_json, updated_at)
+     VALUES (@id, @contentId, @baseRevisionId, @targetLanguage, 1, @segmentsJson, @updatedAt)
+     ON CONFLICT (content_id, target_language) WHERE target_language IS NOT NULL DO NOTHING`,
   );
-  const deleteDraft = db.prepare(
-    "DELETE FROM transcript_draft WHERE content_id = ? AND content_id IN (SELECT id FROM content WHERE user_id = ?)",
-  );
+  const draftUpdate = `UPDATE transcript_draft
+     SET base_revision_id = @baseRevisionId, segments_json = @segmentsJson, updated_at = @updatedAt, version = version + 1
+     WHERE content_id = @contentId AND version = @expectedVersion`;
+  const updateTranscriptDraft = db.prepare(`${draftUpdate} AND target_language IS NULL`);
+  const updateTranslationDraft = db.prepare(`${draftUpdate} AND target_language = @targetLanguage`);
+  const draftDelete = `DELETE FROM transcript_draft
+     WHERE content_id = @contentId AND content_id IN (SELECT id FROM content WHERE user_id = @owner)
+       AND (@expectedVersion IS NULL OR version = @expectedVersion)`;
+  const deleteTranscriptDraft = db.prepare(`${draftDelete} AND target_language IS NULL`);
+  const deleteTranslationDraft = db.prepare(`${draftDelete} AND target_language = @targetLanguage`);
+  const readDraft = (owner: string, contentId: string, targetLanguage: string | undefined): DraftRow | undefined =>
+    (targetLanguage === undefined
+      ? transcriptDraft.get({ contentId, owner })
+      : translationDraft.get({ contentId, owner, targetLanguage })) as DraftRow | undefined;
   const segmentOfRevision = db.prepare("SELECT 1 FROM transcript_segment WHERE id = ? AND revision_id = ?");
   const insertRevision = db.prepare(
     `INSERT INTO transcript_revision (
@@ -260,11 +281,14 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
       );
       return toSegment(row, sources);
     },
-    getDraft(ownerUserId, contentId) {
-      const row = draftOfContent.get(contentId, ownerUserId) as DraftRow | undefined;
+    getDraft(ownerUserId, contentId, targetLanguage) {
+      const row = readDraft(ownerUserId, contentId, targetLanguage);
       return row === undefined ? undefined : toDraft(row);
     },
-    putDraft(ownerUserId, draft) {
+    listDrafts(ownerUserId, contentId) {
+      return (draftsOfContent.all({ contentId, owner: ownerUserId }) as DraftRow[]).map(toDraft);
+    },
+    putDraft(ownerUserId, draft, expectedVersion) {
       if (ownedContent.get(draft.contentId, ownerUserId) === undefined) {
         throw notFound("content", draft.contentId);
       }
@@ -272,16 +296,34 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
       if (base === undefined || base.content_id !== draft.contentId) {
         throw notFound("transcript revision", draft.baseRevisionId);
       }
-      upsertDraft.run({
+      const translation = draft.targetLanguage !== undefined;
+      const values = {
         id: draft.id,
         contentId: draft.contentId,
         baseRevisionId: draft.baseRevisionId,
         segmentsJson: JSON.stringify(draft.segments),
         updatedAt: draft.updatedAt,
-      });
+        ...(translation ? { targetLanguage: draft.targetLanguage } : {}),
+      };
+      const changes =
+        expectedVersion === null
+          ? (translation ? insertTranslationDraft : insertTranscriptDraft).run(values).changes
+          : (translation ? updateTranslationDraft : updateTranscriptDraft).run({ ...values, expectedVersion }).changes;
+      const stored = readDraft(ownerUserId, draft.contentId, draft.targetLanguage);
+      if (changes === 0 || stored === undefined) {
+        return { currentVersion: stored?.version ?? null };
+      }
+      return { written: toDraft(stored) };
     },
-    deleteDraft(ownerUserId, contentId) {
-      return deleteDraft.run(contentId, ownerUserId).changes > 0;
+    deleteDraft(ownerUserId, contentId, targetLanguage, expectedVersion) {
+      const values = { contentId, owner: ownerUserId, expectedVersion: expectedVersion ?? null };
+      const changes =
+        targetLanguage === undefined ? deleteTranscriptDraft.run(values).changes : deleteTranslationDraft.run({ ...values, targetLanguage }).changes;
+      if (changes > 0) {
+        return { deleted: true };
+      }
+      const stored = readDraft(ownerUserId, contentId, targetLanguage);
+      return stored === undefined ? { deleted: false } : { currentVersion: stored.version };
     },
     deleteRevision(ownerUserId, revisionId) {
       return deleteRevision.run(revisionId, ownerUserId).changes > 0;

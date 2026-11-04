@@ -111,7 +111,8 @@ export function TranscriptTab() {
     setParams(next, { replace: true });
   };
   if (editing) {
-    return <DraftEditor base={revision} primaryRevisionId={primaryId} onClose={() => setEditing(false)} />;
+    // Keyed by version: switching to another one closes this editor (keeping its last edits) and opens a fresh one.
+    return <DraftEditor key={revision.id} base={revision} primaryRevisionId={primaryId} onClose={() => setEditing(false)} />;
   }
   // A shown revision that sits behind a toggle (a deep link, say) opens that toggle.
   const historyOpen = showHistory || groups.history.has(revision.id);

@@ -47,6 +47,7 @@ import { ChapterService } from "./application/chapters.ts";
 import { ExportService } from "./application/export.ts";
 import { HighlightService } from "./application/highlights.ts";
 import { TranslationService } from "./application/translations.ts";
+import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
@@ -379,6 +380,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const chapters = new ChapterService({ repository });
   const highlights = new HighlightService({ repository });
   const translations = new TranslationService({ repository });
+  const translationDrafts = new TranslationDraftService({ repository });
   const exports = new ExportService({ repository, version: packageJson.version });
   const clientMedia =
     config.mode === "local"
@@ -548,6 +550,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     chapters,
     highlights,
     translations,
+    translationDrafts,
     exports,
     subtitleFont,
     summaryTemplates,

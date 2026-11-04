@@ -13,6 +13,8 @@ interface TaskRow {
   status_projection: Task["statusProjection"];
   created_at: number;
   finished_at: number | null;
+  history_hidden_at: number | null;
+  history_hide_batch: string | null;
 }
 
 function toTask(row: TaskRow): Task {
@@ -26,8 +28,15 @@ function toTask(row: TaskRow): Task {
     statusProjection: row.status_projection,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
+    historyHiddenAt: row.history_hidden_at,
+    historyHideBatch: row.history_hide_batch,
   });
 }
+
+/** A finished Task the user has not removed from the task panel's history. */
+const HISTORY_VISIBLE = "finished_at IS NOT NULL AND history_hidden_at IS NULL";
+/** Tasks of a trashed Content are listed nowhere until it is restored. */
+const NOT_TRASHED = "NOT EXISTS (SELECT 1 FROM content WHERE content.id = task.content_id AND content.trashed_at IS NOT NULL)";
 
 export function sqliteTaskRepository(db: SqliteConnection): TaskRepository {
   const select = db.prepare("SELECT * FROM task WHERE id = ? AND user_id = ?");
@@ -37,12 +46,21 @@ export function sqliteTaskRepository(db: SqliteConnection): TaskRepository {
      WHERE user_id = @owner
        AND (@unfinished = 0 OR finished_at IS NULL)
        AND (@finished = 0 OR finished_at IS NOT NULL)
+       AND (@history = 0 OR (${HISTORY_VISIBLE}))
        AND (@contentId IS NULL OR content_id = @contentId)
        AND (@collectionId IS NULL OR collection_id = @collectionId)
        AND (@kind IS NULL OR kind = @kind)
        AND (@createdAt IS NULL OR created_at < @createdAt OR (created_at = @createdAt AND id < @id))
-       AND NOT EXISTS (SELECT 1 FROM content WHERE content.id = task.content_id AND content.trashed_at IS NOT NULL)
+       AND ${NOT_TRASHED}
      ORDER BY created_at DESC, id DESC LIMIT @limit`,
+  );
+  // Clearing hides exactly what the history list shows: the same predicates, trash included.
+  const clearHistory = db.prepare(
+    `UPDATE task SET history_hidden_at = @at, history_hide_batch = @batch
+     WHERE user_id = @owner AND ${HISTORY_VISIBLE} AND ${NOT_TRASHED}`,
+  );
+  const restoreHistory = db.prepare(
+    "UPDATE task SET history_hidden_at = NULL, history_hide_batch = NULL WHERE user_id = ? AND history_hide_batch = ?",
   );
   const byContent = db.prepare("SELECT * FROM task WHERE content_id = ? AND user_id = ? ORDER BY created_at, id");
   const byCollection = db.prepare("SELECT * FROM task WHERE collection_id = ? AND user_id = ? ORDER BY created_at, id");
@@ -53,18 +71,25 @@ export function sqliteTaskRepository(db: SqliteConnection): TaskRepository {
     `INSERT INTO task (id, user_id, content_id, collection_id, kind, request_json, status_projection, created_at, finished_at)
      VALUES (@id, @userId, @contentId, @collectionId, @kind, @requestJson, @statusProjection, @createdAt, @finishedAt)`,
   );
-  const setProjection = db.prepare("UPDATE task SET status_projection = ?, finished_at = ? WHERE id = ? AND user_id = ?");
+  // A Task that starts again (no finish time) leaves no hidden history entry behind.
+  const setProjection = db.prepare(
+    `UPDATE task SET status_projection = @status, finished_at = @finishedAt,
+       history_hidden_at = CASE WHEN @finishedAt IS NULL THEN NULL ELSE history_hidden_at END,
+       history_hide_batch = CASE WHEN @finishedAt IS NULL THEN NULL ELSE history_hide_batch END
+     WHERE id = @id AND user_id = @owner`,
+  );
 
   return {
     get(ownerUserId, taskId) {
       const row = select.get(taskId, ownerUserId) as TaskRow | undefined;
       return row === undefined ? undefined : toTask(row);
     },
-    list(ownerUserId, { limit, after, unfinished, finished, contentId, collectionId, kind }) {
+    list(ownerUserId, { limit, after, unfinished, finished, history, contentId, collectionId, kind }) {
       const rows = page.all({
         owner: ownerUserId,
         unfinished: unfinished === true ? 1 : 0,
         finished: finished === true ? 1 : 0,
+        history: history === true ? 1 : 0,
         contentId: contentId ?? null,
         collectionId: collectionId ?? null,
         kind: kind ?? null,
@@ -73,6 +98,24 @@ export function sqliteTaskRepository(db: SqliteConnection): TaskRepository {
         limit,
       });
       return (rows as TaskRow[]).map(toTask);
+    },
+    hideHistory(ownerUserId, taskIds, batchId, hiddenAt) {
+      const ids = [...new Set(taskIds)];
+      if (ids.length === 0) {
+        return 0;
+      }
+      // The id list is bound, never interpolated; only its placeholder count varies.
+      const statement = db.prepare(
+        `UPDATE task SET history_hidden_at = ?, history_hide_batch = ?
+         WHERE user_id = ? AND id IN (${ids.map(() => "?").join(", ")}) AND ${HISTORY_VISIBLE}`,
+      );
+      return statement.run(hiddenAt, batchId, ownerUserId, ...ids).changes;
+    },
+    clearHistory(ownerUserId, batchId, hiddenAt) {
+      return clearHistory.run({ owner: ownerUserId, batch: batchId, at: hiddenAt }).changes;
+    },
+    restoreHistory(ownerUserId, batchId) {
+      return restoreHistory.run(ownerUserId, batchId).changes;
     },
     listByContent(ownerUserId, contentId) {
       return (byContent.all(contentId, ownerUserId) as TaskRow[]).map(toTask);
@@ -104,7 +147,7 @@ export function sqliteTaskRepository(db: SqliteConnection): TaskRepository {
       });
     },
     setProjection(ownerUserId, taskId, status, finishedAt) {
-      if (setProjection.run(status, nullable(finishedAt), taskId, ownerUserId).changes === 0) {
+      if (setProjection.run({ status, finishedAt: nullable(finishedAt), id: taskId, owner: ownerUserId }).changes === 0) {
         throw notFound("task", taskId);
       }
     },

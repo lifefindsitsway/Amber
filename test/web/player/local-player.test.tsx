@@ -753,3 +753,82 @@ describe("LocalPlayer", () => {
     });
   });
 });
+
+describe("LocalPlayer remembered position", () => {
+  it("places the video at the remembered position without starting it, and says so", () => {
+    const controller = new PlayerController();
+    controller.offerResume(754_000);
+    const { video } = show({ src: "/fixture.mp4" }, controller);
+    expect(Math.abs(video.currentTime * 1000 - 754_000)).toBeLessThanOrEqual(PLAYER_SEEK_TOLERANCE_MS);
+    expect(video.autoplay).toBe(false);
+    expect(video.paused).toBe(true);
+    expect(controller.resumeNotice).toBe(754_000);
+  });
+
+  it("stays at 0 when the user or a deep link already chose where to be", () => {
+    const deepLinked = new PlayerController();
+    deepLinked.suppressResume();
+    deepLinked.offerResume(754_000);
+    const first = show({ src: "/fixture.mp4" }, deepLinked);
+    expect(first.video.currentTime).toBe(0);
+    expect(deepLinked.resumeNotice).toBeUndefined();
+    first.unmount();
+
+    const seeked = new PlayerController();
+    seeked.offerResume(754_000);
+    seeked.seek(42_000);
+    const second = show({ src: "/fixture.mp4" }, seeked);
+    expect(second.video.currentTime).toBe(42);
+  });
+
+  it("does not resume again when the quality is switched: the switch carries the position itself", () => {
+    const controller = new PlayerController();
+    controller.offerResume(754_000);
+    const view = (activeSourceId: string) => (
+      <PlayerControllerProvider controller={controller}>
+        <LocalPlayer
+          src="/hd.mp4"
+          sources={[
+            { assetId: "hd", label: "1080P" },
+            { assetId: "sd", label: "720P" },
+          ]}
+          activeSourceId={activeSourceId}
+          onSelectSource={() => undefined}
+        />
+      </PlayerControllerProvider>
+    );
+    const { rerender } = render(view("hd"));
+    const root = screen.getByTestId("player-local");
+    const first = root.querySelector("video") as HTMLVideoElement;
+    first.currentTime = 800;
+    rerender(view("sd"));
+    const second = root.querySelector("video") as HTMLVideoElement;
+    Object.defineProperty(second, "duration", { configurable: true, value: 3_600 });
+    fireEvent.loadedMetadata(second);
+    expect(second.currentTime).toBe(800);
+  });
+
+  it("reports playing, pausing, the end and the length to the page", () => {
+    const controller = new PlayerController();
+    const events: string[] = [];
+    controller.onPlayback((event) => events.push(event));
+    const { video } = show({ src: "/fixture.mp4" }, controller);
+    Object.defineProperty(video, "duration", { configurable: true, value: 3_725 });
+    fireEvent.loadedMetadata(video);
+    expect(controller.durationMs()).toBe(3_725_000);
+    fireEvent.play(video);
+    fireEvent.pause(video);
+    fireEvent.ended(video);
+    expect(events).toEqual(["play", "pause", "ended"]);
+  });
+
+  it("starts at 0 and plays on the restart button", () => {
+    const controller = new PlayerController();
+    controller.offerResume(754_000);
+    const { video } = show({ src: "/fixture.mp4" }, controller);
+    const { play } = playable(video);
+    act(() => controller.restart());
+    expect(video.currentTime).toBe(0);
+    expect(play).toHaveBeenCalledOnce();
+  });
+});

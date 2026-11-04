@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Languages, Plus } from "lucide-react";
+import { Languages, Pencil, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
+import { transcriptRevisionListItemDtoSchema } from "../../../shared/dto/content.ts";
 import { languageTagSchema } from "../../../shared/dto/import.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranslationEntryDto } from "../../../shared/dto/translation.ts";
@@ -19,6 +20,7 @@ import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, useLatestTranslateTask, useRevisions, useTranslations } from "./content-data.ts";
 import { languageLabel, revisionLabel } from "./labels.ts";
+import { TranslationDraftEditor } from "./translation-draft-editor.tsx";
 
 /** Per Content, the failed translate Task whose flow the user closed. */
 export function translateFailureDismissedKey(contentId: string): string {
@@ -56,6 +58,7 @@ export function TranslationTab() {
   const [pickedModel, setPickedModel] = useState<string | undefined>(undefined);
   const [chosen, setChosen] = useState<string[]>([]);
   const [custom, setCustom] = useState("");
+  const [editing, setEditing] = useState<string | undefined>(undefined);
 
   const primaryId = revisions.data?.primaryTranscriptRevisionId;
   const source = revisions.data?.revisions.find((revision) => revision.id === primaryId);
@@ -75,11 +78,19 @@ export function TranslationTab() {
     },
   });
 
+  const unarchiveAndEdit = useUnarchiveAndEdit(contentId, setEditing);
+
   if (translations.isPending || revisions.isPending) return <Loading />;
   if (translations.isError) {
     return translations.error instanceof ApiError ? <ErrorView error={translations.error.error} /> : <EmptyState title={t("common.state.loadFailed")} />;
   }
+  if (editing !== undefined) {
+    return <TranslationDraftEditor key={editing} language={editing} onClose={() => setEditing(undefined)} />;
+  }
   const label = (tag: string): string => languageLabel(tag, t, i18n);
+  const archivedIds = new Set((revisions.data?.revisions ?? []).filter((item) => item.archived).map((item) => item.id));
+  // Re-translating a language whose current translation the user edited replaces it as current; say so before.
+  const replacesManual = translations.data.translations.some((entry) => chosen.includes(entry.targetLanguage) && entry.current?.generation["kind"] === "manual");
   const list = (tags: readonly string[]): string => new Intl.ListFormat(i18n.language, { type: "conjunction" }).format(tags.map(label));
   const choices = [...new Set([...targetLanguageChoices(source?.language), ...chosen])];
   const toggle = (tag: string): void => setChosen(chosen.includes(tag) ? chosen.filter((item) => item !== tag) : [...chosen, tag]);
@@ -173,6 +184,11 @@ export function TranslationTab() {
               {t("contentView.translation.start")}
             </Button>
           </div>
+          {replacesManual ? (
+            <p className="text-xs text-muted" data-testid="translation-replaces-manual">
+              {t("editor.entry.retranslateHint")}
+            </p>
+          ) : null}
           {start.error instanceof ApiError ? <ErrorView error={start.error.error} /> : null}
         </section>
       )}
@@ -190,6 +206,7 @@ export function TranslationTab() {
           testId="translation-failed"
         />
       ) : null}
+      {unarchiveAndEdit.error instanceof ApiError ? <ErrorView error={unarchiveAndEdit.error.error} /> : null}
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-semibold">{t("contentView.translation.versions")}</h2>
         {translations.data.translations.length === 0 ? (
@@ -197,7 +214,16 @@ export function TranslationTab() {
         ) : (
           <ul className="flex flex-col gap-1">
             {translations.data.translations.map((entry) => (
-              <TranslationRow key={entry.artifactId} entry={entry} label={label(entry.targetLanguage)} onOpen={openVersion} />
+              <TranslationRow
+                key={entry.artifactId}
+                entry={entry}
+                label={label(entry.targetLanguage)}
+                archived={entry.current !== undefined && archivedIds.has(entry.current.id)}
+                busy={unarchiveAndEdit.isPending}
+                onOpen={openVersion}
+                onEdit={() => setEditing(entry.targetLanguage)}
+                onUnarchiveAndEdit={(revisionId) => unarchiveAndEdit.mutate({ revisionId, language: entry.targetLanguage })}
+              />
             ))}
           </ul>
         )}
@@ -206,7 +232,16 @@ export function TranslationTab() {
   );
 }
 
-function TranslationRow(props: { entry: TranslationEntryDto; label: string; onOpen: (revisionId: string) => void }) {
+function TranslationRow(props: {
+  entry: TranslationEntryDto;
+  label: string;
+  /** The language's current translation is archived. */
+  archived: boolean;
+  busy: boolean;
+  onOpen: (revisionId: string) => void;
+  onEdit: () => void;
+  onUnarchiveAndEdit: (revisionId: string) => void;
+}) {
   const { t, i18n } = useTranslation();
   const { entry } = props;
   return (
@@ -222,10 +257,63 @@ function TranslationRow(props: { entry: TranslationEntryDto; label: string; onOp
       ) : null}
       <span className="text-xs text-muted">{t("contentView.translation.history", { count: entry.revisions.length })}</span>
       {entry.current === undefined ? null : (
-        <Button size="sm" variant="ghost" className="ml-auto" onClick={() => props.onOpen((entry.current as { id: string }).id)} data-testid="translation-open">
-          {t("contentView.translation.open")}
-        </Button>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button size="sm" variant="ghost" onClick={() => props.onOpen((entry.current as { id: string }).id)} data-testid="translation-open">
+            {t("contentView.translation.open")}
+          </Button>
+          <TranslationEditButton entry={entry} archived={props.archived} busy={props.busy} onEdit={props.onEdit} onUnarchiveAndEdit={props.onUnarchiveAndEdit} />
+        </div>
       )}
     </li>
+  );
+}
+
+/**
+ * 「取消归档并编辑」: an archived current translation cannot be edited, so it is restored first
+ * and the editor of its language opens once that succeeded.
+ */
+export function useUnarchiveAndEdit(contentId: string, onReady: (language: string) => void) {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (entry: { revisionId: string; language: string }) => {
+      await client.put(`/api/transcript/revisions/${encodeURIComponent(entry.revisionId)}/archived`, transcriptRevisionListItemDtoSchema, { body: { archived: false } });
+      return entry.language;
+    },
+    onSuccess: async (language) => {
+      await queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
+      onReady(language);
+    },
+  });
+}
+
+/**
+ * 「编辑译文」, a secondary outlined button: 「继续编辑 •」 while the language has a draft, and
+ * 「取消归档并编辑」 when its current translation is archived. A resumed draft with an archived
+ * base still opens: the editor then offers only to discard it.
+ */
+export function TranslationEditButton(props: {
+  entry: TranslationEntryDto;
+  archived: boolean;
+  busy?: boolean;
+  onEdit: () => void;
+  onUnarchiveAndEdit: (revisionId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const { entry } = props;
+  if (entry.current === undefined) return null;
+  const currentId = entry.current.id;
+  const unarchive = entry.draft === undefined && props.archived;
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      disabled={props.busy === true}
+      onClick={() => (unarchive ? props.onUnarchiveAndEdit(currentId) : props.onEdit())}
+      data-testid="translation-edit"
+    >
+      <Pencil size={14} />
+      {entry.draft !== undefined ? t("editor.entry.resume") : unarchive ? t("editor.entry.unarchiveAndEdit") : t("editor.entry.edit")}
+    </Button>
   );
 }

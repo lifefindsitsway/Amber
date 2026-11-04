@@ -29,6 +29,13 @@ export interface Task {
   statusProjection: ProcessingStatus;
   createdAt: number;
   finishedAt?: number;
+  /**
+   * Set when the user removed the finished Task from the task panel's history. Display only:
+   * status, details and every other listing ignore it; a Task that starts again drops it.
+   */
+  historyHiddenAt?: number;
+  /** The removal that hid it, so an undo restores exactly that removal. */
+  historyHideBatch?: string;
 }
 
 /** Authoritative stage state. The pipeline is a conditional dependency graph, not a fixed line. */

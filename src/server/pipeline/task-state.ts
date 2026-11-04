@@ -171,6 +171,10 @@ export function refreshProjection(scope: RepositoryScope, outbox: Outbox, ownerU
   delete updated.finishedAt;
   if (finishedAt !== undefined) {
     updated.finishedAt = finishedAt;
+  } else {
+    // Mirrors setProjection: a Task that starts again leaves no hidden history entry behind.
+    delete updated.historyHiddenAt;
+    delete updated.historyHideBatch;
   }
   outbox.push(ownerUserId, { type: terminal ? "task.finished" : "task.updated", task: toTaskDto(updated, undefined, wait) });
   if (updated.kind === "process_content" && updated.contentId !== undefined) {

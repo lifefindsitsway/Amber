@@ -281,6 +281,11 @@ export interface MediaAssetRepository {
   delete(ownerUserId: string, assetId: string): boolean;
 }
 
+/** Outcome of a versioned draft write: the stored draft, or the version actually stored (`null`: none). */
+export type DraftWrite = { written: TranscriptDraft } | { currentVersion: number | null };
+/** Outcome of a draft deletion: whether a row went, or the version that blocked it. */
+export type DraftDelete = { deleted: boolean } | { currentVersion: number };
+
 export interface TranscriptRepository {
   /**
    * Commits a revision with its segments and lineage. Invariant: a committed revision and
@@ -299,14 +304,27 @@ export interface TranscriptRepository {
   listSegments(ownerUserId: string, revisionId: string, page?: { afterOrdinal?: number; limit: number }): TranscriptSegment[];
   /** A segment by its globally unique id, when its revision belongs to the owner. */
   getSegment(ownerUserId: string, segmentId: string): TranscriptSegment | undefined;
-  /** The Content's draft, if any; there is at most one per Content. */
-  getDraft(ownerUserId: string, contentId: string): TranscriptDraft | undefined;
   /**
-   * Inserts the Content's draft or replaces it whole; there is at most one per Content.
-   * Its base revision must belong to the same Content.
+   * The Content's transcript draft when `targetLanguage` is undefined, otherwise the draft of
+   * that translation language; at most one of each.
    */
-  putDraft(ownerUserId: string, draft: TranscriptDraft): void;
-  deleteDraft(ownerUserId: string, contentId: string): boolean;
+  getDraft(ownerUserId: string, contentId: string, targetLanguage?: string): TranscriptDraft | undefined;
+  /** Every draft of the Content: the transcript draft and each translation language's. */
+  listDrafts(ownerUserId: string, contentId: string): TranscriptDraft[];
+  /**
+   * Inserts the draft named by its Content and `targetLanguage`, or replaces it whole, only
+   * when the stored version is `expectedVersion` (`null`: there must be no such draft yet).
+   * The written draft gets `expectedVersion + 1` (1 when new), whatever `draft.version` says.
+   * On a mismatch nothing is written and the stored version (`null` when there is none) comes
+   * back, so a late save never revives a discarded or committed draft. Its base revision must
+   * belong to the same Content.
+   */
+  putDraft(ownerUserId: string, draft: TranscriptDraft, expectedVersion: number | null): DraftWrite;
+  /**
+   * Deletes the draft named by `contentId` and `targetLanguage`. With `expectedVersion`, only
+   * when the stored version equals it; without, unconditionally.
+   */
+  deleteDraft(ownerUserId: string, contentId: string, targetLanguage: string | undefined, expectedVersion?: number): DraftDelete;
   /**
    * Removes one revision with its sentences, their lineage rows and its archive mark. The
    * caller has checked that nothing references it any more and deletes children first; a
@@ -369,8 +387,18 @@ export interface TaskRepository {
    */
   list(
     ownerUserId: string,
-    options: { limit: number; after?: TaskCursor; unfinished?: boolean; finished?: boolean; contentId?: string; collectionId?: string; kind?: TaskKind },
+    options: { limit: number; after?: TaskCursor; unfinished?: boolean; finished?: boolean; history?: boolean; contentId?: string; collectionId?: string; kind?: TaskKind },
   ): Task[];
+  /**
+   * Hides the owner's finished, not yet hidden Tasks among `taskIds` from the task panel's
+   * history, marking them with `batchId`; ids of other users, unfinished or already hidden
+   * Tasks are skipped silently. Returns how many rows changed.
+   */
+  hideHistory(ownerUserId: string, taskIds: readonly string[], batchId: string, hiddenAt: number): number;
+  /** Hides every Task `list({ history: true })` would show, marking them with `batchId`; returns how many. */
+  clearHistory(ownerUserId: string, batchId: string, hiddenAt: number): number;
+  /** Shows again exactly the owner's Tasks hidden by `batchId`; returns how many. */
+  restoreHistory(ownerUserId: string, batchId: string): number;
   /** Every Task targeting the Content, oldest first. */
   listByContent(ownerUserId: string, contentId: string): Task[];
   /** Every Task targeting the Collection, oldest first. */
@@ -388,7 +416,10 @@ export interface TaskRepository {
    */
   getUnscoped(taskId: string): Task | undefined;
   insert(task: Task): void;
-  /** `finishedAt` is set for terminal projections and cleared otherwise. */
+  /**
+   * `finishedAt` is set for terminal projections and cleared otherwise; clearing it also shows
+   * the Task in the history again (a restarted Task is no longer a removed history entry).
+   */
   setProjection(ownerUserId: string, taskId: string, status: ProcessingStatus, finishedAt: number | undefined): void;
 }
 

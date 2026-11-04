@@ -351,3 +351,50 @@ export function newerAsrRevision<T extends PickableRevision>(revisions: readonly
     .filter((revision) => revision.kind === "asr" && revision.parentRevisionId === undefined && revision.archived !== true && revision.createdAt > primary.createdAt)
     .reduce<T | undefined>((best, revision) => (best === undefined || revision.createdAt > best.createdAt ? revision : best), undefined);
 }
+
+/** What the default translation pick needs to know of a revision. */
+export type TranslationCandidate = PickableRevision & Pick<TranscriptRevisionDto, "language">;
+
+/** Each language's current translation id, as the translations list reports it. */
+export type TranslationCurrents = Readonly<Record<string, string | undefined>>;
+
+/** The current translation of every language in a translations list. */
+export function translationCurrents(entries: ReadonlyArray<{ targetLanguage: string; current?: { id: string } }> | undefined): TranslationCurrents {
+  const currents: Record<string, string> = {};
+  for (const entry of entries ?? []) {
+    if (entry.current !== undefined) currents[entry.targetLanguage] = entry.current.id;
+  }
+  return currents;
+}
+
+function newest<T extends TranslationCandidate>(revisions: readonly T[]): T | undefined {
+  return revisions.reduce<T | undefined>((best, revision) => (best === undefined || revision.createdAt > best.createdAt ? revision : best), undefined);
+}
+
+/**
+ * The translation shown with, or exported over, the original `originalId` — the one rule the
+ * player's subtitles, the export dialog and the subtitle-video export share. Candidates are the
+ * non-archived translations made from that original. A locked revision among them wins; else
+ * the language's current translation when it was made from that original, else that
+ * language's newest candidate. Without a language, the newest candidate's language is used.
+ * Undefined when the language (or the original) has no candidate, so the caller shows the
+ * original only.
+ */
+export function pickTranslation<T extends TranslationCandidate>(input: {
+  originalId: string | undefined;
+  language?: string | undefined;
+  lockedRevisionId?: string | undefined;
+  revisions: readonly T[];
+  currents: TranslationCurrents;
+}): T | undefined {
+  const candidates = input.revisions.filter(
+    (revision) => revision.kind === "translated" && revision.archived !== true && input.originalId !== undefined && revision.parentRevisionId === input.originalId,
+  );
+  const locked = input.lockedRevisionId === undefined ? undefined : candidates.find((revision) => revision.id === input.lockedRevisionId);
+  if (locked !== undefined) return locked;
+  const language = input.language ?? newest(candidates)?.language;
+  if (language === undefined) return undefined;
+  const inLanguage = candidates.filter((revision) => revision.language === language);
+  const currentId = input.currents[language];
+  return inLanguage.find((revision) => revision.id === currentId) ?? newest(inLanguage);
+}

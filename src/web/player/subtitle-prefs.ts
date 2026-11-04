@@ -8,11 +8,19 @@ import {
   type SubtitleAppearance,
   type SubtitlePlacement,
 } from "../../shared/subtitle-style.ts";
-import { subtitlePrefKeys, trackPrefSchema, type SubtitleTrackPref } from "../../shared/subtitle-prefs.ts";
+import { subtitlePrefKeys, trackPrefSchema, type StoredSubtitleTrackPref, type SubtitleTrackPref } from "../../shared/subtitle-prefs.ts";
 
-export { SUBTITLE_DISPLAY_MODES, subtitlePrefKeys, type SubtitleDisplayMode, type SubtitleTrackPref } from "../../shared/subtitle-prefs.ts";
+export {
+  SUBTITLE_DISPLAY_MODES,
+  subtitlePrefKeys,
+  upgradeTrackPref,
+  type StoredSubtitleTrackPref,
+  type SubtitleDisplayMode,
+  type SubtitleTrackPref,
+  type SubtitleTranslationPref,
+} from "../../shared/subtitle-prefs.ts";
 
-const OFF_TRACK: SubtitleTrackPref = { version: 1, mode: "off" };
+const OFF_TRACK: SubtitleTrackPref = { version: 2, mode: "off" };
 
 function read(key: string): string | null {
   try {
@@ -108,12 +116,28 @@ export function clearPlacement(userId: string, contentId: string): void {
   write(subtitlePrefKeys.placement(userId, contentId), null);
 }
 
-export function readTrack(userId: string, contentId: string): SubtitleTrackPref {
+/**
+ * The stored track preference, in whichever format it was written; `upgradeTrackPref` turns
+ * it into the current one once the Content's revisions are known.
+ */
+export function readTrack(userId: string, contentId: string): StoredSubtitleTrackPref {
   return parsedKey(subtitlePrefKeys.track(userId, contentId), trackPrefSchema) ?? OFF_TRACK;
 }
 
+/** Writes only the current format. */
 export function writeTrack(userId: string, contentId: string, track: SubtitleTrackPref): void {
   write(subtitlePrefKeys.track(userId, contentId), JSON.stringify(track));
+}
+
+/**
+ * After a translation edit is committed as `toRevisionId`: a preference locked to the edited
+ * base `fromRevisionId` moves its lock to the new revision. One following a language already
+ * shows the new current translation, and one locked to another version stays as it is.
+ */
+export function relockTranslation(userId: string, contentId: string, fromRevisionId: string, toRevisionId: string): void {
+  const track = readTrack(userId, contentId);
+  if (track.version !== 2 || track.translation?.lockedRevisionId !== fromRevisionId) return;
+  writeTrack(userId, contentId, { ...track, translation: { ...track.translation, lockedRevisionId: toRevisionId } });
 }
 
 function subscribe(listener: () => void): () => void {
@@ -131,7 +155,8 @@ export interface SubtitlePrefs {
   appearance: SubtitleAppearance;
   placement: SubtitlePlacement;
   placementOverridden: boolean;
-  track: SubtitleTrackPref;
+  /** As stored; see `readTrack`. */
+  track: StoredSubtitleTrackPref;
   setAppearance(appearance: SubtitleAppearance): void;
   resetAppearance(): void;
   setPlacement(placement: SubtitlePlacement): void;

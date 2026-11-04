@@ -360,10 +360,11 @@ describe("BackupExportService", () => {
       const base = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, baseRevisionId));
       h.transcripts.putDraft(LOCAL, contentId, {
         baseRevisionId,
+        expectedVersion: null,
         segments: base.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: `${segment.text}!`, sourceSegmentIds: [segment.id] })),
       });
       const primary = h.repository.withTransaction((scope) => scope.contents.get(LOCAL.userId, contentId)?.primaryTranscriptRevisionId) as string;
-      return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primary });
+      return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primary, draftVersion: 1 });
     };
     const first = edit(fixture.corrected.revision.id);
     const second = edit(first.id);

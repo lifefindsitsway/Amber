@@ -20,9 +20,10 @@ describe("player capabilities", () => {
   });
 
   it("gives YouTube direct seeking with time tracking and Bilibili reload without tracking", () => {
-    expect(CAPABILITIES.youtube).toEqual({ seekMode: "direct", timeTracking: "supported" });
-    expect(CAPABILITIES.bilibili).toEqual({ seekMode: "reload", timeTracking: "unsupported" });
-    expect(CAPABILITIES.local).toEqual({ seekMode: "direct", timeTracking: "supported" });
+    expect(CAPABILITIES.youtube).toEqual({ seekMode: "direct", timeTracking: "supported", remembersPosition: false });
+    expect(CAPABILITIES.bilibili).toEqual({ seekMode: "reload", timeTracking: "unsupported", remembersPosition: false });
+    expect(CAPABILITIES.local).toEqual({ seekMode: "direct", timeTracking: "supported", remembersPosition: true });
+    expect(CAPABILITIES.none.remembersPosition).toBe(false);
   });
 
   it("seeks Bilibili by reloading with t= in whole seconds and autoplay", () => {
@@ -39,5 +40,7 @@ describe("player capabilities", () => {
     expect(url.pathname).toBe("/embed/abc");
     expect(url.searchParams.get("enablejsapi")).toBe("1");
     expect(url.searchParams.get("origin")).toBe("http://localhost:4173");
+    expect(url.searchParams.has("start")).toBe(false);
   });
+
 });

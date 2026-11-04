@@ -40,4 +40,34 @@ describe("BilibiliPlayer", () => {
     fireEvent.load(second);
     expect(screen.queryByTestId("player-loading")).toBeNull();
   });
+
+  describe("remembered position", () => {
+    const show = (controller: PlayerController) =>
+      render(
+        <PlayerControllerProvider controller={controller}>
+          <BilibiliPlayer source={{ kind: "bilibili", bvid: "BV1" }} />
+        </PlayerControllerProvider>,
+      );
+    const srcParams = (): URLSearchParams => new URL(screen.getByTestId("player-bilibili").getAttribute("src") ?? "").searchParams;
+
+    it("neither positions nor starts the embed by itself, and offers nothing", () => {
+      const controller = new PlayerController();
+      controller.offerResume(754_000);
+      show(controller);
+      expect(srcParams().has("t")).toBe(false);
+      expect(srcParams().get("autoplay")).toBe("0");
+      expect(controller.resumeNotice).toBeUndefined();
+      expect(screen.queryByTestId("bili-resume")).toBeNull();
+      expect(screen.queryByRole("button", { name: "继续播放" })).toBeNull();
+    });
+
+    it("still reloads at a position the user jumps to", () => {
+      const controller = new PlayerController();
+      controller.offerResume(754_000);
+      show(controller);
+      act(() => controller.seek(30_000));
+      expect(screen.queryByTestId("bili-resume")).toBeNull();
+      expect(srcParams().get("t")).toBe("30");
+    });
+  });
 });

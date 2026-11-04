@@ -13,6 +13,7 @@ import type { ChapterService } from "./application/chapters.ts";
 import type { ExportService } from "./application/export.ts";
 import type { HighlightService } from "./application/highlights.ts";
 import type { TranslationService } from "./application/translations.ts";
+import type { TranslationDraftService } from "./application/translation-drafts.ts";
 import type { ChatService } from "./application/chat.ts";
 import type { CollectionService } from "./application/collections.ts";
 import type { ClientMediaTaskService } from "./application/client-media-tasks.ts";
@@ -141,6 +142,8 @@ export interface AppDeps {
   chapters?: ChapterService;
   highlights?: HighlightService;
   translations?: TranslationService;
+  /** Hand edits of translations, `/api/contents/:id/translations/:language/draft*`. */
+  translationDrafts?: TranslationDraftService;
   /** Synchronous file export of Contents and Collections. */
   exports?: ExportService;
   /** The bundled subtitle font, `GET /api/fonts/subtitle` (both modes). */
@@ -301,6 +304,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
   registerTranslationRoutes(app, {
     ...(deps.translations === undefined ? {} : { translations: deps.translations }),
+    ...(deps.translationDrafts === undefined ? {} : { translationDrafts: deps.translationDrafts }),
     ...(deps.derivedTasks === undefined ? {} : { derivedTasks: deps.derivedTasks }),
   });
   if (deps.trash !== undefined) {

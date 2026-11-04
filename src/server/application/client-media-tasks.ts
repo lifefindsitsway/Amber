@@ -13,7 +13,7 @@ import {
   sanitizeCacheStem,
   videoCacheFileName,
 } from "../../shared/cache-file-name.ts";
-import { CACHE_MEDIA_MAX_HEIGHT } from "../../shared/defaults.ts";
+import { CACHE_INSPECTION_MAX_ENTRIES, CACHE_INSPECTION_TTL_MS, CACHE_MEDIA_MAX_HEIGHT } from "../../shared/defaults.ts";
 import type { BurnRequest, CacheMediaInspectDto, CacheMediaInspectRequest, CacheMediaQualitiesDto, CacheMediaRequest, ContentCacheDto } from "../../shared/dto/media.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { TaskKind } from "../../shared/enums.ts";
@@ -100,6 +100,24 @@ interface CacheEstimate {
 }
 
 /**
+ * One inspection, kept in memory so the submission that follows it freezes its estimate
+ * without probing again. Only derived values are kept, never the platform's raw answer
+ * (which holds signed media URLs). A restart forgets every one, which reads as expired.
+ */
+interface CacheInspection {
+  id: string;
+  owner: string;
+  contentId: string;
+  /** The requested type; the estimate's own type is `audio` for a source without picture. */
+  type: "video" | "audio";
+  /** The tier as the request named it: a tier, `cap` for none, empty for audio. */
+  quality: string;
+  stem: string;
+  estimate: CacheEstimate;
+  expiresAt: number;
+}
+
+/**
  * The client-only Tasks: caching a platform video or its audio as a `platform_cache` asset
  * and burning subtitles into a video. Both are 202 + Task, carry an Idempotency-Key and
  * freeze their request at submission.
@@ -109,10 +127,11 @@ export class ClientMediaTaskService {
   private readonly now: () => number;
   private readonly newId: () => string;
   /**
-   * The last inspection's expected height per owner, Content, type, cap and stem, which the
-   * submission right after it freezes as its estimate. Consumed by that submission.
+   * Live inspections by id, oldest first, at most `CACHE_INSPECTION_MAX_ENTRIES`. Each is
+   * consumed only by the submission naming it, so dialogs in several windows do not take
+   * each other's estimates away.
    */
-  private readonly estimates = new Map<string, number>();
+  private readonly inspections = new Map<string, CacheInspection>();
 
   constructor(options: ClientMediaTaskServiceOptions) {
     this.options = options;
@@ -150,7 +169,17 @@ export class ClientMediaTaskService {
         this.options.repository.withTransaction((scope) => scope.mediaAssets.listByContent(owner, content.id)),
         signal,
       );
-      const estimate = await this.estimate(content, type, videoTargetOf(body.quality), signal);
+      const quality = qualityKeyOf(type, body.quality);
+      this.pruneInspections();
+      // A changed file name alone does not change what the platform serves: when the latest
+      // live inspection of the same type and tier differs only in the name, it lends its
+      // estimate and only the local checks below run again. Checking the same name again
+      // probes anew.
+      const earlier = [...this.inspections.values()]
+        .reverse()
+        .find((entry) => entry.owner === owner && entry.contentId === content.id && entry.type === type && entry.quality === quality);
+      const reused = earlier !== undefined && earlier.stem.toLowerCase() !== stem.toLowerCase() ? earlier.estimate : undefined;
+      const estimate = reused ?? (await this.estimate(content, type, videoTargetOf(body.quality), signal));
       const fileName = estimate.type === "audio" ? audioCacheFileName(stem) : videoCacheFileName(stem, estimate.height, estimate.ext as "mp4" | "webm");
       // A name with an unknown height is only shown; nothing can hold it yet.
       const nameKnown = estimate.type === "audio" || estimate.height !== undefined;
@@ -188,14 +217,17 @@ export class ClientMediaTaskService {
           caches: own.filter((asset) => asset.availability === "available" && cacheTypeOf(asset) !== undefined).map(contentCacheDto),
         };
       });
-      const estimateKey = this.estimateKey(owner, content.id, type, body.quality, stem);
-      if (estimate.height !== undefined || estimate.type === "audio") {
-        this.estimates.set(estimateKey, estimate.height ?? 0);
-      } else {
-        // The latest inspection knows no height: an earlier one's must not be frozen in its place.
-        this.estimates.delete(estimateKey);
+      const inspectionId = this.newId();
+      this.inspections.set(inspectionId, { id: inspectionId, owner, contentId: content.id, type, quality, stem, estimate, expiresAt: this.now() + CACHE_INSPECTION_TTL_MS });
+      // The oldest go first once the store is full.
+      for (const id of this.inspections.keys()) {
+        if (this.inspections.size <= CACHE_INSPECTION_MAX_ENTRIES) {
+          break;
+        }
+        this.inspections.delete(id);
       }
       return {
+        inspectionId,
         expected: {
           type: estimate.type,
           ...(estimate.height === undefined ? {} : { height: estimate.height }),
@@ -279,23 +311,24 @@ export class ClientMediaTaskService {
     await this.options.recoverSwaps?.();
     const type = body.type ?? "video";
     const probes = type === "audio" ? [this.options.disk] : [];
-    // The estimate is consumed only once the Task exists: a submission refused after reading
-    // it (a lane conflict, a failed transaction) leaves it for the retry.
+    // The inspection is consumed only once the Task exists: a submission refused after
+    // reading it (a lane conflict, a failed transaction) leaves it for the retry.
     let consumed: string | undefined;
+    this.pruneInspections();
     const result = await this.create(principal, contentId, body, idempotencyKey, CACHE_MEDIA_ROUTE, "cache_media", () => this.checkDisks(probes, [cache]), (content, scope) => {
       if (content.source.kind === "local") {
         throw amberError("invalid_request", "only platform contents have media to cache", { params: { detail: "contentId" } });
       }
       const stem = this.stemFor(content, body.fileName);
-      const key = this.estimateKey(owner, content.id, type, body.quality, stem);
-      const estimated = this.estimates.get(key);
-      const expectedHeight = type === "video" && estimated !== undefined && estimated > 0 ? estimated : undefined;
+      const inspection = this.inspectionFor(owner, content.id, type, body.quality, stem, body.inspectionId);
+      const estimated = inspection?.estimate;
+      const expectedHeight = type === "video" && estimated?.type === "video" ? estimated.height : undefined;
       if (this.pendingName(scope, content, type, stem, expectedHeight)) {
         throw amberError("conflict", "another content's unfinished cache task uses this file name", { code: "conflict.cache_name_pending" });
       }
       const expectedName = type === "audio" ? audioCacheFileName(stem) : expectedHeight === undefined ? undefined : labelledStem(stem, expectedHeight);
       const overwrite = body.overwriteAssetId === undefined ? undefined : this.checkOverwrite(scope, owner, content, body.overwriteAssetId, type, expectedName);
-      consumed = key;
+      consumed = inspection?.id;
       return canonicalJson(
         cacheMediaTaskRequestV4Schema.parse({
           requestSchemaVersion: 4,
@@ -311,7 +344,7 @@ export class ClientMediaTaskService {
       );
     });
     if (consumed !== undefined) {
-      this.estimates.delete(consumed);
+      this.inspections.delete(consumed);
     }
     return result;
   }
@@ -345,10 +378,42 @@ export class ClientMediaTaskService {
     return fitted;
   }
 
-  // A named tier and an omitted one select differently (exactly that tier, or the best under
-  // the default cap), so their estimates are kept apart even when the tier is the cap.
-  private estimateKey(owner: string, contentId: string, type: string, quality: number | undefined, stem: string): string {
-    return [owner, contentId, type, type === "video" ? (quality === undefined ? "cap" : String(quality)) : "", stem.toLowerCase()].join("\u0000");
+  private pruneInspections(): void {
+    const now = this.now();
+    for (const [id, inspection] of this.inspections) {
+      if (inspection.expiresAt <= now) {
+        this.inspections.delete(id);
+      }
+    }
+  }
+
+  /**
+   * The inspection a submission freezes its estimate from. Named by `inspectionId`, it must
+   * still be live and made by this owner for this Content, type, tier and stem, else
+   * `conflict.cache_inspection_expired`: the user confirmed what that check showed, and
+   * nothing else may be submitted in its place. Without an id, the latest live inspection
+   * matching the request lends its estimate if there is one; the stage probes otherwise.
+   * Either way only the inspection used is consumed, never another window's.
+   */
+  private inspectionFor(
+    owner: string,
+    contentId: string,
+    type: "video" | "audio",
+    requestedQuality: number | undefined,
+    stem: string,
+    inspectionId: string | undefined,
+  ): CacheInspection | undefined {
+    const quality = qualityKeyOf(type, requestedQuality);
+    const matches = (entry: CacheInspection): boolean =>
+      entry.owner === owner && entry.contentId === contentId && entry.type === type && entry.quality === quality && entry.stem.toLowerCase() === stem.toLowerCase();
+    if (inspectionId === undefined) {
+      return [...this.inspections.values()].reverse().find(matches);
+    }
+    const named = this.inspections.get(inspectionId);
+    if (named === undefined || named.expiresAt <= this.now() || !matches(named)) {
+      throw amberError("conflict", "the cache inspection expired or does not match the request", { code: "conflict.cache_inspection_expired" });
+    }
+    return named;
   }
 
   /** The format check: what the adapter would download for `type` and the video `target`. */
@@ -655,6 +720,15 @@ function contentCacheDto(asset: MediaAsset): ContentCacheDto {
     sizeBytes: asset.sizeBytes,
     createdAt: asset.createdAt,
   };
+}
+
+/**
+ * The tier as a request names it. A named tier and an omitted one select differently (exactly
+ * that tier, or the best under the default cap), so they are kept apart even when the tier is
+ * the cap; audio has none.
+ */
+function qualityKeyOf(type: "video" | "audio", quality: number | undefined): string {
+  return type === "audio" ? "" : quality === undefined ? "cap" : String(quality);
 }
 
 /** What an inspection asks the adapter for: the chosen tier exactly, or without one the default cap. */

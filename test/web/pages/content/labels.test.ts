@@ -43,6 +43,17 @@ describe("revisionLabel", () => {
     expect(revisionLabel(revision("c", { kind: "translated", language: "en", generation: llm("gpt-5.6-sol"), createdAt: at(12, 26) }), undefined, t, i18n)).toBe("翻译 · 英语 · gpt-5.6-sol · 10-04 12:26");
   });
 
+  it("names a hand-edited translation by the machine translation it came from", () => {
+    const t = i18n.t.bind(i18n);
+    const origin = { revisionId: "c", modelRef: { providerProfileId: "p", modelId: "raw", modelDisplaySnapshot: "gpt-5.6-sol" } };
+    expect(revisionLabel(revision("m", { kind: "translated", language: "en", generation: { kind: "manual", origin }, createdAt: at(12, 40) }), undefined, t, i18n)).toBe(
+      "人工编辑 · 源自 gpt-5.6-sol 译文 · 英语 · 10-04 12:40",
+    );
+    expect(revisionLabel(revision("n", { kind: "translated", language: "en", generation: { kind: "manual" }, createdAt: at(12, 40) }), undefined, t, i18n)).toBe("人工编辑 · 英语 · 10-04 12:40");
+    // A hand-edited transcript keeps its own label.
+    expect(revisionLabel(revision("o", { kind: "manual", generation: { kind: "manual" }, createdAt: at(12, 40) }), undefined, t, i18n)).toBe("手动修订 · 10-04 12:40");
+  });
+
   it("adds seconds only where two listed labels would read the same", () => {
     const t = i18n.t.bind(i18n);
     const twin = revision("r3", { kind: "corrected", generation: llm("deepseek-flash"), createdAt: at(11, 50, 42) });

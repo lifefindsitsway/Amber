@@ -50,7 +50,7 @@ describe("TranscriptService draft commit", () => {
     const ids = base.segments.map((segment) => segment.id);
     const sentence = (startMs: number, sourceSegmentIds: string[]) => ({ startMs, endMs: startMs + 500, text: "改", sourceSegmentIds });
     h.transcripts.putDraft(LOCAL, contentId, {
-      baseRevisionId: base.revision.id,
+      baseRevisionId: base.revision.id, expectedVersion: null,
       segments: [
         sentence(0, [ids[0] as string]),
         sentence(1000, [ids[1] as string, ids[2] as string]),
@@ -60,7 +60,7 @@ describe("TranscriptService draft commit", () => {
         sentence(5000, []),
       ],
     });
-    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id });
+    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id, draftVersion: 1 });
     const segments = h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, committed.id));
     expect(segments.map((segment) => segment.paragraphStart)).toEqual([true, false, false, true, false, false]);
     expect(h.transcripts.segments(LOCAL, committed.id, { limit: 10 }).items.map((item) => item.paragraphStart)).toEqual([true, false, false, true, false, false]);
@@ -72,10 +72,10 @@ describe("TranscriptService draft commit", () => {
     const contentId = createLocalContent(h);
     const base = seed(h, contentId, 2);
     h.transcripts.putDraft(LOCAL, contentId, {
-      baseRevisionId: base.revision.id,
+      baseRevisionId: base.revision.id, expectedVersion: null,
       segments: base.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] })),
     });
-    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id });
+    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id, draftVersion: 1 });
     const items = h.transcripts.segments(LOCAL, committed.id, { limit: 10 }).items;
     expect(items.map((item) => item.paragraphStart)).toEqual([undefined, undefined]);
     expect(items.every((item) => !("paragraphStart" in item))).toBe(true);
@@ -106,13 +106,13 @@ const segmentsOf = (h: Harness, id: string) => h.repository.withTransaction((sco
 function commitEdit(h: Harness, contentId: string, baseId: string, extra: Array<{ startMs: number; endMs: number; text: string }> = []) {
   const base = segmentsOf(h, baseId);
   h.transcripts.putDraft(LOCAL, contentId, {
-    baseRevisionId: baseId,
+    baseRevisionId: baseId, expectedVersion: null,
     segments: [
       ...base.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: `${segment.text}!`, sourceSegmentIds: [segment.id] })),
       ...extra.map((sentence) => ({ ...sentence, sourceSegmentIds: [] })),
     ],
   });
-  return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primaryOf(h, contentId) as string });
+  return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primaryOf(h, contentId) as string, draftVersion: 1 });
 }
 
 /** A manual revision stored directly, as earlier builds left them: one sentence per parent sentence. */
@@ -313,13 +313,13 @@ describe("TranscriptService commit merges unreferenced manual revisions", () => 
     const m3 = insertManual(h, contentId, m2.id, 5);
     const base = segmentsOf(h, m3.id);
     h.transcripts.putDraft(LOCAL, contentId, {
-      baseRevisionId: m3.id,
+      baseRevisionId: m3.id, expectedVersion: null,
       segments: [
         { startMs: 0, endMs: 9000, text: "合并", sourceSegmentIds: [base[1]?.id as string, base[0]?.id as string, base[1]?.id as string] },
         { startMs: 9900, endMs: 15000, text: "保留", sourceSegmentIds: [base[2]?.id as string] },
       ],
     });
-    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: fixture.corrected.revision.id });
+    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: fixture.corrected.revision.id, draftVersion: 1 });
     expect(committed.parentRevisionId).toBe(fixture.corrected.revision.id);
     for (const gone of [m1, m2, m3]) expect(revisionOf(h, gone.id)).toBeUndefined();
     const corrected = fixture.corrected.segments.map((segment) => segment.id);
@@ -409,12 +409,12 @@ describe("TranscriptService archive", () => {
     expect(archived).toMatchObject({ id: asr, archived: true, archivedAt: expect.any(Number), deletable: false });
     expect(h.contents.revisions(LOCAL, contentId).revisions.find((item) => item.id === asr)).toMatchObject({ archived: true });
     expect(await codeOf(() => h.contents.setPrimary(LOCAL, contentId, asr))).toMatchObject({ code: "invalid_request" });
-    expect(await codeOf(() => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: asr, segments: [] }))).toMatchObject({ code: "invalid_request" });
+    expect(await codeOf(() => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: asr, expectedVersion: null, segments: [] }))).toMatchObject({ code: "invalid_request" });
     expect(h.transcripts.setArchived(LOCAL, asr, false)).toMatchObject({ archived: false });
     expect(h.transcripts.setArchived(LOCAL, asr, false)).not.toHaveProperty("archivedAt");
 
     expect(await codeOf(() => h.transcripts.setArchived(LOCAL, fixture.corrected.revision.id, true))).toEqual({ code: "conflict.revision_is_primary" });
-    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: fixture.platform.revision.id, segments: [] });
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: fixture.platform.revision.id, expectedVersion: null, segments: [] });
     expect(await codeOf(() => h.transcripts.setArchived(LOCAL, fixture.platform.revision.id, true))).toMatchObject({
       code: "conflict.revision_referenced",
       details: { draft: 1 },
@@ -445,7 +445,7 @@ describe("TranscriptService archive", () => {
     const h = createHarness();
     open.push(h);
     const { contentId, fixture } = lecture(h);
-    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: fixture.corrected.revision.id, segments: [] });
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: fixture.corrected.revision.id, expectedVersion: null, segments: [] });
     h.transcripts.discardDraft(LOCAL, contentId);
     expect(await codeOf(() => h.transcripts.getDraft(LOCAL, contentId))).toEqual({ code: "not_found" });
     expect(await codeOf(() => h.transcripts.discardDraft(LOCAL, contentId))).toEqual({ code: "not_found" });
@@ -466,7 +466,7 @@ describe("TranscriptService permanent delete", () => {
   it("refuses with the count of every blocking category", async () => {
     const cases: Array<{ category: string; count: number; add: (setup: ReturnType<typeof withManual>) => void }> = [
       { category: "children", count: 2, add: ({ h, contentId, m }) => [insertTranslation(h, contentId, m.id, "en", 4), insertManual(h, contentId, m.id, 5)] },
-      { category: "draft", count: 1, add: ({ h, contentId, m }) => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: m.id, segments: [] }) },
+      { category: "draft", count: 1, add: ({ h, contentId, m }) => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: m.id, expectedVersion: null, segments: [] }) },
       { category: "notes", count: 1, add: ({ h, contentId, m }) => insertNote(h, contentId, m.id) },
       {
         category: "highlights",
@@ -785,10 +785,10 @@ describe("TranscriptService permanent delete", () => {
     // The next edit keeps the first four sentences only; nothing else uses m1, so it is folded into m2 and deleted.
     const kept = segmentsOf(h, m1.id).slice(0, 4);
     h.transcripts.putDraft(LOCAL, contentId, {
-      baseRevisionId: m1.id,
+      baseRevisionId: m1.id, expectedVersion: null,
       segments: kept.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] })),
     });
-    const m2 = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: m1.id });
+    const m2 = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: m1.id, draftVersion: 1 });
     expect(revisionOf(h, m1.id)).toBeUndefined();
 
     expect(h.search.search(LOCAL, { q: "量子纠缠" }).segments).toEqual([]);
@@ -889,5 +889,50 @@ describe("TranscriptService delete together with history artifact revisions", ()
     expect(next.parentRevisionId).toBe(m.id);
     expect(revisionOf(h, m.id)).toBeDefined();
     expect(countRows(h.db, "summary_revision", "id = ?", history.summary)).toBe(1);
+  });
+});
+
+describe("TranscriptService draft versions", () => {
+  it("saves, discards and commits only at the expected version, and a late save never revives a draft", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = lecture(h);
+    const base = fixture.corrected.revision.id;
+    const segments = fixture.corrected.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] }));
+    const put = (expectedVersion: number | null) => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: base, expectedVersion, segments });
+    const conflict = (currentVersion?: number) => ({ code: "conflict.draft_changed", ...(currentVersion === undefined ? {} : { details: { currentVersion } }) });
+
+    expect(await codeOf(() => put(1))).toEqual(conflict());
+    expect(put(null).version).toBe(1);
+    expect(await codeOf(() => put(null))).toEqual(conflict(1));
+    expect(put(1).version).toBe(2);
+    expect(await codeOf(() => put(1))).toEqual(conflict(2));
+    expect(await codeOf(() => h.transcripts.discardDraft(LOCAL, contentId, 1))).toEqual(conflict(2));
+    expect(await codeOf(() => h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base, draftVersion: 1 }))).toEqual(conflict(2));
+    expect(primaryOf(h, contentId)).toBe(base);
+    expect(h.transcripts.getDraft(LOCAL, contentId).version).toBe(2);
+
+    h.transcripts.discardDraft(LOCAL, contentId, 2);
+    expect(await codeOf(() => put(2))).toEqual(conflict());
+    expect(await codeOf(() => h.transcripts.getDraft(LOCAL, contentId))).toEqual({ code: "not_found" });
+    expect(await codeOf(() => h.transcripts.discardDraft(LOCAL, contentId, 2))).toEqual(conflict());
+
+    // After a commit, the editor's late save is refused too.
+    put(null);
+    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base, draftVersion: 1 });
+    expect(primaryOf(h, contentId)).toBe(committed.id);
+    expect(await codeOf(() => put(1))).toEqual(conflict());
+    expect(countRows(h.db, "transcript_draft")).toBe(0);
+  });
+
+  it("discards without a version whatever the draft's version is", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = lecture(h);
+    const body = { baseRevisionId: fixture.corrected.revision.id, segments: [] };
+    h.transcripts.putDraft(LOCAL, contentId, { ...body, expectedVersion: null });
+    h.transcripts.putDraft(LOCAL, contentId, { ...body, expectedVersion: 1 });
+    h.transcripts.discardDraft(LOCAL, contentId);
+    expect(await codeOf(() => h.transcripts.discardDraft(LOCAL, contentId))).toEqual({ code: "not_found" });
   });
 });

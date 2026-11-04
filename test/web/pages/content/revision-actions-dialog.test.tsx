@@ -102,7 +102,20 @@ describe("RevisionDeleteDialog", () => {
 
   it("discards a blocking draft only after a second confirmation", async () => {
     const target = revision("m1", { kind: "manual", parentRevisionId: "r1", blockers: blockers({ draft: 1 }) });
-    const { api } = render(target, { "DELETE /api/contents/c1/transcript/draft": { status: 204 } });
+    const { api } = render(target, {
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "m1", version: 4, segments: [], updatedAt: 1 } },
+      "GET /api/contents/c1/translations": {
+        body: {
+          activeTasks: [],
+          translations: [
+            { artifactId: "a-en", targetLanguage: "en", revisions: [], stale: false, draft: { baseRevisionId: "m1-en", version: 2, updatedAt: 1 } },
+            { artifactId: "a-ja", targetLanguage: "ja", revisions: [], stale: false, draft: { baseRevisionId: "m1", version: 1, updatedAt: 1 } },
+          ],
+        },
+      },
+      "DELETE /api/contents/c1/transcript/draft": { status: 204 },
+      "DELETE /api/contents/c1/translations/ja/draft": { status: 204 },
+    });
     const discard = await screen.findByTestId("revision-discard-draft");
     expect((screen.getByTestId("revision-archive-instead") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(discard);
@@ -110,7 +123,29 @@ describe("RevisionDeleteDialog", () => {
     expect(discard.textContent).toBe("确认放弃草稿");
     expect(screen.getByTestId("revision-discard-draft-hint")).toBeTruthy();
     fireEvent.click(discard);
-    await waitFor(() => expect(api.calls.some((call) => call.method === "DELETE" && call.path === "/api/contents/c1/transcript/draft")).toBe(true));
+    // Only drafts whose base is in the delete set go, each at the version just read, so a save
+    // from another window in between is refused rather than lost.
+    await waitFor(() =>
+      expect(api.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([
+        "/api/contents/c1/transcript/draft?version=4",
+        "/api/contents/c1/translations/ja/draft?version=1",
+      ]),
+    );
+  });
+
+  it("leaves a transcript draft whose base is outside the delete set", async () => {
+    const target = revision("m1", { kind: "manual", parentRevisionId: "r1", blockers: blockers({ draft: 1 }) });
+    const { api } = render(target, {
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "r1", version: 4, segments: [], updatedAt: 1 } },
+      "GET /api/contents/c1/translations": {
+        body: { activeTasks: [], translations: [{ artifactId: "a-ja", targetLanguage: "ja", revisions: [], stale: false, draft: { baseRevisionId: "m1", version: 1, updatedAt: 1 } }] },
+      },
+      "DELETE /api/contents/c1/translations/ja/draft": { status: 204 },
+    });
+    const discard = await screen.findByTestId("revision-discard-draft");
+    fireEvent.click(discard);
+    fireEvent.click(discard);
+    await waitFor(() => expect(api.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1/translations/ja/draft?version=1"]));
   });
 
   it("lists the history artifacts and blocks the delete until they are opted in", async () => {

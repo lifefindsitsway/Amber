@@ -80,6 +80,21 @@ const MATRIX: Record<string, Entry> = {
     reason: "lists the caller's Tasks; a filter naming A's Content finds nothing",
     requests: (ids) => [get("/api/tasks"), get(`/api/tasks?contentId=${ids.contentId}`), get(`/api/tasks?collectionId=${ids.collectionId}`)],
   },
+  "POST /api/tasks/history/hide": {
+    kind: "self",
+    reason: "hides only the caller's finished Tasks; A's Task id is skipped like an unknown one",
+    requests: (ids) => [{ method: "POST", url: "/api/tasks/history/hide", payload: { taskIds: [ids.taskId] } }],
+  },
+  "POST /api/tasks/history/clear": {
+    kind: "self",
+    reason: "clears only the caller's own history",
+    requests: () => [{ method: "POST", url: "/api/tasks/history/clear", payload: {} }],
+  },
+  "POST /api/tasks/history/restore": {
+    kind: "self",
+    reason: "restores only the caller's Tasks of that batch",
+    requests: () => [{ method: "POST", url: "/api/tasks/history/restore", payload: { batchId: newId() } }],
+  },
   "GET /api/tasks/events": { kind: "self", reason: "an open stream of the caller's own events (per-user filtering is covered by the SSE tests)" },
   "GET /api/tasks/:id": owned((ids) => [get(`/api/tasks/${ids.taskId}`)]),
   "POST /api/tasks/:id/cancel": owned((ids) => [{ method: "POST", url: `/api/tasks/${ids.taskId}/cancel` }]),
@@ -133,7 +148,7 @@ const MATRIX: Record<string, Entry> = {
   "GET /api/transcript/revisions/:rid/segments": owned((ids) => [get(`/api/transcript/revisions/${ids.asrRevisionId}/segments`)]),
   "GET /api/contents/:id/transcript/draft": owned((ids) => [get(`/api/contents/${ids.contentId}/transcript/draft`)]),
   "PUT /api/contents/:id/transcript/draft": owned((ids) => [
-    { method: "PUT", url: `/api/contents/${ids.contentId}/transcript/draft`, payload: { baseRevisionId: ids.asrRevisionId, segments: [] } },
+    { method: "PUT", url: `/api/contents/${ids.contentId}/transcript/draft`, payload: { baseRevisionId: ids.asrRevisionId, expectedVersion: 1, segments: [] } },
   ]),
   "DELETE /api/contents/:id/transcript/draft": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/transcript/draft` }]),
   "PUT /api/transcript/revisions/:rid/archived": owned((ids) => [
@@ -143,7 +158,7 @@ const MATRIX: Record<string, Entry> = {
     { method: "DELETE", url: `/api/transcript/revisions/${ids.correctedRevisionId}?withDescendants=true` },
   ]),
   "POST /api/contents/:id/transcript/draft/commit": owned((ids) => [
-    { method: "POST", url: `/api/contents/${ids.contentId}/transcript/draft/commit`, payload: { expectedPrimaryRevisionId: ids.asrRevisionId } },
+    { method: "POST", url: `/api/contents/${ids.contentId}/transcript/draft/commit`, payload: { expectedPrimaryRevisionId: ids.asrRevisionId, draftVersion: 1 } },
   ]),
   "GET /api/transcript/segments/:sid/map": owned((ids) => [get(`/api/transcript/segments/${ids.segmentId}/map?targetRevision=${ids.correctedRevisionId}`)]),
   "POST /api/contents/:id/transcript/proofread": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/transcript/proofread`, payload: { modelRef: modelRef(ids) } }]),
@@ -155,6 +170,14 @@ const MATRIX: Record<string, Entry> = {
   "GET /api/contents/:id/highlights": owned((ids) => [get(`/api/contents/${ids.contentId}/highlights`)]),
   "POST /api/contents/:id/highlights/recompute": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/highlights/recompute`, payload: { modelRef: modelRef(ids) } }]),
   "GET /api/contents/:id/translations": owned((ids) => [get(`/api/contents/${ids.contentId}/translations`)]),
+  "GET /api/contents/:id/translations/:language/draft": owned((ids) => [get(`/api/contents/${ids.contentId}/translations/en/draft`)]),
+  "PUT /api/contents/:id/translations/:language/draft": owned((ids) => [
+    { method: "PUT", url: `/api/contents/${ids.contentId}/translations/en/draft`, payload: { baseRevisionId: ids.asrRevisionId, expectedVersion: null, segments: [] } },
+  ]),
+  "DELETE /api/contents/:id/translations/:language/draft": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/translations/en/draft` }]),
+  "POST /api/contents/:id/translations/:language/draft/commit": owned((ids) => [
+    { method: "POST", url: `/api/contents/${ids.contentId}/translations/en/draft/commit`, payload: { expectedRevisionId: ids.asrRevisionId, draftVersion: 1 } },
+  ]),
   "POST /api/contents/:id/translations": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/translations`, payload: { targetLanguages: ["en"], modelRef: modelRef(ids) } },
   ]),
@@ -392,9 +415,10 @@ function seedAlice(userId: string, bobId: string): AliceIds {
       id: newId(),
       contentId,
       baseRevisionId: transcripts.asr.revision.id,
+      version: 1,
       segments: transcripts.asr.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: `${MARK} ${segment.text}`, sourceSegmentIds: [segment.id] })),
       updatedAt: now,
-    });
+    }, null);
     const { artifactId } = scope.summaries.insertRevision(userId, {
       contentId,
       templateId: "summary.core",

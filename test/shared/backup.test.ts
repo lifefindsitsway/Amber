@@ -52,6 +52,23 @@ describe("filterUiPreferences", () => {
     expect(accepted).toEqual(input);
   });
 
+  it("accepts both formats of the subtitle track and drops a damaged one", () => {
+    const track = (userId: string) => `amber.subtitle.track.${userId}.${CONTENT}`;
+    const input = {
+      [track("v1")]: JSON.stringify({ version: 1, mode: "bilingual", revisionId: "r1", translationRevisionId: "t1" }),
+      [track("v2")]: JSON.stringify({ version: 2, mode: "translation", revisionId: "r1", translation: { language: "en", lockedRevisionId: "t1" } }),
+      [track("v2follow")]: JSON.stringify({ version: 2, mode: "off", translation: { language: "ja" } }),
+      [track("mixed")]: JSON.stringify({ version: 2, mode: "bilingual", translationRevisionId: "t1" }),
+      [track("v3")]: JSON.stringify({ version: 3, mode: "bilingual" }),
+    };
+    const { accepted, dropped } = filterUiPreferences(input);
+    expect(Object.keys(accepted).sort()).toEqual([track("v1"), track("v2"), track("v2follow")].sort());
+    expect(dropped.map((item) => [item.key, item.reason])).toEqual([
+      [track("mixed"), "invalid_value"],
+      [track("v3"), "invalid_value"],
+    ]);
+  });
+
   it("drops keys outside the whitelist, invalid values and values over the per-value cap, with a reason each", () => {
     const { accepted, dropped } = filterUiPreferences({
       "amber.sidebar.width": "300",

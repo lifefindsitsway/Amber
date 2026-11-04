@@ -27,10 +27,24 @@ function revisionModel(revision: TranscriptRevisionDto): string | undefined {
     return filled(generation["modelId"]);
   }
   if (generation["kind"] !== "llm") return undefined;
-  const modelRef = generation["modelRef"];
+  return snapshotModel(generation["modelRef"]);
+}
+
+/** The display name a model snapshot keeps, else its id. */
+function snapshotModel(modelRef: unknown): string | undefined {
   if (typeof modelRef !== "object" || modelRef === null) return undefined;
   const { modelDisplaySnapshot, modelId } = modelRef as Record<string, unknown>;
   return filled(modelDisplaySnapshot) ?? filled(modelId);
+}
+
+/**
+ * A hand-edited translation: `null` when the revision is not one; else the model of the
+ * machine translation it was first edited from, when recorded.
+ */
+function manualTranslationModel(revision: TranscriptRevisionDto): string | undefined | null {
+  if (revision.kind !== "translated" || revision.generation["kind"] !== "manual") return null;
+  const origin = revision.generation["origin"];
+  return typeof origin === "object" && origin !== null ? snapshotModel((origin as Record<string, unknown>)["modelRef"]) : undefined;
 }
 
 /** The value when it is a non-empty string. */
@@ -53,6 +67,13 @@ function revisionTime(epochMs: number, seconds: boolean): string {
 }
 
 function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18n, "exists"> | undefined, seconds: boolean): string {
+  const manual = manualTranslationModel(revision);
+  if (manual !== null) {
+    // 「人工编辑 · 源自 <模型> 译文 · English · 10-04 11:50」: what the user edited stays named.
+    const kind = manual === undefined ? t("editor.label.manual") : t("editor.label.manualTranslation", { model: manual });
+    const language = i18n === undefined ? revision.language : languageLabel(revision.language, t, i18n);
+    return [kind, language, revisionTime(revision.createdAt, seconds)].join(" · ");
+  }
   const parts: string[] = [t(`contentView.revisionKind.${revision.kind}`)];
   // Every other kind is in the Content's own language; a translation is named by its target.
   if (revision.kind === "translated") {

@@ -1,11 +1,29 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlayerController, PlayerControllerProvider } from "../../../src/web/player/player-controller.tsx";
 import { PlayerView } from "../../../src/web/player/player-view.tsx";
 import type { SubtitleTrackModel } from "../../../src/web/player/subtitle-overlay.tsx";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../src/shared/subtitle-style.ts";
 
-vi.mock("../../../src/web/player/youtube-api.ts", () => ({ loadYoutubeApi: () => Promise.reject(new Error("blocked")) }));
+// The IFrame API is blocked unless a test turns the stand-in on; it records what the embed is asked to do.
+const youtube = vi.hoisted(() => ({ available: false, onReady: undefined as (() => void) | undefined, seekTo: vi.fn(), time: 0 }));
+vi.mock("../../../src/web/player/youtube-api.ts", () => ({
+  loadYoutubeApi: () =>
+    youtube.available
+      ? Promise.resolve({
+          Player: class {
+            constructor(_element: unknown, options: { events?: { onReady?: () => void } }) {
+              youtube.onReady = options.events?.onReady;
+            }
+            seekTo = youtube.seekTo;
+            playVideo = () => undefined;
+            getDuration = () => 3_600;
+            getCurrentTime = () => youtube.time;
+            destroy = () => undefined;
+          },
+        })
+      : Promise.reject(new Error("blocked")),
+}));
 vi.mock("../../../src/web/player/player-settings.ts", () => ({
   END_BEHAVIORS: ["pause", "loop_one", "loop_list"],
   usePlayerSettings: () => ({ endBehavior: "loop_list", setEndBehavior: () => undefined, autoplay: false, setAutoplay: () => undefined }),
@@ -116,7 +134,9 @@ describe("PlayerView", () => {
       setOriginal: () => undefined,
       translations: [],
       translationId: undefined,
-      setTranslation: () => undefined,
+      translationLocked: false,
+      followTranslation: () => undefined,
+      lockTranslation: () => undefined,
       goTranslate: () => undefined,
       status: "ready",
       retry: () => undefined,
@@ -163,5 +183,65 @@ describe("PlayerView", () => {
     show({ source: YOUTUBE, localSources: sources, localSourceId: "hd" });
     await screen.findByTestId("player-failed");
     expect(screen.queryByTestId("player-quality")).toBeNull();
+  });
+});
+
+describe("PlayerView switching players", () => {
+  afterEach(() => {
+    youtube.available = false;
+    youtube.onReady = undefined;
+    youtube.seekTo.mockReset();
+    youtube.time = 0;
+    vi.useRealTimers();
+  });
+  const page = (controller: PlayerController, props: Parameters<typeof PlayerView>[0]) => (
+    <PlayerControllerProvider controller={controller}>
+      <PlayerView {...props} />
+    </PlayerControllerProvider>
+  );
+
+  it("takes the position from the local player to the embed", async () => {
+    youtube.available = true;
+    const controller = new PlayerController();
+    const { rerender } = render(page(controller, { source: YOUTUBE, localSrc: "/cache.mp4", preferLocal: true }));
+    const video = screen.getByTestId("player-local").querySelector("video") as HTMLVideoElement;
+    video.currentTime = 120;
+    fireEvent.timeUpdate(video);
+    rerender(page(controller, { source: YOUTUBE, localSrc: "/cache.mp4", preferLocal: false }));
+    expect(screen.getByTestId("player-youtube")).toBeTruthy();
+    await vi.waitFor(() => expect(youtube.onReady).toBeDefined());
+    act(() => youtube.onReady?.());
+    expect(youtube.seekTo.mock.calls).toEqual([[120, true]]);
+  });
+
+  it("takes the position from the embed to the local player, which only places it", async () => {
+    youtube.available = true;
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const controller = new PlayerController();
+    const { rerender } = render(page(controller, { source: YOUTUBE, localSrc: "/cache.mp4", preferLocal: false }));
+    await vi.waitFor(() => expect(youtube.onReady).toBeDefined());
+    act(() => youtube.onReady?.());
+    youtube.time = 301.5;
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    rerender(page(controller, { source: YOUTUBE, localSrc: "/cache.mp4", preferLocal: true }));
+    const video = screen.getByTestId("player-local").querySelector("video") as HTMLVideoElement;
+    expect(video.currentTime).toBeCloseTo(301.5, 1);
+    expect(video.autoplay).toBe(false);
+  });
+
+  it("does not carry a position into the Bilibili embed: its t= would force autoplay", () => {
+    const bilibili = { kind: "bilibili", bvid: "BV1" } as const;
+    const controller = new PlayerController();
+    const { rerender } = render(page(controller, { source: bilibili, localSrc: "/cache.mp4", preferLocal: true }));
+    const video = screen.getByTestId("player-local").querySelector("video") as HTMLVideoElement;
+    video.currentTime = 754;
+    fireEvent.timeUpdate(video);
+    rerender(page(controller, { source: bilibili, localSrc: "/cache.mp4", preferLocal: false }));
+    const src = new URL(screen.getByTestId("player-bilibili").getAttribute("src") ?? "");
+    expect(src.searchParams.has("t")).toBe(false);
+    expect(src.searchParams.get("autoplay")).toBe("0");
+    expect(screen.queryByTestId("bili-resume")).toBeNull();
   });
 });
