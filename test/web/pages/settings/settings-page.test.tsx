@@ -33,6 +33,29 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("link", { name: "备份与恢复" })).toBeTruthy();
   });
 
+  it("puts 「凭据重置」 between the platform accounts and the templates in the desktop client only", async () => {
+    fakeShell.desktop = true;
+    mockApi({
+      "GET /api/version": { body: VERSION },
+      "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } },
+    });
+    renderApp(<SettingsPage />, { route: "/settings/credentials", path: "/settings/:section" });
+    const nav = screen.getByRole("navigation");
+    await waitFor(() => expect([...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toContain("/settings/credentials"));
+    const hrefs = [...nav.querySelectorAll("a")].map((link) => link.getAttribute("href"));
+    const at = hrefs.indexOf("/settings/credentials");
+    expect(hrefs[at - 1]).toBe("/settings/platform-accounts");
+    expect(hrefs[at + 1]).toBe("/settings/templates");
+    expect(screen.getByRole("heading", { level: 2, name: "凭据重置" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重置全部凭据" })).toBeTruthy();
+  });
+
+  it("sends /settings/credentials to models in server mode, where the reset lives in the administration page", async () => {
+    mockApi({ "GET /api/providers": { body: { items: [] } }, "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } } });
+    const { container } = renderApp(<SettingsPage />, { route: "/settings/credentials", path: "/settings/:section", mode: "server" });
+    await waitFor(() => expect(container.querySelector("[data-settings-section]")?.getAttribute("data-settings-section")).toBe("models"));
+  });
+
   it("sends /settings/backup to models in server mode", async () => {
     mockApi({ "GET /api/providers": { body: { items: [] } }, "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } } });
     const { container } = renderApp(<SettingsPage />, { route: "/settings/backup", path: "/settings/:section", mode: "server" });

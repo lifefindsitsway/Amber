@@ -7,6 +7,7 @@ export const settings = {
     "other-models": "其他模型",
     "web-search": "联网搜索",
     "platform-accounts": "平台账号",
+    credentials: "凭据重置",
     templates: "提示词模板",
     terminology: "全局术语库",
     storage: "存储",

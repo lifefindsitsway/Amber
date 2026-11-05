@@ -4,6 +4,7 @@ import { Navigate, NavLink, useParams } from "react-router";
 import { useApi } from "../../api/context.tsx";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { PageHeader } from "../../ui/feedback.tsx";
+import { CredentialsSection } from "../admin/credentials-section.tsx";
 import { BackupSection } from "./backup-section.tsx";
 import { ModelsSection } from "./models-section.tsx";
 import { OtherModelsSection } from "./other-models-section.tsx";
@@ -17,19 +18,21 @@ import { WebSearchSection } from "./web-search-section.tsx";
 
 /**
  * Feature settings sections, in the order the settings page lists them. Appearance, password
- * and administration live in the account menu; 「备份与恢复」 is listed in the desktop client only.
+ * and administration live in the account menu; 「凭据重置」 and 「备份与恢复」 are listed in the
+ * desktop client only (server mode resets credentials from the administration page).
  */
-export const SETTINGS_SECTIONS = ["models", "transcription", "other-models", "web-search", "platform-accounts", "templates", "terminology", "storage", "backup", "shortcuts"] as const;
+export const SETTINGS_SECTIONS = ["models", "transcription", "other-models", "web-search", "platform-accounts", "credentials", "templates", "terminology", "storage", "backup", "shortcuts"] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** Sections that exist only in the desktop client. */
-const DESKTOP_SECTIONS: ReadonlySet<SettingsSection> = new Set(["backup"]);
+const DESKTOP_SECTIONS: ReadonlySet<SettingsSection> = new Set(["credentials", "backup"]);
 const SECTION_VIEWS: Record<SettingsSection, ComponentType> = {
   models: ModelsSection,
   transcription: TranscriptionSection,
   "other-models": OtherModelsSection,
   "web-search": WebSearchSection,
   "platform-accounts": PlatformAccountsSection,
+  credentials: CredentialsSection,
   templates: TemplatesSection,
   terminology: TerminologySection,
   storage: StorageSection,

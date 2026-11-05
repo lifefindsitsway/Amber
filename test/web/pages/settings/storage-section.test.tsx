@@ -191,7 +191,7 @@ describe("StorageSection in the desktop client", () => {
     expect(screen.queryByTestId("burn-output-saved")).toBeNull();
   });
 
-  it("deletes a burn product after confirmation and offers the credential reset", async () => {
+  it("deletes a burn product after confirmation, and no longer carries the credential reset", async () => {
     const { calls } = desktop();
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(2));
     const second = screen.getAllByTestId("burn-output")[1] as HTMLElement;
@@ -200,7 +200,7 @@ describe("StorageSection in the desktop client", () => {
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(1));
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/media/m2"]);
-    expect(screen.getByRole("button", { name: "重置全部凭据" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "重置全部凭据" })).toBeNull();
   });
 
   it("shows neither outside the desktop client", async () => {

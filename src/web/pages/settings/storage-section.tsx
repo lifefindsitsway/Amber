@@ -29,7 +29,6 @@ import { burnFileName, burnOutputFormat, burnOutputsKey, deleteBurnProduct, save
 import { cacheLocationKey } from "../../desktop/cached-media.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime, formatDuration } from "../../format.ts";
-import { CredentialsSection } from "../admin/credentials-section.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { Button } from "../../ui/button.tsx";
@@ -76,7 +75,6 @@ export function StorageSection() {
         </>
       ) : null}
       <UsageBlock />
-      {desktop ? <CredentialsSection title={t("admin.section.credentials")} /> : null}
     </div>
   );
 }
