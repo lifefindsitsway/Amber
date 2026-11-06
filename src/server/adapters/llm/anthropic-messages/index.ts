@@ -8,10 +8,11 @@ import {
 import { amberError } from "../../../domain/errors.ts";
 import type { LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../../../domain/llm.ts";
 import { effectiveCapability, type EffectiveCapability, type ProviderProfile } from "../../../domain/provider-profile.ts";
+import type { RequestStartInfo } from "../../../domain/usage.ts";
 import type { LlmProbeCall, LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../../ports/outbound-http.ts";
 import type { SecretStore } from "../../../ports/secret-store.ts";
-import { endpoint, linkedController, OutputWatchdog, revealKey, sseEvents, transportFailure, withIdleTimeout, type SseEvent } from "../shared.ts";
+import { beginRequest, endpoint, linkedController, OutputWatchdog, sseEvents, transportFailure, withIdleTimeout, type SseEvent } from "../shared.ts";
 import { errorDetail, httpError, rejectsFeature, upstreamText } from "./errors.ts";
 
 /** The API version every request pins (Messages API versioning). */
@@ -34,7 +35,7 @@ const PROBE_TOOL = {
 
 export interface AnthropicMessagesProviderOptions {
   http: OutboundHttpClient;
-  secrets: Pick<SecretStore, "reveal">;
+  secrets: Pick<SecretStore, "revealVersioned">;
   now?: () => number;
 }
 
@@ -44,6 +45,8 @@ interface WireUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** Cache writes by lifetime; only the one-hour share is read. */
+  cache_creation?: { ephemeral_1h_input_tokens?: unknown };
   [field: string]: unknown;
 }
 
@@ -79,7 +82,7 @@ export class AnthropicMessagesProvider implements LlmProvider {
       let response: OutboundResponse;
       watchdog.start();
       try {
-        response = await this.request(opts.profile, body, controller.signal, undefined);
+        response = await this.request(opts.profile, body, controller.signal, opts.onRequestStart, undefined);
       } catch (error) {
         throw transportFailure(error, opts.signal);
       }
@@ -129,7 +132,7 @@ export class AnthropicMessagesProvider implements LlmProvider {
     flag: LlmProbeFlag,
     body: WireBody,
     streaming: boolean,
-    opts: { signal: AbortSignal; onCall(call: LlmProbeCall): void },
+    opts: Parameters<LlmProbeCheck["run"]>[0],
   ): Promise<{ result: "supported" | "unsupported"; latencyMs: number }> {
     const { signal } = opts;
     let reported = false;
@@ -143,7 +146,7 @@ export class AnthropicMessagesProvider implements LlmProvider {
     const startedAt = this.now();
     let response: OutboundResponse;
     try {
-      response = await this.request(profile, body, controller.signal, LLM_PROBE_TIMEOUT_MS);
+      response = await this.request(profile, body, controller.signal, opts.onRequestStart, LLM_PROBE_TIMEOUT_MS);
     } catch (error) {
       // Only a request that reached the upstream in full can have been processed.
       if (error instanceof OutboundHttpError && error.phase === "after_send") {
@@ -196,10 +199,21 @@ export class AnthropicMessagesProvider implements LlmProvider {
     }
   }
 
-  /** One request through the transport; failures are the transport's own. */
-  private request(profile: ProviderProfile, body: WireBody, signal: AbortSignal, timeoutMs: number | undefined): Promise<OutboundResponse> {
+  /**
+   * One request through the transport; failures are the transport's own. Everything that
+   * can fail is done before the key is revealed; the request then goes out with exactly the
+   * key `onRequestStart` was told about.
+   */
+  private request(
+    profile: ProviderProfile,
+    body: WireBody,
+    signal: AbortSignal,
+    onRequestStart: (info: RequestStartInfo) => void,
+    timeoutMs: number | undefined,
+  ): Promise<OutboundResponse> {
+    const payload = JSON.stringify(body);
     const headers = {
-      "x-api-key": revealKey(profile, this.options.secrets),
+      "x-api-key": beginRequest(profile, this.options.secrets, onRequestStart, this.now),
       "anthropic-version": ANTHROPIC_VERSION,
       "content-type": "application/json",
       accept: body["stream"] === true ? "text/event-stream" : "application/json",
@@ -208,7 +222,7 @@ export class AnthropicMessagesProvider implements LlmProvider {
       url: endpoint(profile, MESSAGES_PATH),
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: payload,
       signal,
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
@@ -389,7 +403,8 @@ function mergeUsage(target: WireUsage, source: WireUsage | undefined): boolean {
 /**
  * Normalized counts: `inputTokens` is every input token processed, cache reads and
  * writes included, the same meaning as OpenAI's `prompt_tokens`; the cache counts are
- * kept as a breakdown when reported.
+ * kept as a breakdown when reported. `cache_creation` is merged whole like every other
+ * field, so a later event's breakdown replaces an earlier one's, as its totals do.
  */
 function toRawUsage(usage: WireUsage): RawUsage | undefined {
   const { input_tokens: input, output_tokens: output } = usage;
@@ -398,11 +413,14 @@ function toRawUsage(usage: WireUsage): RawUsage | undefined {
   }
   const cacheRead = typeof usage.cache_read_input_tokens === "number" ? usage.cache_read_input_tokens : undefined;
   const cacheWrite = typeof usage.cache_creation_input_tokens === "number" ? usage.cache_creation_input_tokens : undefined;
+  const oneHour = usage.cache_creation?.ephemeral_1h_input_tokens;
+  const cacheWrite1h = typeof oneHour === "number" && Number.isInteger(oneHour) && oneHour >= 0 ? oneHour : undefined;
   return {
     inputTokens: input + (cacheRead ?? 0) + (cacheWrite ?? 0),
     outputTokens: output,
     ...(cacheRead === undefined ? {} : { cacheReadTokens: cacheRead }),
     ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
+    ...(cacheWrite1h === undefined ? {} : { cacheWrite1hTokens: cacheWrite1h }),
     rawJson: JSON.stringify(usage),
   };
 }

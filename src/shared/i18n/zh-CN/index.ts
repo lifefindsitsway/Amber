@@ -16,6 +16,7 @@ import { search } from "./ui-search.ts";
 import { settings } from "./ui-settings.ts";
 import { shell } from "./ui-shell.ts";
 import { trash } from "./ui-trash.ts";
+import { usage } from "./ui-usage.ts";
 
 /** zh-CN resource bundle; namespaces are added as UI areas land. */
 export const zhCN = {
@@ -39,4 +40,5 @@ export const zhCN = {
   notes,
   trash,
   backup,
+  usage,
 } as const;

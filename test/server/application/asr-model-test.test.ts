@@ -6,6 +6,7 @@ import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
 import type { AsrProviderFactory } from "../../../src/server/ports/asr-provider.ts";
 import { ASR_TEST_AUDIO_MS, ASR_TEST_POLL_INTERVAL_MS, ASR_TEST_TIMEOUT_MS } from "../../../src/shared/defaults.ts";
 import type { AsrProviderId } from "../../../src/shared/enums.ts";
+import type { ModelPricing } from "../../../src/shared/model-pricing.ts";
 import { fakeAsrResult, FakeAsrFactory } from "../../fixtures/asr/fake-asr.ts";
 import { BOB, createHarness, gate, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { tempDataDir } from "../../tools/sqlite.ts";
@@ -182,7 +183,7 @@ describe("AsrProfileService.testModel", () => {
     fake.delivery = "job";
     fake.submitOutcomes = [
       async (opts) => {
-        opts.onPaidCallStart();
+        opts.onRequestStart({ sentAt: Date.now(), credential: { versionId: "key-version-1", setAt: 1 } });
         controller.abort(new Error("client went away"));
         return { version: 1, provider: "fake", jobId: "job-x", submittedAt: 1 };
       },
@@ -238,5 +239,109 @@ describe("AsrProfileService.testModel", () => {
     expect(result).not.toHaveProperty("testedAt");
     expect(storedModel(h, profile.id, "scribe_v2")).toBeUndefined();
     expect(usageRows(h)).toHaveLength(1);
+  });
+});
+
+describe("AsrProfileService.testModel usage context", () => {
+  const PRICE: ModelPricing = { currency: "CNY", items: [{ unit: "audio_per_second", amount: "0.00022" }] };
+
+  it("records the profile snapshot, the send-time context and the price in force, and the outcome of a synchronous test", async () => {
+    const { h, fake, service, profile } = await setup();
+    h.repository.withTransaction((scope) => {
+      const current = scope.asrProfiles.get(LOCAL.userId, profile.id)!;
+      scope.asrProfiles.update({ ...current, models: current.models.map((model) => (model.modelId === "scribe_v2" ? { ...model, pricing: PRICE } : model)) });
+    });
+    fake.sentAt = 1_700_000_000_000;
+    fake.credential = { versionId: "version-4", setAt: 77 };
+    await service.testModel(LOCAL, profile.id, "scribe_v2", signal);
+    expect(usageRows(h)[0]).toMatchObject({
+      feature: "test_connection",
+      profileIdSnapshot: profile.id,
+      profileNameSnapshot: "ElevenLabs",
+      jobOutcome: "succeeded",
+      sentAt: 1_700_000_000_000,
+      credentialVersion: "version-4",
+      credentialSetAt: 77,
+      priceSnapshot: PRICE,
+    });
+    expect(usageRows(h)[0]).not.toHaveProperty("jobId");
+  });
+
+  it("fills the job's row with the remote end state the query reported", async () => {
+    const { h, fake, service, profile } = await setup();
+    fake.delivery = "job";
+    fake.pollOutcomes = [{ state: "pending" }, { state: "done", result: fakeAsrResult() }];
+    fake.pollReports = [undefined, { remote: "succeeded", usage: { billedInputTokens: 150, billedOutputTokens: 39, billedAudioMs: 12_000 }, rawUsageJson: '{"duration":12}' }];
+    await service.testModel(LOCAL, profile.id, "scribe_v2", signal);
+    expect(usageRows(h)[0]).toMatchObject({
+      outcome: "succeeded",
+      jobId: "job-1",
+      jobOutcome: "succeeded",
+      billedInputTokens: 150,
+      billedOutputTokens: 39,
+      billedAudioMs: 12_000,
+      profileNameSnapshot: "ElevenLabs",
+      credentialVersion: "key-version-1",
+    });
+  });
+
+  it("records a remote failure as reported, not inferred from the error", async () => {
+    const { h, fake, service, profile } = await setup();
+    fake.delivery = "job";
+    fake.pollOutcomes = [amberError("asr_failed", "decode", { code: "asr_failed.invalid_audio" })];
+    fake.pollReports = [{ remote: "failed" }];
+    expect(await codeOf(() => service.testModel(LOCAL, profile.id, "scribe_v2", signal))).toBe("asr_failed.invalid_audio");
+    expect(usageRows(h)[0]).toMatchObject({ outcome: "succeeded", jobOutcome: "failed" });
+
+    fake.pollReports = [];
+    expect(await codeOf(() => service.testModel(LOCAL, profile.id, "scribe_v2", signal))).toBe("asr_failed.invalid_audio");
+    expect(usageRows(h)[1]).not.toHaveProperty("jobOutcome");
+  });
+
+  it("writes cancelled and tells the caller when the provider confirmed the cancellation at the timeout", async () => {
+    const { h, fake, service, profile } = await setup();
+    fake.delivery = "job";
+    fake.pollOutcomes = [{ state: "pending" }];
+    fake.cancelOutcome = "cancelled";
+    const result = await service.testModel(LOCAL, profile.id, "scribe_v2", signal);
+    expect(result).toMatchObject({ result: "accepted", remoteCancelled: true });
+    expect(result).not.toHaveProperty("testedAt");
+    expect(usageRows(h)[0]).toMatchObject({ outcome: "succeeded", jobOutcome: "cancelled" });
+  });
+
+  it("leaves the job outcome unknown when the cancellation was not confirmed", async () => {
+    const { h, fake, service, profile } = await setup();
+    fake.delivery = "job";
+    fake.pollOutcomes = [{ state: "pending" }];
+    for (const cancel of ["already_terminal", "unsupported", new Error("cancel failed")] as const) {
+      fake.cancelOutcome = cancel;
+      const result = await service.testModel(LOCAL, profile.id, "scribe_v2", signal);
+      expect(result.result).toBe("accepted");
+      expect(result).not.toHaveProperty("remoteCancelled");
+    }
+    expect(usageRows(h)).toHaveLength(3);
+    expect(usageRows(h).every((row) => row.jobOutcome === undefined && row.jobId !== undefined)).toBe(true);
+  });
+
+  it("keeps a reported end state when the job ended before the cancellation reached it", async () => {
+    const { h, fake, service, profile } = await setup();
+    fake.delivery = "job";
+    fake.pollOutcomes = [{ state: "pending" }];
+    // A late report of the job having succeeded, then a confirmed cancellation: the first end state stays.
+    fake.pollReports = [{ remote: "succeeded", usage: { billedAudioMs: 12_000 } }];
+    fake.cancelOutcome = "cancelled";
+    const result = await service.testModel(LOCAL, profile.id, "scribe_v2", signal);
+    expect(result).toMatchObject({ result: "accepted", remoteCancelled: true });
+    expect(usageRows(h)[0]).toMatchObject({ jobOutcome: "succeeded", billedAudioMs: 12_000 });
+  });
+
+  it("does not let a failing fill change the test's result", async () => {
+    const { h, fake, service, profile } = await setup();
+    h.db.exec("CREATE TRIGGER refuse_fill BEFORE UPDATE ON asr_usage BEGIN SELECT RAISE(ABORT, 'locked'); END");
+    fake.delivery = "job";
+    fake.pollOutcomes = [{ state: "done", result: fakeAsrResult() }];
+    fake.pollReports = [{ remote: "succeeded", usage: { billedAudioMs: 1 } }];
+    expect((await service.testModel(LOCAL, profile.id, "scribe_v2", signal)).result).toBe("transcribed");
+    expect(usageRows(h)[0]).not.toHaveProperty("jobOutcome");
   });
 });

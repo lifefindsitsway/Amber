@@ -325,10 +325,36 @@ describe("TranscriptionSection", () => {
     expect(api.calls.find((call) => call.path === "/api/asr-profiles/a2/test")?.body).toEqual({ modelId: "fun-asr" });
   });
 
+  it("words a rate-limited model test as advice to test again, not as a pipeline retry", async () => {
+    mockApi({
+      "GET /api/asr-profiles": { body: { items: [BAILIAN] } },
+      "GET /api/settings": { body: SETTINGS },
+      "POST /api/asr-profiles/a2/test": {
+        status: 429,
+        body: {
+          error: {
+            class: "asr_failed",
+            code: "asr_failed.rate_limited",
+            retryDisposition: "policy",
+            userMessage: "已按服务端要求等待并自动重试仍未成功；可稍后从这步重跑",
+            details: { retryAfterMs: 30100 },
+          },
+        },
+      },
+    });
+    renderApp(<TranscriptionSection />);
+    const row = (await screen.findAllByTestId("asr-profile-model"))[1] as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "测试连接 · fun-asr" }));
+    const alert = await within(row).findByRole("alert");
+    expect(alert.textContent).toContain("请约 31 秒后再测试");
+    expect(alert.textContent).not.toContain("重跑");
+  });
+
   it("tells a sound without speech and an accepted job apart, and shows a refused test as an error", async () => {
     const replies = [
       { body: { modelId: "fun-asr", result: "no_speech", latencyMs: 900 } },
       { body: { modelId: "fun-asr", result: "accepted", latencyMs: 45000 } },
+      { body: { modelId: "fun-asr", result: "accepted", latencyMs: 45000, remoteCancelled: true } },
       { status: 400, body: { error: { class: "asr_failed", code: "asr_failed.model_unavailable", retryDisposition: "never", userMessage: "所配置的转写模型不存在" } } },
     ];
     mockApi({
@@ -342,7 +368,9 @@ describe("TranscriptionSection", () => {
     fireEvent.click(button);
     await waitFor(() => expect(within(row).getByTestId("asr-model-test-result").textContent).toBe("可用（测试音频无语音内容）· 延迟 900 ms"));
     fireEvent.click(within(row).getByRole("button", { name: "测试连接 · fun-asr" }));
-    await waitFor(() => expect(within(row).getByTestId("asr-model-test-result").textContent).toBe("服务已受理，未在等待时间内返回结果"));
+    await waitFor(() => expect(within(row).getByTestId("asr-model-test-result").textContent).toBe("测试超时，已尝试取消 · 计费量未知"));
+    fireEvent.click(within(row).getByRole("button", { name: "测试连接 · fun-asr" }));
+    await waitFor(() => expect(within(row).getByTestId("asr-model-test-result").textContent).toBe("测试超时，已取消"));
     fireEvent.click(within(row).getByRole("button", { name: "测试连接 · fun-asr" }));
     expect((await within(row).findByRole("alert")).textContent).toContain("所配置的转写模型不存在");
     expect(within(row).queryByTestId("asr-model-test-result")).toBeNull();
@@ -379,7 +407,6 @@ describe("TranscriptionSection", () => {
     expect([...(within(dialog).getByLabelText("计费单位 1") as HTMLSelectElement).options].map((option) => option.value)).toEqual([
       "input_tokens_per_million",
       "output_tokens_per_million",
-      "cached_input_tokens_per_million",
       "audio_per_second",
       "audio_per_minute",
       "audio_per_hour",

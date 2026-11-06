@@ -11,7 +11,7 @@ import {
 import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../../../src/server/domain/media-asset.ts";
 import type { AsrModelEntry, AsrProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
-import type { AsrJobHandle, AsrJobProvider } from "../../../../../src/server/ports/asr-provider.ts";
+import type { AsrJobHandle, AsrJobProvider, AsrJobReport } from "../../../../../src/server/ports/asr-provider.ts";
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse, type OutboundStreamBody } from "../../../../../src/server/ports/outbound-http.ts";
 import { ASR_PRESETS } from "../../../../../src/shared/asr-presets.ts";
 import { ASR_RESULT_MAX_MB } from "../../../../../src/shared/defaults.ts";
@@ -144,8 +144,11 @@ class StubHttp {
   }
 }
 
+const KEY_VERSION = { versionId: "version-1", setAt: 1_700_000_000_000 };
+
 function setup(route: Route = routes(), model = QWEN, models?: ReadonlyArray<string | AsrModelEntry>) {
   const http = new StubHttp(route);
+  const reveals: string[] = [];
   const factory = new DashscopeAsrProviderFactory({
     http,
     files: {
@@ -155,11 +158,20 @@ function setup(route: Route = routes(), model = QWEN, models?: ReadonlyArray<str
         }
       },
     },
-    secrets: { reveal: () => API_KEY },
+    secrets: {
+      reveal: () => {
+        reveals.push("reveal");
+        return API_KEY;
+      },
+      revealVersioned: () => {
+        reveals.push("revealVersioned");
+        return { plaintext: API_KEY, version: KEY_VERSION };
+      },
+    },
     now: () => 1_000,
     newId: () => "01JOBFILE",
   });
-  return { http, factory, provider: factory.create(profile(models), model) };
+  return { http, factory, reveals, provider: factory.create(profile(models), model) };
 }
 
 const signal = (): AbortSignal => new AbortController().signal;
@@ -199,7 +211,7 @@ async function submit(provider: AsrJobProvider, terminology = [...KNOWN_MISHEARD
   const events: string[] = [];
   const handle = await provider.submit(
     { audio: ASSET, terminology, ...(language === undefined ? {} : { language }) },
-    { signal: signal(), onPaidCallStart: () => events.push("paid") },
+    { signal: signal(), onRequestStart: () => events.push("paid") },
   );
   return { handle, events };
 }
@@ -248,7 +260,7 @@ describe("descriptor and per-model capabilities", () => {
 });
 
 describe("submit", () => {
-  it("asks for upload space, uploads the file last, then creates the job right after onPaidCallStart", async () => {
+  it("asks for upload space, uploads the file last, then creates the job right after onRequestStart", async () => {
     const order: string[] = [];
     const base = routes();
     const { http, provider } = setup((request) => {
@@ -258,7 +270,7 @@ describe("submit", () => {
     const events: string[] = [];
     const handle = await (provider as AsrJobProvider).submit(
       { audio: ASSET, terminology: [...KNOWN_MISHEARD_TERMS], language: "zh-CN" },
-      { signal: signal(), onPaidCallStart: () => events.push(`paid after ${order.length}`) },
+      { signal: signal(), onRequestStart: () => events.push(`paid after ${order.length}`) },
     );
     expect(order).toEqual(["policy", "upload", "submit"]);
     expect(events).toEqual(["paid after 2"]);
@@ -403,11 +415,78 @@ describe("submit", () => {
     expect(error.appError.details).toEqual({ retryAfterMs: 7000 });
   });
 
-  it("does not call onPaidCallStart when the upload fails", async () => {
+  it("does not call onRequestStart when the upload fails", async () => {
     const { provider } = setup(routes({ upload: () => ({ status: 500, body: "" }) }));
     const events: string[] = [];
-    await failure((provider as AsrJobProvider).submit({ audio: ASSET, terminology: [] }, { signal: signal(), onPaidCallStart: () => events.push("paid") }));
+    await failure((provider as AsrJobProvider).submit({ audio: ASSET, terminology: [] }, { signal: signal(), onRequestStart: () => events.push("paid") }));
     expect(events).toEqual([]);
+  });
+});
+
+describe("request start", () => {
+  it("creates the job with the key it reported, and only that request reports a start", async () => {
+    const events: string[] = [];
+    const base = routes();
+    // Each reveal hands out a different key, so a second reveal between report and send would show.
+    let revealed = 0;
+    const http = new StubHttp((request) => {
+      events.push(`${request.url.endsWith("/asr/transcription") ? "submit" : request.url.startsWith(UPLOAD_HOST) ? "upload" : "policy"} ${String(request.headers?.["authorization"])}`);
+      return base(request);
+    });
+    const factory = new DashscopeAsrProviderFactory({
+      http,
+      files: { read: async function* () { yield AUDIO; } },
+      secrets: {
+        reveal: () => `plain-${(revealed += 1)}`,
+        revealVersioned: () => ({ plaintext: `paid-${(revealed += 1)}`, version: { versionId: `version-${revealed}`, setAt: revealed } }),
+      },
+      now: () => 4_242,
+      newId: () => "01JOBFILE",
+    });
+    const provider = factory.create(profile(), QWEN) as AsrJobProvider;
+    const infos: unknown[] = [];
+    await provider.submit(
+      { audio: ASSET, terminology: [] },
+      {
+        signal: signal(),
+        onRequestStart: (info) => {
+          infos.push(info);
+          events.push("started");
+        },
+      },
+    );
+    expect(events).toEqual(["policy Bearer plain-1", "upload undefined", "started", "submit Bearer paid-2"]);
+    expect(infos).toEqual([{ sentAt: 4_242, credential: { versionId: "version-2", setAt: 2 } }]);
+
+    // Later queries reveal on their own and never report a start.
+    await provider.poll(HANDLE, { signal: signal() });
+    const poll = http.captured.find((entry) => entry.request.url === `${BASE}/api/v1/tasks/task-123`);
+    expect(poll?.request.headers?.["authorization"]).toBe("Bearer plain-3");
+    expect(infos).toHaveLength(1);
+  });
+
+  it("sends nothing and creates no job when the start callback refuses", async () => {
+    const { http, provider } = setup();
+    const refusal = new Error("do not send");
+    await expect(
+      (provider as AsrJobProvider).submit(
+        { audio: ASSET, terminology: [] },
+        {
+          signal: signal(),
+          onRequestStart: () => {
+            throw refusal;
+          },
+        },
+      ),
+    ).rejects.toBe(refusal);
+    expect(http.captured.some((entry) => entry.request.url.endsWith("/asr/transcription"))).toBe(false);
+  });
+
+  it("reveals the paid key once, for the creating request only", async () => {
+    const { reveals, provider } = setup();
+    await submit(provider as AsrJobProvider);
+    // The upload space is asked for with an ordinary reveal; the upload carries none.
+    expect(reveals).toEqual(["reveal", "revealVersioned"]);
   });
 });
 
@@ -499,6 +578,134 @@ describe("poll", () => {
     expect((await failure((provider as AsrJobProvider).poll({ ...HANDLE, provider: "elevenlabs" }, { signal: signal() }))).appError.class).toBe("internal");
     expect((await failure((provider as AsrJobProvider).poll({ ...HANDLE, version: 2 } as unknown as AsrJobHandle, { signal: signal() }))).appError.class).toBe("internal");
     expect(http.captured).toHaveLength(0);
+  });
+});
+
+describe("job reports", () => {
+  const succeeded = (extra: Record<string, unknown>, results: unknown = [{ file_url: "oss://x", transcription_url: RESULT_URL, subtask_status: "SUCCEEDED" }]) =>
+    JSON.stringify({ request_id: "req-poll", output: { task_id: "task-123", task_status: "SUCCEEDED", results }, ...extra });
+
+  async function pollReports(route: Route): Promise<{ reports: AsrJobReport[]; outcome: "done" | AmberError }> {
+    const { provider } = setup(route);
+    const reports: AsrJobReport[] = [];
+    const attempt = (provider as AsrJobProvider).poll(HANDLE, { signal: signal(), onJobReport: (report) => reports.push(report) });
+    const outcome = await attempt.then(
+      () => "done" as const,
+      (thrown: unknown) => thrown as AmberError,
+    );
+    return { reports, outcome };
+  }
+
+  it("reports a qwen-audio success with billed tokens and time from the measured usage", async () => {
+    const usage = { duration: 12, input_tokens: 150, output_tokens: 39, total_tokens: 189 };
+    const { reports, outcome } = await pollReports(routes({ poll: () => ({ body: succeeded({ usage }) }) }));
+    expect(outcome).toBe("done");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ remote: "succeeded", usage: { billedInputTokens: 150, billedOutputTokens: 39, billedAudioMs: 12_000 } });
+    // The raw record keeps the whitelisted fields as received, total_tokens included.
+    expect(JSON.parse(reports[0]?.rawUsageJson as string)).toEqual(usage);
+  });
+
+  it("reports a fun-asr success with billed time only", async () => {
+    const { reports } = await pollReports(routes({ poll: () => ({ body: succeeded({ usage: { duration: 12 } }) }) }));
+    expect(reports[0]).toEqual({ remote: "succeeded", usage: { billedAudioMs: 12_000 }, rawUsageJson: JSON.stringify({ duration: 12 }) });
+  });
+
+  it("reports a failed job without any billing when the answer has no usage", async () => {
+    const body = JSON.stringify({
+      output: { task_id: "task-123", task_status: "FAILED", code: "DECODE_ERROR", message: "decode", results: [{ subtask_status: "FAILED", code: "DECODE_ERROR", usage: {} }] },
+    });
+    const { reports, outcome } = await pollReports(routes({ poll: () => ({ body }) }));
+    expect(isAmberError(outcome) && outcome.appError.code).toBe("asr_failed.invalid_audio");
+    expect(reports).toEqual([{ remote: "failed" }]);
+  });
+
+  it("reports a failed subtask of a succeeded task as failed, and a cancelled job as cancelled", async () => {
+    const subtask = JSON.stringify({
+      output: { task_status: "SUCCEEDED", results: [{ subtask_status: "FAILED", code: "DECODE_ERROR", message: "m" }] },
+    });
+    const failed = await pollReports(routes({ poll: () => ({ body: subtask }) }));
+    expect(failed.reports).toEqual([{ remote: "failed" }]);
+    const cancelled = await pollReports(routes({ poll: () => ({ body: JSON.stringify({ output: { task_status: "CANCELED" } }) }) }));
+    expect(isAmberError(cancelled.outcome) && cancelled.outcome.appError.code).toBe("asr_failed.job_expired");
+    expect(cancelled.reports).toEqual([{ remote: "cancelled" }]);
+  });
+
+  it("reads usage leniently: whitelisted finite numbers only, seconds only without duration", async () => {
+    const messy = { input_tokens: "150", output_tokens: 39.4, total_tokens: -1, seconds: 7.25, duration: null, request_url: "https://x.example/?Signature=secret", unknown_field: 5 };
+    const { reports } = await pollReports(routes({ poll: () => ({ body: succeeded({ usage: messy }) }) }));
+    expect(reports[0]).toEqual({ remote: "succeeded", usage: { billedOutputTokens: 39, billedAudioMs: 7250 }, rawUsageJson: JSON.stringify({ output_tokens: 39.4, seconds: 7.25 }) });
+    expect(reports[0]?.rawUsageJson).not.toContain("Signature");
+
+    const both = await pollReports(routes({ poll: () => ({ body: succeeded({ usage: { duration: 3, seconds: 9 } }) }) }));
+    expect(both.reports[0]?.usage).toEqual({ billedAudioMs: 3000 });
+
+    const onlyTotal = await pollReports(routes({ poll: () => ({ body: succeeded({ usage: { total_tokens: 10 } }) }) }));
+    expect(onlyTotal.reports[0]).toEqual({ remote: "succeeded", rawUsageJson: JSON.stringify({ total_tokens: 10 }) });
+
+    for (const usage of [undefined, null, [], "x", {}]) {
+      const none = await pollReports(routes({ poll: () => ({ body: succeeded(usage === undefined ? {} : { usage }) }) }));
+      expect(none.reports).toEqual([{ remote: "succeeded" }]);
+    }
+  });
+
+  it("reports a success before the result is downloaded", async () => {
+    const events: string[] = [];
+    const { provider } = setup(
+      routes({
+        result: () => {
+          events.push("download");
+          return { body: fixture("zh") };
+        },
+      }),
+    );
+    await (provider as AsrJobProvider).poll(HANDLE, { signal: signal(), onJobReport: (report) => events.push(`report ${report.remote}`) });
+    expect(events).toEqual(["report succeeded", "download"]);
+  });
+
+  it("has already reported a remote success when the download or the normalization fails locally", async () => {
+    const download = await pollReports(routes({ result: () => ({ status: 500, body: "" }) }));
+    expect(isAmberError(download.outcome)).toBe(true);
+    expect(download.reports).toEqual([{ remote: "succeeded" }]);
+
+    const malformed = await pollReports(routes({ result: () => ({ body: JSON.stringify({ transcripts: [] }) }) }));
+    expect(isAmberError(malformed.outcome) && malformed.outcome.appError.code).toBe("asr_failed.job_failed");
+    expect(malformed.reports).toEqual([{ remote: "succeeded" }]);
+  });
+
+  it("reports nothing while the job is pending, throttled, unknown or an unreadable state", async () => {
+    const answers: Route[] = [
+      routes({ poll: () => ({ body: JSON.stringify({ output: { task_status: "RUNNING" }, usage: { duration: 3 } }) }) }),
+      routes({ poll: () => ({ status: 429, headers: { "retry-after": "3" }, body: "{}" }) }),
+      routes({ poll: () => ({ body: JSON.stringify({ output: { task_status: "UNKNOWN" } }) }) }),
+      routes({ poll: () => ({ status: 404, body: "{}" }) }),
+      routes({ poll: () => ({ status: 502, body: "" }) }),
+      routes({ poll: () => ({ body: "not json" }) }),
+    ];
+    for (const route of answers) {
+      expect((await pollReports(route)).reports).toEqual([]);
+    }
+  });
+
+  it("is not disturbed by a report callback that throws", async () => {
+    const { provider } = setup(routes({ poll: () => ({ body: succeeded({ usage: { duration: 12 } }) }) }));
+    const status = await (provider as AsrJobProvider).poll(HANDLE, {
+      signal: signal(),
+      onJobReport: () => {
+        throw new Error("bookkeeping failed");
+      },
+    });
+    expect(status.state).toBe("done");
+    const failing = setup(routes({ poll: () => ({ body: JSON.stringify({ output: { task_status: "FAILED", code: "InternalError" } }) }) }));
+    const error = await failure(
+      (failing.provider as AsrJobProvider).poll(HANDLE, {
+        signal: signal(),
+        onJobReport: () => {
+          throw new Error("bookkeeping failed");
+        },
+      }),
+    );
+    expect(error.appError.code).toBe("asr_failed.job_failed");
   });
 });
 

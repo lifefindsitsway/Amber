@@ -190,6 +190,10 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "PATCH", path: "/instance-settings", modes: BOTH },
   // usage
   { method: "GET", path: "/usage", modes: BOTH },
+  { method: "GET", path: "/usage/summary", modes: BOTH },
+  { method: "GET", path: "/usage/activities", modes: BOTH },
+  { method: "GET", path: "/usage/calls", modes: BOTH },
+  { method: "GET", path: "/usage/cache-observed", modes: BOTH },
   { method: "GET", path: "/storage", modes: ["server"] },
   // admin
   { method: "GET", path: "/admin/users", modes: ["server"] },

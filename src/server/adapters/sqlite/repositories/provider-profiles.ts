@@ -60,6 +60,10 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
   const select = db.prepare("SELECT * FROM provider_profile WHERE id = ? AND user_id = ?");
   const selectAll = db.prepare("SELECT * FROM provider_profile WHERE user_id = ? ORDER BY position, created_at, id");
   const models = db.prepare("SELECT * FROM model_capability WHERE profile_id = ? ORDER BY position, model_id");
+  const selectPricing = db.prepare(
+    `SELECT m.pricing_json FROM model_capability AS m JOIN provider_profile AS p ON p.id = m.profile_id
+     WHERE p.id = ? AND p.user_id = ? AND m.model_id = ?`,
+  );
   const insertProfile = db.prepare(
     // A new profile goes last in the user's order.
     `INSERT INTO provider_profile (id, user_id, name, protocol, base_url, credential_ref, created_at, position)
@@ -127,6 +131,10 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
     list(ownerUserId) {
       return (selectAll.all(ownerUserId) as ProviderProfileRow[]).map(toProfile);
     },
+    getModelPricing(ownerUserId, profileId, modelId) {
+      const row = selectPricing.get(profileId, ownerUserId, modelId) as { pricing_json: string | null } | undefined;
+      return parseJsonOrNull<ModelPricing>(row?.pricing_json ?? null) ?? undefined;
+    },
     insert(profile) {
       insertProfile.run({ ...fields(profile), protocol: profile.protocol, createdAt: profile.createdAt });
       writeModels(profile);
@@ -192,6 +200,10 @@ export function sqliteAsrProfileRepository(db: SqliteConnection): AsrProfileRepo
     },
     list(ownerUserId) {
       return (selectAll.all(ownerUserId) as AsrProfileRow[]).map(toAsrProfile);
+    },
+    getModelPricing(ownerUserId, profileId, modelId) {
+      const row = select.get(profileId, ownerUserId) as AsrProfileRow | undefined;
+      return row === undefined ? undefined : parseJson<AsrModelEntry[]>(row.models_json).find((entry) => entry.modelId === modelId)?.pricing;
     },
     insert(profile) {
       insert.run({ ...params(profile), createdAt: profile.createdAt });

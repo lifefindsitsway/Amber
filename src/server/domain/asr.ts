@@ -121,3 +121,24 @@ export const asrJobHandleSchema = z
   })
   .strict();
 export type AsrJobHandleRecord = z.infer<typeof asrJobHandleSchema>;
+
+/**
+ * What `asr:submit` persists. The first form is the older record (the handle alone), still
+ * read as is; the second also names the usage row of the job-creating request, so the
+ * remote end state found later can be filled into it.
+ */
+export const asrSubmitRecordSchema = z.union([
+  asrJobHandleSchema,
+  z.object({ handle: asrJobHandleSchema, usageId: z.string().min(1) }).strict(),
+]);
+export type AsrSubmitRecord = z.infer<typeof asrSubmitRecordSchema>;
+
+/** A submit record read in either form: the handle, and the usage row when the record names one. */
+export function parseAsrSubmitRecord(value: unknown): { handle: AsrJobHandleRecord; usageId?: string } | undefined {
+  const parsed = asrSubmitRecordSchema.safeParse(value);
+  if (!parsed.success) {
+    return undefined;
+  }
+  const record = parsed.data;
+  return "handle" in record ? { handle: record.handle, usageId: record.usageId } : { handle: record };
+}

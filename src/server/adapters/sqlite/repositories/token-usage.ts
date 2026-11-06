@@ -1,13 +1,16 @@
+import type { PriceSnapshot } from "../../../../shared/model-pricing.ts";
 import type { ModelRefSnapshot } from "../../../domain/model-ref.ts";
 import type { TokenUsage } from "../../../domain/usage.ts";
 import type { TokenUsageRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
-import { notFound, nullable, parseJson, withoutNulls } from "./rows.ts";
+import { jsonOrNull, notFound, nullable, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
 
 interface TokenUsageRow {
   id: string;
   user_id: string;
   model_ref_json: string;
+  provider_profile_id: string | null;
+  model_id: string | null;
   feature: TokenUsage["feature"];
   task_id: string | null;
   work_unit_id: string | null;
@@ -19,7 +22,12 @@ interface TokenUsageRow {
   output_tokens: number | null;
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
+  cache_write_1h_tokens: number | null;
   reasoning_tokens: number | null;
+  sent_at: number | null;
+  credential_version: string | null;
+  credential_set_at: number | null;
+  price_snapshot_json: string | null;
   raw_usage_json: string | null;
   created_at: number;
 }
@@ -29,6 +37,8 @@ function toUsage(row: TokenUsageRow): TokenUsage {
     id: row.id,
     userId: row.user_id,
     modelRef: parseJson<ModelRefSnapshot>(row.model_ref_json),
+    providerProfileId: row.provider_profile_id,
+    modelId: row.model_id,
     feature: row.feature,
     taskId: row.task_id,
     workUnitId: row.work_unit_id,
@@ -40,7 +50,12 @@ function toUsage(row: TokenUsageRow): TokenUsage {
     outputTokens: row.output_tokens,
     cacheReadTokens: row.cache_read_tokens,
     cacheWriteTokens: row.cache_write_tokens,
+    cacheWrite1hTokens: row.cache_write_1h_tokens,
     reasoningTokens: row.reasoning_tokens,
+    sentAt: row.sent_at,
+    credentialVersion: row.credential_version,
+    credentialSetAt: row.credential_set_at,
+    priceSnapshot: parseJsonOrNull<PriceSnapshot>(row.price_snapshot_json),
     rawUsageJson: row.raw_usage_json,
     createdAt: row.created_at,
   });
@@ -52,10 +67,12 @@ function toUsage(row: TokenUsageRow): TokenUsage {
  */
 export function sqliteTokenUsageRepository(db: SqliteConnection): TokenUsageRepository {
   const insert = db.prepare(
-    `INSERT INTO token_usage (id, user_id, model_ref_json, feature, task_id, work_unit_id, artifact_revision_id, chat_message_id, content_id,
-       outcome, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, raw_usage_json, created_at)
-     VALUES (@id, @userId, @modelRefJson, @feature, @taskId, @workUnitId, @artifactRevisionId, @chatMessageId, @contentId,
-       @outcome, @inputTokens, @outputTokens, @cacheReadTokens, @cacheWriteTokens, @reasoningTokens, @rawUsageJson, @createdAt)`,
+    `INSERT INTO token_usage (id, user_id, model_ref_json, provider_profile_id, model_id, feature, task_id, work_unit_id, artifact_revision_id,
+       chat_message_id, content_id, outcome, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens,
+       reasoning_tokens, sent_at, credential_version, credential_set_at, price_snapshot_json, raw_usage_json, created_at)
+     VALUES (@id, @userId, @modelRefJson, @providerProfileId, @modelId, @feature, @taskId, @workUnitId, @artifactRevisionId,
+       @chatMessageId, @contentId, @outcome, @inputTokens, @outputTokens, @cacheReadTokens, @cacheWriteTokens, @cacheWrite1hTokens,
+       @reasoningTokens, @sentAt, @credentialVersion, @credentialSetAt, @priceSnapshotJson, @rawUsageJson, @createdAt)`,
   );
   const list = db.prepare(
     `SELECT * FROM token_usage
@@ -98,6 +115,8 @@ export function sqliteTokenUsageRepository(db: SqliteConnection): TokenUsageRepo
         id: usage.id,
         userId: usage.userId,
         modelRefJson: JSON.stringify(usage.modelRef),
+        providerProfileId: nullable(usage.providerProfileId),
+        modelId: nullable(usage.modelId),
         feature: usage.feature,
         taskId: nullable(usage.taskId),
         workUnitId: nullable(usage.workUnitId),
@@ -109,7 +128,12 @@ export function sqliteTokenUsageRepository(db: SqliteConnection): TokenUsageRepo
         outputTokens: nullable(usage.outputTokens),
         cacheReadTokens: nullable(usage.cacheReadTokens),
         cacheWriteTokens: nullable(usage.cacheWriteTokens),
+        cacheWrite1hTokens: nullable(usage.cacheWrite1hTokens),
         reasoningTokens: nullable(usage.reasoningTokens),
+        sentAt: nullable(usage.sentAt),
+        credentialVersion: nullable(usage.credentialVersion),
+        credentialSetAt: nullable(usage.credentialSetAt),
+        priceSnapshotJson: jsonOrNull(usage.priceSnapshot),
         rawUsageJson: nullable(usage.rawUsageJson),
         createdAt: usage.createdAt,
       });

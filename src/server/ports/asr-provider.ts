@@ -3,6 +3,7 @@ import type { CanonicalAsrResult } from "../domain/asr.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { AsrProviderProfile } from "../domain/provider-profile.ts";
 import type { TerminologyEntry } from "../domain/terminology.ts";
+import type { AsrJobOutcome, RequestStartInfo } from "../domain/usage.ts";
 
 /**
  * Static declaration by each adapter, taken from the provider's official documentation;
@@ -44,17 +45,19 @@ export interface AsrTranscribeInput {
 export interface AsrTranscribeOptions {
   signal: AbortSignal;
   onProgress?: (progress: number) => void;
+  /**
+   * Called exactly once, right after the adapter obtained the credential the paid request
+   * will use and right before that request is sent: for a synchronous provider the
+   * transcription request, for a job provider the request that creates the job. Everything
+   * before it (credentials, upload space, the upload itself) is free, so a crash before it
+   * is not an unknown paid outcome. The request must use the credential whose version it
+   * reported. Invariant: a paid call whose outcome is unknown is never resent
+   * automatically. A throw from the callback means "do not send" and propagates unchanged.
+   */
+  onRequestStart(info: RequestStartInfo): void;
 }
 
-export interface AsrSubmitOptions extends AsrTranscribeOptions {
-  /**
-   * Called exactly once, right before the request that creates the paid job is sent:
-   * everything before it (credentials, upload space, the upload itself) is free, so a crash
-   * before it is not an unknown paid outcome. Invariant: a paid call whose outcome is
-   * unknown is never resent automatically.
-   */
-  onPaidCallStart(): void;
-}
+export type AsrSubmitOptions = AsrTranscribeOptions;
 
 /**
  * What identifies a submitted job to its provider; persisted with the submitting WorkUnit
@@ -77,6 +80,16 @@ export type AsrJobStatus =
   | { state: "missing" }
   | { state: "done"; result: CanonicalAsrResult };
 
+/**
+ * A job's remote end state as the provider reported it, with the quantities it billed when
+ * it said so. `rawUsageJson` holds the metering fields only: never a key, signature or URL.
+ */
+export interface AsrJobReport {
+  remote: AsrJobOutcome;
+  usage?: { billedInputTokens?: number; billedOutputTokens?: number; billedAudioMs?: number };
+  rawUsageJson?: string;
+}
+
 /** What a best-effort remote cancellation achieved. */
 export type AsrJobCancelOutcome = "cancelled" | "already_terminal" | "unsupported";
 
@@ -92,8 +105,15 @@ export interface AsrJobProvider {
   readonly id: string;
   readonly capabilities: AsrProviderCapabilities & { delivery: "job" };
   submit(input: AsrTranscribeInput, opts: AsrSubmitOptions): Promise<AsrJobHandle>;
-  /** One query; never waits for the job. Downloads and normalizes the result when it is ready. */
-  poll(handle: AsrJobHandle, opts: { signal: AbortSignal }): Promise<AsrJobStatus>;
+  /**
+   * One query; never waits for the job. Downloads and normalizes the result when it is ready.
+   * `onJobReport` is called exactly once when the adapter reads a remote end state: on
+   * success before the result is downloaded, on failure (including a failed subtask) before
+   * the error is thrown, and for a cancelled job. Local download or normalization failures
+   * report nothing: they say nothing about the remote job. It must not throw; adapters guard
+   * the call regardless.
+   */
+  poll(handle: AsrJobHandle, opts: { signal: AbortSignal; onJobReport?(report: AsrJobReport): void }): Promise<AsrJobStatus>;
   cancel?(handle: AsrJobHandle, opts: { signal: AbortSignal }): Promise<AsrJobCancelOutcome>;
 }
 

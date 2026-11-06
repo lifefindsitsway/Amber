@@ -9,7 +9,7 @@ import type {
 } from "../../shared/dto/task.ts";
 import type { TaskKind } from "../../shared/enums.ts";
 import { ASR_AWAIT_UNIT_KEY, ASR_SUBMIT_UNIT_KEY } from "../../shared/work-steps.ts";
-import { asrJobHandleSchema } from "../domain/asr.ts";
+import { parseAsrSubmitRecord } from "../domain/asr.ts";
 import { amberError } from "../domain/errors.ts";
 import type { AsrModelRef } from "../domain/model-ref.ts";
 import type { AsrProviderProfile } from "../domain/provider-profile.ts";
@@ -484,13 +484,13 @@ function remoteAsrJob(scope: RepositoryScope, state: TaskState): RemoteAsrJob | 
   } catch {
     return undefined;
   }
-  const parsed = asrJobHandleSchema.safeParse(payload);
-  if (!parsed.success) {
+  const parsed = parseAsrSubmitRecord(payload);
+  if (parsed === undefined) {
     return undefined;
   }
   const ref = parseStageInput(run.inputJson).asrModelRef ?? taskRequestView(state.task.requestJson).asrModelRef;
   const profile = ref === undefined ? undefined : scope.asrProfiles.get(owner, ref.asrProfileId);
-  return profile === undefined || ref === undefined ? undefined : { profile, modelId: ref.modelId, handle: parsed.data };
+  return profile === undefined || ref === undefined ? undefined : { profile, modelId: ref.modelId, handle: parsed.handle };
 }
 
 function hasDependencyReason(resultJson: string | undefined): boolean {

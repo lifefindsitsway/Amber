@@ -5,6 +5,7 @@ import type { ModelRef } from "../../../src/server/domain/model-ref.ts";
 import type { TokenUsage } from "../../../src/server/domain/usage.ts";
 import type { Logger, LogFields } from "../../../src/server/ports/logger.ts";
 import { OutboundHttpError } from "../../../src/server/ports/outbound-http.ts";
+import type { NotPromise, RepositoryScope } from "../../../src/server/ports/repository.ts";
 import { LlmGateway } from "../../../src/server/application/llm-gateway.ts";
 import type { LlmLane, LlmLanes } from "../../../src/server/application/llm-lanes.ts";
 import { LlmCallDeferred } from "../../../src/server/pipeline/executor.ts";
@@ -160,10 +161,15 @@ describe("usage", () => {
         id: completion.invocationId,
         userId: LOCAL.userId,
         modelRef: { ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: "model-a", protocolSnapshot: "openai_compatible" },
+        providerProfileId: modelRef.providerProfileId,
+        modelId: "model-a",
         feature: "chat",
         outcome: "succeeded",
         inputTokens: 12,
         outputTokens: 5,
+        sentAt: expect.any(Number),
+        credentialVersion: "key-version-1",
+        credentialSetAt: 1_000,
         rawUsageJson: FAKE_USAGE.rawJson,
         createdAt: expect.any(Number),
       },
@@ -376,6 +382,195 @@ describe("retries", () => {
   });
 });
 
+describe("send-time context", () => {
+  const PRICE = { currency: "CNY", items: [{ unit: "input_tokens_per_million", amount: "0.8" }, { unit: "output_tokens_per_million", amount: "2.7" }] } as const;
+  const setPrice = (h: Harness, modelRef: ModelRef, pricing: object | null): void => {
+    h.db.prepare("UPDATE model_capability SET pricing_json = ? WHERE profile_id = ? AND model_id = ?").run(pricing === null ? null : JSON.stringify(pricing), modelRef.providerProfileId, modelRef.modelId);
+  };
+  /** A scripted call that reports its start, then waits for its gate. */
+  function gated() {
+    let open: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let started: () => void = () => undefined;
+    const hasStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const step = () =>
+      (async function* () {
+        started();
+        await opened;
+        yield* reply("ok");
+      })();
+    return { step, open, hasStarted };
+  }
+
+  it("records the send time, key version and price the adapter reported, with the model's identifiers and the one-hour cache share", async () => {
+    const { h, fake, modelRef } = setup();
+    setPrice(h, modelRef, PRICE);
+    fake.sentAt = 1_700_000_123_000;
+    fake.credential = { versionId: "version-7", setAt: 1_699_000_000_000 };
+    const usage = { ...FAKE_USAGE, cacheReadTokens: 4, cacheWriteTokens: 9, cacheWrite1hTokens: 6 };
+    fake.script({ events: reply("hi", usage) });
+    await h.llm.complete(CHAT, request(modelRef), { signal: signal() });
+    expect(usageRows(h)).toMatchObject([
+      {
+        providerProfileId: modelRef.providerProfileId,
+        modelId: "model-a",
+        sentAt: 1_700_000_123_000,
+        credentialVersion: "version-7",
+        credentialSetAt: 1_699_000_000_000,
+        priceSnapshot: PRICE,
+        cacheReadTokens: 4,
+        cacheWriteTokens: 9,
+        cacheWrite1hTokens: 6,
+      },
+    ]);
+    expect(usageRows(h)[0]).toHaveProperty("createdAt");
+  });
+
+  it("freezes the price and key version at the moment the request leaves, not when the call was resolved or when it ended", async () => {
+    const { h, fake, modelRef } = setup({ window: 1 });
+    const first = gated();
+    const second = gated();
+    fake.script(first.step, second.step);
+    setPrice(h, modelRef, PRICE);
+    const a = h.llm.complete(CHAT, request(modelRef), { signal: signal() });
+    await first.hasStarted;
+    // The second call is resolved now, against the old price, but queued behind the first.
+    const b = h.llm.complete(CHAT, request(modelRef), { signal: signal() });
+    const cheaper = { currency: "USD", items: [{ unit: "per_request", amount: "0.01" }] } as const;
+    setPrice(h, modelRef, cheaper);
+    fake.credential = { versionId: "version-2", setAt: 2_000 };
+    first.open();
+    await second.hasStarted;
+    // Edits made while the second request is on the wire do not reach its row either.
+    setPrice(h, modelRef, null);
+    fake.credential = { versionId: "version-3", setAt: 3_000 };
+    second.open();
+    await Promise.all([a, b]);
+    const rows = usageRows(h);
+    expect(rows.map((row) => [row.credentialVersion, row.priceSnapshot])).toEqual([
+      ["key-version-1", PRICE],
+      ["version-2", cheaper],
+    ]);
+  });
+
+  it("gives every retry its own send context and row", async () => {
+    const { h, fake, modelRef } = setup();
+    setPrice(h, modelRef, PRICE);
+    // The key is replaced after the first request left, before the retry does.
+    fake.script(
+      () =>
+        (async function* (): AsyncGenerator<LlmStreamEvent> {
+          fake.credential = { versionId: "version-2", setAt: 2_000 };
+          yield { type: "done", stopReason: "error", raw: "boom" };
+        })(),
+      { events: reply("ok") },
+    );
+    await h.llm.complete(CHAT, request(modelRef), { signal: signal() });
+    const rows = usageRows(h);
+    expect(rows.map((row) => [row.outcome, row.credentialVersion])).toEqual([
+      ["failed", "key-version-1"],
+      ["succeeded", "version-2"],
+    ]);
+    expect(fake.requestStarts).toHaveLength(2);
+    expect(rows.every((row) => row.priceSnapshot !== undefined)).toBe(true);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it("drops the context of a request that never left: no row, whether or not the adapter had reported the start", async () => {
+    const { h, fake, modelRef } = setup();
+    setPrice(h, modelRef, PRICE);
+    const unreachable = amberError("llm_failed", "down", { code: "llm_failed.unreachable" });
+    const taskId = createTaskOfKind(h, "regenerate_summary", { modelRef });
+    const inPipeline = { ...CHAT, feature: "summary" as const, taskId };
+    fake.script({ events: [], error: unreachable, noStart: true });
+    expect(await codeOf(h.llm.complete(inPipeline, request(modelRef), { signal: signal() }))).toBe("llm_failed.unreachable");
+    fake.script({ events: [], error: unreachable });
+    expect(await codeOf(h.llm.complete(inPipeline, request(modelRef), { signal: signal() }))).toBe("llm_failed.unreachable");
+    expect(fake.requestStarts).toHaveLength(1);
+    expect(usageRows(h)).toEqual([]);
+  });
+
+  it("leaves the snapshot empty when the model has no price, and when reading the price fails, without failing the call", async () => {
+    const { h, fake, modelRef } = setup();
+    await h.llm.complete(CHAT, request(modelRef), { signal: signal() });
+    expect(usageRows(h)[0]).not.toHaveProperty("priceSnapshot");
+    expect(usageRows(h)[0]).toHaveProperty("credentialVersion");
+
+    setPrice(h, modelRef, PRICE);
+    const warnings: Array<[string, LogFields | undefined]> = [];
+    const logger: Logger = { debug() {}, info() {}, warn: (message, fields) => void warnings.push([message, fields]), error() {}, child: () => logger };
+    // A repository whose price read fails, as a database error would.
+    const failing = {
+      withTransaction: <T>(work: (scope: RepositoryScope) => NotPromise<T>): T =>
+        h.repository.withTransaction<T>((scope) =>
+          work({
+            ...scope,
+            providerProfiles: {
+              ...scope.providerProfiles,
+              getModelPricing: () => {
+                throw new Error("database is locked <secret-detail>");
+              },
+            },
+          } as unknown as RepositoryScope),
+        ),
+    };
+    const gateway = new LlmGateway({ repository: failing as never, secrets: h.secrets, providers: [fake], logger });
+    const completion = await gateway.complete(CHAT, request(modelRef), { signal: signal() });
+    expect(completion.text).toBe("ok");
+    const rows = usageRows(h);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ credentialVersion: "key-version-1", outcome: "succeeded" });
+    expect(rows[1]).not.toHaveProperty("priceSnapshot");
+    expect(warnings).toEqual([["llm_price_snapshot_failed", { providerProfileId: modelRef.providerProfileId, modelId: "model-a", error: "Error" }]]);
+    expect(JSON.stringify(warnings)).not.toContain("secret-detail");
+  });
+
+  it("gives each probe request its own context and the price of the model being tested", async () => {
+    const { h, fake, modelRef } = setup();
+    setPrice(h, modelRef, PRICE);
+    fake.scriptProbe(
+      "tools",
+      { error: amberError("llm_failed"), call: { outcome: "failed" } },
+      { result: "supported", call: { outcome: "succeeded", usage: FAKE_USAGE } },
+    );
+    await h.llm.probe(LOCAL.userId, modelRef, signal());
+    const rows = usageRows(h);
+    expect(rows.map((row) => row.feature)).toEqual(["test_connection", "test_connection", "test_connection", "test_connection"]);
+    expect(fake.requestStarts).toHaveLength(4);
+    expect(rows.every((row) => row.priceSnapshot !== undefined && row.credentialVersion === "key-version-1" && row.modelId === "model-a")).toBe(true);
+  });
+
+  it("calls onCallStart before the adapter reports its start, and a failing onCallStart leaves nothing recorded", async () => {
+    const { h, fake, modelRef } = setup();
+    const order: string[] = [];
+    fake.script(() =>
+      (async function* () {
+        order.push("adapter");
+        yield* reply("ok");
+      })(),
+    );
+    const original = fake.stream.bind(fake);
+    fake.stream = (request, opts) => original(request, { ...opts, onRequestStart: (info) => (order.push("start"), opts.onRequestStart(info)) });
+    const taskId = createTaskOfKind(h, "regenerate_summary", { modelRef });
+    await h.llm.complete({ ...CHAT, feature: "summary", taskId }, request(modelRef), { signal: signal(), onCallStart: () => order.push("call start") });
+    expect(order).toEqual(["call start", "start", "adapter"]);
+
+    await expect(
+      h.llm.complete({ ...CHAT, feature: "summary", taskId }, request(modelRef), {
+        signal: signal(),
+        onCallStart: () => {
+          throw new Error("not allowed to start");
+        },
+      }),
+    ).rejects.toThrow("not allowed to start");
+    expect(usageRows(h)).toHaveLength(1);
+  });
+});
+
 describe("probe", () => {
   it("records each probe request as test_connection usage and reports what was measured", async () => {
     const { h, fake, modelRef } = setup();
@@ -430,7 +625,7 @@ describe("probe", () => {
 describe("both protocols through the gateway", () => {
   it("normalize the equivalent fixtures to the same text, stop reason and usage, events in order", async () => {
     let harness: Harness | undefined;
-    const secrets = { reveal: (owner: string, ref: string): string => (harness as Harness).secrets.reveal(owner, ref) };
+    const secrets = { revealVersioned: (owner: string, ref: string) => (harness as Harness).secrets.revealVersioned(owner, ref) };
     const openAiHttp = new ReplayHttp(() => ({ status: 200, body: openAiStream("equivalent") }), 5);
     const anthropicHttp = new ReplayHttp(() => ({ status: 200, body: anthropicFixture("equivalent.sse") }), 11);
     harness = createHarness({

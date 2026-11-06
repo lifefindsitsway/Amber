@@ -1,9 +1,11 @@
 import type { CanonicalAsrResult } from "../../../src/server/domain/asr.ts";
 import { amberError } from "../../../src/server/domain/errors.ts";
+import type { RequestStartInfo } from "../../../src/server/domain/usage.ts";
 import type { AsrProviderProfile } from "../../../src/server/domain/provider-profile.ts";
 import type {
   AsrJobCancelOutcome,
   AsrJobHandle,
+  AsrJobReport,
   AsrJobStatus,
   AsrProbeResult,
   AsrProvider,
@@ -86,6 +88,16 @@ export class FakeAsrFactory implements AsrProviderFactory {
   submitOutcomes: FakeSubmitOutcome[] = ["job"];
   pollOutcomes: Array<AsrJobStatus | Error> = [{ state: "done", result: fakeAsrResult() }];
   cancelOutcome: AsrJobCancelOutcome | Error = "cancelled";
+  /**
+   * The remote end state each `poll` reports before it answers, in the order of `pollOutcomes`
+   * (the last repeats; `undefined` reports nothing), as a real adapter's `onJobReport` would.
+   */
+  pollReports: Array<AsrJobReport | undefined> = [];
+  /** What `onRequestStart` is called with: the key version in force and the send time (now when unset). */
+  credential = { versionId: "key-version-1", setAt: 1_000 };
+  sentAt: number | undefined;
+  /** Every request start the fake providers reported. */
+  readonly requestStarts: RequestStartInfo[] = [];
   /** A failing scripted submission fails before the paid request (nothing billed). */
   failBeforeSend = false;
   private jobs = 0;
@@ -93,6 +105,12 @@ export class FakeAsrFactory implements AsrProviderFactory {
   probeOutcome: AsrProbeResult | Error = { subscriptionStatus: "active", usedUnits: 10, limitUnits: 100 };
   /** Progress each `transcribe` reports, in order, before taking its outcome. */
   progressSteps: number[] = [];
+
+  private requestInfo(): RequestStartInfo {
+    const info = { sentAt: this.sentAt ?? Date.now(), credential: { ...this.credential } };
+    this.requestStarts.push(info);
+    return info;
+  }
 
   create(profile: AsrProviderProfile, modelId: string): AsrProvider {
     const entry = profile.models.find((model) => model.modelId === modelId);
@@ -112,6 +130,7 @@ export class FakeAsrFactory implements AsrProviderFactory {
           opts.onProgress?.(step);
         }
         const outcome = this.outcomes[Math.min(this.calls.length - 1, this.outcomes.length - 1)];
+        opts.onRequestStart(this.requestInfo());
         if (outcome instanceof Error) {
           throw outcome;
         }
@@ -135,17 +154,22 @@ export class FakeAsrFactory implements AsrProviderFactory {
         }
         if (outcome instanceof Error) {
           if (!this.failBeforeSend) {
-            opts.onPaidCallStart();
+            opts.onRequestStart(this.requestInfo());
           }
           throw outcome;
         }
-        opts.onPaidCallStart();
+        opts.onRequestStart(this.requestInfo());
         this.jobs += 1;
         return { version: 1, provider: "fake", jobId: `job-${this.jobs}`, submittedAt: Date.now() };
       },
-      poll: async (handle) => {
+      poll: async (handle, opts) => {
         this.polls.push(handle);
-        const outcome = this.pollOutcomes[Math.min(this.polls.length - 1, this.pollOutcomes.length - 1)] as AsrJobStatus | Error;
+        const index = Math.min(this.polls.length - 1, this.pollOutcomes.length - 1);
+        const outcome = this.pollOutcomes[index] as AsrJobStatus | Error;
+        const report = this.pollReports[Math.min(index, this.pollReports.length - 1)];
+        if (report !== undefined) {
+          opts.onJobReport?.(report);
+        }
         if (outcome instanceof Error) {
           throw outcome;
         }

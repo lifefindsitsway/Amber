@@ -17,7 +17,6 @@ import { CACHE_MIGRATION_REFRESH_MS } from "../../../shared/defaults.ts";
 import { cacheLocationDtoSchema, type CacheHoldDto, type CacheLocationDto, type CacheLocationPut } from "../../../shared/dto/local-media.ts";
 import { isCacheDirReason, type AppError } from "../../../shared/errors.ts";
 import { storageDtoSchema } from "../../../shared/dto/storage.ts";
-import { usageDtoSchema } from "../../../shared/dto/usage.ts";
 import { UPLOAD_RETENTION_POLICIES, type UploadRetentionPolicy } from "../../../shared/enums.ts";
 import { BYTES_PER_GB, formatBytes } from "../../../shared/units.ts";
 import { ApiError } from "../../api/client.ts";
@@ -28,7 +27,7 @@ import { allowCacheDir, openFolder, pickCacheDir, type PickedFile } from "../../
 import { burnFileName, burnOutputFormat, burnOutputsKey, deleteBurnProduct, saveBurnProduct, useBurnOutputs } from "../../desktop/burn-outputs.ts";
 import { cacheLocationKey } from "../../desktop/cached-media.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
-import { formatDateTime, formatDuration } from "../../format.ts";
+import { formatDateTime } from "../../format.ts";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { Button } from "../../ui/button.tsx";
@@ -42,7 +41,7 @@ const DISK_FIELDS = ["maxDataGB", "lowWaterFreeGB", "lowWaterFreeRatio"] as cons
 type NumericField = (typeof CONCURRENCY_FIELDS)[number] | (typeof DISK_FIELDS)[number];
 
 /**
- * `/settings/storage`: usage totals, and the instance parameters where they live in local
+ * `/settings/storage`: the instance parameters where they live in local
  * mode (the local user is admin). Server mode keeps instance parameters in the admin area,
  * pointed to for administrators only, and shows each user their own storage.
  * The desktop client also owns the cache directory, lists burn products
@@ -74,7 +73,6 @@ export function StorageSection() {
           <BurnOutputsBlock />
         </>
       ) : null}
-      <UsageBlock />
     </div>
   );
 }
@@ -673,52 +671,6 @@ function BurnOutputsBlock() {
         </div>
       )}
       <RequestError error={remove.error} />
-    </SettingsBlock>
-  );
-}
-
-/** Totals over all recorded calls; user-entered prices are never applied to them. */
-function UsageBlock() {
-  const { t } = useTranslation();
-  const client = useApi();
-  const usage = useQuery({ queryKey: [...queryKeys.usage, "totals"], queryFn: () => client.get("/api/usage?limit=1", usageDtoSchema) });
-  const totals = usage.data?.totals ?? [];
-  return (
-    <SettingsBlock title={t("settings.storage.usageTitle")}>
-      {usage.isPending ? <Loading /> : null}
-      <RequestError error={usage.error} />
-      {usage.data !== undefined && totals.length === 0 ? <p className="text-sm text-muted">{t("settings.storage.usageEmpty")}</p> : null}
-      {totals.length === 0 ? null : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-muted">
-              <th className="pb-1 font-medium">{t("settings.storage.usageModel")}</th>
-              <th className="pb-1 font-medium">{t("settings.storage.usageFeature")}</th>
-              <th className="pb-1 font-medium">{t("settings.storage.usageCalls")}</th>
-              <th className="pb-1 font-medium">{t("settings.storage.usageTokens")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {totals.map((total, index) => (
-              <tr key={index} className="border-t border-line">
-                <td className="py-1">{total.kind === "llm" ? `${total.modelRef.providerNameSnapshot} · ${total.modelRef.modelDisplaySnapshot}` : `${total.provider} · ${total.model}`}</td>
-                <td className="py-1">{total.kind === "llm"
-                    ? t(`settings.storage.feature.${total.feature}`)
-                    : total.feature === "test_connection"
-                      ? t("settings.storage.feature.test_connection")
-                      : t("settings.storage.usageAsr")}</td>
-                <td className="py-1">{total.calls}</td>
-                <td className="py-1">
-                  {total.kind === "llm"
-                    ? `${total.inputTokens ?? "—"} / ${total.outputTokens ?? "—"}`
-                    : `${t("settings.storage.usageAudio")} ${formatDuration(total.audioMs)}`}
-                  {total.incomplete ? <span className="ml-1 text-xs text-muted" title={t("settings.storage.usageIncomplete")}>*</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </SettingsBlock>
   );
 }

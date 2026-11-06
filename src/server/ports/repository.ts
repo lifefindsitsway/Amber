@@ -1,4 +1,5 @@
 import type { ContentSourceKind, NoteColor, NoteMark, Platform, PlatformAccountStatus, ProcessingStatus, TaskKind } from "../../shared/enums.ts";
+import type { ModelPricing } from "../../shared/model-pricing.ts";
 import type { ChapterEntry } from "../domain/platform-subtitle.ts";
 import type {
   ChapterArtifact,
@@ -23,7 +24,7 @@ import type { Note } from "../domain/note.ts";
 import type { AsrProviderProfile, OtherModelProfile, PlatformAccount, ProviderProfile } from "../domain/provider-profile.ts";
 import type { TokenUsageFeature } from "../../shared/enums.ts";
 import type { TerminologyEntry, TerminologyScope, TerminologySet } from "../domain/terminology.ts";
-import type { AsrUsage, TokenUsage } from "../domain/usage.ts";
+import type { AsrJobOutcome, AsrUsage, TokenUsage } from "../domain/usage.ts";
 import type { IdempotencyRecord, InstanceSettings, NetworkAllowlistEntry, PendingFileDelete, Session, UserSettings } from "../domain/runtime-support.ts";
 import type { StageRun, Task, WorkUnit, WorkUnitResult } from "../domain/task.ts";
 import type { ModelRefSnapshot, PromptRef } from "../domain/model-ref.ts";
@@ -492,6 +493,11 @@ export interface ProviderProfileRepository {
   get(ownerUserId: string, profileId: string): ProviderProfile | undefined;
   /** In the user's order; a new profile goes last. */
   list(ownerUserId: string): ProviderProfile[];
+  /**
+   * The price currently set for one model, read on its own so a call can freeze it as it
+   * leaves; `undefined` when the profile or model is unknown or has no price.
+   */
+  getModelPricing(ownerUserId: string, profileId: string, modelId: string): ModelPricing | undefined;
   insert(profile: ProviderProfile): void;
   /**
    * Rewrites name, baseURL and credentialRef, and replaces the model list with
@@ -514,6 +520,8 @@ export interface AsrProfileRepository {
   get(ownerUserId: string, profileId: string): AsrProviderProfile | undefined;
   /** In the user's order; a new profile goes last. */
   list(ownerUserId: string): AsrProviderProfile[];
+  /** As `ProviderProfileRepository.getModelPricing`, for a model of an ASR profile. */
+  getModelPricing(ownerUserId: string, profileId: string, modelId: string): ModelPricing | undefined;
   insert(profile: AsrProviderProfile): void;
   /** Rewrites an existing profile of `profile.userId` in place (same `id`); `false` when there is none. */
   update(profile: AsrProviderProfile): boolean;
@@ -581,11 +589,29 @@ export interface TokenUsageRepository {
   attach(ownerUserId: string, invocationIds: readonly string[], artifactRevisionId: string): number;
 }
 
-/** Append-only: one row per ASR submission that crossed the send boundary. */
+/** What a job's remote end state adds to its usage row; every field is optional. */
+export interface AsrJobReportFill {
+  jobOutcome?: AsrJobOutcome;
+  billedInputTokens?: number;
+  billedOutputTokens?: number;
+  billedAudioMs?: number;
+  rawUsageJson?: string;
+}
+
+/**
+ * One row per ASR submission that crossed the send boundary. Append-only, with one
+ * exception: `fillJobReport` completes a job's row later, field by field.
+ */
 export interface AsrUsageRepository {
   insert(usage: AsrUsage): void;
   /** Oldest first. */
   list(ownerUserId: string, query?: AsrUsageQuery): AsrUsage[];
+  /**
+   * Writes each given field only where the row has none yet, located by `id` and owner
+   * together: an earlier value is never overwritten and a job outcome never changes once
+   * set. Returns whether the row exists for this owner.
+   */
+  fillJobReport(ownerUserId: string, id: string, report: AsrJobReportFill): boolean;
 }
 
 /** One terminology set per scope (global, collection or content) and owner. */

@@ -2,22 +2,25 @@ import { LLM_FIRST_OUTPUT_TIMEOUT_MS, LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_TIM
 import { amberError } from "../../../domain/errors.ts";
 import type { LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../../../domain/llm.ts";
 import { effectiveCapability, type ProviderProfile } from "../../../domain/provider-profile.ts";
+import type { RequestStartInfo } from "../../../domain/usage.ts";
 import type { FileStore } from "../../../ports/file-store.ts";
-import type { LlmProbeCall, LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../ports/llm-provider.ts";
+import type { LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../../ports/outbound-http.ts";
 import type { SecretStore } from "../../../ports/secret-store.ts";
-import { endpoint, linkedController, OutputWatchdog, revealKey, sseEvents, transportFailure } from "../shared.ts";
+import { beginRequest, endpoint, linkedController, OutputWatchdog, sseEvents, transportFailure } from "../shared.ts";
 import { encodeRequest, OPENAI_AUDIO_MIME_TYPES, type ChatCompletionsBody } from "./encode.ts";
 import { errorDetail, httpError, refusesProbedFeature, upstreamText } from "./errors.ts";
 
 export interface OpenAiCompatibleProviderOptions {
   http: OutboundHttpClient;
-  secrets: Pick<SecretStore, "reveal">;
+  secrets: Pick<SecretStore, "revealVersioned">;
   files: Pick<FileStore, "read">;
   now?: () => number;
 }
 
 const PATH = "/chat/completions";
+
+type ProbeRunOptions = Parameters<LlmProbeCheck["run"]>[0];
 const DONE_SENTINEL = "[DONE]";
 
 /** `finish_reason` values with a meaning of their own; any other value counts as a stop. */
@@ -53,7 +56,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       let response: OutboundResponse;
       watchdog.start();
       try {
-        response = await this.send(opts.profile, body, controller.signal);
+        response = await this.send(opts.profile, body, controller.signal, opts.onRequestStart);
       } catch (error) {
         throw transportFailure(error, opts.signal);
       }
@@ -78,20 +81,31 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   probe(profile: ProviderProfile, modelId: string): readonly LlmProbeCheck[] {
     return (["stream", "structuredOutput", "tools"] as const).map((flag) => ({
       flag,
-      run: (opts: { signal: AbortSignal; onCall(call: LlmProbeCall): void }) => this.runCheck(profile, modelId, flag, opts),
+      run: (opts: ProbeRunOptions) => this.runCheck(profile, modelId, flag, opts),
     }));
   }
 
-  private send(profile: ProviderProfile, body: ChatCompletionsBody, signal: AbortSignal): Promise<OutboundResponse> {
+  /**
+   * Everything that can fail is done before the key is revealed; the request then goes out
+   * with exactly the key `onRequestStart` was told about.
+   */
+  private send(
+    profile: ProviderProfile,
+    body: ChatCompletionsBody,
+    signal: AbortSignal,
+    onRequestStart: (info: RequestStartInfo) => void,
+  ): Promise<OutboundResponse> {
+    const payload = JSON.stringify(body);
+    const key = beginRequest(profile, this.options.secrets, onRequestStart, this.now);
     return this.options.http.request({
       url: endpoint(profile, PATH),
       method: "POST",
       headers: {
-        authorization: `Bearer ${revealKey(profile, this.options.secrets)}`,
+        authorization: `Bearer ${key}`,
         "content-type": "application/json",
         accept: body.stream ? "text/event-stream" : "application/json",
       },
-      body: JSON.stringify(body),
+      body: payload,
       signal,
     });
   }
@@ -105,13 +119,13 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     profile: ProviderProfile,
     modelId: string,
     flag: LlmProbeFlag,
-    opts: { signal: AbortSignal; onCall(call: LlmProbeCall): void },
+    opts: ProbeRunOptions,
   ): Promise<{ result: "supported" | "unsupported"; latencyMs: number }> {
     const controller = linkedController(opts.signal);
     const timer = setTimeout(() => controller.abort(), LLM_PROBE_TIMEOUT_MS);
     const started = this.now();
     try {
-      const response = await this.send(profile, probeBody(modelId, flag), controller.signal);
+      const response = await this.send(profile, probeBody(modelId, flag), controller.signal, opts.onRequestStart);
       const text = await response.text();
       const latencyMs = Math.max(0, this.now() - started);
       if (response.status === 200) {

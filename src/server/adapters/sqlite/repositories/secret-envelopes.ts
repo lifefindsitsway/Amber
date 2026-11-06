@@ -9,6 +9,8 @@ interface SecretRow {
   nonce: Buffer;
   ciphertext: Buffer;
   auth_tag: Buffer;
+  version_id: string | null;
+  version_set_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -19,13 +21,13 @@ const blob = (bytes: Uint8Array): Buffer => Buffer.from(bytes.buffer, bytes.byte
 export function sqliteSecretEnvelopeStore(db: SqliteConnection): SecretEnvelopeStore {
   const select = db.prepare("SELECT * FROM secret WHERE id = ? AND user_id = ?");
   const insert = db.prepare(
-    `INSERT INTO secret (id, user_id, envelope_version, kdf_salt, nonce, ciphertext, auth_tag, created_at, updated_at)
-     VALUES (@id, @userId, @envelopeVersion, @kdfSalt, @nonce, @ciphertext, @authTag, @createdAt, @updatedAt)`,
+    `INSERT INTO secret (id, user_id, envelope_version, kdf_salt, nonce, ciphertext, auth_tag, version_id, version_set_at, created_at, updated_at)
+     VALUES (@id, @userId, @envelopeVersion, @kdfSalt, @nonce, @ciphertext, @authTag, @versionId, @versionSetAt, @createdAt, @updatedAt)`,
   );
   const update = db.prepare(
     `UPDATE secret
      SET envelope_version = @envelopeVersion, kdf_salt = @kdfSalt, nonce = @nonce, ciphertext = @ciphertext,
-         auth_tag = @authTag, updated_at = @updatedAt
+         auth_tag = @authTag, version_id = @versionId, version_set_at = @versionSetAt, updated_at = @updatedAt
      WHERE id = @id AND user_id = @userId`,
   );
   const remove = db.prepare("DELETE FROM secret WHERE id = ? AND user_id = ?");
@@ -40,6 +42,8 @@ export function sqliteSecretEnvelopeStore(db: SqliteConnection): SecretEnvelopeS
     nonce: blob(envelope.nonce),
     ciphertext: blob(envelope.ciphertext),
     authTag: blob(envelope.authTag),
+    versionId: envelope.versionId,
+    versionSetAt: envelope.versionSetAt,
     createdAt: envelope.createdAt,
     updatedAt: envelope.updatedAt,
   });
@@ -53,6 +57,9 @@ export function sqliteSecretEnvelopeStore(db: SqliteConnection): SecretEnvelopeS
       if (row.envelope_version !== 1) {
         throw new Error(`secret ${row.id} has unsupported envelope version ${row.envelope_version}`);
       }
+      if (row.version_id === null || row.version_set_at === null) {
+        throw new Error(`secret ${row.id} has no credential version`);
+      }
       return {
         id: row.id,
         userId: row.user_id,
@@ -61,6 +68,8 @@ export function sqliteSecretEnvelopeStore(db: SqliteConnection): SecretEnvelopeS
         nonce: row.nonce,
         ciphertext: row.ciphertext,
         authTag: row.auth_tag,
+        versionId: row.version_id,
+        versionSetAt: row.version_set_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };

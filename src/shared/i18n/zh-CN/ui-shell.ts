@@ -24,6 +24,7 @@ export const shell = {
     resize: "调整侧栏宽度（双击恢复默认）",
     localSettings: "系统设置",
     appearance: "外观设置",
+    usage: "AI 使用量",
     theme: "主题",
     language: "界面语言",
     changePassword: "修改密码",

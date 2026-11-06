@@ -4,7 +4,7 @@ import {
   IdleTimeoutError,
   linkedController,
   OutputWatchdog,
-  revealKey,
+  beginRequest,
   sseEvents,
   transportFailure,
   withIdleTimeout,
@@ -219,22 +219,38 @@ describe("transportFailure", () => {
   });
 });
 
-describe("revealKey and endpoint", () => {
-  it("reveals the profile's own credential and refuses a profile without one", () => {
+describe("beginRequest and endpoint", () => {
+  it("reveals the profile's own credential once, reports its version with the send time, and returns the key", () => {
     const calls: Array<[string, string]> = [];
-    const secrets = { reveal: (owner: string, ref: string) => (calls.push([owner, ref]), "key") };
-    expect(revealKey(PROFILE, secrets)).toBe("key");
+    const secrets = {
+      revealVersioned: (owner: string, ref: string) => (calls.push([owner, ref]), { plaintext: "key", version: { versionId: "v1", setAt: 5 } }),
+    };
+    const infos: unknown[] = [];
+    expect(beginRequest(PROFILE, secrets, (info) => infos.push(info), () => 77)).toBe("key");
     expect(calls).toEqual([["user-1", "secret-1"]]);
+    expect(infos).toEqual([{ sentAt: 77, credential: { versionId: "v1", setAt: 5 } }]);
+  });
+
+  it("refuses a profile without a credential before reporting anything, and lets a refusing callback through", () => {
+    const secrets = { revealVersioned: () => ({ plaintext: "key", version: { versionId: "v1", setAt: 5 } }) };
+    const infos: unknown[] = [];
     const { credentialRef: _, ...withoutKey } = PROFILE;
     const error = (() => {
       try {
-        revealKey(withoutKey, secrets);
+        beginRequest(withoutKey, secrets, (info) => infos.push(info), () => 77);
       } catch (thrown) {
         return thrown;
       }
       return undefined;
     })();
     expect(isAmberError(error) && error.appError.class).toBe("llm_unconfigured");
+    expect(infos).toEqual([]);
+    const refusal = new Error("do not send");
+    expect(() =>
+      beginRequest(PROFILE, secrets, () => {
+        throw refusal;
+      }, () => 77),
+    ).toThrow(refusal);
   });
 
   it("appends the protocol path without doubling slashes", () => {

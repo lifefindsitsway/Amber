@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import { Info } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -8,6 +9,7 @@ import {
   PRICE_ITEMS_MAX,
   PRICE_NOTE_MAX_CHARS,
   PRICE_UNITS_BY_SCOPE,
+  pricingConflict,
   type ModelPricing,
   type PriceCurrency,
   type PriceUnit,
@@ -17,6 +19,9 @@ import { ApiError } from "../api/client.ts";
 import { Button } from "../ui/button.tsx";
 import { Modal } from "../ui/modal.tsx";
 import { ErrorView } from "./error-view.tsx";
+
+/** The unit whose absence leaves cache-hit requests out of a cost estimate. */
+const CACHE_READ_UNIT: PriceUnit = "cached_input_tokens_per_million";
 
 const INPUT_CLASS = "h-9 rounded-md border border-line bg-surface px-2 text-sm outline-none focus:border-accent disabled:opacity-60";
 
@@ -39,10 +44,13 @@ export function ModelPricingControl(props: {
   modelId: string;
   scope: PricingScope;
   pricing: ModelPricing | undefined;
+  /** The model's calls have reported cache hits (usage analysis), so a missing cache-read price matters. */
+  cacheObserved?: boolean;
   onSubmit: (pricing: ModelPricing | null) => Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const cacheUnpriced = props.cacheObserved === true && props.pricing?.items.every((item) => item.unit !== CACHE_READ_UNIT) !== false;
   return (
     <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" data-testid="model-pricing">
       {props.pricing === undefined ? (
@@ -52,11 +60,24 @@ export function ModelPricingControl(props: {
       ) : (
         <span data-testid="model-pricing-summary">{formatPricing(props.pricing, t)}</span>
       )}
+      {cacheUnpriced ? (
+        <span className="inline-flex items-center gap-1 text-accent" title={t("settings.pricing.cacheObservedHint")} data-testid="pricing-cache-marker">
+          <Info size={12} aria-hidden="true" />
+          {t("settings.pricing.cacheObservedMarker")}
+        </span>
+      ) : null}
       <Button size="sm" aria-label={`${t("settings.pricing.button")} · ${props.modelId}`} onClick={() => setOpen(true)}>
         {t("settings.pricing.button")}
       </Button>
       {open ? (
-        <ModelPricingDialog modelId={props.modelId} scope={props.scope} pricing={props.pricing} onSubmit={props.onSubmit} onClose={() => setOpen(false)} />
+        <ModelPricingDialog
+          modelId={props.modelId}
+          scope={props.scope}
+          pricing={props.pricing}
+          {...(props.cacheObserved === undefined ? {} : { cacheObserved: props.cacheObserved })}
+          onSubmit={props.onSubmit}
+          onClose={() => setOpen(false)}
+        />
       ) : null}
     </div>
   );
@@ -77,6 +98,7 @@ export function ModelPricingDialog(props: {
   modelId: string;
   scope: PricingScope;
   pricing: ModelPricing | undefined;
+  cacheObserved?: boolean;
   onSubmit: (pricing: ModelPricing | null) => Promise<unknown>;
   onClose: () => void;
 }) {
@@ -104,6 +126,9 @@ export function ModelPricingDialog(props: {
     ...(note.trim() === "" ? {} : { note: note.trim() }),
   };
   const parsed = modelPricingSchema.safeParse(candidate);
+  // Judged on the units alone, so the reason shows even while an amount is still being typed.
+  const conflict = pricingConflict({ currency, items: candidate.items }, props.scope);
+  const cacheHint = props.cacheObserved === true && !used.has(CACHE_READ_UNIT);
 
   const submit = (pricing: ModelPricing | null): void => {
     setPending(true);
@@ -122,7 +147,7 @@ export function ModelPricingDialog(props: {
         onSubmit={(event) => {
           event.preventDefault();
           setTouched(true);
-          if (parsed.success) submit(parsed.data);
+          if (parsed.success && conflict === undefined) submit(parsed.data);
         }}
       >
         <p className="mb-3 text-xs text-muted">{t("settings.pricing.intro")}</p>
@@ -184,11 +209,24 @@ export function ModelPricingDialog(props: {
             );
           })}
         </ul>
+        {conflict === undefined ? null : (
+          <p className="mt-2 text-xs text-danger" role="alert" data-testid="pricing-conflict">
+            {t(`settings.pricing.conflict.${conflict}`)}
+          </p>
+        )}
+        {cacheHint ? (
+          <p className="mt-2 text-xs text-muted" data-testid="pricing-cache-hint">
+            {t("settings.pricing.cacheObservedHint")}
+          </p>
+        ) : null}
         <Button
           size="sm"
+          className="mt-2"
           disabled={items.length >= PRICE_ITEMS_MAX || free.length === 0}
           onClick={() => {
-            const unit = free[0];
+            // A new row starts on a unit that goes with the others, when there is one, so adding never opens with a conflict.
+            const fitting = free.find((unit) => pricingConflict({ currency, items: [...candidate.items, { unit, amount: "0" }] }, props.scope) === undefined);
+            const unit = fitting ?? free[0];
             if (unit !== undefined) setItems((current) => [...current, { key: newKey(), unit, amount: "" }]);
           }}
         >
@@ -223,7 +261,7 @@ export function ModelPricingDialog(props: {
           </div>
           <div className="flex gap-2">
             <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-            <Button type="submit" variant="primary" disabled={pending}>
+            <Button type="submit" variant="primary" disabled={pending || conflict !== undefined}>
               {t("common.action.save")}
             </Button>
           </div>

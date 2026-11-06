@@ -348,7 +348,7 @@ describe("Sidebar", () => {
     await waitFor(() => expect(card.textContent).toBe("admin"));
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: "登出" });
-    expect(menuLabels()).toEqual(["功能设置", "外观设置", "修改密码", "系统管理", "关于 Amberv0.0.0-test", "登出"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "AI 使用量", "修改密码", "系统管理", "关于 Amberv0.0.0-test", "登出"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "登出" }));
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/login"));
     expect(calls.find((call) => call.path === "/api/auth/logout")?.headers["x-amber-request"]).toBe("1");
@@ -364,17 +364,33 @@ describe("Sidebar", () => {
     await waitFor(() => expect(card.textContent).toBe("Alice"));
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: "登出" });
-    expect(menuLabels()).toEqual(["功能设置", "外观设置", "修改密码", "关于 Amberv0.0.0-test", "登出"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "AI 使用量", "修改密码", "关于 Amberv0.0.0-test", "登出"]);
   });
 
-  it("keeps the local menu to settings, appearance and about", async () => {
+  it("keeps the local menu to settings, appearance, AI usage and about", async () => {
     mockApi(baseRoutes());
     renderApp(<Sidebar onOpenOmnibox={() => undefined} onOpenTasks={() => undefined} />, { route: "/library" });
     const card = await screen.findByTestId("account-card");
     expect(card.textContent).toBe("系统设置");
     fireEvent.keyDown(card, { key: "Enter" });
     await screen.findByRole("menuitem", { name: /关于 Amber/ });
-    expect(menuLabels()).toEqual(["功能设置", "外观设置", "关于 Amberv0.0.0-test"]);
+    expect(menuLabels()).toEqual(["功能设置", "外观设置", "AI 使用量", "关于 Amberv0.0.0-test"]);
+  });
+
+  it("opens the AI usage page right after 外观设置 in every mode", async () => {
+    mockApi(baseRoutes());
+    renderApp(
+      <>
+        <Sidebar onOpenOmnibox={() => undefined} onOpenTasks={() => undefined} />
+        <Where />
+      </>,
+      { route: "/library" },
+    );
+    fireEvent.keyDown(await screen.findByTestId("account-card"), { key: "Enter" });
+    const items = (await screen.findAllByRole("menuitem")).map((item) => item.textContent);
+    expect(items.indexOf("AI 使用量")).toBe(items.indexOf("外观设置") + 1);
+    fireEvent.click(screen.getByRole("menuitem", { name: "AI 使用量" }));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/usage"));
   });
 
   it("switches the theme from the appearance submenu and lists the bundled interface languages", async () => {

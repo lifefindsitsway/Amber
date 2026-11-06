@@ -1,7 +1,7 @@
 import type { LlmProtocol } from "../../shared/enums.ts";
 import type { LlmRequest, LlmStreamEvent, RawUsage } from "../domain/llm.ts";
 import type { CapabilityFlags, ModelCapability, ProviderProfile } from "../domain/provider-profile.ts";
-import type { UsageOutcome } from "../domain/usage.ts";
+import type { RequestStartInfo, UsageOutcome } from "../domain/usage.ts";
 
 export interface LlmStreamOptions {
   signal: AbortSignal;
@@ -9,6 +9,12 @@ export interface LlmStreamOptions {
   effectiveCapability: ModelCapability;
   /** Endpoint and credential reference; the key is revealed per call and dropped after it. */
   profile: ProviderProfile;
+  /**
+   * Called once per request, after the adapter revealed the key it will send and right
+   * before sending it; the request must use exactly that key. Not called when building the
+   * request or revealing the key fails. A throw means "do not send" and propagates unchanged.
+   */
+  onRequestStart(info: RequestStartInfo): void;
 }
 
 /** A "test connection" request that crossed the send boundary, reported once it ended. */
@@ -34,7 +40,12 @@ export interface LlmProbeCheck {
    * every other failure (authentication, quota, unknown model, other 4xx, 5xx, network)
    * is thrown as an AppError and nothing is learned.
    */
-  run(opts: { signal: AbortSignal; onCall(call: LlmProbeCall): void }): Promise<{ result: "supported" | "unsupported"; latencyMs: number }>;
+  run(opts: {
+    signal: AbortSignal;
+    /** As `LlmStreamOptions.onRequestStart`. */
+    onRequestStart(info: RequestStartInfo): void;
+    onCall(call: LlmProbeCall): void;
+  }): Promise<{ result: "supported" | "unsupported"; latencyMs: number }>;
 }
 
 /**

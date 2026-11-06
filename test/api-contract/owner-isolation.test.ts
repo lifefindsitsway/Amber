@@ -62,6 +62,12 @@ const modelRef = (ids: AliceIds) => ({ providerProfileId: ids.providerId, modelI
 const owned = (requests: Entry & { kind: "owned" } extends infer E ? (E extends { requests: infer R } ? R : never) : never): Entry => ({ kind: "owned", requests });
 const get = (url: string): StackRequest => ({ method: "GET", url });
 
+/** The range every usage request of the matrix asks for: the whole history. */
+const USAGE_QUERY = "range=all&displayCurrency=CNY";
+
+/** An opaque usage key as the server builds it: base64url of the JSON parts. */
+const usageKey = (parts: readonly string[]): string => Buffer.from(JSON.stringify(parts), "utf8").toString("base64url");
+
 const MATRIX: Record<string, Entry> = {
   "GET /api/health": { kind: "public", reason: "liveness only, no user data" },
   "GET /api/version": { kind: "public", reason: "version and run mode only" },
@@ -339,6 +345,26 @@ const MATRIX: Record<string, Entry> = {
   "DELETE /api/web-search": { kind: "self", reason: "removes the caller's own search service", requests: () => [{ method: "DELETE", url: "/api/web-search" }] },
   "POST /api/web-search/test": { kind: "self", reason: "a search with the caller's own key (not sent: it would go online)" },
   "GET /api/usage": { kind: "self", reason: "the caller's own usage", requests: () => [get("/api/usage")] },
+  "GET /api/usage/summary": {
+    kind: "self",
+    reason: "the caller's own usage; a filter naming A's profile or model finds nothing",
+    requests: (ids) => [
+      get(`/api/usage/summary?${USAGE_QUERY}`),
+      get(`/api/usage/summary?${USAGE_QUERY}&profileKey=${usageKey(["llm", ids.providerId])}`),
+      get(`/api/usage/summary?${USAGE_QUERY}&modelKey=${usageKey(["llm", ids.providerId, "model-a"])}&simulate=1`),
+    ],
+  },
+  "GET /api/usage/activities": { kind: "self", reason: "the caller's own activities", requests: () => [get(`/api/usage/activities?${USAGE_QUERY}`)] },
+  "GET /api/usage/calls": {
+    kind: "self",
+    reason: "A's group key is refused as invalid for B (the dedicated test below covers the answer)",
+    requests: (ids) => [
+      get(`/api/usage/calls?${USAGE_QUERY}&group=${usageKey(["task", ids.taskId])}`),
+      get(`/api/usage/calls?${USAGE_QUERY}&group=${usageKey(["chat", ids.chatAnswerId])}`),
+      get(`/api/usage/calls?${USAGE_QUERY}&group=${usageKey(["content_day", ids.contentId, "summary", "2026-01-01"])}`),
+    ],
+  },
+  "GET /api/usage/cache-observed": { kind: "self", reason: "the caller's own models", requests: () => [get("/api/usage/cache-observed")] },
   "GET /api/storage": { kind: "self", reason: "the caller's own stored bytes and limit", requests: () => [get("/api/storage")] },
   "GET /api/platform-accounts": { kind: "self", reason: "the caller's own accounts", requests: () => [get("/api/platform-accounts")] },
   "PUT /api/platform-accounts/:platform/cookies": { kind: "self", reason: "the caller's own account of a platform (not sent: it stores a credential)" },
@@ -498,6 +524,33 @@ function seedAlice(userId: string, bobId: string): AliceIds {
   };
 }
 
+/**
+ * Alice's AI calls, written with plain SQL: one under her task, one under her chat answer,
+ * one transcription, all priced, and one model that reported a cache read.
+ */
+function seedAliceUsage(alice: AliceIds): void {
+  const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
+  const snapshot = JSON.stringify({ currency: "CNY", items: [{ unit: "input_tokens_per_million", amount: "2" }, { unit: "output_tokens_per_million", amount: "8" }] });
+  const modelRefJson = JSON.stringify({ providerProfileId: alice.providerId, modelId: "model-a", providerNameSnapshot: `${MARK} relay`, modelDisplaySnapshot: "model-a" });
+  const at = Date.now() - 60_000;
+  try {
+    const insertToken = db.prepare(
+      `INSERT INTO token_usage (id, user_id, model_ref_json, provider_profile_id, model_id, feature, task_id, chat_message_id, content_id, outcome,
+         input_tokens, output_tokens, cache_read_tokens, sent_at, credential_version, price_snapshot_json, created_at)
+       VALUES (@id, @user, @modelRef, @profile, 'model-a', @feature, @task, @chat, @content, 'succeeded', 1000, 100, @cache, @at, 'v-alice', @snapshot, @at)`,
+    );
+    const base = { user: alice.userId, modelRef: modelRefJson, profile: alice.providerId, content: alice.contentId, snapshot, at };
+    insertToken.run({ ...base, id: newId(), feature: "summary", task: alice.taskId, chat: null, cache: null });
+    insertToken.run({ ...base, id: newId(), feature: "chat", task: null, chat: alice.chatAnswerId, cache: 500 });
+    db.prepare(
+      `INSERT INTO asr_usage (id, user_id, profile_id_snapshot, profile_name_snapshot, provider, model, feature, outcome, audio_ms, task_id, content_id, sent_at, price_snapshot_json, created_at)
+       VALUES (?, ?, ?, ?, 'dashscope', 'qwen-audio-3.1-asr-flash-filetrans', 'transcribe', 'succeeded', 61000, ?, ?, ?, ?, ?)`,
+    ).run(newId(), alice.userId, alice.asrProfileId, `${MARK} asr`, alice.taskId, alice.contentId, at, snapshot, at);
+  } finally {
+    db.close();
+  }
+}
+
 /** Every row of every table except the session bookkeeping that logins legitimately touch. */
 function databaseDump(): string {
   const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
@@ -523,10 +576,42 @@ beforeAll(async () => {
   const bob = await stack.createUser("bob");
   bobCookie = bob.cookie;
   ids = seedAlice(alice.id, bob.id);
+  seedAliceUsage(ids);
 }, 60_000);
 
 afterAll(async () => {
   await stack?.close();
+});
+
+describe("usage analytics of user A and user B", () => {
+  const group = (parts: readonly string[]): string => usageKey(parts);
+
+  it("shows B an empty history, whatever filter or group key names A's resources", async () => {
+    const summary = await stack.send(get(`/api/usage/summary?${USAGE_QUERY}`), bobCookie);
+    expect(summary.json()).toMatchObject({ summary: { requests: 0 }, models: [], options: { profiles: [], models: [] }, currencies: [] });
+    const activities = await stack.send(get(`/api/usage/activities?${USAGE_QUERY}`), bobCookie);
+    expect(activities.json()).toMatchObject({ items: [], total: 0 });
+    expect((await stack.send(get("/api/usage/cache-observed"), bobCookie)).json()).toEqual({ models: [] });
+    for (const parts of [["task", ids.taskId], ["chat", ids.chatAnswerId], ["content_day", ids.contentId, "summary", "2026-01-01"]]) {
+      const calls = await stack.send(get(`/api/usage/calls?${USAGE_QUERY}&group=${group(parts as string[])}`), bobCookie);
+      expect([parts[0], calls.statusCode, (calls.json() as { error?: { class?: string } }).error?.class]).toEqual([parts[0], 400, "invalid_request"]);
+    }
+  });
+
+  it("serves A her own calls through the group keys of her activities", async () => {
+    const alice = await stack.login("alice");
+    const activities = (await stack.send(get(`/api/usage/activities?${USAGE_QUERY}`), alice)).json() as { total: number; items: Array<{ group: string; kind: string; requests: number }> };
+    expect(activities.items.map((item) => `${item.kind}:${item.requests}`).sort()).toEqual(["chat:1", "task:2"]);
+    for (const item of activities.items) {
+      const calls = (await stack.send(get(`/api/usage/calls?${USAGE_QUERY}&group=${item.group}`), alice)).json() as { items: unknown[] };
+      expect(calls.items).toHaveLength(item.requests);
+    }
+    const summary = (await stack.send(get(`/api/usage/summary?${USAGE_QUERY}`), alice)).json() as { summary: { requests: number }; currencies: string[] };
+    expect(summary.summary.requests).toBe(3);
+    expect(summary.currencies).toEqual(["CNY"]);
+    const observed = (await stack.send(get("/api/usage/cache-observed"), alice)).json() as { models: unknown[] };
+    expect(observed.models).toHaveLength(1);
+  });
 });
 
 describe("user B against every server route holding user A's ids", () => {

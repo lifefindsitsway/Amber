@@ -152,3 +152,90 @@ describe("deleteAll", () => {
     expect(envelopes.anyExists()).toBe(false);
   });
 });
+
+describe("credential versions", () => {
+  const versionOf = (ref: string) => {
+    const row = db.prepare("SELECT version_id, version_set_at FROM secret WHERE id = ?").get(ref) as { version_id: string; version_set_at: number };
+    return { versionId: row.version_id, setAt: row.version_set_at };
+  };
+
+  it("gives every stored secret its own ULID version, set when it was stored", () => {
+    const secrets = store();
+    const first = secrets.store("alice", PLACEHOLDER);
+    const second = secrets.store("alice", PLACEHOLDER);
+    expect(versionOf(first).versionId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(versionOf(first).versionId).not.toBe(versionOf(second).versionId);
+    expect(versionOf(first).setAt).toBe(T0);
+  });
+
+  it("reveals the plaintext together with the version it belongs to", () => {
+    const secrets = store();
+    const ref = secrets.store("alice", PLACEHOLDER);
+    expect(secrets.revealVersioned("alice", ref)).toEqual({ plaintext: PLACEHOLDER, version: versionOf(ref) });
+    expect(secrets.reveal("alice", ref)).toBe(PLACEHOLDER);
+    expect(codeOf(() => secrets.revealVersioned("bob", ref))).toBe("not_found");
+    expect(codeOf(() => withKey(randomBytes(32)).revealVersioned("alice", ref))).toBe("internal.secret_unavailable");
+  });
+
+  it("keeps the version when a secret is replaced with the same plaintext, even though the ciphertext is rewritten", () => {
+    let clock = T0;
+    const secrets = new AesGcmSecretStore({ masterKey: key, envelopes, now: () => (clock += 1_000) });
+    const ref = secrets.store("alice", PLACEHOLDER);
+    const before = { version: versionOf(ref), ciphertext: envelopes.get("alice", ref)?.ciphertext, nonce: envelopes.get("alice", ref)?.nonce };
+    secrets.replace("alice", ref, PLACEHOLDER);
+    const after = envelopes.get("alice", ref);
+    expect(versionOf(ref)).toEqual(before.version);
+    expect(Buffer.compare(after?.nonce as Uint8Array, before.nonce as Uint8Array)).not.toBe(0);
+    expect(after?.updatedAt).toBeGreaterThan(before.version.setAt);
+    expect(secrets.revealVersioned("alice", ref).version).toEqual(before.version);
+  });
+
+  it("starts a new version when the plaintext differs, however small the difference", () => {
+    let clock = T0;
+    const secrets = new AesGcmSecretStore({ masterKey: key, envelopes, now: () => (clock += 1_000) });
+    const ref = secrets.store("alice", PLACEHOLDER);
+    const first = versionOf(ref);
+    secrets.replace("alice", ref, `${PLACEHOLDER} `);
+    const second = versionOf(ref);
+    expect(second.versionId).not.toBe(first.versionId);
+    expect(second.setAt).toBeGreaterThan(first.setAt);
+    secrets.replace("alice", ref, `${PLACEHOLDER} `.slice(0, -1));
+    expect(versionOf(ref).versionId).not.toBe(second.versionId);
+    // Multi-byte text is compared as UTF-8, not as UTF-16 units.
+    secrets.replace("alice", ref, "密钥甲");
+    const chinese = versionOf(ref);
+    secrets.replace("alice", ref, "密钥甲");
+    expect(versionOf(ref)).toEqual(chinese);
+    secrets.replace("alice", ref, "密钥乙");
+    expect(versionOf(ref).versionId).not.toBe(chinese.versionId);
+  });
+
+  it("starts a new version when the old value cannot be decrypted, even for the same plaintext", () => {
+    const ref = store().store("alice", PLACEHOLDER);
+    const before = versionOf(ref);
+    const rotated = withKey(randomBytes(32));
+    rotated.replace("alice", ref, PLACEHOLDER);
+    expect(versionOf(ref).versionId).not.toBe(before.versionId);
+    expect(rotated.reveal("alice", ref)).toBe(PLACEHOLDER);
+  });
+
+  it("leaves versions untouched when the master key is switched, and a secret stored afterwards has a new one", () => {
+    const secrets = store();
+    const ref = secrets.store("alice", PLACEHOLDER);
+    const before = versionOf(ref);
+    secrets.replaceMasterKey(randomBytes(32));
+    expect(versionOf(ref)).toEqual(before);
+    const fresh = secrets.store("alice", PLACEHOLDER);
+    expect(versionOf(fresh).versionId).not.toBe(before.versionId);
+  });
+
+  it("round-trips the version columns through the envelope store and refuses a row without them", () => {
+    const ref = store().store("alice", PLACEHOLDER);
+    const envelope = envelopes.get("alice", ref);
+    expect(envelope).toMatchObject({ versionSetAt: T0, versionId: versionOf(ref).versionId });
+    envelopes.update({ ...(envelope as NonNullable<typeof envelope>), versionId: "version-x", versionSetAt: 42 });
+    expect(versionOf(ref)).toEqual({ versionId: "version-x", setAt: 42 });
+    db.prepare("UPDATE secret SET version_id = NULL WHERE id = ?").run(ref);
+    expect(() => envelopes.get("alice", ref)).toThrow(/no credential version/);
+  });
+});

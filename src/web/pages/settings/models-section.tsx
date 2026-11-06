@@ -17,7 +17,7 @@ import {
 import { LLM_PROTOCOLS, TRI_STATES, type LlmProtocol } from "../../../shared/enums.ts";
 import { LLM_PRESETS } from "../../../shared/llm-presets.ts";
 import { useApi } from "../../api/context.tsx";
-import { queryKeys, usePatchSettings, useProviders, useSetModelPricing, useSettings } from "../../api/queries.ts";
+import { queryKeys, useCacheObservedModel, usePatchSettings, useProviders, useSetModelPricing, useSettings } from "../../api/queries.ts";
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
@@ -33,6 +33,7 @@ import {
   positiveInt,
   RequestError,
   SettingsBlock,
+  TestConnectionError,
 } from "./settings-ui.tsx";
 
 type TriState = (typeof TRI_STATES)[number];
@@ -293,6 +294,7 @@ function ModelRow({ profile, model }: { profile: ProviderProfileDto; model: Mode
   const [showOverride, setShowOverride] = useState(false);
   const [result, setResult] = useState<ProbeResultDto | undefined>(undefined);
   const pricing = useSetModelPricing("providers");
+  const cacheObserved = useCacheObservedModel(profile.id, model.modelId);
   const probe = useMutation({
     mutationFn: () =>
       client.post(`/api/providers/${encodeURIComponent(profile.id)}/probe`, probeResultDtoSchema, { body: { modelId: model.modelId } }),
@@ -315,6 +317,7 @@ function ModelRow({ profile, model }: { profile: ProviderProfileDto; model: Mode
             modelId={model.modelId}
             scope="llm"
             pricing={model.pricing}
+            cacheObserved={cacheObserved}
             onSubmit={(next) => pricing.mutateAsync({ profileId: profile.id, modelId: model.modelId, pricing: next })}
           />
         </div>
@@ -345,7 +348,7 @@ function ModelRow({ profile, model }: { profile: ProviderProfileDto; model: Mode
           {t("settings.models.latency", { ms: Math.round(result.latencyMs) })}
         </p>
       )}
-      <RequestError error={probe.error} />
+      <TestConnectionError error={probe.error} />
       {showOverride ? <OverrideEditor profile={profile} model={model} /> : null}
     </li>
   );

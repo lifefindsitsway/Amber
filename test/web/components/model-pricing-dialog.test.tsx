@@ -47,9 +47,16 @@ describe("ModelPricingDialog", () => {
 
   it("offers only the units of its section, and no more items than units", () => {
     const { form } = dialog({ scope: "llm" });
-    expect(units(form, 1)).toEqual(["input_tokens_per_million", "output_tokens_per_million", "cached_input_tokens_per_million", "per_request"]);
+    expect(units(form, 1)).toEqual([
+      "input_tokens_per_million",
+      "output_tokens_per_million",
+      "cached_input_tokens_per_million",
+      "cache_write_tokens_per_million",
+      "cache_write_1h_tokens_per_million",
+      "per_request",
+    ]);
     const add = within(form).getByRole("button", { name: "添加计费项" }) as HTMLButtonElement;
-    for (let index = 1; index < 4; index += 1) fireEvent.click(add);
+    for (let index = 1; index < 6; index += 1) fireEvent.click(add);
     expect(add.disabled).toBe(true);
   });
 
@@ -94,5 +101,68 @@ describe("ModelPricingControl", () => {
     fireEvent.click(screen.getByRole("button", { name: "价格 · m-1" }));
     const form = await screen.findByTestId("model-pricing-dialog");
     expect(within(form).queryByRole("button", { name: "清除价格" })).toBeNull();
+  });
+});
+
+describe("ModelPricingDialog rules", () => {
+  it("names the conflict of audio units in place and refuses to save while it stands", () => {
+    const { form, onSubmit } = dialog({ scope: "asr" });
+    fireEvent.change(within(form).getByLabelText("计费单位 1"), { target: { value: "audio_per_second" } });
+    fireEvent.change(within(form).getByLabelText("单价 1"), { target: { value: "0.00022" } });
+    fireEvent.click(within(form).getByRole("button", { name: "添加计费项" }));
+    expect(within(form).queryByTestId("pricing-conflict")).toBeNull();
+    fireEvent.change(within(form).getByLabelText("计费单位 2"), { target: { value: "audio_per_minute" } });
+    fireEvent.change(within(form).getByLabelText("单价 2"), { target: { value: "0.0132" } });
+    expect(within(form).getByTestId("pricing-conflict").textContent).toBe("音频只能选一种计费单位：秒、分钟、小时三选一。");
+    expect((within(form).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(form);
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.click(within(form).getByRole("button", { name: "移除计费项 2" }));
+    expect(within(form).queryByTestId("pricing-conflict")).toBeNull();
+    expect((within(form).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("says a transcription price cannot bill tokens and audio at once", () => {
+    const { form } = dialog({ scope: "asr" });
+    fireEvent.change(within(form).getByLabelText("单价 1"), { target: { value: "1.2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "添加计费项" }));
+    fireEvent.change(within(form).getByLabelText("计费单位 2"), { target: { value: "audio_per_hour" } });
+    expect(within(form).getByTestId("pricing-conflict").textContent).toBe("转录要么按 tokens 计费，要么按音频时长计费，不能同时填写。");
+    expect((within(form).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("names the conflict of character units", () => {
+    const { form } = dialog({ scope: "other" });
+    fireEvent.change(within(form).getByLabelText("计费单位 1"), { target: { value: "characters_per_thousand" } });
+    fireEvent.click(within(form).getByRole("button", { name: "添加计费项" }));
+    fireEvent.change(within(form).getByLabelText("计费单位 2"), { target: { value: "characters_per_million" } });
+    expect(within(form).getByTestId("pricing-conflict").textContent).toBe("字符只能选一种计费单位：千字符、万字符、百万字符三选一。");
+  });
+
+  it("hints at a missing cache-read price for a model whose calls hit the cache, until the unit is added", () => {
+    const onSubmit = vi.fn(async () => undefined);
+    renderApp(<ModelPricingDialog modelId="m-1" scope="llm" pricing={undefined} cacheObserved onSubmit={onSubmit} onClose={vi.fn()} />);
+    const form = screen.getByTestId("model-pricing-dialog");
+    expect(within(form).getByTestId("pricing-cache-hint").textContent).toBe("该模型的调用出现过缓存命中，未填缓存读取单价时这些请求不计入估算费用");
+    fireEvent.change(within(form).getByLabelText("计费单位 1"), { target: { value: "cached_input_tokens_per_million" } });
+    expect(within(form).queryByTestId("pricing-cache-hint")).toBeNull();
+  });
+
+  it("gives no hint when no call has hit the cache", () => {
+    const { form } = dialog({ scope: "llm" });
+    expect(within(form).queryByTestId("pricing-cache-hint")).toBeNull();
+  });
+
+  it("fits the full set of units of an AI model in the item limit and saves it", async () => {
+    const { form, onSubmit, onClose } = dialog({ scope: "llm" });
+    const add = within(form).getByRole("button", { name: "添加计费项" });
+    for (let index = 1; index < PRICE_ITEMS_MAX; index += 1) fireEvent.click(add);
+    const items = within(form).getAllByTestId("pricing-item");
+    expect(items).toHaveLength(PRICE_ITEMS_MAX);
+    items.forEach((_item, index) => fireEvent.change(within(form).getByLabelText(`单价 ${index + 1}`), { target: { value: String(index + 1) } }));
+    expect(within(form).queryByTestId("pricing-conflict")).toBeNull();
+    fireEvent.click(within(form).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect((onSubmit.mock.calls[0] as unknown as [ModelPricing])[0].items).toHaveLength(PRICE_ITEMS_MAX);
   });
 });

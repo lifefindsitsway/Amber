@@ -298,6 +298,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.prompt_protocol": { detailsKeys: ["missing", "unknown"] },
   // A media cache location the sidecar or the shell refuses; `reason` is a CacheDirReason.
   "invalid_request.cache_dir": { detailsKeys: ["reason"] },
+  // A usage chart bucket size too fine for the time range; `suggestedGranularity` is the finest that fits.
+  "invalid_request.usage_granularity": { detailsKeys: ["suggestedGranularity"] },
   "unauthenticated.csrf": {},
   "unauthenticated.setup_token": {},
   "unauthenticated.bad_credentials": {},

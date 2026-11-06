@@ -78,7 +78,7 @@ describe("on-demand audio extraction", () => {
       async run(context) {
         const { asset, path } = await ensureExtractedAudio(context, { repository: stack.h.repository, files: stack.files, ingest: stack.ingest });
         observed.push({ asset, exists: existsSync(path), probe: ffprobeFlac(path) });
-        await stubAsr(providerCalls).transcribe({ audio: asset, terminology: [] }, { signal: context.signal }).catch(() => undefined);
+        await stubAsr(providerCalls).transcribe({ audio: asset, terminology: [] }, { signal: context.signal, onRequestStart: () => undefined }).catch(() => undefined);
         return { resultJson: { reasons: [] } };
       },
     };

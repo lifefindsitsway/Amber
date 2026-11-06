@@ -44,6 +44,7 @@ import type { TaskService } from "./application/tasks.ts";
 import type { TerminologyService } from "./application/terminology.ts";
 import type { TranscriptService } from "./application/transcripts.ts";
 import type { TrashService } from "./application/trash.ts";
+import type { UsageAnalyticsService } from "./application/usage-analytics.ts";
 import type { UsageService } from "./application/usage.ts";
 import type { WebSearchService } from "./application/web-search.ts";
 import { installAuthentication } from "./api/auth.ts";
@@ -137,6 +138,8 @@ export interface AppDeps {
   otherModels?: OtherModelService;
   terminology?: TerminologyService;
   usage?: UsageService;
+  /** The usage analyses, `/api/usage/summary` and its siblings; needs `usage`. */
+  usageAnalytics?: UsageAnalyticsService;
   retranscribe?: RetranscribeService;
   transcripts?: TranscriptService;
   chapters?: ChapterService;
@@ -353,7 +356,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     registerTerminologyRoutes(app, { terminology: deps.terminology });
   }
   if (deps.usage !== undefined) {
-    registerUsageRoutes(app, { usage: deps.usage });
+    registerUsageRoutes(app, { usage: deps.usage, ...(deps.usageAnalytics === undefined ? {} : { analytics: deps.usageAnalytics }) });
   }
   if (deps.platformAccounts !== undefined) {
     registerPlatformAccountRoutes(app, {

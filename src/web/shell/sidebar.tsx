@@ -479,6 +479,9 @@ function AccountMenu(props: { collapsed: boolean }) {
                 </DropdownMenu.SubContent>
               </DropdownMenu.Portal>
             </DropdownMenu.Sub>
+            <DropdownMenu.Item className={item} onSelect={() => void navigate("/usage")} data-testid="account-usage">
+              {t("shell.sidebar.usage")}
+            </DropdownMenu.Item>
             {server ? (
               <DropdownMenu.Item className={item} onSelect={() => void navigate("/account/password")}>
                 {t("shell.sidebar.changePassword")}

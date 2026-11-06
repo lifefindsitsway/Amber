@@ -33,7 +33,6 @@ function server(role: "admin" | "user", storage: { usedBytes: number; storageLim
     "GET /api/version": { body: { version: "0.1.0", mode: "server" } },
     "GET /api/auth/me": { body: { userId: "u1", role, mode: "server", mustChangePassword: false } },
     "GET /api/storage": { body: storage },
-    "GET /api/usage": { body: { llm: [], asr: [], totals: [] } },
   });
   renderApp(<StorageSection />, { mode: "server" });
   return api;
@@ -57,30 +56,12 @@ describe("StorageSection in server mode", () => {
 });
 
 describe("AI usage", () => {
-  it("names an ASR model test 「测试连接」 apart from transcription", async () => {
-    const asr = { kind: "asr", provider: "dashscope", model: "fun-asr", audioMs: 2000, incomplete: false };
-    mockApi({
-      "GET /api/version": { body: { version: "0.1.0", mode: "server" } },
-      "GET /api/auth/me": { body: { userId: "u1", role: "user", mode: "server", mustChangePassword: false } },
-      "GET /api/storage": { body: { usedBytes: 0 } },
-      "GET /api/usage": {
-        body: {
-          llm: [],
-          asr: [],
-          totals: [
-            { ...asr, feature: "transcribe", calls: 3, audioMs: 3_600_000 },
-            { ...asr, feature: "test_connection", calls: 1 },
-          ],
-        },
-      },
-    });
-    renderApp(<StorageSection />, { mode: "server" });
-    const rows = await screen.findAllByRole("row");
-    const cells = rows.slice(1).map((row) => [...row.querySelectorAll("td")].slice(0, 3).map((cell) => cell.textContent));
-    expect(cells).toEqual([
-      ["dashscope · fun-asr", "语音转写", "3"],
-      ["dashscope · fun-asr", "测试连接", "1"],
-    ]);
+  it("is no longer shown here: neither the block nor a request for it", async () => {
+    const { calls } = server("user", { usedBytes: 0 });
+    expect(await screen.findByText(/已用 0 B/u)).toBeTruthy();
+    expect(screen.queryByText("AI 调用用量")).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(calls.some((call) => call.path.startsWith("/api/usage"))).toBe(false);
   });
 });
 
@@ -102,7 +83,6 @@ function desktopRoutes(cache: CacheLocationDto | (() => CacheLocationDto) = DEFA
   return mockApi({
     "GET /api/version": { body: { version: "0.1.0", mode: "local" } },
     "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
-    "GET /api/usage": { body: { llm: [], asr: [], totals: [] } },
     "GET /api/media/burn-outputs": { body: [] },
     "GET /api/media/cache-location": () => ({ body: typeof cache === "function" ? cache() : cache }),
     ...extra,
@@ -207,10 +187,9 @@ describe("StorageSection in the desktop client", () => {
     mockApi({
       "GET /api/version": { body: { version: "0.1.0", mode: "local" } },
       "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
-      "GET /api/usage": { body: { llm: [], asr: [], totals: [] } },
     });
     renderApp(<StorageSection />, { mode: "local" });
-    expect(await screen.findByText("暂无用量记录")).toBeTruthy();
+    expect(await screen.findByText("实例参数对本机所有任务生效。来自环境变量的项只读。")).toBeTruthy();
     expect(screen.queryByText("待保存的导出视频")).toBeNull();
     expect(screen.queryByText("本地缓存")).toBeNull();
     expect(screen.queryByRole("button", { name: "重置全部凭据" })).toBeNull();
@@ -524,7 +503,6 @@ function localInstance(settings = INSTANCE, route = "/settings/storage") {
   const api = mockApi({
     "GET /api/version": { body: { version: "0.1.0", mode: "local" } },
     "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
-    "GET /api/usage": { body: { llm: [], asr: [], totals: [] } },
     "GET /api/instance-settings": { body: settings },
     "PATCH /api/instance-settings": (call) => ({ body: { ...settings, ...(call.body as object) } }),
   });

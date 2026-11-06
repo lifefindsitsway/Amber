@@ -12,7 +12,13 @@ import {
 import type { SegmentId } from "../../../shared/ids.ts";
 import { BYTES_PER_GB } from "../../../shared/units.ts";
 import { ASR_AWAIT_UNIT_KEY, ASR_SUBMIT_UNIT_KEY } from "../../../shared/work-steps.ts";
-import { asrJobHandleSchema, assignWordsToSentences, truncateTerminologyForAsr, type CanonicalAsrResult } from "../../domain/asr.ts";
+import {
+  assignWordsToSentences,
+  parseAsrSubmitRecord,
+  truncateTerminologyForAsr,
+  type AsrSubmitRecord,
+  type CanonicalAsrResult,
+} from "../../domain/asr.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
 import type { Content } from "../../domain/content.ts";
 import { amberError, isAmberError } from "../../domain/errors.ts";
@@ -21,19 +27,22 @@ import type { AsrProviderProfile } from "../../domain/provider-profile.ts";
 import type { TerminologyEntry } from "../../domain/terminology.ts";
 import { canonicalLanguageTag } from "../../domain/subtitle-file.ts";
 import { revisionTakesPrimary, type TranscriptRevision, type TranscriptSegment, type TranscriptWord } from "../../domain/transcript.ts";
-import type { UsageOutcome } from "../../domain/usage.ts";
+import type { AsrJobOutcome, UsageOutcome } from "../../domain/usage.ts";
 import type { WorkUnit } from "../../domain/task.ts";
 import {
   isAsrJobProvider,
   type AsrJobHandle,
   type AsrJobProvider,
+  type AsrJobReport,
   type AsrProvider,
   type AsrProviderFactory,
   type AsrSyncProvider,
 } from "../../ports/asr-provider.ts";
 import type { FileStore } from "../../ports/file-store.ts";
+import type { Logger } from "../../ports/logger.ts";
 import type { LocalMediaIngest } from "../../ports/local-media-ingest.ts";
 import type { Repository, RepositoryScope } from "../../ports/repository.ts";
+import { captureAsrSend, fillAsrJobReport, type AsrSendContext } from "../asr-usage.ts";
 import { UnitDeferred, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import type { MediaFiles } from "../media-files.ts";
 import { ensureExtractedAudio } from "./extracted-audio.ts";
@@ -52,6 +61,8 @@ export interface AsrStageDeps {
   platforms?: PlatformAccess;
   /** The factory implementing a profile's provider; composed from the adapters. */
   asr(provider: AsrProviderProfile["provider"]): AsrProviderFactory | undefined;
+  /** Diagnostics only: never keys, URLs, upstream text or transcript content. */
+  logger?: Logger;
   now?: () => number;
   newId?: () => string;
   /** Source of the polling jitter; `Math.random` by default. */
@@ -299,18 +310,20 @@ export class AsrStageExecutor implements StageExecutor {
   private async transcribeAsJob(provider: AsrJobProvider, submission: Submission, inputDigest: string): Promise<CanonicalAsrResult> {
     const { context, profile } = submission;
     const taskId = context.task.id;
-    const stored = await context.runUnit<AsrJobHandle>({
+    const stored = await context.runUnit<AsrSubmitRecord>({
       key: ASR_SUBMIT_UNIT_KEY,
       inputDigest,
       billing: "asr",
       paidCallStart: "explicit",
       run: async (signal: AbortSignal, unit: UnitIdentity) => this.submitJob(provider, submission, signal, unit),
     });
-    const parsed = asrJobHandleSchema.safeParse(stored);
-    if (!parsed.success) {
+    // Either form of the record: a handle alone (older) or a handle with its usage row.
+    const record = parseAsrSubmitRecord(stored);
+    if (record === undefined) {
       throw amberError("internal", "stored ASR job handle does not match its schema");
     }
-    const handle: AsrJobHandle = parsed.data;
+    const { handle, usageId } = record;
+    const owner = submission.content.userId;
     const output = await context.runUnit({
       key: ASR_AWAIT_UNIT_KEY,
       inputDigest: digestOf(canonicalJson({ jobId: handle.jobId, asrProfileId: profile.id })),
@@ -320,7 +333,11 @@ export class AsrStageExecutor implements StageExecutor {
         if (this.now() - handle.submittedAt > ASR_JOB_MAX_WAIT_HOURS * MS_PER_HOUR) {
           throw amberError("asr_failed", "the ASR job exceeded the longest wait", { code: "asr_failed.job_expired" });
         }
-        const status = await context.withHeavySlot(() => provider.poll(handle, { signal }));
+        // A remote end state completes the submission's usage row; a record without a row
+        // (older, or never written) simply has nothing to complete.
+        const onJobReport =
+          usageId === undefined ? undefined : (report: AsrJobReport): void => fillAsrJobReport(this.deps.repository, this.deps.logger, owner, usageId, report);
+        const status = await context.withHeavySlot(() => provider.poll(handle, { signal, ...(onJobReport === undefined ? {} : { onJobReport }) }));
         switch (status.state) {
           case "pending":
             throw new UnitDeferred(this.now() + asrPollDelayMs(unit.attempt, status.retryAfterMs, this.random), { resetRetries: true });
@@ -383,32 +400,36 @@ export class AsrStageExecutor implements StageExecutor {
 
   /** One paid submission, recorded as usage the moment it ends unless it never left. */
   private async submit(provider: AsrSyncProvider, submission: Submission, signal: AbortSignal): Promise<CanonicalAsrResult> {
-    const { context, content, terminology } = submission;
+    const { context, content, terminology, profile, modelId } = submission;
     const { asset, audioMs } = await submission.audio();
+    const send = captureAsrSend(this.deps.repository, this.deps.logger, profile, modelId);
     let result: CanonicalAsrResult;
     try {
       result = await provider.transcribe(
         { audio: asset, terminology, ...(content.rawLanguage === undefined ? {} : { language: content.rawLanguage }) },
-        { signal, onProgress: span((progress) => context.reportProgress(progress), ASR_EXTRACT_PROGRESS_END, 1) },
+        { signal, onProgress: span((progress) => context.reportProgress(progress), ASR_EXTRACT_PROGRESS_END, 1), onRequestStart: send.onRequestStart },
       );
     } catch (error) {
       const outcome = failedOutcome(error, signal);
       if (outcome !== undefined) {
-        this.recordUsage(submission, audioMs, outcome);
+        this.recordUsage(submission, audioMs, outcome, send.context(), syncJobOutcome(outcome));
       }
       throw error;
     }
-    this.recordUsage(submission, audioMs, "succeeded");
+    this.recordUsage(submission, audioMs, "succeeded", send.context(), syncJobOutcome("succeeded"));
     return result;
   }
 
   /**
    * Creates the job. Only a failure after the creating request was on its way can have been
-   * billed, so only then is usage recorded; the upload before it is free.
+   * billed, so only then is usage recorded; the upload before it is free. The usage row's id
+   * is chosen up front and returned with the handle, so the job's later end state can be
+   * filled into that row.
    */
-  private async submitJob(provider: AsrJobProvider, submission: Submission, signal: AbortSignal, unit: UnitIdentity): Promise<AsrJobHandle> {
-    const { context, content, terminology } = submission;
+  private async submitJob(provider: AsrJobProvider, submission: Submission, signal: AbortSignal, unit: UnitIdentity): Promise<AsrSubmitRecord> {
+    const { context, content, terminology, profile, modelId } = submission;
     const { asset, audioMs } = await submission.audio();
+    const send = captureAsrSend(this.deps.repository, this.deps.logger, profile, modelId);
     let sent = false;
     let handle: AsrJobHandle;
     try {
@@ -417,35 +438,51 @@ export class AsrStageExecutor implements StageExecutor {
         {
           signal,
           onProgress: span((progress) => context.reportProgress(progress), ASR_EXTRACT_PROGRESS_END, ASR_JOB_SUBMITTED_PROGRESS),
-          onPaidCallStart: () => {
-            sent = true;
+          onRequestStart: (info) => {
+            // From here a crash leaves the outcome unknown. A refusal to mark it means the
+            // request must not be sent, so nothing counts as sent.
             unit.markPaidCallStart();
+            sent = true;
+            send.onRequestStart(info);
           },
         },
       );
     } catch (error) {
       const outcome = sent ? failedOutcome(error, signal) : undefined;
       if (outcome !== undefined) {
-        this.recordUsage(submission, audioMs, outcome);
+        this.recordUsage(submission, audioMs, outcome, send.context());
       }
       throw error;
     }
-    this.recordUsage(submission, audioMs, "succeeded");
-    return { version: handle.version, provider: handle.provider, jobId: handle.jobId, submittedAt: handle.submittedAt };
+    const usageId = this.newId();
+    this.recordUsage(submission, audioMs, "succeeded", send.context(), { id: usageId, jobId: handle.jobId });
+    return { handle: { version: handle.version, provider: handle.provider, jobId: handle.jobId, submittedAt: handle.submittedAt }, usageId };
   }
 
-  private recordUsage(submission: Submission, audioMs: number, outcome: UsageOutcome): void {
+  /** One usage row; `extra` carries what only a job or a synchronous call knows (see `syncJobOutcome`). */
+  private recordUsage(
+    submission: Submission,
+    audioMs: number,
+    outcome: UsageOutcome,
+    send: AsrSendContext | undefined,
+    extra: { id?: string; jobId?: string; jobOutcome?: AsrJobOutcome } = {},
+  ): void {
     const { context, profile, modelId, content } = submission;
     this.deps.repository.withTransaction((scope) =>
       scope.asrUsage.insert({
-        id: this.newId(),
+        id: extra.id ?? this.newId(),
         userId: content.userId,
         asrProfileId: profile.id,
+        profileIdSnapshot: profile.id,
+        profileNameSnapshot: profile.name,
         provider: profile.provider,
         model: modelId,
         feature: "transcribe",
         outcome,
+        ...(extra.jobId === undefined ? {} : { jobId: extra.jobId }),
+        ...(extra.jobOutcome === undefined ? {} : { jobOutcome: extra.jobOutcome }),
         audioMs,
+        ...send,
         taskId: context.task.id,
         contentId: content.id,
         createdAt: this.now(),
@@ -573,6 +610,15 @@ function checkProviderLimits(provider: AsrProvider, audio: MediaAsset, audioMs: 
       params: { limit: `${Math.floor((maxDurationSec / SECONDS_PER_HOUR) * 10) / 10} h` },
     });
   }
+}
+
+/**
+ * For a synchronous call the request is the whole job, so its end state is known when the
+ * row is written; an unknown outcome stays unknown. A job's end state is never derived from
+ * its creating request: it only ever comes from the provider's report.
+ */
+function syncJobOutcome(outcome: UsageOutcome): { jobOutcome?: AsrJobOutcome } {
+  return outcome === "outcome_unknown" ? {} : { jobOutcome: outcome };
 }
 
 /**

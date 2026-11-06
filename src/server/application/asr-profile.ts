@@ -16,10 +16,12 @@ import { pricingFitsScope } from "../../shared/model-pricing.ts";
 import { amberError } from "../domain/errors.ts";
 import type { AsrModelEntry, AsrProviderProfile } from "../domain/provider-profile.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
-import type { UsageOutcome } from "../domain/usage.ts";
+import type { AsrJobOutcome, UsageOutcome } from "../domain/usage.ts";
+import { captureAsrSend, fillAsrJobReport } from "../pipeline/asr-usage.ts";
 import { sleep } from "../pipeline/retry.ts";
-import type { AsrProviderDescriptor, AsrProviderFactory } from "../ports/asr-provider.ts";
+import type { AsrJobReport, AsrProviderDescriptor, AsrProviderFactory } from "../ports/asr-provider.ts";
 import type { FileStore } from "../ports/file-store.ts";
+import type { Logger } from "../ports/logger.ts";
 import { PERMISSIVE_TARGET_CHECK, type NetworkTargetCheck } from "../ports/network-target-check.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { SecretStore } from "../ports/secret-store.ts";
@@ -38,6 +40,8 @@ export interface AsrProfileServiceOptions {
   files?: Pick<FileStore, "writeAtomic" | "remove">;
   newId?: () => string;
   now?: () => number;
+  /** Diagnostics only: never keys, URLs or upstream text. */
+  logger?: Logger;
   /** The wait between a test job's state queries; injectable for tests. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
@@ -290,27 +294,40 @@ export class AsrProfileService {
     }
     this.testsRunning.add(key);
     try {
-      const recordUsage = (outcome: UsageOutcome): void =>
-        this.options.repository.withTransaction((scope) =>
+      const { repository, logger } = this.options;
+      const send = captureAsrSend(repository, logger, profile, modelId);
+      const recordUsage = (usage: { outcome: UsageOutcome; jobId?: string; jobOutcome?: AsrJobOutcome }): string => {
+        const id = this.newId();
+        repository.withTransaction((scope) =>
           scope.asrUsage.insert({
-            id: this.newId(),
+            id,
             userId: owner,
             asrProfileId: profile.id,
+            profileIdSnapshot: profile.id,
+            profileNameSnapshot: profile.name,
             provider: profile.provider,
             model: modelId,
             feature: "test_connection",
-            outcome,
+            outcome: usage.outcome,
+            ...(usage.jobId === undefined ? {} : { jobId: usage.jobId }),
+            ...(usage.jobOutcome === undefined ? {} : { jobOutcome: usage.jobOutcome }),
             audioMs: ASR_TEST_AUDIO_MS,
+            ...send.context(),
             createdAt: this.now(),
           }),
         );
-      const outcome = await runAsrModelTest({ files, newId: this.newId, now: this.now, sleep: this.sleep, recordUsage }, { factory, profile, modelId, family, signal });
+        return id;
+      };
+      const fillJobReport = (usageId: string, report: AsrJobReport): void => fillAsrJobReport(repository, logger, owner, usageId, report);
+      const deps = { files, newId: this.newId, now: this.now, sleep: this.sleep, onRequestStart: send.onRequestStart, recordUsage, fillJobReport };
+      const outcome = await runAsrModelTest(deps, { factory, profile, modelId, family, signal });
       const testedAt = outcome.result === "accepted" ? undefined : this.storeTestedAt(owner, profileId, modelId);
       return {
         modelId,
         result: outcome.result,
         ...(outcome.textPreview === undefined ? {} : { textPreview: outcome.textPreview }),
         latencyMs: outcome.latencyMs,
+        ...(outcome.remoteCancelled === true ? { remoteCancelled: true } : {}),
         ...(testedAt === undefined ? {} : { testedAt }),
       };
     } finally {

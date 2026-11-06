@@ -16,6 +16,10 @@ export interface SecretEnvelope {
   ciphertext: Uint8Array;
   /** 16 bytes. */
   authTag: Uint8Array;
+  /** Opaque identifier of the stored value; changes whenever the plaintext does. */
+  versionId: string;
+  /** When this version took effect. */
+  versionSetAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -53,7 +57,17 @@ export interface SecretStore {
   store(ownerUserId: string, plaintext: string): string;
   /** Throws `not_found` for an unknown reference and `internal.secret_unavailable` when it cannot be decrypted. */
   reveal(ownerUserId: string, credentialRef: string): string;
-  /** Re-encrypts under the same `credentialRef` with a fresh salt and nonce. */
+  /**
+   * `reveal` together with the version of the value returned, read from one envelope. Versions
+   * are opaque and only tell usage records apart by which stored value a request used; they
+   * never promise that two versions are different physical keys or that equal ones are the same.
+   */
+  revealVersioned(ownerUserId: string, credentialRef: string): { plaintext: string; version: { versionId: string; setAt: number } };
+  /**
+   * Re-encrypts under the same `credentialRef` with a fresh salt and nonce. Keeps the version
+   * when the new plaintext equals the old one (decided in memory, the old value is dropped at
+   * once); otherwise, or when the old value cannot be decrypted, starts a new version.
+   */
   replace(ownerUserId: string, credentialRef: string, plaintext: string): void;
   /** Idempotent. Works without a usable master key, so credentials can always be reset. */
   remove(ownerUserId: string, credentialRef: string): void;

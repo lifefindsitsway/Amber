@@ -109,6 +109,7 @@ export const EXPECTED_REFINED_CODES = [
   { code: "invalid_request.note_limit", detailsKeys: ["limit"], retryDisposition: null, action: null },
   { code: "invalid_request.prompt_protocol", detailsKeys: ["missing", "unknown"], retryDisposition: null, action: null },
   { code: "invalid_request.cache_dir", detailsKeys: ["reason"], retryDisposition: null, action: null },
+  { code: "invalid_request.usage_granularity", detailsKeys: ["suggestedGranularity"], retryDisposition: null, action: null },
   { code: "conflict.mutation_lane", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.setting_env_overridden", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.duplicate_file", detailsKeys: ["duplicateOfContentId", "trashed"], retryDisposition: null, action: null },

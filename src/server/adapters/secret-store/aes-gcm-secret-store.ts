@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { ulid } from "ulid";
 import type { CredentialStatus } from "../../../shared/enums.ts";
 import { amberError, type AmberError } from "../../domain/errors.ts";
@@ -19,6 +19,8 @@ export interface AesGcmSecretStoreOptions {
   envelopes: SecretEnvelopeStore;
   now?: () => number;
   newId?: () => string;
+  /** Source of credential version identifiers; ULIDs by default. */
+  newVersionId?: () => string;
 }
 
 /**
@@ -45,6 +47,7 @@ export class AesGcmSecretStore implements SecretStore {
   private readonly envelopes: SecretEnvelopeStore;
   private readonly now: () => number;
   private readonly newId: () => string;
+  private readonly newVersionId: () => string;
 
   constructor(options: AesGcmSecretStoreOptions) {
     if (options.masterKey !== undefined && options.masterKey.length !== MASTER_KEY_BYTES) {
@@ -54,6 +57,7 @@ export class AesGcmSecretStore implements SecretStore {
     this.envelopes = options.envelopes;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? ulid;
+    this.newVersionId = options.newVersionId ?? ulid;
   }
 
   /**
@@ -71,7 +75,13 @@ export class AesGcmSecretStore implements SecretStore {
   store(ownerUserId: string, plaintext: string): string {
     const id = this.newId();
     const at = this.now();
-    this.envelopes.insert({ ...this.seal(ownerUserId, id, plaintext), createdAt: at, updatedAt: at });
+    this.envelopes.insert({
+      ...this.seal(ownerUserId, id, plaintext),
+      versionId: this.newVersionId(),
+      versionSetAt: at,
+      createdAt: at,
+      updatedAt: at,
+    });
     return id;
   }
 
@@ -87,13 +97,39 @@ export class AesGcmSecretStore implements SecretStore {
     return plaintext.toString("utf8");
   }
 
+  revealVersioned(ownerUserId: string, credentialRef: string): { plaintext: string; version: { versionId: string; setAt: number } } {
+    const envelope = this.envelopes.get(ownerUserId, credentialRef);
+    if (envelope === undefined) {
+      throw amberError("not_found", `secret ${credentialRef} not found for this owner`);
+    }
+    const plaintext = this.open(envelope);
+    if (plaintext === undefined) {
+      throw unavailable();
+    }
+    return { plaintext: plaintext.toString("utf8"), version: { versionId: envelope.versionId, setAt: envelope.versionSetAt } };
+  }
+
+  /**
+   * Re-sealing the value that is already stored keeps its version, so saving a form
+   * unchanged does not split a credential's usage history. The old value is decrypted only
+   * to compare and is wiped right after; a value that cannot be decrypted (another master
+   * key) cannot be shown equal, so the new one starts a new version.
+   */
   replace(ownerUserId: string, credentialRef: string, plaintext: string): void {
     const existing = this.envelopes.get(ownerUserId, credentialRef);
     if (existing === undefined) {
       throw amberError("not_found", `secret ${credentialRef} not found for this owner`);
     }
+    const at = this.now();
+    const unchanged = this.sameValue(existing, plaintext);
     const sealed = this.seal(ownerUserId, credentialRef, plaintext);
-    this.envelopes.update({ ...sealed, createdAt: existing.createdAt, updatedAt: this.now() });
+    this.envelopes.update({
+      ...sealed,
+      versionId: unchanged ? existing.versionId : this.newVersionId(),
+      versionSetAt: unchanged ? existing.versionSetAt : at,
+      createdAt: existing.createdAt,
+      updatedAt: at,
+    });
   }
 
   remove(ownerUserId: string, credentialRef: string): void {
@@ -116,6 +152,21 @@ export class AesGcmSecretStore implements SecretStore {
     return "configured";
   }
 
+  /** Whether the stored value decrypts to exactly `plaintext`; both buffers are wiped before returning. */
+  private sameValue(envelope: SecretEnvelope, plaintext: string): boolean {
+    const current = this.open(envelope);
+    if (current === undefined) {
+      return false;
+    }
+    const next = Buffer.from(plaintext, "utf8");
+    try {
+      return current.length === next.length && timingSafeEqual(current, next);
+    } finally {
+      current.fill(0);
+      next.fill(0);
+    }
+  }
+
   private requireKey(): Buffer {
     if (this.masterKey === undefined) {
       throw unavailable();
@@ -127,7 +178,7 @@ export class AesGcmSecretStore implements SecretStore {
     return Buffer.from(hkdfSync("sha256", this.requireKey(), salt, HKDF_INFO, DATA_KEY_BYTES));
   }
 
-  private seal(userId: string, id: string, plaintext: string): Omit<SecretEnvelope, "createdAt" | "updatedAt"> {
+  private seal(userId: string, id: string, plaintext: string): Omit<SecretEnvelope, "versionId" | "versionSetAt" | "createdAt" | "updatedAt"> {
     const kdfSalt = randomBytes(SALT_BYTES);
     const nonce = randomBytes(NONCE_BYTES);
     const cipher = createCipheriv("aes-256-gcm", this.dataKey(kdfSalt), nonce, { authTagLength: TAG_BYTES });

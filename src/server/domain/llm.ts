@@ -23,7 +23,10 @@ export interface RawUsage {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
+  /** All cache writes, including the one-hour part. */
   cacheWriteTokens?: number;
+  /** Only when the upstream reports one-hour cache writes separately; never faked as 0. */
+  cacheWrite1hTokens?: number;
   reasoningTokens?: number;
   rawJson: string;
 }

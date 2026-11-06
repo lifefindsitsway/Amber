@@ -37,6 +37,7 @@ import { BackupExportService } from "./application/backup-export.ts";
 import { RestoreReadinessService } from "./application/restore-readiness.ts";
 import { recoverInterruptedRestore } from "./restore.ts";
 import { SqliteRepository } from "./adapters/sqlite/repository.ts";
+import { SqliteUsageAnalyticsRepository } from "./adapters/sqlite/repositories/usage-analytics.ts";
 import { sqliteSecretEnvelopeStore } from "./adapters/sqlite/repositories/secret-envelopes.ts";
 import { buildApp, type RegisteredRoute, type ServerAuthDeps } from "./app.ts";
 import { AdminService, type AdminTaskControl } from "./application/admin.ts";
@@ -81,6 +82,7 @@ import { TaskService, type TaskControl } from "./application/tasks.ts";
 import { TerminologyService } from "./application/terminology.ts";
 import { TranscriptService } from "./application/transcripts.ts";
 import { TrashService } from "./application/trash.ts";
+import { UsageAnalyticsService } from "./application/usage-analytics.ts";
 import { UsageService } from "./application/usage.ts";
 import { WebSearchService } from "./application/web-search.ts";
 import { AssetJanitor } from "./pipeline/asset-janitor.ts";
@@ -355,7 +357,14 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ]),
   );
   const asrFactoryFor = (provider: AsrProviderId): AsrProviderFactory | undefined => asrFactories.get(provider);
-  const asrProfiles = new AsrProfileService({ repository, secrets, factories: asrFactories, files, ...targets });
+  const asrProfiles = new AsrProfileService({
+    repository,
+    secrets,
+    factories: asrFactories,
+    files,
+    logger: lateLogger(() => appLogger?.child({ component: "asr_profiles" })),
+    ...targets,
+  });
   // One adapter per `ProviderProfile.protocol`; the gateway picks by protocol.
   const llmGateway = new LlmGateway({
     repository,
@@ -374,6 +383,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const terminology = new TerminologyService({ repository });
   const settings = new SettingsService({ repository });
   const usage = new UsageService({ repository });
+  const usageAnalytics = new UsageAnalyticsService({ repository: new SqliteUsageAnalyticsRepository(db) });
   const retranscribe = new RetranscribeService({ repository, bus, control, disk: files, settings: instanceSettings });
   const derivedTasks = new DerivedTaskService({ repository, bus, control, disk: files, settings: instanceSettings });
   const transcripts = new TranscriptService({ repository });
@@ -544,6 +554,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     otherModels,
     terminology,
     usage,
+    usageAnalytics,
     retranscribe,
     derivedTasks,
     transcripts,
@@ -613,7 +624,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       media: new MediaStageExecutor({ repository, files, ingest, mode: config.mode }),
       source: new SourceStageExecutor({ repository, platforms: platformAccess }),
       subtitle: new SubtitleStageExecutor({ repository, platforms: platformAccess }),
-      asr: new AsrStageExecutor({ repository, files, media, ingest, platforms: platformAccess, asr: asrFactoryFor }),
+      asr: new AsrStageExecutor({ repository, files, media, ingest, platforms: platformAccess, asr: asrFactoryFor, logger: logger.child({ component: "asr_stage" }) }),
       proofread: new ProofreadStageExecutor({ repository, files, media, ingest, platforms: platformAccess }),
       chapter: new ChapterStageExecutor({ repository }),
       highlight: new HighlightStageExecutor({ repository }),

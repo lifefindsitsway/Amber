@@ -23,8 +23,8 @@ async function clearPlayerSession(): Promise<void> {
 
 /**
  * "Reset all credentials", for a master key that is lost or no longer
- * decrypts what is stored: `/admin/credentials` in server mode, the storage settings in the
- * desktop client. Destructive, so it asks first. On the desktop the shell then replaces the
+ * decrypts what is stored: `/admin/credentials` in server mode, the desktop-only
+ * `/settings/credentials` section of the settings in the desktop client. Destructive, so it asks first. On the desktop the shell then replaces the
  * master key and restarts the backend; that second step may fail on its own and be retried,
  * since the state after the reset is consistent with either key.
  */

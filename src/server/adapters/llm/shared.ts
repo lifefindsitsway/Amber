@@ -1,5 +1,6 @@
 import { amberError } from "../../domain/errors.ts";
 import type { ProviderProfile } from "../../domain/provider-profile.ts";
+import type { RequestStartInfo } from "../../domain/usage.ts";
 import { OutboundHttpError } from "../../ports/outbound-http.ts";
 import type { SecretStore } from "../../ports/secret-store.ts";
 
@@ -219,12 +220,25 @@ export function transportFailure(error: unknown, callerSignal: AbortSignal): unk
   return error;
 }
 
-/** The profile's key, revealed for one request; callers must not keep or log it. */
-export function revealKey(profile: ProviderProfile, secrets: Pick<SecretStore, "reveal">): string {
+/**
+ * The profile's key for one request, revealed once and reported through `onRequestStart`
+ * together with its version and the send time. The caller must send with the returned key
+ * right away: revealing again would let the recorded version differ from the key actually
+ * sent. The callback is the last thing that can stop the request, so a throw from it
+ * propagates and nothing is sent. The key must not be kept or logged.
+ */
+export function beginRequest(
+  profile: ProviderProfile,
+  secrets: Pick<SecretStore, "revealVersioned">,
+  onRequestStart: (info: RequestStartInfo) => void,
+  now: () => number,
+): string {
   if (profile.credentialRef === undefined) {
     throw amberError("llm_unconfigured", "provider profile has no credential");
   }
-  return secrets.reveal(profile.userId, profile.credentialRef);
+  const { plaintext, version } = secrets.revealVersioned(profile.userId, profile.credentialRef);
+  onRequestStart({ sentAt: now(), credential: version });
+  return plaintext;
 }
 
 /** `baseURL` is stored without a trailing slash; the protocol path is appended here. */

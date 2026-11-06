@@ -126,6 +126,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "invalid_request.prompt_protocol": "提示词缺少必须保留的内容，或含有无法识别的插值槽",
   // Filled with the matching `cacheDirErrors` text by the sidecar.
   "invalid_request.cache_dir": "{{message}}",
+  "invalid_request.usage_granularity": "这个时间范围太长，请改用更粗的粒度",
   "invalid_request.subtitle_encoding": "字幕文件不是 UTF-8 编码",
   "invalid_request.subtitle_format": "无法识别的字幕格式",
   "unauthenticated.file_grant": "文件授权无效或已过期，请重新选择文件",

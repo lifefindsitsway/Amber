@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { PRICE_UNITS } from "../../../../src/shared/model-pricing.ts";
 import { beforeEach, describe, expect, it } from "vitest";
 import { OtherModelsSection } from "../../../../src/web/pages/settings/other-models-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -44,7 +45,7 @@ describe("OtherModelsSection", () => {
 
     fireEvent.click(within(image).getByRole("button", { name: "价格 · img/flux" }));
     const dialog = await screen.findByRole("dialog");
-    expect((within(dialog).getByLabelText("计费单位 1") as HTMLSelectElement).options).toHaveLength(12);
+    expect((within(dialog).getByLabelText("计费单位 1") as HTMLSelectElement).options).toHaveLength(PRICE_UNITS.length);
     fireEvent.change(within(dialog).getByLabelText("计费单位 1"), { target: { value: "per_image" } });
     fireEvent.change(within(dialog).getByLabelText("单价 1"), { target: { value: "0.2" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));

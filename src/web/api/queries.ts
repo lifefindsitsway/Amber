@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { z } from "zod";
 import {
   asrModelTestResultDtoSchema,
@@ -31,6 +31,16 @@ import {
   type TaskHistoryRestoreRequest,
   type TaskListDto,
 } from "../../shared/dto/task.ts";
+import {
+  decodeModelKey,
+  usageActivitiesResponseSchema,
+  usageCacheObservedResponseSchema,
+  usageCallsResponseSchema,
+  usageSummaryResponseSchema,
+  type UsageActivitiesQuery,
+  type UsageCallsQuery,
+  type UsageSummaryQuery,
+} from "../../shared/dto/usage-analytics.ts";
 import { webSearchProfileDtoSchema, webSearchTestResultSchema, type WebSearchProfilePut } from "../../shared/dto/web-search.ts";
 import { noteKeys } from "../notes/note-keys.ts";
 import { useApi } from "./context.tsx";
@@ -285,7 +295,7 @@ export function useTaskHistory() {
   return useInfiniteQuery({
     queryKey: queryKeys.taskHistory,
     queryFn: ({ pageParam, signal }) =>
-      client.get(`/api/tasks${queryString({ history: true, limit: TASK_HISTORY_PAGE_SIZE, cursor: pageParam })}`, taskListDtoSchema, { signal }),
+      client.get(`/api/tasks${queryString({ history: true, limit: TASK_HISTORY_PAGE_SIZE, cursor: pageParam })}`, taskListDtoSchema),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor,
   });
@@ -473,4 +483,56 @@ export function useWebSearchMutations() {
       mutationFn: () => client.post("/api/web-search/test", webSearchTestResultSchema),
     }),
   };
+}
+
+/**
+ * The usage analysis reads. Each one keeps the previous answer on screen while a changed
+ * filter loads, so the page does not collapse into a skeleton on every click.
+ */
+export function useUsageSummary(query: UsageSummaryQuery) {
+  const client = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.usage, "summary", query] as const,
+    queryFn: () => client.get(`/api/usage/summary${queryString({ ...query })}`, usageSummaryResponseSchema),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useUsageActivities(query: UsageActivitiesQuery, enabled = true) {
+  const client = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.usage, "activities", query] as const,
+    queryFn: () => client.get(`/api/usage/activities${queryString({ ...query })}`, usageActivitiesResponseSchema),
+    placeholderData: keepPreviousData,
+    enabled,
+  });
+}
+
+/** The individual calls of one activity group; fetched when its row is expanded. */
+export function useUsageCalls(query: UsageCallsQuery, enabled = true) {
+  const client = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.usage, "calls", query] as const,
+    queryFn: () => client.get(`/api/usage/calls${queryString({ ...query })}`, usageCallsResponseSchema),
+    enabled,
+  });
+}
+
+/** LLM models whose calls ever reported a cache read; the price dialog uses it to hint at a missing cache price. */
+export function useUsageCacheObserved(enabled = true) {
+  const client = useApi();
+  return useQuery({
+    queryKey: [...queryKeys.usage, "cache-observed"] as const,
+    queryFn: () => client.get("/api/usage/cache-observed", usageCacheObservedResponseSchema),
+    enabled,
+  });
+}
+
+/** Whether calls of this LLM model have ever reported a cache read. */
+export function useCacheObservedModel(profileId: string, modelId: string): boolean {
+  const observed = useUsageCacheObserved();
+  return (observed.data?.models ?? []).some((entry) => {
+    const parts = decodeModelKey(entry.modelKey);
+    return parts !== undefined && parts[0] === "llm" && parts[1] === profileId && parts[2] === modelId;
+  });
 }

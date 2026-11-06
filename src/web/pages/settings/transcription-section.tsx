@@ -24,7 +24,7 @@ import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
-import { ConfirmButton, CredentialInput, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { ConfirmButton, CredentialInput, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
 
 /**
  * `/settings/transcription`: the user's ASR profiles, each one service account with its
@@ -346,7 +346,7 @@ function ModelRow({ profile, model }: { profile: AsrProfileDto; model: AsrProfil
         {model.testedAt === undefined ? t("settings.transcription.untested") : t("settings.transcription.testedAt", { time: formatDateTime(model.testedAt, i18n.language) })}
       </p>
       {test.data === undefined || test.isPending ? null : <TestResult result={test.data} />}
-      <RequestError error={test.error} />
+      <TestConnectionError error={test.error} />
     </li>
   );
 }
@@ -354,9 +354,12 @@ function ModelRow({ profile, model }: { profile: AsrProfileDto; model: AsrProfil
 function TestResult({ result }: { result: AsrModelTestResultDto }) {
   const { t } = useTranslation();
   const preview = result.textPreview?.trim() ?? "";
+  // A confirmed remote cancellation is a settled outcome; otherwise the job may still be
+  // running and billed, which the wording must not hide.
+  const resultKey = result.result === "accepted" && result.remoteCancelled === true ? "acceptedCancelled" : result.result;
   return (
     <div className={`mt-1 text-xs ${result.result === "accepted" ? "text-muted" : "text-ok"}`} role="status" data-testid="asr-model-test-result">
-      <p>{t(`settings.transcription.testResult.${result.result}`, { ms: Math.round(result.latencyMs) })}</p>
+      <p>{t(`settings.transcription.testResult.${resultKey}`, { ms: Math.round(result.latencyMs) })}</p>
       {result.result === "transcribed" && preview !== "" ? <p className="text-muted">{t("settings.transcription.testPreview", { text: preview })}</p> : null}
     </div>
   );

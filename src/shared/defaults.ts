@@ -131,6 +131,15 @@ export const TASK_HISTORY_PAGE_SIZE = 20;
 /** Most Task ids one "remove from history" request may carry. */
 export const TASK_HISTORY_HIDE_MAX = 100;
 
+/** Series the usage trend chart and the per-model view colour individually; the rest merge into "other". */
+export const USAGE_CHART_SERIES_MAX = 6;
+/** Longest time range, in days, that may be bucketed by the hour. */
+export const USAGE_GRANULARITY_HOUR_MAX_DAYS = 7;
+/** Longest time range, in days, that may be bucketed by the day. */
+export const USAGE_GRANULARITY_DAY_MAX_DAYS = 400;
+/** Longest time range, in years, that may be bucketed by the week; bucketing by the month has no limit. */
+export const USAGE_GRANULARITY_WEEK_MAX_YEARS = 5;
+
 /** Below this width the right pane collapses into a drawer, in px. */
 export const BREAKPOINT_DRAWER_PX = 1100;
 /** Below this width the layout switches to single-pane tabs, in px. */

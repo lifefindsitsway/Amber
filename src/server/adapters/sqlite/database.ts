@@ -8,6 +8,8 @@ export interface SqliteStatement {
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
   run(...params: unknown[]): { changes: number };
+  /** Reads INTEGER columns as `bigint`, for sums that can outgrow a double's exact range. */
+  safeIntegers(enabled?: boolean): this;
 }
 
 /** The connection surface this adapter exposes; the driver's own types stay inside the adapter. */

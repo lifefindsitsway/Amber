@@ -9,6 +9,7 @@ import type {
   AsrJobCancelOutcome,
   AsrJobHandle,
   AsrJobProvider,
+  AsrJobReport,
   AsrJobStatus,
   AsrProbeResult,
   AsrProviderCapabilities,
@@ -102,7 +103,7 @@ function modelSpec(profile: AsrProviderProfile, modelId: string): FamilySpec {
 export interface DashscopeAsrProviderFactoryOptions {
   http: OutboundHttpClient;
   files: Pick<FileStore, "read">;
-  secrets: Pick<SecretStore, "reveal">;
+  secrets: Pick<SecretStore, "reveal" | "revealVersioned">;
   now?: () => number;
   newId?: () => string;
 }
@@ -172,6 +173,11 @@ const taskSchema = z.object({
 interface CallOptions {
   /** `false` for the storage upload and the signed result link, which carry their own authorization. */
   authorized?: boolean;
+  /**
+   * The authorization to send instead of revealing the key again: for the one paid request,
+   * whose key was already revealed and reported with its version.
+   */
+  authorization?: string;
   limitBytes?: number;
 }
 
@@ -180,6 +186,7 @@ interface Answer {
   text: string;
 }
 
+const SUBTASK_SUCCEEDED = "SUCCEEDED";
 const NOT_FOUND = 404;
 const TOO_MANY_REQUESTS = 429;
 const BAD_REQUEST = 400;
@@ -215,6 +222,19 @@ class DashscopeClient {
     return `Bearer ${this.options.secrets.reveal(this.profile.userId, this.profile.credentialRef)}`;
   }
 
+  /**
+   * The authorization of the paid request together with the version of the key behind it.
+   * The caller reports the version and sends exactly this authorization, so what is
+   * recorded is what was sent.
+   */
+  paidAuthorization(): { authorization: string; version: { versionId: string; setAt: number } } {
+    if (this.profile.credentialRef === undefined) {
+      throw amberError("asr_unconfigured", "ASR profile has no credential");
+    }
+    const { plaintext, version } = this.options.secrets.revealVersioned(this.profile.userId, this.profile.credentialRef);
+    return { authorization: `Bearer ${plaintext}`, version };
+  }
+
   /** Sends one request and reads its answer within `limitBytes`; error statuses become ASR errors. */
   async call(phase: DashscopePhase, request: OutboundRequest, options: CallOptions = {}): Promise<Answer> {
     const answer = await this.send(phase, request, options);
@@ -232,7 +252,10 @@ class DashscopeClient {
     try {
       response = await this.options.http.request({
         ...request,
-        headers: { ...(options.authorized === false ? {} : { authorization: this.authorization() }), ...request.headers },
+        headers: {
+          ...(options.authorized === false ? {} : { authorization: options.authorization ?? this.authorization() }),
+          ...request.headers,
+        },
       });
       text = await readBounded(response.body, options.limitBytes ?? CONTROL_BODY_MAX_BYTES);
     } catch (error) {
@@ -336,20 +359,29 @@ class DashscopeAsrProvider implements AsrJobProvider {
         ...(vocabulary === undefined ? {} : { vocabulary }),
       },
     };
-    opts.onPaidCallStart();
-    const { text } = await this.client.call("submit", {
-      url: `${this.client.baseUrl}/api/v1/services/audio/asr/transcription`,
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        "x-dashscope-async": "enable",
-        "x-dashscope-ossresourceresolve": "enable",
+    const payload = JSON.stringify(request);
+    // Everything before this point is free. The key is revealed once, reported with its
+    // version, and used for the creating request below; the upload space and later queries
+    // reveal on their own and are not reported.
+    const { authorization, version } = this.client.paidAuthorization();
+    opts.onRequestStart({ sentAt: this.client.now(), credential: version });
+    const { text } = await this.client.call(
+      "submit",
+      {
+        url: `${this.client.baseUrl}/api/v1/services/audio/asr/transcription`,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          "x-dashscope-async": "enable",
+          "x-dashscope-ossresourceresolve": "enable",
+        },
+        body: payload,
+        signal,
+        timeoutMs: SUBMIT_TIMEOUT_MS,
       },
-      body: JSON.stringify(request),
-      signal,
-      timeoutMs: SUBMIT_TIMEOUT_MS,
-    });
+      { authorization },
+    );
     const submitted = submitSchema.safeParse(parseJson(text));
     if (!submitted.success) {
       // Accepted with an answer that names no job: a job may exist and be billed.
@@ -359,7 +391,7 @@ class DashscopeAsrProvider implements AsrJobProvider {
     return { version: 1, provider: this.id, jobId: submitted.data.output.task_id, submittedAt: this.client.now() };
   }
 
-  async poll(handle: AsrJobHandle, opts: { signal: AbortSignal }): Promise<AsrJobStatus> {
+  async poll(handle: AsrJobHandle, opts: { signal: AbortSignal; onJobReport?(report: AsrJobReport): void }): Promise<AsrJobStatus> {
     const { signal } = opts;
     const jobId = this.jobIdOf(handle);
     const { response, text } = await this.client.send("poll", {
@@ -385,16 +417,33 @@ class DashscopeAsrProvider implements AsrJobProvider {
       throw amberError("asr_failed", "dashscope task state is unreadable", { code: "asr_failed.job_failed" });
     }
     const { output } = task.data;
+    // What the job's end state says about its billing, read from the answer itself and
+    // reported once, before anything local can fail.
+    const metering = meteringOf(parseJson(text));
+    const report = (remote: AsrJobReport["remote"]): void => {
+      try {
+        opts.onJobReport?.({ remote, ...metering });
+      } catch {
+        // The report is bookkeeping: it must never decide whether the job's result is usable.
+      }
+    };
     switch (output.task_status) {
       case "PENDING":
       case "RUNNING":
         return { state: "pending" };
       case "UNKNOWN":
         return { state: "missing" };
-      case "SUCCEEDED":
-        return { state: "done", result: await this.result(output.results ?? [], signal) };
+      case "SUCCEEDED": {
+        const results = output.results ?? [];
+        report(results[0] !== undefined && results[0].subtask_status !== SUBTASK_SUCCEEDED ? "failed" : "succeeded");
+        return { state: "done", result: await this.result(results, signal) };
+      }
+      case "FAILED":
+      case "CANCELED":
+        report(output.task_status === "FAILED" ? "failed" : "cancelled");
+        throw jobError(failureOf(output), output.task_status);
       default:
-        throw jobError({ ...(output.code === undefined ? {} : { code: output.code }), ...(output.message === undefined ? {} : { message: output.message }) }, output.task_status);
+        throw jobError(failureOf(output), output.task_status);
     }
   }
 
@@ -430,7 +479,7 @@ class DashscopeAsrProvider implements AsrJobProvider {
     if (file === undefined) {
       throw amberError("asr_failed", "dashscope job succeeded without a result", { code: "asr_failed.job_failed" });
     }
-    if (file.subtask_status !== "SUCCEEDED" || file.transcription_url === undefined) {
+    if (file.subtask_status !== SUBTASK_SUCCEEDED || file.transcription_url === undefined) {
       throw jobError({ ...(file.code === undefined ? {} : { code: file.code }), ...(file.message === undefined ? {} : { message: file.message }) }, file.subtask_status ?? "FAILED");
     }
     if (!isAliyunHttps(file.transcription_url)) {
@@ -444,6 +493,47 @@ class DashscopeAsrProvider implements AsrJobProvider {
     );
     return canonicalFromResultFile(text, { provider: this.id, model: this.modelId });
   }
+}
+
+/** The numeric fields of the answer's top-level `usage` that Amber reads; nothing else of it is kept. */
+const METERING_FIELDS = ["input_tokens", "output_tokens", "total_tokens", "duration", "seconds"] as const;
+const MS_PER_SECOND = 1000;
+
+/**
+ * The billing quantities of a task answer, read leniently: only the whitelisted fields that
+ * are finite non-negative numbers count, anything else in `usage` is ignored, and an answer
+ * without any of them reports nothing. `rawUsageJson` holds exactly the kept fields as
+ * received, so it can never carry a key, signature or URL. `duration` (seconds) is the
+ * billed time; `seconds` is only consulted when `duration` is absent. `total_tokens` stays
+ * in the raw record only.
+ */
+function meteringOf(answer: unknown): Pick<AsrJobReport, "usage" | "rawUsageJson"> {
+  const usage = typeof answer === "object" && answer !== null ? (answer as Record<string, unknown>)["usage"] : undefined;
+  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) {
+    return {};
+  }
+  const received = usage as Record<string, unknown>;
+  const kept: Partial<Record<(typeof METERING_FIELDS)[number], number>> = {};
+  for (const field of METERING_FIELDS) {
+    const value = received[field];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      kept[field] = value;
+    }
+  }
+  if (Object.keys(kept).length === 0) {
+    return {};
+  }
+  const seconds = kept.duration ?? kept.seconds;
+  const billed: NonNullable<AsrJobReport["usage"]> = {
+    ...(kept.input_tokens === undefined ? {} : { billedInputTokens: Math.round(kept.input_tokens) }),
+    ...(kept.output_tokens === undefined ? {} : { billedOutputTokens: Math.round(kept.output_tokens) }),
+    ...(seconds === undefined ? {} : { billedAudioMs: Math.round(seconds * MS_PER_SECOND) }),
+  };
+  return { ...(Object.keys(billed).length === 0 ? {} : { usage: billed }), rawUsageJson: JSON.stringify(kept) };
+}
+
+function failureOf(output: { code?: string | undefined; message?: string | undefined }): { code?: string; message?: string } {
+  return { ...(output.code === undefined ? {} : { code: output.code }), ...(output.message === undefined ? {} : { message: output.message }) };
 }
 
 function isAliyunHttps(value: string): boolean {

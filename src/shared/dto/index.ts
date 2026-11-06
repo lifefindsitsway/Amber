@@ -12,6 +12,7 @@ export * from "./task.ts";
 export * from "./terminology.ts";
 export * from "./transcript.ts";
 export * from "./usage.ts";
+export * from "./usage-analytics.ts";
 export * from "./collection.ts";
 export * from "./summary.ts";
 export * from "./settings.ts";

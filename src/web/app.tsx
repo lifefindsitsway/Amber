@@ -17,6 +17,7 @@ const NotesPage = lazy(async () => ({ default: (await import("./pages/notes-page
 const TrashPage = lazy(async () => ({ default: (await import("./pages/trash-page.tsx")).TrashPage }));
 const ContentPage = lazy(async () => ({ default: (await import("./pages/content/content-page.tsx")).ContentPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./pages/settings/settings-page.tsx")).SettingsPage }));
+const UsagePage = lazy(async () => ({ default: (await import("./pages/usage/usage-page.tsx")).UsagePage }));
 const AccountPasswordPage = lazy(async () => ({ default: (await import("./pages/account-password-page.tsx")).AccountPasswordPage }));
 const AdminPage = lazy(async () => ({ default: (await import("./pages/admin/admin-page.tsx")).AdminPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./pages/login-page.tsx")).LoginPage }));
@@ -28,7 +29,7 @@ function Page(props: { children: ReactNode }) {
 
 /**
  * The app's routes: new page, library, collections, notes, trash, content page, settings,
- * account, admin, setup and login. `/login` and `/setup` stand outside the authentication
+ * AI usage, account, admin, setup and login. `/login` and `/setup` stand outside the authentication
  * boundary and the shell; everything else mounts only for an authenticated principal.
  */
 export function AppRoutes() {
@@ -48,6 +49,7 @@ export function AppRoutes() {
           <Route path="contents/:id" element={<Page><ContentPage /></Page>} />
           <Route path="settings" element={<Navigate to="/settings/models" replace />} />
           <Route path="settings/:section" element={<Page><SettingsPage /></Page>} />
+          <Route path="usage" element={<Page><UsagePage /></Page>} />
           <Route path="account/password" element={<Page><AccountPasswordPage /></Page>} />
           <Route path="admin" element={<Navigate to="/admin/users" replace />} />
           <Route path="admin/:section" element={<Page><AdminPage /></Page>} />

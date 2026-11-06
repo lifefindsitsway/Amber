@@ -3,7 +3,8 @@ import { OpenAiCompatibleProvider } from "../../../../../src/server/adapters/llm
 import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../../src/server/domain/llm.ts";
 import type { CapabilityFlags, ModelCapability, ProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
-import type { LlmProbeCall } from "../../../../../src/server/ports/llm-provider.ts";
+import type { RequestStartInfo } from "../../../../../src/server/domain/usage.ts";
+import type { LlmProbeCall, LlmProbeCheck } from "../../../../../src/server/ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse } from "../../../../../src/server/ports/outbound-http.ts";
 import {
   LLM_FIRST_OUTPUT_TIMEOUT_MS,
@@ -136,9 +137,9 @@ function setup(http: ScriptedHttp, files: Record<string, Uint8Array> = {}) {
   const provider = new OpenAiCompatibleProvider({
     http,
     secrets: {
-      reveal: (_owner, ref) => {
+      revealVersioned: (_owner, ref) => {
         revealed.push(ref);
-        return API_KEY;
+        return { plaintext: API_KEY, version: KEY_VERSION };
       },
     },
     files: {
@@ -177,8 +178,15 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 }
 
 const live = (): AbortSignal => new AbortController().signal;
-const streamOf = (provider: OpenAiCompatibleProvider, request: LlmRequest = EQUIVALENT_REQUEST, cap = capability(), signal = live()) =>
-  provider.stream(request, { signal, effectiveCapability: cap, profile: PROFILE });
+const KEY_VERSION = { versionId: "version-1", setAt: 1_700_000_000_000 };
+const noStartReport = (): void => undefined;
+const streamOf = (
+  provider: OpenAiCompatibleProvider,
+  request: LlmRequest = EQUIVALENT_REQUEST,
+  cap = capability(),
+  signal = live(),
+  onRequestStart: (info: RequestStartInfo) => void = noStartReport,
+) => provider.stream(request, { signal, effectiveCapability: cap, profile: PROFILE, onRequestStart });
 
 /** Splits text into fixed-size pieces so SSE events straddle chunk boundaries. */
 function sliced(text: string, size: number): string[] {
@@ -563,7 +571,7 @@ describe("OpenAiCompatibleProvider.probe", () => {
     const results: Array<[string, unknown]> = [];
     for (const check of checks) {
       try {
-        results.push([check.flag, await check.run({ signal: live(), onCall: (call) => calls.push([check.flag, call]) })]);
+        results.push([check.flag, await check.run({ signal: live(), onRequestStart: noStartReport, onCall: (call) => calls.push([check.flag, call]) })]);
       } catch (error) {
         results.push([check.flag, error]);
       }
@@ -670,10 +678,125 @@ describe("OpenAiCompatibleProvider.probe", () => {
     const controller = new AbortController();
     controller.abort();
     const calls: LlmProbeCall[] = [];
-    const before = await failure((first as NonNullable<typeof first>).run({ signal: controller.signal, onCall: (call) => calls.push(call) }));
-    const after = await failure((second as NonNullable<typeof second>).run({ signal: controller.signal, onCall: (call) => calls.push(call) }));
+    const before = await failure((first as NonNullable<typeof first>).run({ signal: controller.signal, onRequestStart: noStartReport, onCall: (call) => calls.push(call) }));
+    const after = await failure((second as NonNullable<typeof second>).run({ signal: controller.signal, onRequestStart: noStartReport, onCall: (call) => calls.push(call) }));
     expect(before).toBeInstanceOf(OutboundHttpError);
     expect(after).toBeInstanceOf(OutboundHttpError);
     expect(calls).toEqual([{ outcome: "outcome_unknown" }]);
+  });
+});
+
+describe("OpenAiCompatibleProvider request start", () => {
+  const AUDIO_REQUEST: LlmRequest = {
+    ...EQUIVALENT_REQUEST,
+    messages: [{ role: "user", content: [{ type: "audio", mimeType: "audio/wav", dataRef: "tmp/tasks/t/missing.wav" }] }],
+  };
+
+  /** A store whose key and version change at every reveal, so a second reveal would show in the request. */
+  function rotating(log: string[]): { provider: OpenAiCompatibleProvider; http: ScriptedHttp } {
+    let reveals = 0;
+    const http = new ScriptedHttp({ body: openAiStream("equivalent") }, { body: openAiStream("equivalent") }, { body: openAiStream("equivalent") }, { body: openAiStream("equivalent") });
+    const original = http.request.bind(http);
+    http.request = (request) => {
+      log.push(`send ${String(request.headers?.["authorization"])}`);
+      return original(request);
+    };
+    const provider = new OpenAiCompatibleProvider({
+      http,
+      secrets: {
+        revealVersioned: () => {
+          reveals += 1;
+          log.push(`reveal ${reveals}`);
+          return { plaintext: `key-${reveals}`, version: { versionId: `version-${reveals}`, setAt: reveals * 10 } };
+        },
+      },
+      files: { read: () => (async function* () { throw new Error("no file"); })() },
+      now: () => 5_000,
+    });
+    return { provider, http };
+  }
+
+  it("reports each request once, between the reveal and the send, with the version of the key that is sent", async () => {
+    const log: string[] = [];
+    const infos: RequestStartInfo[] = [];
+    const { provider } = rotating(log);
+    const record = (info: RequestStartInfo): void => {
+      infos.push(info);
+      log.push("started");
+    };
+    await events(streamOf(provider, EQUIVALENT_REQUEST, capability(), live(), record));
+    await events(streamOf(provider, EQUIVALENT_REQUEST, capability(), live(), record));
+    expect(log).toEqual(["reveal 1", "started", "send Bearer key-1", "reveal 2", "started", "send Bearer key-2"]);
+    expect(infos).toEqual([
+      { sentAt: 5_000, credential: { versionId: "version-1", setAt: 10 } },
+      { sentAt: 5_000, credential: { versionId: "version-2", setAt: 20 } },
+    ]);
+  });
+
+  it("reports the plain-answer fallback request too", async () => {
+    const http = new ScriptedHttp({ body: JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }) });
+    const { provider } = setup(http);
+    const infos: RequestStartInfo[] = [];
+    await events(streamOf(provider, EQUIVALENT_REQUEST, capability({ stream: "unsupported" }), live(), (info) => infos.push(info)));
+    expect(infos).toHaveLength(1);
+  });
+
+  it("does not report when the request cannot be built or there is no key", async () => {
+    const http = new ScriptedHttp({ body: openAiStream("equivalent") });
+    const { provider, revealed } = setup(http);
+    const infos: RequestStartInfo[] = [];
+    const encoding = await failure(events(streamOf(provider, AUDIO_REQUEST, capability(), live(), (info) => infos.push(info))));
+    expect(encoding).toBeInstanceOf(Error);
+    const unconfigured = await failure(
+      events(provider.stream(EQUIVALENT_REQUEST, { signal: live(), effectiveCapability: capability(), profile: { ...PROFILE, credentialRef: undefined as never }, onRequestStart: (info) => infos.push(info) })),
+    );
+    expect((unconfigured as AmberError).appError.class).toBe("llm_unconfigured");
+    expect(infos).toEqual([]);
+    expect(http.requests).toEqual([]);
+    expect(revealed).toEqual([]);
+  });
+
+  it("sends nothing when the start callback throws", async () => {
+    const http = new ScriptedHttp({ body: openAiStream("equivalent") });
+    const { provider } = setup(http);
+    const refusal = new Error("do not send");
+    const thrown = await failure(
+      events(
+        streamOf(provider, EQUIVALENT_REQUEST, capability(), live(), () => {
+          throw refusal;
+        }),
+      ),
+    );
+    expect(thrown).toBe(refusal);
+    expect(http.requests).toEqual([]);
+  });
+
+  it("reports every probe request, and nothing is sent when the callback throws", async () => {
+    const log: string[] = [];
+    const { provider } = rotating(log);
+    const checks = provider.probe(PROFILE, "model-under-test");
+    const infos: RequestStartInfo[] = [];
+    for (const check of checks) {
+      await check.run({ signal: live(), onRequestStart: (info) => infos.push(info), onCall: () => undefined }).catch(() => undefined);
+    }
+    expect(infos.map((info) => info.credential.versionId)).toEqual(["version-1", "version-2", "version-3"]);
+    expect(log.filter((entry) => entry.startsWith("send"))).toEqual(["send Bearer key-1", "send Bearer key-2", "send Bearer key-3"]);
+
+    const http = new ScriptedHttp({ body: openAiStream("equivalent") });
+    const refused = setup(http).provider.probe(PROFILE, "model-under-test")[0] as LlmProbeCheck;
+    const calls: LlmProbeCall[] = [];
+    const refusal = new Error("do not send");
+    const thrown = await failure(
+      refused.run({
+        signal: live(),
+        onRequestStart: () => {
+          throw refusal;
+        },
+        onCall: (call) => calls.push(call),
+      }),
+    );
+    expect(thrown).toBe(refusal);
+    expect(http.requests).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ErrorView } from "../../components/error-view.tsx";
+import type { AppError } from "../../../shared/errors.ts";
 import { ApiError } from "../../api/client.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
@@ -55,6 +56,35 @@ export function RequestError({ error }: { error: unknown }) {
   return (
     <div className="mt-2">
       <ErrorView error={error.error} />
+    </div>
+  );
+}
+
+const TEST_RATE_LIMITED_CODES: ReadonlySet<string> = new Set(["llm_rate_limited", "llm_rate_limited.retry_after", "asr_failed.rate_limited"]);
+
+/**
+ * Like `RequestError`, for the result of a model "test connection". The stored wording of a
+ * rate-limit error says the pipeline waited and retried and offers a step to rerun; a test
+ * does neither (it fails on the first 429), so that text would be untrue here and is replaced
+ * by advice to test again later. The upstream detail toggle is kept.
+ */
+export function TestConnectionError({ error }: { error: unknown }) {
+  const { t } = useTranslation();
+  if (!(error instanceof ApiError)) {
+    return null;
+  }
+  const appError: AppError = error.error;
+  if (!TEST_RATE_LIMITED_CODES.has(appError.code)) {
+    return <RequestError error={error} />;
+  }
+  const retryAfterMs = appError.details?.["retryAfterMs"];
+  const userMessage =
+    typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+      ? t("settings.common.testRateLimitedIn", { seconds: Math.ceil(retryAfterMs / 1000) })
+      : t("settings.common.testRateLimited");
+  return (
+    <div className="mt-2">
+      <ErrorView error={{ ...appError, userMessage }} />
     </div>
   );
 }

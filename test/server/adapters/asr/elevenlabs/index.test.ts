@@ -10,6 +10,8 @@ import {
   type SentenceParams,
 } from "../../../../../src/server/adapters/asr/elevenlabs/index.ts";
 import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
+import type { RequestStartInfo } from "../../../../../src/server/domain/usage.ts";
+import type { AsrTranscribeOptions } from "../../../../../src/server/ports/asr-provider.ts";
 import type { MediaAsset } from "../../../../../src/server/domain/media-asset.ts";
 import type { AsrProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse, type OutboundStreamBody } from "../../../../../src/server/ports/outbound-http.ts";
@@ -96,6 +98,10 @@ function setup(answer: (request: OutboundRequest) => Answer, files = { read: chu
         revealed.push([owner, ref]);
         return API_KEY;
       },
+      revealVersioned: (owner, ref) => {
+        revealed.push([owner, ref]);
+        return { plaintext: API_KEY, version: KEY_VERSION };
+      },
     },
   });
   return { http, factory, revealed, provider: factory.create(PROFILE, "scribe_v2") };
@@ -110,6 +116,8 @@ function chunked(bytes: Uint8Array, size = 16_384): (ref: string) => AsyncIterab
 }
 
 const signal = (): AbortSignal => new AbortController().signal;
+const KEY_VERSION = { versionId: "version-1", setAt: 1_700_000_000_000 };
+const options = (): AsrTranscribeOptions => ({ signal: signal(), onRequestStart: () => undefined });
 
 /** The parts of a multipart body: name, optional filename and content as bytes. */
 function parts(bytes: Buffer, contentType: string): Array<{ name: string; filename?: string; content: Buffer }> {
@@ -194,9 +202,58 @@ describe("ElevenLabs descriptor and capabilities", () => {
 });
 
 describe("transcribe request", () => {
+  it("reports the request start with the version of the key it is then sent with, right before sending", async () => {
+    const events: string[] = [];
+    const infos: RequestStartInfo[] = [];
+    const http = new CapturingHttp((request) => {
+      events.push(`send ${String(request.headers?.["xi-api-key"])}`);
+      return { body: asrResponse("en") };
+    });
+    // A store whose value and version change after every reveal: only one reveal may happen.
+    let reveals = 0;
+    const factory = new ElevenLabsAsrProviderFactory({
+      http,
+      files: { read: chunked(AUDIO) },
+      now: () => 1_234,
+      secrets: {
+        reveal: () => API_KEY,
+        revealVersioned: () => {
+          reveals += 1;
+          events.push(`reveal ${reveals}`);
+          return { plaintext: `key-${reveals}`, version: { versionId: `version-${reveals}`, setAt: reveals } };
+        },
+      },
+    });
+    await factory.create(PROFILE, "scribe_v2").transcribe(
+      { audio: ASSET, terminology: [] },
+      {
+        signal: signal(),
+        onRequestStart: (info) => {
+          infos.push(info);
+          events.push("started");
+        },
+      },
+    );
+    expect(events).toEqual(["reveal 1", "started", "send key-1"]);
+    expect(infos).toEqual([{ sentAt: 1_234, credential: { versionId: "version-1", setAt: 1 } }]);
+  });
+
+  it("sends nothing when the start callback refuses, and never reports a start without a credential", async () => {
+    const { http, provider } = setup(() => ({ body: asrResponse("en") }));
+    const refusal = new Error("do not send");
+    await expect(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal(), onRequestStart: () => { throw refusal; } })).rejects.toBe(refusal);
+    expect(http.captured).toEqual([]);
+
+    const started: unknown[] = [];
+    const unconfigured = setup(() => ({ body: asrResponse("en") })).factory.create({ ...PROFILE, credentialRef: undefined as never }, "scribe_v2");
+    const error = await failure(unconfigured.transcribe({ audio: ASSET, terminology: [] }, { signal: signal(), onRequestStart: (info) => started.push(info) }));
+    expect(error.appError.class).toBe("asr_unconfigured");
+    expect(started).toEqual([]);
+  });
+
   it("streams a multipart body with the fixed options, the terms as keyterms and the audio bytes", async () => {
     const { http, provider, revealed } = setup(() => ({ body: asrResponse("mixed") }));
-    await provider.transcribe({ audio: ASSET, language: "zh-Hans", terminology: [...KNOWN_MISHEARD_TERMS] }, { signal: signal() });
+    await provider.transcribe({ audio: ASSET, language: "zh-Hans", terminology: [...KNOWN_MISHEARD_TERMS] }, options());
 
     const [{ request, bytes }] = http.captured as [Captured];
     expect(request.method).toBe("POST");
@@ -225,7 +282,7 @@ describe("transcribe request", () => {
 
   it("leaves language_code out when the language does not map and sends no keyterms without terms", async () => {
     const { http, provider } = setup(() => ({ body: asrResponse("en") }));
-    await provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() });
+    await provider.transcribe({ audio: ASSET, terminology: [] }, options());
     const { request, bytes } = http.captured[0] as Captured;
     const sent = parts(bytes as Buffer, (request.body as OutboundStreamBody).contentType);
     expect(sent.map((part) => part.name)).toEqual(["model_id", "timestamps_granularity", "diarize", "tag_audio_events", "no_verbatim", "file"]);
@@ -233,7 +290,7 @@ describe("transcribe request", () => {
 
   it("sends the chosen model, and no_verbatim only to the model the API reference documents it for", async () => {
     const { http, factory } = setup(() => ({ body: asrResponse("en") }));
-    const result = await factory.create(PROFILE, "scribe_v2_medical").transcribe({ audio: ASSET, terminology: [...KNOWN_MISHEARD_TERMS] }, { signal: signal() });
+    const result = await factory.create(PROFILE, "scribe_v2_medical").transcribe({ audio: ASSET, terminology: [...KNOWN_MISHEARD_TERMS] }, options());
     expect(result.model).toBe("scribe_v2_medical");
     const { request, bytes } = http.captured[0] as Captured;
     const sent = parts(bytes as Buffer, (request.body as OutboundStreamBody).contentType);
@@ -247,7 +304,7 @@ describe("transcribe request", () => {
     const custom = { ...PROFILE, models: [{ modelId: "scribe_v3", family: "scribe" }, { modelId: "scribe_v2:beta/1", family: "scribe_v2" }] };
     const sentFields = async (model: string): Promise<(name: string) => string[]> => {
       const { http, factory } = setup(() => ({ body: asrResponse("en") }));
-      const result = await factory.create(custom, model).transcribe({ audio: ASSET, terminology: [...KNOWN_MISHEARD_TERMS] }, { signal: signal() });
+      const result = await factory.create(custom, model).transcribe({ audio: ASSET, terminology: [...KNOWN_MISHEARD_TERMS] }, options());
       expect(result.model).toBe(model);
       const { request, bytes } = http.captured[0] as Captured;
       const sent = parts(bytes as Buffer, (request.body as OutboundStreamBody).contentType);
@@ -264,22 +321,22 @@ describe("transcribe request", () => {
 
   it("allows at least ASR_HTTP_TIMEOUT_MIN and scales the timeout with long audio", async () => {
     const { http, provider } = setup(() => ({ body: asrResponse("en") }));
-    await provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() });
-    await provider.transcribe({ audio: { ...ASSET, durationMs: 3 * 3_600_000 }, terminology: [] }, { signal: signal() });
+    await provider.transcribe({ audio: ASSET, terminology: [] }, options());
+    await provider.transcribe({ audio: { ...ASSET, durationMs: 3 * 3_600_000 }, terminology: [] }, options());
     expect(http.captured.map((entry) => entry.request.timeoutMs)).toEqual([ASR_HTTP_TIMEOUT_MIN * 60_000, 3 * 3_600_000]);
   });
 
   it("fails the upload when the file does not hold the recorded number of bytes", async () => {
     const { provider } = setup(() => ({ body: asrResponse("en") }), { read: chunked(AUDIO.subarray(1)) });
-    await expect(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() })).rejects.toThrow(/smaller than recorded/);
+    await expect(provider.transcribe({ audio: ASSET, terminology: [] }, options())).rejects.toThrow(/smaller than recorded/);
     const larger = setup(() => ({ body: asrResponse("en") }), { read: chunked(new Uint8Array(AUDIO.byteLength + 1)) });
-    await expect(larger.provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() })).rejects.toThrow(/larger than recorded/);
+    await expect(larger.provider.transcribe({ audio: ASSET, terminology: [] }, options())).rejects.toThrow(/larger than recorded/);
   });
 
   it("keeps line breaks out of field values so a term cannot end its part", async () => {
     const { http, provider } = setup(() => ({ body: asrResponse("en") }));
     const term = { id: "t", ordinal: 1, term: "two\r\nlines", normalizedKey: "two lines" };
-    await provider.transcribe({ audio: ASSET, terminology: [term] }, { signal: signal() });
+    await provider.transcribe({ audio: ASSET, terminology: [term] }, options());
     const { request, bytes } = http.captured[0] as Captured;
     const sent = parts(bytes as Buffer, (request.body as OutboundStreamBody).contentType);
     expect(sent.filter((part) => part.name === "keyterms").map((part) => part.content.toString("utf8"))).toEqual(["two lines"]);
@@ -288,7 +345,7 @@ describe("transcribe request", () => {
   it("reports upload progress up to half and completion at the end", async () => {
     const { provider } = setup(() => ({ body: asrResponse("en") }));
     const progress: number[] = [];
-    await provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal(), onProgress: (value) => progress.push(value) });
+    await provider.transcribe({ audio: ASSET, terminology: [] }, { ...options(), onProgress: (value) => progress.push(value) });
     expect(progress.at(-2)).toBe(0.5);
     expect(progress.at(-1)).toBe(1);
     expect(progress).toEqual([...progress].sort((a, b) => a - b));
@@ -297,14 +354,14 @@ describe("transcribe request", () => {
   it("refuses a profile without a credential before sending anything", async () => {
     const { http, factory } = setup(() => ({ body: asrResponse("en") }));
     const { credentialRef: _none, ...unconfigured } = PROFILE;
-    const error = await failure(factory.create(unconfigured, "scribe_v2").transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+    const error = await failure(factory.create(unconfigured, "scribe_v2").transcribe({ audio: ASSET, terminology: [] }, options()));
     expect(error.appError.class).toBe("asr_unconfigured");
     expect(http.captured).toHaveLength(0);
   });
 
   it("uses the profile's base URL without a trailing slash", async () => {
     const { http, factory } = setup(() => ({ body: asrResponse("en") }));
-    await factory.create({ ...PROFILE, baseURL: "https://relay.example.com/eleven/" }, "scribe_v2").transcribe({ audio: ASSET, terminology: [] }, { signal: signal() });
+    await factory.create({ ...PROFILE, baseURL: "https://relay.example.com/eleven/" }, "scribe_v2").transcribe({ audio: ASSET, terminology: [] }, options());
     expect(http.captured[0]?.request.url).toBe("https://relay.example.com/eleven/v1/speech-to-text");
   });
 });
@@ -312,7 +369,7 @@ describe("transcribe request", () => {
 describe("transcribe answer", () => {
   it("keeps word timing in whole milliseconds, drops spacing tokens and merges sentences (English)", async () => {
     const { provider } = setup(() => ({ body: asrResponse("en") }));
-    const result = await provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() });
+    const result = await provider.transcribe({ audio: ASSET, terminology: [] }, options());
     expect(result.language).toBe("en");
     expect(result.provider).toBe("elevenlabs");
     expect(result.model).toBe("scribe_v2");
@@ -334,7 +391,7 @@ describe("transcribe answer", () => {
 
   it("merges a Chinese transcript with the Chinese parameters (mixed with English terms)", async () => {
     const { provider } = setup(() => ({ body: asrResponse("mixed") }));
-    const result = await provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() });
+    const result = await provider.transcribe({ audio: ASSET, terminology: [] }, options());
     expect(result.language).toBe("zh");
     expect(result.segments.map((segment) => segment.text)).toEqual([
       "今天我们用 Claude Opus 4.5 来搜索代码。",
@@ -398,7 +455,7 @@ describe("transcribe answer", () => {
   it("treats an unreadable paid answer as an unknown outcome", async () => {
     for (const body of ["<html>oops</html>", JSON.stringify({ text: "x" }), JSON.stringify({ language_code: "eng", text: "", words: [{ text: 1 }] })]) {
       const { provider } = setup(() => ({ body }));
-      const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+      const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, options()));
       expect(error.appError).toMatchObject({ class: "asr_timeout", retryDisposition: "outcome_unknown" });
     }
   });
@@ -456,7 +513,7 @@ describe("transcribe errors", () => {
     it(`maps HTTP ${testCase.status} ${JSON.stringify(testCase.body).slice(0, 40)} to ${testCase.code}`, async () => {
       const body = typeof testCase.body === "string" ? testCase.body : JSON.stringify(testCase.body);
       const { provider } = setup(() => ({ status: testCase.status, body }));
-      const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+      const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, options()));
       expect(error.appError).toMatchObject({ class: testCase.class, code: testCase.code, retryDisposition: testCase.retryDisposition });
       expect(JSON.stringify(error.appError)).not.toContain(API_KEY);
       expect(error.message).not.toContain(API_KEY);
@@ -465,15 +522,15 @@ describe("transcribe errors", () => {
 
   it("keeps the upstream code and message, never the key", async () => {
     const { provider } = setup(() => ({ status: 401, body: JSON.stringify({ detail: { code: "invalid_api_key", message: "The provided API key is invalid." } }) }));
-    const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+    const error = await failure(provider.transcribe({ audio: ASSET, terminology: [] }, options()));
     expect(error.appError.upstreamMessage).toBe("invalid_api_key: The provided API key is invalid.");
   });
 
   it("classifies transport failures by the send boundary", async () => {
-    const before = await failure(setup(() => new OutboundHttpError("before_send", "network")).provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+    const before = await failure(setup(() => new OutboundHttpError("before_send", "network")).provider.transcribe({ audio: ASSET, terminology: [] }, options()));
     expect(before.appError).toMatchObject({ class: "asr_failed", code: "asr_failed.unreachable", retryDisposition: "safe" });
     for (const reason of ["network", "timeout"] as const) {
-      const after = await failure(setup(() => new OutboundHttpError("after_send", reason)).provider.transcribe({ audio: ASSET, terminology: [] }, { signal: signal() }));
+      const after = await failure(setup(() => new OutboundHttpError("after_send", reason)).provider.transcribe({ audio: ASSET, terminology: [] }, options()));
       expect(after.appError).toMatchObject({ class: "asr_timeout", retryDisposition: "outcome_unknown", action: "confirm_resend" });
     }
   });
@@ -485,7 +542,7 @@ describe("transcribe errors", () => {
       controller.abort(reason);
       return new OutboundHttpError("after_send", "aborted");
     });
-    await expect(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: controller.signal })).rejects.toBe(reason);
+    await expect(provider.transcribe({ audio: ASSET, terminology: [] }, { signal: controller.signal, onRequestStart: () => undefined })).rejects.toBe(reason);
   });
 });
 

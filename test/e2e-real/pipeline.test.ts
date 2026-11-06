@@ -83,7 +83,7 @@ describe.skipIf(!enabled)("real short-video pipeline (YouTube guest + ElevenLabs
       let secretsHolder: Harness["secrets"] | undefined;
       const anthropic = new AnthropicMessagesProvider({
         http,
-        secrets: { reveal: (owner, ref) => (secretsHolder as Harness["secrets"]).reveal(owner, ref) },
+        secrets: { revealVersioned: (owner, ref) => (secretsHolder as Harness["secrets"]).revealVersioned(owner, ref) },
       });
       const h = createHarness({ llmProviders: [anthropic], executors: {} });
       open.push(h);

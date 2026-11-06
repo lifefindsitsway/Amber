@@ -70,6 +70,46 @@ html[data-theme="parchment"] {
   --color-ok: #246b3f;
 }
 
+/*
+ * Chart series of the AI usage page: eight categorical slots in a fixed order plus a neutral
+ * remainder. Hues are validated against the panel the chart sits on in every theme (adjacent
+ * pairs stay apart under colour-vision deficiency and for full-colour readers); the lighter
+ * hues fall below 3:1 on light grounds, so every chart also offers a legend, tooltips and a
+ * table view. The eye-care themes share the light steps. The remainder is deliberately grey,
+ * so it is outside the hue checks.
+ */
+:root {
+  --usage-series-0: #2a78d6;
+  --usage-series-1: #eb6834;
+  --usage-series-2: #1baf7a;
+  --usage-series-3: #eda100;
+  --usage-series-4: #e87ba4;
+  --usage-series-5: #008300;
+  --usage-series-6: #6250d6;
+  --usage-series-7: #e34948;
+  --usage-other: #a8a49b;
+}
+
+.dark {
+  --usage-series-0: #3987e5;
+  --usage-series-1: #d95926;
+  --usage-series-2: #199e70;
+  --usage-series-3: #c98500;
+  --usage-series-4: #d55181;
+  --usage-series-5: #008300;
+  --usage-series-6: #9085e9;
+  --usage-series-7: #e66767;
+  --usage-other: #6f6b64;
+}
+
+html[data-theme="bean-green"] {
+  --usage-other: #7e9d84;
+}
+
+html[data-theme="parchment"] {
+  --usage-other: #a89a7c;
+}
+
 /* Filled accent surfaces (primary buttons, pressed toggles, badges): the Logo's amber-gold, lit from above. */
 @utility bg-accent-glow {
   background-image: linear-gradient(180deg, #ffd36e 0%, #f5b23a 48%, #e0870f 100%);

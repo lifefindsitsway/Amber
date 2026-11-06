@@ -57,6 +57,32 @@ describe("token usage repository", () => {
     expect(second).not.toHaveProperty("inputTokens");
   });
 
+  it("round-trips the send-time snapshots: profile and model, send time, key version, price and the one-hour cache share", () => {
+    const snapshots = usage("u1", {
+      providerProfileId: "p-alice",
+      modelId: "model-a",
+      inputTokens: 500,
+      outputTokens: 20,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 300,
+      cacheWrite1hTokens: 120,
+      sentAt: T0 - 5_000,
+      credentialVersion: "version-1",
+      credentialSetAt: T0 - 86_400_000,
+      priceSnapshot: { currency: "USD", items: [{ unit: "input_tokens_per_million", amount: "3" }, { unit: "cache_write_1h_tokens_per_million", amount: "6" }], note: "tier 1" },
+    });
+    repository.withTransaction((scope) => {
+      scope.tokenUsage.insert(snapshots);
+      scope.tokenUsage.insert(usage("u2", { createdAt: T0 + 1 }));
+    });
+    const [first, second] = list("alice");
+    expect(first).toEqual(snapshots);
+    expect(second).toEqual(usage("u2", { createdAt: T0 + 1 }));
+    for (const key of ["sentAt", "credentialVersion", "credentialSetAt", "priceSnapshot", "cacheWrite1hTokens", "providerProfileId", "modelId"]) {
+      expect(second).not.toHaveProperty(key);
+    }
+  });
+
   it("lists the owner's rows oldest first, filtered by task, content, feature and a half-open time range", () => {
     repository.withTransaction((scope) => {
       scope.tokenUsage.insert(usage("u3", { feature: "test_connection", createdAt: T0 + 3 }));

@@ -3,7 +3,8 @@ import { AmberError, amberError, appError, isAmberError } from "../domain/errors
 import type { LlmCallAttribution, LlmCompletion, LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../domain/llm.ts";
 import type { ModelRef, ModelRefSnapshot } from "../domain/model-ref.ts";
 import { effectiveCapability, type CapabilityFlags, type ModelCapability, type ProviderProfile } from "../domain/provider-profile.ts";
-import type { TokenUsage, UsageOutcome } from "../domain/usage.ts";
+import type { RequestStartInfo, TokenUsage, UsageOutcome } from "../domain/usage.ts";
+import type { PriceSnapshot } from "../../shared/model-pricing.ts";
 import { isDeferredLlmRequest, LlmCallDeferred, type LlmInvoker, type LlmModelDescription, type LlmRequestInput } from "../pipeline/executor.ts";
 import { backoffMs, mayRetry, sleep, toAppError } from "../pipeline/retry.ts";
 import { FairSemaphore, taskGroup, type FairGroupRef, type SlotOrder } from "../pipeline/fair-semaphore.ts";
@@ -77,6 +78,15 @@ interface Resolved {
   capability: ModelCapability;
   provider: LlmProvider;
   snapshot: ModelRefSnapshot;
+}
+
+/** What an adapter reported when a request was about to leave, kept until the attempt's usage row is written. */
+interface SendContext {
+  sentAt: number;
+  credentialVersion: string;
+  credentialSetAt: number;
+  /** The model's price at that moment; absent when none was set or reading it failed. */
+  priceSnapshot?: PriceSnapshot;
 }
 
 const PROBE_FLAGS: readonly LlmProbeFlag[] = ["stream", "structuredOutput", "tools"];
@@ -230,9 +240,11 @@ export class LlmGateway implements LlmInvoker {
           let feedback: LaneFeedback = { kind: "none" };
           let outcome: Awaited<ReturnType<typeof check.run>>;
           try {
+            const send = this.sendCapture(resolved);
             outcome = await check.run({
               signal,
-              onCall: (probeCall) => this.record(this.newId(), resolved, attribution, probeCall.outcome, probeCall.usage),
+              onRequestStart: send.onRequestStart,
+              onCall: (probeCall) => this.record(this.newId(), resolved, attribution, probeCall.outcome, probeCall.usage, send.context()),
             });
             feedback = { kind: "success" };
           } catch (error) {
@@ -293,17 +305,24 @@ export class LlmGateway implements LlmInvoker {
     }
     let recorded = false;
     let usage: RawUsage | undefined;
+    // Each attempt reads its own price and key version, so a retry is recorded as it was sent.
+    const send = this.sendCapture(resolved);
     const record = (outcome: UsageOutcome | undefined): void => {
       if (!recorded) {
         recorded = true;
         if (outcome !== undefined) {
-          this.record(id, resolved, call, outcome, usage);
+          this.record(id, resolved, call, outcome, usage, send.context());
         }
       }
     };
     try {
       state.invocationId = id;
-      const events = resolved.provider.stream(request, { signal, effectiveCapability: resolved.capability, profile: resolved.profile });
+      const events = resolved.provider.stream(request, {
+        signal,
+        effectiveCapability: resolved.capability,
+        profile: resolved.profile,
+        onRequestStart: send.onRequestStart,
+      });
       for await (const event of events) {
         if (recorded) {
           break;
@@ -456,11 +475,50 @@ export class LlmGateway implements LlmInvoker {
     return outsidePipeline && !signal.aborted && !(error instanceof ForegroundLaneCooling) && mayRetry(toAppError(error), retry);
   }
 
-  private record(id: string, resolved: Resolved, call: LlmCallAttribution, outcome: UsageOutcome, usage: RawUsage | undefined): void {
+  /**
+   * Collects what the adapter reports as a request leaves: the send time, the key version
+   * and the model's price read at that moment. Reading the price must never fail the call:
+   * on error the snapshot stays empty and only the error's name is logged. A context the
+   * attempt never turns into a row (the failure was judged to be before the send) is simply
+   * dropped with the attempt.
+   */
+  private sendCapture(resolved: Resolved): { onRequestStart: (info: RequestStartInfo) => void; context: () => SendContext | undefined } {
+    let captured: SendContext | undefined;
+    const { userId } = resolved.profile;
+    const { providerProfileId, modelId } = resolved.snapshot;
+    return {
+      onRequestStart: (info) => {
+        let priceSnapshot: PriceSnapshot | undefined;
+        try {
+          priceSnapshot = this.options.repository.withTransaction((scope) => scope.providerProfiles.getModelPricing(userId, providerProfileId, modelId));
+        } catch (error) {
+          this.options.logger?.warn("llm_price_snapshot_failed", { providerProfileId, modelId, error: error instanceof Error ? error.name : "unknown" });
+        }
+        captured = {
+          sentAt: info.sentAt,
+          credentialVersion: info.credential.versionId,
+          credentialSetAt: info.credential.setAt,
+          ...(priceSnapshot === undefined ? {} : { priceSnapshot }),
+        };
+      },
+      context: () => captured,
+    };
+  }
+
+  private record(
+    id: string,
+    resolved: Resolved,
+    call: LlmCallAttribution,
+    outcome: UsageOutcome,
+    usage: RawUsage | undefined,
+    send: SendContext | undefined,
+  ): void {
     const row: TokenUsage = {
       id,
       userId: call.userId,
       modelRef: resolved.snapshot,
+      providerProfileId: resolved.snapshot.providerProfileId,
+      modelId: resolved.snapshot.modelId,
       feature: call.feature,
       ...(call.taskId === undefined ? {} : { taskId: call.taskId }),
       ...(call.workUnitId === undefined ? {} : { workUnitId: call.workUnitId }),
@@ -474,8 +532,17 @@ export class LlmGateway implements LlmInvoker {
             outputTokens: usage.outputTokens,
             ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
             ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+            ...(usage.cacheWrite1hTokens === undefined ? {} : { cacheWrite1hTokens: usage.cacheWrite1hTokens }),
             ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
             rawUsageJson: usage.rawJson,
+          }),
+      ...(send === undefined
+        ? {}
+        : {
+            sentAt: send.sentAt,
+            credentialVersion: send.credentialVersion,
+            credentialSetAt: send.credentialSetAt,
+            ...(send.priceSnapshot === undefined ? {} : { priceSnapshot: send.priceSnapshot }),
           }),
       createdAt: this.now(),
     };

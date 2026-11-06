@@ -67,7 +67,7 @@ describe("/api/usage", () => {
 describe("usage of replayed calls through the API", () => {
   it("lists one row per call under the profile and model created through /api/providers, with the fixtures' token counts", async () => {
     let harness: Harness | undefined;
-    const secrets = { reveal: (owner: string, ref: string): string => (harness as Harness).secrets.reveal(owner, ref) };
+    const secrets = { revealVersioned: (owner: string, ref: string) => (harness as Harness).secrets.revealVersioned(owner, ref) };
     const openAiHttp = new ReplayHttp(() => ({ status: 200, body: openAiStream("regression") }));
     const anthropicHttp = new ReplayHttp(() => ({ status: 200, body: anthropicFixture("realistic.sse") }));
     const h = createHarness({

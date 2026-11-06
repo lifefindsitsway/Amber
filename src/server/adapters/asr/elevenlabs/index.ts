@@ -91,7 +91,7 @@ function modelSpec(profile: AsrProviderProfile, modelId: string): FamilySpec {
 export interface ElevenLabsAsrProviderFactoryOptions {
   http: OutboundHttpClient;
   files: Pick<FileStore, "read">;
-  secrets: Pick<SecretStore, "reveal">;
+  secrets: Pick<SecretStore, "reveal" | "revealVersioned">;
   now?: () => number;
 }
 
@@ -173,13 +173,17 @@ class ElevenLabsAsrProvider implements AsrSyncProvider {
     });
     const timeoutMs = Math.max(ASR_HTTP_TIMEOUT_MIN * MS_PER_MINUTE, (audio.durationMs ?? 0) * TIMEOUT_PER_AUDIO_MS);
 
+    // The key is revealed once and reported with its version; the request below is sent with
+    // exactly that key. A throw from the callback means "do not send".
+    const { plaintext: key, version } = revealVersioned(this.profile, this.options.secrets);
+    opts.onRequestStart({ sentAt: this.options.now?.() ?? Date.now(), credential: version });
     let response: OutboundResponse;
     let text: string;
     try {
       response = await this.options.http.request({
         url: `${baseUrlOf(this.profile)}/v1/speech-to-text`,
         method: "POST",
-        headers: { "xi-api-key": apiKey(this.profile, this.options.secrets), accept: "application/json" },
+        headers: { "xi-api-key": key, accept: "application/json" },
         body,
         signal,
         timeoutMs,
@@ -207,6 +211,14 @@ function apiKey(profile: AsrProviderProfile, secrets: Pick<SecretStore, "reveal"
     throw amberError("asr_unconfigured", "ASR profile has no credential");
   }
   return secrets.reveal(profile.userId, profile.credentialRef);
+}
+
+/** The profile's key with its version, for the one paid request that reports it; callers must not keep or log it. */
+function revealVersioned(profile: AsrProviderProfile, secrets: Pick<SecretStore, "revealVersioned">): ReturnType<SecretStore["revealVersioned"]> {
+  if (profile.credentialRef === undefined) {
+    throw amberError("asr_unconfigured", "ASR profile has no credential");
+  }
+  return secrets.revealVersioned(profile.userId, profile.credentialRef);
 }
 
 function extensionOf(mimeType: string): string {

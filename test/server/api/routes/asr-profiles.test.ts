@@ -190,6 +190,10 @@ describe("/api/asr-profiles", () => {
       { currency: "CNY", items: [{ unit: "audio_per_second", amount: "1" }, { unit: "audio_per_second", amount: "2" }] },
       { currency: "CNY", items: [{ unit: "audio_per_second", amount: "1" }], note: "x".repeat(201) },
       { currency: "CNY", items: ["audio_per_second", "audio_per_minute", "audio_per_hour", "per_request", "input_tokens_per_million", "output_tokens_per_million", "cached_input_tokens_per_million"].map((unit) => ({ unit, amount: "1" })) },
+      { currency: "CNY", items: [{ unit: "cached_input_tokens_per_million", amount: "1" }] },
+      { currency: "CNY", items: [{ unit: "cache_write_tokens_per_million", amount: "1" }] },
+      { currency: "CNY", items: [{ unit: "input_tokens_per_million", amount: "1" }, { unit: "audio_per_second", amount: "1" }] },
+      { currency: "CNY", items: [{ unit: "audio_per_second", amount: "1" }, { unit: "audio_per_minute", amount: "1" }] },
       // A unit of another section.
       { currency: "CNY", items: [{ unit: "per_image", amount: "1" }] },
     ]) {

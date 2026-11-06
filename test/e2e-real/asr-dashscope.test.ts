@@ -70,7 +70,7 @@ describe.skipIf(!enabled)("real ASR (Alibaba Cloud Model Studio)", () => {
       const factory = new DashscopeAsrProviderFactory({
         http,
         files: { read: (ref) => createReadStream(ref) as AsyncIterable<Uint8Array> },
-        secrets: { reveal: () => apiKey },
+        secrets: { reveal: () => apiKey, revealVersioned: () => ({ plaintext: apiKey, version: { versionId: "e2e", setAt: 0 } }) },
       });
       const profile: AsrProviderProfile = { id: "e2e", userId: "e2e", name: "e2e", provider: "dashscope", models: [{ modelId: model }], credentialRef: "e2e", createdAt: Date.now() };
       const provider = factory.create(profile, model) as AsrJobProvider;
@@ -96,7 +96,7 @@ describe.skipIf(!enabled)("real ASR (Alibaba Cloud Model Studio)", () => {
       const startedAt = Date.now();
       const handle = await provider.submit(
         { audio, terminology, ...(language === undefined || language === "" ? {} : { language }) },
-        { signal, onPaidCallStart: () => (paidCalls += 1) },
+        { signal, onRequestStart: () => (paidCalls += 1) },
       );
       const submittedAt = Date.now();
       expect(paidCalls).toBe(1);

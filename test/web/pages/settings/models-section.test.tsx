@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { encodeModelKey } from "../../../../src/shared/dto/usage-analytics.ts";
 import { ModelsSection } from "../../../../src/web/pages/settings/models-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
@@ -80,6 +81,30 @@ describe("ModelsSection", () => {
     expect(await screen.findByText("延迟 812 ms")).toBeTruthy();
   });
 
+  it("words a rate-limited connection test as advice to test again, not as a pipeline retry", async () => {
+    mockApi({
+      "GET /api/providers": { body: { items: [profile(true)] } },
+      "GET /api/settings": { body: SETTINGS },
+      "POST /api/providers/p1/probe": {
+        status: 429,
+        body: {
+          error: {
+            class: "llm_rate_limited",
+            code: "llm_rate_limited.retry_after",
+            retryDisposition: "policy",
+            userMessage: "已按服务端要求等待并自动重试仍未成功；可稍后从这步重跑",
+            details: { retryAfterMs: 59000 },
+          },
+        },
+      },
+    });
+    renderApp(<ModelsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("请约 59 秒后再测试");
+    expect(alert.textContent).not.toContain("重跑");
+  });
+
   it("shows a model's price and edits it with the units of AI models", async () => {
     const priced = { ...profile(true), models: [{ ...model("model-a"), pricing: { currency: "USD", items: [{ unit: "input_tokens_per_million", amount: "0.27" }], note: "cache hits cheaper" } }] };
     const api = mockApi({
@@ -96,10 +121,41 @@ describe("ModelsSection", () => {
       "input_tokens_per_million",
       "output_tokens_per_million",
       "cached_input_tokens_per_million",
+      "cache_write_tokens_per_million",
+      "cache_write_1h_tokens_per_million",
       "per_request",
     ]);
     fireEvent.click(within(dialog).getByRole("button", { name: "清除价格" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ modelId: "model-a", pricing: null }));
+  });
+
+  it("marks a model whose calls reported cache hits while its price has no cache-read unit, and says so in the price dialog", async () => {
+    const priced = { ...profile(true), models: [{ ...model("model-a"), pricing: { currency: "CNY", items: [{ unit: "input_tokens_per_million", amount: "9" }] } }] };
+    mockApi({
+      "GET /api/providers": { body: { items: [priced] } },
+      "GET /api/settings": { body: SETTINGS },
+      "GET /api/usage/cache-observed": { body: { models: [{ modelKey: encodeModelKey(["llm", "p1", "model-a"]) }] } },
+    });
+    renderApp(<ModelsSection />);
+    const marker = await screen.findByTestId("pricing-cache-marker");
+    expect(marker.textContent).toBe("缓存读取未定价");
+    fireEvent.click(screen.getByRole("button", { name: "价格 · model-a" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByTestId("pricing-cache-hint").textContent).toBe("该模型的调用出现过缓存命中，未填缓存读取单价时这些请求不计入估算费用");
+  });
+
+  it("shows no cache hint for a model that has no cache hits, or whose price already has a cache-read unit", async () => {
+    const withCache = { ...profile(true), models: [{ ...model("model-a"), pricing: { currency: "CNY", items: [{ unit: "cached_input_tokens_per_million", amount: "0.9" }] } }] };
+    mockApi({
+      "GET /api/providers": { body: { items: [withCache] } },
+      "GET /api/settings": { body: SETTINGS },
+      "GET /api/usage/cache-observed": { body: { models: [{ modelKey: encodeModelKey(["llm", "p1", "model-a"]) }, { modelKey: encodeModelKey(["llm", "other", "model-a"]) }] } },
+    });
+    renderApp(<ModelsSection />);
+    await screen.findByTestId("model-pricing-summary");
+    expect(screen.queryByTestId("pricing-cache-marker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "价格 · model-a" }));
+    expect(within(await screen.findByRole("dialog")).queryByTestId("pricing-cache-hint")).toBeNull();
   });
 
   it("sets the default model through PATCH /api/settings", async () => {

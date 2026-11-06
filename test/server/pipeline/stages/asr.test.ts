@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -65,7 +66,9 @@ function reportingIngest(): LocalMediaIngest {
   };
 }
 
-function setup(): { stack: MediaStack; fake: FakeAsrFactory } {
+type StageDeps = ConstructorParameters<typeof AsrStageExecutor>[0];
+
+function setup(extra: Partial<StageDeps> = {}): { stack: MediaStack; fake: FakeAsrFactory } {
   const fake = new FakeAsrFactory();
   const stack = createMediaStack();
   open.push(stack);
@@ -75,6 +78,7 @@ function setup(): { stack: MediaStack; fake: FakeAsrFactory } {
     ingest: stack.ingest,
     asr: (provider) => (provider === fake.descriptor.provider ? fake : undefined),
     newId: stack.h.newId,
+    ...extra,
   });
   configureAsr(stack.h);
   return { stack, fake };
@@ -118,6 +122,22 @@ function contentOf(stack: MediaStack, contentId: string) {
 
 function usageOf(stack: MediaStack, taskId: string) {
   return stack.h.repository.withTransaction((scope) => scope.asrUsage.list(LOCAL.userId, { taskId }));
+}
+
+const PRICE = { currency: "CNY", items: [{ unit: "audio_per_second", amount: "0.00022" }] } as const;
+
+/** Prices the ASR model the Task is bound to, as a user would in settings. */
+function priceModel(stack: MediaStack, asrModelRef: AsrModelRef, pricing: object | null): void {
+  stack.h.repository.withTransaction((scope) => {
+    const profile = scope.asrProfiles.get(LOCAL.userId, asrModelRef.asrProfileId);
+    scope.asrProfiles.update({
+      ...profile!,
+      models: profile!.models.map((model) => {
+        const { pricing: _old, ...rest } = model;
+        return model.modelId === asrModelRef.modelId && pricing !== null ? { ...rest, pricing: pricing as never } : rest;
+      }),
+    });
+  });
 }
 
 function asrResultJson(stack: MediaStack, taskId: string): Record<string, unknown> {
@@ -291,6 +311,76 @@ describe("asr stage", () => {
   });
 });
 
+describe("asr stage usage context", () => {
+  it("records what the adapter reported as the request left, the profile snapshot and the price in force, and the outcome of a synchronous call", async () => {
+    const { stack, fake } = setup();
+    const ref = stack.h.repository.withTransaction((scope) => scope.userSettings.get(LOCAL.userId)?.defaultAsrModelRef) as AsrModelRef;
+    priceModel(stack, ref, PRICE);
+    fake.sentAt = 1_700_000_000_000;
+    fake.credential = { versionId: "version-9", setAt: 1_690_000_000_000 };
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const [row] = usageOf(stack, taskId);
+    expect(row).toMatchObject({
+      asrProfileId: ref.asrProfileId,
+      profileIdSnapshot: ref.asrProfileId,
+      profileNameSnapshot: "ElevenLabs",
+      outcome: "succeeded",
+      jobOutcome: "succeeded",
+      sentAt: 1_700_000_000_000,
+      credentialVersion: "version-9",
+      credentialSetAt: 1_690_000_000_000,
+      priceSnapshot: PRICE,
+    });
+    expect(row).not.toHaveProperty("jobId");
+    expect(fake.requestStarts).toHaveLength(1);
+  });
+
+  it("sets the job outcome from a definite failure and leaves it empty for an unknown outcome", async () => {
+    const { stack, fake } = setup();
+    fake.outcomes = [amberError("asr_failed", "bad key", { code: "asr_failed.auth" })];
+    const failed = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, failed.taskId)).toBe("failed");
+    expect(usageOf(stack, failed.taskId)[0]).toMatchObject({ outcome: "failed", jobOutcome: "failed" });
+
+    fake.outcomes = [amberError("asr_timeout", "connection lost after the last chunk")];
+    const unknown = await importFixture(stack);
+    await waitFor(() => workUnitsOf(stack.h, unknown.taskId).some((unit) => unit.key === "asr:submit" && unit.status === "waiting_user_action"));
+    const [row] = usageOf(stack, unknown.taskId);
+    expect(row).toMatchObject({ outcome: "outcome_unknown", sentAt: expect.any(Number), credentialVersion: "key-version-1" });
+    expect(row).not.toHaveProperty("jobOutcome");
+  });
+
+  it("keeps the send time when the row is written on the other side of Beijing midnight, and a price edited afterwards does not reach it", async () => {
+    // 23:59:58 on 2026-11-05 in Beijing; the row is written 00:00:07 on the 6th.
+    const sentAt = Date.UTC(2026, 10, 5, 15, 59, 58);
+    const recordedAt = Date.UTC(2026, 10, 5, 16, 0, 7);
+    const { stack, fake } = setup({ now: () => recordedAt });
+    const ref = stack.h.repository.withTransaction((scope) => scope.userSettings.get(LOCAL.userId)?.defaultAsrModelRef) as AsrModelRef;
+    priceModel(stack, ref, PRICE);
+    fake.sentAt = sentAt;
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    priceModel(stack, ref, null);
+    const [row] = usageOf(stack, taskId);
+    expect(row).toMatchObject({ sentAt, createdAt: recordedAt, priceSnapshot: PRICE });
+  });
+
+  it("writes no context for a request that never left", async () => {
+    const { stack, fake } = setup();
+    fake.outcomes = [amberError("asr_failed", "refused", { code: "asr_failed.unreachable" }), fakeAsrResult()];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    // Two requests were reported, but only the one that answered is a row.
+    expect(fake.requestStarts).toHaveLength(2);
+    expect(usageOf(stack, taskId)).toHaveLength(1);
+  });
+});
+
 describe("asr stage progress", () => {
   it("fills download 0–0.4, extraction 0.4–0.5 and transcription 0.5–1 of a platform Content, never moving back", async () => {
     const h = createHarness();
@@ -347,7 +437,7 @@ describe("asr stage progress", () => {
 // These tests wait on real timers (scheduler kicks, retry delays), as long as `settledAttempt` allows.
 describe("asr stage with a job provider", { timeout: 15_000 }, () => {
   /** A job provider whose pending answers ask for the next query at once. */
-  function setupJob(models?: string[]): { stack: MediaStack; fake: FakeAsrFactory; asrModelRef: AsrModelRef } {
+  function setupJob(models?: string[], extra: Partial<StageDeps> = {}): { stack: MediaStack; fake: FakeAsrFactory; asrModelRef: AsrModelRef } {
     const fake = new FakeAsrFactory();
     fake.delivery = "job";
     const stack = createMediaStack();
@@ -359,6 +449,7 @@ describe("asr stage with a job provider", { timeout: 15_000 }, () => {
       asr: (provider) => (provider === fake.descriptor.provider ? fake : undefined),
       newId: stack.h.newId,
       random: () => 0.5,
+      ...extra,
     });
     const asrModelRef = configureAsr(stack.h, LOCAL.userId, models === undefined ? {} : { models });
     return { stack, fake, asrModelRef };
@@ -401,7 +492,11 @@ describe("asr stage with a job provider", { timeout: 15_000 }, () => {
     expect(submit).toMatchObject({ status: "succeeded", billing: "asr" });
     expect(submit?.outputRef).toBeUndefined();
     const payload = stack.h.repository.withTransaction((scope) => scope.workUnits.getResult(LOCAL.userId, submit?.id as string));
-    expect(JSON.parse(payload?.payloadJson ?? "null")).toMatchObject({ version: 1, provider: "fake", jobId: "job-1" });
+    // The submission's record names its usage row next to the handle.
+    expect(JSON.parse(payload?.payloadJson ?? "null")).toEqual({
+      handle: { version: 1, provider: "fake", jobId: "job-1", submittedAt: expect.any(Number) },
+      usageId: usageOf(stack, taskId)[0]?.id,
+    });
     const [awaited] = unitsByKey(stack, taskId, "asr:await");
     expect(awaited).toMatchObject({ status: "succeeded", outputRef: `tmp/tasks/${taskId}/asr-${awaited?.id}.json` });
     expect(awaited?.billing).toBeUndefined();
@@ -588,7 +683,7 @@ describe("asr stage with a job provider", { timeout: 15_000 }, () => {
     const { stack, fake } = setupJob();
     fake.submitOutcomes = [
       async (opts) => {
-        opts.onPaidCallStart();
+        opts.onRequestStart({ sentAt: Date.now(), credential: { versionId: "key-version-1", setAt: 1 } });
         return { version: 1, provider: "fake", jobId: "ancient", submittedAt: Date.now() - (ASR_JOB_MAX_WAIT_HOURS * 3_600_000 + 1) };
       },
     ];
@@ -651,6 +746,206 @@ describe("asr stage with a job provider", { timeout: 15_000 }, () => {
     expect(taskOf(stack.h, taskId).statusProjection).toBe("waiting");
     expect(usageOf(stack, taskId).map((row) => row.outcome)).toEqual(["outcome_unknown"]);
     expect(fake.polls).toHaveLength(0);
+  });
+});
+
+describe("asr stage job usage", { timeout: 15_000 }, () => {
+  const soon = { state: "pending", retryAfterMs: 1 } as const;
+  const done = () => ({ state: "done", result: fakeAsrResult() }) as const;
+  const throttled = () => amberError("asr_failed", "throttled", { code: "asr_failed.rate_limited", details: { retryAfterMs: 1 } });
+  const jobFailed = () => amberError("asr_failed", "job failed", { code: "asr_failed.job_failed" });
+
+  function setupJob(extra: Partial<StageDeps> = {}) {
+    const fake = new FakeAsrFactory();
+    fake.delivery = "job";
+    const stack = createMediaStack();
+    open.push(stack);
+    stack.h.executors.asr = new AsrStageExecutor({
+      repository: stack.h.repository,
+      files: stack.files,
+      ingest: stack.ingest,
+      asr: (provider) => (provider === fake.descriptor.provider ? fake : undefined),
+      newId: stack.h.newId,
+      random: () => 0.5,
+      ...extra,
+    });
+    const asrModelRef = configureAsr(stack.h);
+    return { stack, fake, asrModelRef };
+  }
+
+  const submitUnits = (stack: MediaStack, taskId: string) => workUnitsOf(stack.h, taskId).filter((unit) => unit.key === "asr:submit");
+  const awaitUnits = (stack: MediaStack, taskId: string) => workUnitsOf(stack.h, taskId).filter((unit) => unit.key === "asr:await");
+  const recordOf = (stack: MediaStack, unitId: string): unknown => {
+    const payload = stack.h.repository.withTransaction((scope) => scope.workUnits.getResult(LOCAL.userId, unitId));
+    return JSON.parse(payload?.payloadJson ?? "null");
+  };
+  async function attemptSettled(stack: MediaStack, taskId: string, attempt: number): Promise<string> {
+    await waitFor(() => {
+      const run = latestAttempts(stageRunsOf(stack.h, taskId)).find((candidate) => candidate.stage === "asr");
+      return run !== undefined && run.attempt === attempt && ["succeeded", "failed"].includes(run.status);
+    }, 15_000);
+    return stageStatuses(stack.h, taskId)["asr"] as string;
+  }
+
+  it("writes the creating request's row with the job id and its send-time context, and keeps its id in the submission record", async () => {
+    const { stack, fake, asrModelRef } = setupJob();
+    priceModel(stack, asrModelRef, PRICE);
+    fake.sentAt = 1_700_000_000_000;
+    fake.credential = { versionId: "version-3", setAt: 5 };
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("succeeded");
+    const [row] = usageOf(stack, taskId);
+    expect(row).toMatchObject({
+      outcome: "succeeded",
+      jobId: "job-1",
+      profileIdSnapshot: asrModelRef.asrProfileId,
+      profileNameSnapshot: "ElevenLabs",
+      sentAt: 1_700_000_000_000,
+      credentialVersion: "version-3",
+      credentialSetAt: 5,
+      priceSnapshot: PRICE,
+    });
+    // Nothing reported a remote end state, so none is claimed.
+    expect(row).not.toHaveProperty("jobOutcome");
+    const [submit] = submitUnits(stack, taskId);
+    expect(recordOf(stack, submit?.id as string)).toEqual({ handle: expect.objectContaining({ jobId: "job-1" }), usageId: row?.id });
+  });
+
+  it("fills the row from the remote end state the query reported, field by field", async () => {
+    const { stack, fake } = setupJob();
+    fake.pollOutcomes = [done()];
+    fake.pollReports = [{ remote: "succeeded", usage: { billedInputTokens: 150, billedOutputTokens: 39, billedAudioMs: 12_000 }, rawUsageJson: '{"duration":12,"input_tokens":150,"output_tokens":39}' }];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("succeeded");
+    expect(usageOf(stack, taskId)[0]).toMatchObject({
+      outcome: "succeeded",
+      jobOutcome: "succeeded",
+      billedInputTokens: 150,
+      billedOutputTokens: 39,
+      billedAudioMs: 12_000,
+      rawUsageJson: '{"duration":12,"input_tokens":150,"output_tokens":39}',
+    });
+  });
+
+  it("never overwrites: a later report fills only what is still empty, and the job outcome stays as first reported", async () => {
+    const { stack, fake } = setupJob();
+    fake.pollOutcomes = [soon, done()];
+    fake.pollReports = [
+      { remote: "succeeded", usage: { billedAudioMs: 1_000 } },
+      { remote: "failed", usage: { billedAudioMs: 2_000, billedInputTokens: 5 }, rawUsageJson: '{"input_tokens":5}' },
+    ];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("succeeded");
+    expect(usageOf(stack, taskId)[0]).toMatchObject({ jobOutcome: "succeeded", billedAudioMs: 1_000, billedInputTokens: 5, rawUsageJson: '{"input_tokens":5}' });
+  });
+
+  it("takes the job outcome only from the report: a remote failure is recorded as reported, a bare error code is not read as one", async () => {
+    const reported = setupJob();
+    reported.fake.pollOutcomes = [jobFailed()];
+    reported.fake.pollReports = [{ remote: "failed" }];
+    const failed = await importFixture(reported.stack);
+    reported.stack.h.scheduler.start();
+    expect(await attemptSettled(reported.stack, failed.taskId, 1)).toBe("failed");
+    expect(usageOf(reported.stack, failed.taskId)[0]).toMatchObject({ outcome: "succeeded", jobOutcome: "failed" });
+    expect(usageOf(reported.stack, failed.taskId)[0]).not.toHaveProperty("billedInputTokens");
+
+    const bare = setupJob();
+    bare.fake.pollOutcomes = [jobFailed()];
+    const unreported = await importFixture(bare.stack);
+    bare.stack.h.scheduler.start();
+    expect(await attemptSettled(bare.stack, unreported.taskId, 1)).toBe("failed");
+    expect(usageOf(bare.stack, unreported.taskId)[0]).not.toHaveProperty("jobOutcome");
+  });
+
+  it("records a remote success even when the result could not be used locally", async () => {
+    const { stack, fake } = setupJob();
+    fake.pollOutcomes = [amberError("asr_failed", "result unreadable", { code: "asr_failed.job_failed" })];
+    fake.pollReports = [{ remote: "succeeded", usage: { billedAudioMs: 3_000 } }];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("failed");
+    expect(usageOf(stack, taskId)[0]).toMatchObject({ jobOutcome: "succeeded", billedAudioMs: 3_000 });
+  });
+
+  it("is not disturbed when filling the row fails: the unit, the transcript and the retries are as without it", async () => {
+    const warnings: string[] = [];
+    const logger = { debug() {}, info() {}, warn: (message: string) => void warnings.push(message), error() {}, child: () => logger };
+    const { stack, fake } = setupJob({ logger });
+    stack.h.db.exec("CREATE TRIGGER refuse_fill BEFORE UPDATE ON asr_usage BEGIN SELECT RAISE(ABORT, 'locked'); END");
+    fake.pollOutcomes = [throttled(), done()];
+    fake.pollReports = [undefined, { remote: "succeeded", usage: { billedAudioMs: 3_000 } }] as never;
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("succeeded");
+    expect(revisionsOf(stack, contentId)).toHaveLength(1);
+    expect(awaitUnits(stack, taskId)[0]).toMatchObject({ status: "succeeded", retryCount: 1 });
+    expect(usageOf(stack, taskId)[0]).not.toHaveProperty("jobOutcome");
+    expect(warnings).toEqual(["asr_job_report_not_recorded"]);
+  });
+
+  it("still resumes a submission recorded as the handle alone, with the same await digest and no row to fill", async () => {
+    const { stack, fake } = setupJob();
+    fake.pollOutcomes = [throttled()];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("failed");
+    const [submit] = submitUnits(stack, taskId);
+    const record = recordOf(stack, submit?.id as string) as { handle: unknown };
+    // The record as an older version wrote it, with the digest a completed unit must still match.
+    const legacy = JSON.stringify(record.handle);
+    const digest = `sha256:${createHash("sha256").update(legacy).digest("hex")}`;
+    stack.h.db.prepare("UPDATE work_unit_result SET payload_json = ?, output_digest = ? WHERE work_unit_id = ?").run(legacy, digest, submit?.id);
+    stack.h.db.prepare("UPDATE work_unit SET output_digest = ? WHERE id = ?").run(digest, submit?.id);
+    const digestBefore = awaitUnits(stack, taskId)[0]?.inputDigest;
+
+    // The provider reports an end state again, but a record without a row has nothing to fill.
+    fake.pollOutcomes = [done()];
+    fake.pollReports = [{ remote: "succeeded", usage: { billedAudioMs: 3_000 } }];
+    stack.h.tasks.retryStage(LOCAL, taskId, { stage: "asr" });
+    expect(await attemptSettled(stack, taskId, 2)).toBe("succeeded");
+    expect(fake.submits).toHaveLength(1);
+    expect(fake.polls.at(-1)?.jobId).toBe("job-1");
+    expect(awaitUnits(stack, taskId).map((unit) => unit.inputDigest)).toEqual([digestBefore, digestBefore]);
+    expect(usageOf(stack, taskId)).toHaveLength(1);
+    expect(usageOf(stack, taskId)[0]).not.toHaveProperty("jobOutcome");
+  });
+
+  it("does not stumble on a submission record whose usage row is gone", async () => {
+    const warnings: string[] = [];
+    const logger = { debug() {}, info() {}, warn: (message: string) => void warnings.push(message), error() {}, child: () => logger };
+    const { stack, fake } = setupJob({ logger });
+    fake.pollOutcomes = [throttled()];
+    const { taskId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, taskId, 1)).toBe("failed");
+    stack.h.db.prepare("DELETE FROM asr_usage").run();
+    fake.pollOutcomes = [done()];
+    fake.pollReports = [{ remote: "succeeded", usage: { billedAudioMs: 3_000 } }];
+    stack.h.tasks.retryStage(LOCAL, taskId, { stage: "asr" });
+    expect(await attemptSettled(stack, taskId, 2)).toBe("succeeded");
+    expect(usageOf(stack, taskId)).toEqual([]);
+    expect(warnings).toEqual(["asr_job_report_without_usage_row"]);
+  });
+
+  it("records a creating request that failed after it left with its context but no job id, and none that failed before", async () => {
+    const { stack, fake } = setupJob();
+    fake.submitOutcomes = [amberError("asr_failed", "refused", { code: "asr_failed.invalid_audio" })];
+    fake.sentAt = 1_700_000_000_000;
+    const sent = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await attemptSettled(stack, sent.taskId, 1)).toBe("failed");
+    const [row] = usageOf(stack, sent.taskId);
+    expect(row).toMatchObject({ outcome: "failed", sentAt: 1_700_000_000_000, credentialVersion: "key-version-1", profileNameSnapshot: "ElevenLabs" });
+    expect(row).not.toHaveProperty("jobId");
+    expect(row).not.toHaveProperty("jobOutcome");
+
+    fake.failBeforeSend = true;
+    const unsent = await importFixture(stack);
+    expect(await attemptSettled(stack, unsent.taskId, 1)).toBe("failed");
+    expect(usageOf(stack, unsent.taskId)).toEqual([]);
   });
 });
 

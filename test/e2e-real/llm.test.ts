@@ -94,7 +94,7 @@ describe.skipIf(!enabled)("real LLM", () => {
       const model = required(`${env}_MODEL`);
 
       let harness: Harness | undefined;
-      const secrets = { reveal: (owner: string, ref: string): string => (harness as Harness).secrets.reveal(owner, ref) };
+      const secrets = { revealVersioned: (owner: string, ref: string) => (harness as Harness).secrets.revealVersioned(owner, ref) };
       const http = new CapturingHttp();
       const h = createHarness({
         llmProviders: [

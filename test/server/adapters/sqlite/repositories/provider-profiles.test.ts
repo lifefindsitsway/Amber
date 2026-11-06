@@ -81,6 +81,16 @@ describe("ASR profile writes", () => {
     expect(repository.withTransaction((scope) => scope.asrProfiles.get("alice", "a1"))?.models).toEqual(reordered);
   });
 
+  it("reads one ASR model's current price on its own, scoped to the owner", () => {
+    const models: AsrModelEntry[] = [{ modelId: "plain" }, { modelId: "priced", pricing: { currency: "CNY", items: [{ unit: "audio_per_second", amount: "0.00022" }] } }];
+    repository.withTransaction((scope) => scope.asrProfiles.insert(profile("a1", "alice", { models })));
+    const price = (owner: string, profileId: string, modelId: string) => repository.withTransaction((scope) => scope.asrProfiles.getModelPricing(owner, profileId, modelId));
+    expect(price("alice", "a1", "priced")).toEqual(models[1]?.pricing);
+    expect(price("alice", "a1", "plain")).toBeUndefined();
+    expect(price("alice", "a1", "unknown")).toBeUndefined();
+    expect(price("bob", "a1", "priced")).toBeUndefined();
+  });
+
   it("refuses another user's secret as the credential", () => {
     secret("s-bob", "bob");
     expect(() => repository.withTransaction((scope) => scope.asrProfiles.insert(profile("a1", "alice", { credentialRef: "s-bob" })))).toThrow(/FOREIGN KEY/);
@@ -163,6 +173,21 @@ describe("provider profile writes", () => {
     repository.withTransaction((scope) => scope.providerProfiles.update(profile("p1", "alice", { models: [model("plain")] })));
     expect(get("alice", "p1")?.models).toEqual([model("plain")]);
     expect(() => insertRow(db, "model_capability", { profile_id: "p1", model_id: "bad", position: 5, flags_declared_json: "{}", limits_declared_json: "{}", pricing_json: "{oops" })).toThrow(/CHECK/);
+  });
+
+  it("reads one model's current price on its own, scoped to the owner, and nothing for unknown or unpriced models", () => {
+    const priced = model("priced", { pricing: { currency: "CNY", items: [{ unit: "input_tokens_per_million", amount: "0.8" }] } });
+    repository.withTransaction((scope) => scope.providerProfiles.insert(profile("p1", "alice", { models: [model("plain"), priced] })));
+    const price = (owner: string, profileId: string, modelId: string) => repository.withTransaction((scope) => scope.providerProfiles.getModelPricing(owner, profileId, modelId));
+    expect(price("alice", "p1", "priced")).toEqual(priced.pricing);
+    expect(price("alice", "p1", "plain")).toBeUndefined();
+    expect(price("alice", "p1", "unknown")).toBeUndefined();
+    expect(price("bob", "p1", "priced")).toBeUndefined();
+    expect(price("alice", "nope", "priced")).toBeUndefined();
+    // A later edit is what the next read sees.
+    const repriced = { ...priced, pricing: { currency: "USD" as const, items: [{ unit: "output_tokens_per_million" as const, amount: "15" }] } };
+    repository.withTransaction((scope) => scope.providerProfiles.update(profile("p1", "alice", { models: [repriced] })));
+    expect(price("alice", "p1", "priced")).toEqual(repriced.pricing);
   });
 
   it("lists the owner's profiles in their order: each new one last, reordering renumbers them", () => {

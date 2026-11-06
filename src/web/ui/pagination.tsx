@@ -7,7 +7,7 @@ import { isListPageSize, LIST_PAGE_SIZES, type ListPageSize } from "../../shared
 import { Button } from "./button.tsx";
 
 /** Each list page remembers its own page size. */
-export type PaginationScope = "library" | "collections" | "collectionItems" | "trash" | "notes";
+export type PaginationScope = "library" | "collections" | "collectionItems" | "trash" | "notes" | "usage";
 
 export const PAGE_PARAM = "page";
 export const PAGE_SIZE_PARAM = "pageSize";

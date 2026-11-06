@@ -98,13 +98,16 @@ export type AsrModelTestRequest = z.infer<typeof asrModelTestRequestSchema>;
  * Outcome of a model test: `transcribed` (a result, possibly empty text),
  * `no_speech` (the provider found no speech in the test sound, which still proves the
  * model runs), or `accepted` (a job was accepted but gave no result in time; it was
- * cancelled best-effort). `testedAt` is set when the outcome was stored on the model.
+ * cancelled best-effort). `remoteCancelled` is true only when the provider confirmed the
+ * cancellation; otherwise the job may still run and be billed. `testedAt` is set when the
+ * outcome was stored on the model.
  */
 export const asrModelTestResultDtoSchema = z.object({
   modelId: z.string().min(1),
   result: z.enum(["transcribed", "no_speech", "accepted"]),
   textPreview: z.string().exactOptional(),
   latencyMs: z.number().int().nonnegative(),
+  remoteCancelled: z.boolean().exactOptional(),
   testedAt: z.number().int().exactOptional(),
 });
 export type AsrModelTestResultDto = z.infer<typeof asrModelTestResultDtoSchema>;
