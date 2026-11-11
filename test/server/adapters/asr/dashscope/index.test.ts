@@ -750,6 +750,24 @@ describe("result normalization", () => {
     expect(result.words?.find((word) => word.text.startsWith("prompts"))?.text).toBe("prompts,");
   });
 
+  it("leaves out the blank word the service puts between an English word and the Chinese after it, keeping the others", () => {
+    const file = JSON.parse(fixture("zh")) as { transcripts: Array<{ sentences: Array<{ words: Array<{ begin_time: number; end_time: number; text: string; punctuation?: string }> }> }> };
+    const words = file.transcripts[0]?.sentences[0]?.words as Array<{ begin_time: number; end_time: number; text: string; punctuation?: string }>;
+    const before = words[0] as { begin_time: number; end_time: number };
+    words.splice(1, 0, { begin_time: before.end_time, end_time: before.end_time, text: " ", punctuation: "" });
+    const result = canonicalFromResultFile(JSON.stringify(file), { provider: "dashscope", model: QWEN });
+    expect(result.words?.map((word) => word.text)).toEqual(["欢迎", "来到", "生成式", "软件工程。", "今天", "我们", "讲", "提示词。"]);
+  });
+
+  it("drops every word when a sentence's words are all blank", () => {
+    const file = JSON.parse(fixture("zh")) as { transcripts: Array<{ sentences: Array<{ words: Array<{ text: string; punctuation?: string }> }> }> };
+    for (const word of file.transcripts[0]?.sentences[1]?.words ?? []) {
+      word.text = " ";
+      word.punctuation = "";
+    }
+    expect(canonicalFromResultFile(JSON.stringify(file), { provider: "dashscope", model: QWEN }).words).toBeUndefined();
+  });
+
   it("drops every word when one sentence's words do not spell it", () => {
     const file = JSON.parse(fixture("zh")) as { transcripts: Array<{ sentences: Array<{ words: Array<{ text: string }> }> }> };
     (file.transcripts[0]?.sentences[1]?.words[0] as { text: string }).text = "明天";

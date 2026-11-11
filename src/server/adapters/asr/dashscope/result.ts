@@ -48,11 +48,11 @@ function bare(text: string): string {
 }
 
 /**
- * Words of every sentence when all of them are consistent, else none: each word has text,
- * a start not after its end and not before the previous word's start, and the words of a
- * sentence spell out exactly that sentence once spaces and punctuation are ignored. A
- * result whose words cannot be trusted keeps its sentences only, with `segment_only`
- * timing, rather than mixing real and doubtful word times.
+ * Words of every sentence when all of them are consistent, else none: blank words left out,
+ * each word has a start not after its end and not before the previous word's start, and the
+ * words of a sentence (at least one) spell out exactly that sentence once spaces and
+ * punctuation are ignored. A result whose words cannot be trusted keeps its sentences only,
+ * with `segment_only` timing, rather than mixing real and doubtful word times.
  */
 function consistentWords(sentences: readonly ResultSentence[]): TranscriptWord[] | undefined {
   const words: TranscriptWord[] = [];
@@ -63,16 +63,23 @@ function consistentWords(sentences: readonly ResultSentence[]): TranscriptWord[]
       return undefined;
     }
     let spelled = "";
+    let kept = 0;
     for (const word of sentenceWords) {
       const text = `${word.text.trim()}${(word.punctuation ?? "").trim()}`;
-      if (text === "" || word.begin_time > word.end_time || word.begin_time < previousStart) {
+      // The service returns the space between an English word and the Chinese after it as a
+      // word of its own; it spells nothing, so it is left out rather than failing the file.
+      if (text === "") {
+        continue;
+      }
+      if (word.begin_time > word.end_time || word.begin_time < previousStart) {
         return undefined;
       }
+      kept += 1;
       previousStart = word.begin_time;
       spelled += text;
       words.push({ text, startMs: Math.round(word.begin_time), endMs: Math.round(word.end_time) });
     }
-    if (bare(spelled) !== bare(sentence.text)) {
+    if (kept === 0 || bare(spelled) !== bare(sentence.text)) {
       return undefined;
     }
   }
