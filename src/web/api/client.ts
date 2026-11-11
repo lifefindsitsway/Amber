@@ -188,11 +188,13 @@ export class ApiClient {
   /**
    * A GET answered with raw bytes (the subtitle font). Authentication, the 401 redirect and
    * error conversion work as for JSON calls. The body must declare a `Content-Type` starting
-   * with `accept` and stay within `maxBytes`: a larger `Content-Length` is refused before
+   * with `acceptPrefix` (default: `accept`, which is what the request sends as its `Accept`
+   * header; a caller offering several types sets the prefix to their common family) and stay
+   * within `maxBytes`: a larger `Content-Length` is refused before
    * reading, and the read stops as soon as the bytes received pass the limit, so a lying or
    * missing header cannot make the page buffer an unbounded body.
    */
-  async bytes(path: string, options: { accept: string; maxBytes: number; signal?: AbortSignal }): Promise<ArrayBuffer> {
+  async bytes(path: string, options: { accept: string; acceptPrefix?: string; maxBytes: number; signal?: AbortSignal }): Promise<ArrayBuffer> {
     const response = await this.fetchOrThrow(this.url(path), {
       method: "GET",
       headers: this.headers({ accept: options.accept }),
@@ -207,7 +209,7 @@ export class ApiClient {
       throw new ApiError(response.status, localError("internal", message));
     };
     const type = (response.headers.get("content-type") ?? "").trim().toLowerCase();
-    if (!type.startsWith(options.accept.toLowerCase())) {
+    if (!type.startsWith((options.acceptPrefix ?? options.accept).toLowerCase())) {
       return refuse("unexpected content type");
     }
     const declared = response.headers.get("content-length");

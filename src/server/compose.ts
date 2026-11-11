@@ -51,6 +51,7 @@ import { TranslationService } from "./application/translations.ts";
 import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
+import { SpeakerService } from "./application/speakers.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
 import { CacheHoldService } from "./application/cache-holds.ts";
 import { ClientMediaTaskService } from "./application/client-media-tasks.ts";
@@ -461,6 +462,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         });
   const search = new SearchService({ repository });
   const notes = new NoteService({ repository, logger: lateLogger(() => appLogger?.child({ component: "notes" })) });
+  const speakers = new SpeakerService({ repository });
   // Local mode only: the client backup and the maintenance state before an update install.
   let backgroundReady = false;
   const backupStore = grants === undefined ? undefined : new SqliteBackupStore({ db, file: layout.database });
@@ -572,6 +574,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     chat,
     webSearch,
     notes,
+    speakers,
     localImport,
     media: mediaAssets,
     ...(clientMedia === undefined ? {} : { clientMedia }),

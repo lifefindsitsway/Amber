@@ -1,0 +1,158 @@
+{
+  "en": {
+    "segments": [
+      {
+        "startMs": 500,
+        "endMs": 2420,
+        "text": "Welcome to generative software engineering."
+      },
+      {
+        "startMs": 2750,
+        "endMs": 7070,
+        "text": "Today we look at prompts, e.g. how a model reads them."
+      },
+      {
+        "startMs": 7400,
+        "endMs": 16520,
+        "text": "The first thing to notice is that a prompt is not a magic spell but a specification that the model tries to satisfy,"
+      },
+      {
+        "startMs": 16970,
+        "endMs": 27540,
+        "text": "and like every specification it can be vague, contradictory or incomplete in ways that only show up when you run it so that is the idea"
+      },
+      {
+        "startMs": 28820,
+        "endMs": 31940,
+        "text": "and then we move on to the tools"
+      }
+    ]
+  },
+  "mixed": {
+    "segments": [
+      {
+        "startMs": 500,
+        "endMs": 4390,
+        "text": "今天我们用 Claude Opus 4.5 来搜索代码。"
+      },
+      {
+        "startMs": 4720,
+        "endMs": 10270,
+        "text": "编译的时候加上 -I 参数，告诉编译器头文件在哪里。"
+      },
+      {
+        "startMs": 10600,
+        "endMs": 13120,
+        "text": "这就是生成式软件工程。"
+      }
+    ]
+  },
+  "zh-synthetic": {
+    "segments": [
+      {
+        "startMs": 500,
+        "endMs": 3240,
+        "text": "欢迎来到生成式软件工程。"
+      },
+      {
+        "startMs": 3570,
+        "endMs": 11550,
+        "text": "这门课我们要讨论的问题是当大语言模型已经能写出相当多的代码，"
+      },
+      {
+        "startMs": 11630,
+        "endMs": 19950,
+        "text": "程序员的工作会变成什么样子以及我们应该怎样重新组织软件开发的过程"
+      },
+      {
+        "startMs": 20280,
+        "endMs": 22880,
+        "text": "好我们先看第一个例子"
+      },
+      {
+        "startMs": 24160,
+        "endMs": 26020,
+        "text": "这个例子很简单。"
+      }
+    ]
+  },
+  "zh-recorded": {
+    "segments": [
+      {
+        "startMs": 60,
+        "endMs": 280,
+        "text": "是的。"
+      },
+      {
+        "startMs": 280,
+        "endMs": 4400,
+        "text": "OK，所以我讲了为什么我，我要来上，呃，这门课。"
+      },
+      {
+        "startMs": 4880,
+        "endMs": 5220,
+        "text": "然后，"
+      },
+      {
+        "startMs": 6180,
+        "endMs": 9020,
+        "text": "那我们来讲讲这门课，呃，到底打算讲什么。"
+      },
+      {
+        "startMs": 10040,
+        "endMs": 14480,
+        "text": "啊，这门课的题目叫生成式软件工程，所以我其实是，是一门软件工程课。"
+      },
+      {
+        "startMs": 14820,
+        "endMs": 15820,
+        "text": "软件工程做什么呢？"
+      },
+      {
+        "startMs": 15900,
+        "endMs": 22820,
+        "text": "软件工程做的事情很简单，怎么样让软件工程不失败，就怎么样造出一个，呃，一个软件来。"
+      },
+      {
+        "startMs": 23320,
+        "endMs": 25140,
+        "text": "呃，那我们经常听说的，"
+      },
+      {
+        "startMs": 26480,
+        "endMs": 29340,
+        "text": "说你，你们作为人和 AI 比，你的优势在哪里？"
+      },
+      {
+        "startMs": 29880,
+        "endMs": 30880,
+        "text": "你可以做到 AI 不能，"
+      },
+      {
+        "startMs": 32259,
+        "endMs": 32439,
+        "text": "对啊。"
+      },
+      {
+        "startMs": 32980,
+        "endMs": 35420,
+        "text": "呃，实际上我觉得大学里面能，能教你的，"
+      },
+      {
+        "startMs": 35940,
+        "endMs": 41920,
+        "text": "呃，有，呃，或者说能，OK，你，你作为人吧，或者说你在大学毕业的时候你能拥有的能力，"
+      },
+      {
+        "startMs": 42420,
+        "endMs": 46800,
+        "text": "呃，比较重要的第一个是信息差，这是一直人类，这是人类社会比较，呃，"
+      },
+      {
+        "startMs": 47440,
+        "endMs": 49980,
+        "text": "也，也不能说可悲吧，它人类社会要，要进步必须的。"
+      }
+    ]
+  }
+}

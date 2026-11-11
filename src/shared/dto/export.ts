@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SPEAKER_LABEL_MODES } from "../speakers.ts";
 import { subtitleStyleSchema } from "../subtitle-style.ts";
 
 const idSchema = z.string().min(1);
@@ -24,6 +25,8 @@ const markdownExportSchema = z
       })
       .strict(),
     backlinks: z.boolean(),
+    /** Name the speaker of each turn in the transcript section; absent = no speakers, as before. */
+    includeSpeakers: z.boolean().exactOptional(),
   })
   .strict();
 
@@ -33,6 +36,10 @@ const subtitleExportSchema = z
     revisionId: idSchema,
     translationRevisionId: idSchema.exactOptional(),
     style: subtitleStyleSchema.exactOptional(),
+    /** Name the speakers; absent = no speakers, the output byte for byte as before. */
+    includeSpeakers: z.boolean().exactOptional(),
+    /** SRT and TXT only: name the speaker on the first cue or paragraph of each turn (default) or on every one. */
+    speakerLabels: z.enum(SPEAKER_LABEL_MODES).exactOptional(),
   })
   .strict()
   .refine((body) => BILINGUAL_EXPORT_FORMATS.has(body.format) === (body.translationRevisionId !== undefined), {

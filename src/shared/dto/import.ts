@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { asrModelRefSchema, modelRefSchema } from "./model-ref.ts";
+import { diarizationRequestSchema } from "./speaker.ts";
 
 /** BCP-47 shape only; whether a language is offered in the UI is not validated here. */
 export const languageTagSchema = z.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/);
@@ -13,6 +14,8 @@ export const importSettingsSchema = z
     asrModelRef: asrModelRefSchema.exactOptional(),
     outputLanguage: languageTagSchema.exactOptional(),
     autoProofread: z.boolean().default(true),
+    /** Speaker identification; absent = the user's "identify speakers" setting at submission. */
+    diarization: diarizationRequestSchema.exactOptional(),
   })
   .strict();
 export type ImportSettings = z.infer<typeof importSettingsSchema>;

@@ -421,3 +421,60 @@ describe("TranscriptionSection", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
+
+describe("TranscriptionSection speaker identification", () => {
+  beforeEach(() => localStorage.removeItem("amber.settings.collapsedAsrProfiles"));
+
+  it("shows the setting on by default and saves a change through the settings patch", async () => {
+    const api = mockApi({
+      "GET /api/asr-profiles": { body: { items: [profile()] } },
+      "GET /api/settings": { body: SETTINGS },
+      "PATCH /api/settings": { body: { ...SETTINGS, asrDiarization: false } },
+    });
+    renderApp(<TranscriptionSection />);
+    const toggle = (await screen.findByRole("switch", { name: "识别发言人" })) as HTMLInputElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.checked).toBe(true);
+    expect(screen.getByText(/只对支持该功能的官方模型生效/)).toBeTruthy();
+    expect(toggle.getAttribute("aria-describedby")).toBe(screen.getByText(/只对支持该功能的官方模型生效/).id);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ asrDiarization: false }));
+    await waitFor(() => expect(toggle.checked).toBe(false));
+  });
+
+  it("takes no second toggle while a save is out", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    mockApi({
+      "GET /api/asr-profiles": { body: { items: [profile()] } },
+      "GET /api/settings": { body: SETTINGS },
+      "PATCH /api/settings": { body: { ...SETTINGS, asrDiarization: false } },
+    });
+    const original = globalThis.fetch;
+    let patches = 0;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "PATCH") {
+        patches += 1;
+        await gate;
+      }
+      return original(input, init);
+    });
+    renderApp(<TranscriptionSection />);
+    const toggle = (await screen.findByRole("switch", { name: "识别发言人" })) as HTMLInputElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(patches).toBe(1));
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    release();
+    await waitFor(() => expect(toggle.checked).toBe(false));
+    expect(patches).toBe(1);
+  });
+
+  it("reads an explicit off from the stored settings", async () => {
+    mockApi({ "GET /api/asr-profiles": { body: { items: [profile()] } }, "GET /api/settings": { body: { ...SETTINGS, asrDiarization: false } } });
+    renderApp(<TranscriptionSection />);
+    const toggle = (await screen.findByRole("switch", { name: "识别发言人" })) as HTMLInputElement;
+    await waitFor(() => expect(toggle.checked).toBe(false));
+  });
+});

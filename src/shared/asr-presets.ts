@@ -19,6 +19,16 @@ export interface AsrModelFamily {
 }
 
 /**
+ * Speaker identification a model offers, from the provider's official documentation.
+ * `reference`: the provider tries to output that many speakers; `maximum`: at most that many.
+ * Past `recommendedMaxDurationSec` the provider documents that identification may fail.
+ */
+export interface AsrDiarizationSupport {
+  speakerCount: { min: number; max: number; semantics: "reference" | "maximum" };
+  recommendedMaxDurationSec?: number;
+}
+
+/**
  * What an ASR provider offers its profiles: suggested models in the order the
  * UI lists them, those a new profile starts with, the one "test key" uses, the request
  * families a model may follow and the family of each model Amber knows, and where requests
@@ -42,6 +52,16 @@ export interface AsrPreset {
   customModelFamily: string;
   /** The family of every model Amber knows; such a model cannot be given another. */
   knownModels: Readonly<Record<string, string>>;
+  /**
+   * Speaker identification of the known models that offer it. A typed-in model never has it,
+   * even in the same family: the family describes request parameters, not what was verified.
+   */
+  diarization: Readonly<Record<string, AsrDiarizationSupport>>;
+}
+
+/** Speaker identification of a profile's model, when Amber knows the model offers it. */
+export function asrDiarizationSupport(preset: AsrPreset, modelId: string): AsrDiarizationSupport | undefined {
+  return Object.hasOwn(preset.diarization, modelId) ? preset.diarization[modelId] : undefined;
 }
 
 /** A model id as typed in: letters, digits and `._:/-`, starting with a letter or digit. */
@@ -75,6 +95,11 @@ export const ASR_PRESETS: Readonly<Record<AsrProviderId, AsrPreset>> = {
     ],
     customModelFamily: "scribe",
     knownModels: { scribe_v2: "scribe_v2", scribe_v2_medical: "scribe" },
+    // `num_speakers` is an upper bound, at most 32; Medical uses the same API and features.
+    diarization: {
+      scribe_v2: { speakerCount: { min: 1, max: 32, semantics: "maximum" } },
+      scribe_v2_medical: { speakerCount: { min: 1, max: 32, semantics: "maximum" } },
+    },
   },
   // Free quota exists only in the Beijing region, and the temporary upload space is
   // documented for it alone.
@@ -92,5 +117,11 @@ export const ASR_PRESETS: Readonly<Record<AsrProviderId, AsrPreset>> = {
     ],
     customModelFamily: "fun_asr",
     knownModels: { "qwen-audio-3.1-asr-flash-filetrans": "qwen_audio", "fun-asr": "fun_asr" },
+    // Both API references: `speaker_count` is a reference value from 2 to 100, mono audio
+    // only, and audio over two hours may fail or time out with identification on.
+    diarization: {
+      "qwen-audio-3.1-asr-flash-filetrans": { speakerCount: { min: 2, max: 100, semantics: "reference" }, recommendedMaxDurationSec: 7200 },
+      "fun-asr": { speakerCount: { min: 2, max: 100, semantics: "reference" }, recommendedMaxDurationSec: 7200 },
+    },
   },
 };

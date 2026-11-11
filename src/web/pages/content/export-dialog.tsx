@@ -1,8 +1,9 @@
 import { useMutation } from "@tanstack/react-query";
 import { Copy, Download } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TranscriptRevisionDto } from "../../../shared/dto/content.ts";
+import { SPEAKER_LABEL_MODES, type SpeakerLabelMode } from "../../../shared/speakers.ts";
 import { BILINGUAL_EXPORT_FORMATS, SUBTITLE_EXPORT_FORMATS, type ContentExportRequest, type MarkdownExportRequest, type SubtitleExportFormat, type SubtitleExportRequest } from "../../../shared/dto/export.ts";
 import { ApiError } from "../../api/client.ts";
 import { useMe } from "../../api/queries.ts";
@@ -14,7 +15,7 @@ import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { pickTranslation, rootsOf, translationCurrents, useChapters, useRevisions, useSummaries, useTranslations, visibleRevisions } from "./content-data.ts";
+import { pickTranslation, rootsOf, translationCurrents, useChapters, useRevisions, useSegments, useSummaries, useTranslations, visibleRevisions } from "./content-data.ts";
 import { revisionLabel, templateName } from "./labels.ts";
 
 /** What the left side of the dialog has ticked. */
@@ -24,6 +25,8 @@ export interface MarkdownChoice {
   transcriptRevisionId: string | undefined;
   subtitlesRevisionId: string | undefined;
   backlinks: boolean;
+  /** Name the speakers in the transcript section; only meaningful while that section is ticked. */
+  includeSpeakers?: boolean;
 }
 
 /** The Markdown export request: only ticked sections, each naming its revision. */
@@ -37,14 +40,29 @@ export function markdownExportBody(choice: MarkdownChoice): MarkdownExportReques
       ...(choice.subtitlesRevisionId === undefined ? {} : { subtitles: { revisionId: choice.subtitlesRevisionId } }),
     },
     backlinks: choice.backlinks,
+    ...(choice.includeSpeakers === true && choice.transcriptRevisionId !== undefined ? { includeSpeakers: true } : {}),
   };
 }
 
+/** Subtitle formats whose speaker names go on the first line of each turn or on every line, as the user chooses. */
+const SPEAKER_LABELED_FORMATS: ReadonlySet<SubtitleExportFormat> = new Set(["srt", "srt-bilingual", "txt"]);
+
+/** Speakers in a subtitle file: how SRT and TXT mark them (the other formats name the speaker on every cue). */
+export interface SubtitleSpeakerChoice {
+  labels: SpeakerLabelMode;
+}
+
 /** A subtitle-file export request; the bilingual formats pair the revision with its translation. */
-export function subtitleExportBody(format: SubtitleExportFormat, revisionId: string, translationRevisionId: string | undefined): SubtitleExportRequest {
-  return BILINGUAL_EXPORT_FORMATS.has(format) && translationRevisionId !== undefined
-    ? { format, revisionId, translationRevisionId }
-    : { format, revisionId };
+export function subtitleExportBody(
+  format: SubtitleExportFormat,
+  revisionId: string,
+  translationRevisionId: string | undefined,
+  speakers?: SubtitleSpeakerChoice,
+): SubtitleExportRequest {
+  const base: SubtitleExportRequest =
+    BILINGUAL_EXPORT_FORMATS.has(format) && translationRevisionId !== undefined ? { format, revisionId, translationRevisionId } : { format, revisionId };
+  if (speakers === undefined) return base;
+  return { ...base, includeSpeakers: true, ...(SPEAKER_LABELED_FORMATS.has(format) ? { speakerLabels: speakers.labels } : {}) };
 }
 
 /**
@@ -97,6 +115,20 @@ function ExportForm(props: { templateId?: string }) {
   const [translationId, setTranslationId] = useState<string | undefined>(undefined);
   const [backlinks, setBacklinks] = useState(true);
   const [copied, setCopied] = useState(false);
+  // `undefined` = not touched: ticked whenever the chosen version names speakers.
+  const [markdownSpeakers, setMarkdownSpeakers] = useState<boolean | undefined>(undefined);
+  const [fileSpeakers, setFileSpeakers] = useState<boolean | undefined>(undefined);
+  const [speakerLabels, setSpeakerLabels] = useState<SpeakerLabelMode>("turn");
+  const labelsHintId = useId();
+
+  const readable = all.filter((revision) => revision.kind !== "translated");
+  const transcriptRevision = transcriptId ?? primaryId ?? readable.at(-1)?.id;
+  const subtitleRevision = subtitleId ?? primaryId ?? all.at(-1)?.id;
+  // Whether a version names speakers is read from its sentences, which the reading tabs have usually fetched already.
+  const transcriptSegments = useSegments(transcriptRevision);
+  const subtitleSegments = useSegments(subtitleRevision);
+  const transcriptHasSpeakers = transcriptSegments.data?.some((segment) => segment.speakerId !== undefined) === true;
+  const subtitleHasSpeakers = subtitleSegments.data?.some((segment) => segment.speakerId !== undefined) === true;
 
   const exportFile = useMutation({
     mutationFn: async (action: { body: ContentExportRequest; copy?: true }) => {
@@ -112,13 +144,10 @@ function ExportForm(props: { templateId?: string }) {
 
   if (summaries.isPending || revisions.isPending || chapters.isPending) return <Loading />;
 
-  const readable = all.filter((revision) => revision.kind !== "translated");
   const primary = all.find((revision) => revision.id === primaryId);
   // Archived originals stay out of the choices, as in every version picker.
   const roots = rootsOf(all).filter((root) => root.id !== primaryId && !root.archived);
-  const transcriptRevision = transcriptId ?? primaryId ?? readable.at(-1)?.id;
   const summaryTemplate = templateId !== undefined && generated.some((entry) => entry.template.id === templateId) ? templateId : generated[0]?.template.id;
-  const subtitleRevision = subtitleId ?? primaryId ?? all.at(-1)?.id;
   const subtitleChoices = visibleRevisions(all, primaryId, { include: [subtitleRevision] });
   const pairs = translationsOf(subtitleRevision, all);
   const track = me.data === undefined ? undefined : upgradeTrackPref(prefs.track, all);
@@ -140,7 +169,10 @@ function ExportForm(props: { templateId?: string }) {
     transcriptRevisionId: transcriptOn ? transcriptRevision : undefined,
     subtitlesRevisionId: subtitlesOn ? subtitleRevision : undefined,
     backlinks,
+    includeSpeakers: transcriptHasSpeakers && (markdownSpeakers ?? true),
   };
+  const filesWithSpeakers = subtitleHasSpeakers && (fileSpeakers ?? true);
+  const speakerChoice: SubtitleSpeakerChoice | undefined = filesWithSpeakers ? { labels: speakerLabels } : undefined;
   const nothing = choice.summaryTemplateId === undefined && !choice.chapters && choice.transcriptRevisionId === undefined && choice.subtitlesRevisionId === undefined;
   const select = "h-7 max-w-80 rounded border border-line bg-surface px-1 text-xs";
 
@@ -182,6 +214,12 @@ function ExportForm(props: { templateId?: string }) {
               </select>
             )}
           </label>
+          {transcriptOn && transcriptHasSpeakers ? (
+            <label className="flex items-center gap-2 pl-6 text-xs">
+              <input type="checkbox" checked={markdownSpeakers ?? true} onChange={(event) => setMarkdownSpeakers(event.target.checked)} data-testid="export-markdown-speakers" />
+              {t("speakerTools.export.includeSpeakers")}
+            </label>
+          ) : null}
           <label className="flex flex-wrap items-center gap-2">
             <input type="checkbox" checked={subtitlesOn && subtitleRevision !== undefined} disabled={subtitleRevision === undefined} onChange={(event) => setSubtitlesOn(event.target.checked)} data-testid="export-subtitles" />
             {t("contentView.export.subtitles")}
@@ -232,6 +270,31 @@ function ExportForm(props: { templateId?: string }) {
                 </select>
               </label>
             ) : null}
+            {subtitleHasSpeakers ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={fileSpeakers ?? true} onChange={(event) => setFileSpeakers(event.target.checked)} data-testid="export-speakers" />
+                  {t("speakerTools.export.includeSpeakers")}
+                </label>
+                {filesWithSpeakers ? (
+                  <label className="flex items-center gap-2">
+                    <span className="text-muted">{t("speakerTools.export.labels")}</span>
+                    <select className={select} value={speakerLabels} onChange={(event) => setSpeakerLabels(event.target.value as SpeakerLabelMode)} aria-describedby={labelsHintId} data-testid="export-speaker-labels">
+                      {SPEAKER_LABEL_MODES.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {t(`speakerTools.export.label.${mode}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+            {filesWithSpeakers ? (
+              <p id={labelsHintId} className="text-xs text-muted" data-testid="export-speaker-labels-hint">
+                {t("speakerTools.export.labelsHint")}
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               {SUBTITLE_EXPORT_FORMATS.map((format) => {
                 const bilingual = BILINGUAL_EXPORT_FORMATS.has(format);
@@ -242,7 +305,7 @@ function ExportForm(props: { templateId?: string }) {
                     disabled={subtitleRevision === undefined || (bilingual && translation === undefined) || exportFile.isPending}
                     onClick={() => {
                       if (subtitleRevision === undefined) return;
-                      exportFile.mutate({ body: subtitleExportBody(format, subtitleRevision, translation) });
+                      exportFile.mutate({ body: subtitleExportBody(format, subtitleRevision, translation, speakerChoice) });
                     }}
                     data-testid={`export-format-${format}`}
                   >

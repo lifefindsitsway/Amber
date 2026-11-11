@@ -102,7 +102,9 @@ export function TaskPanel(props: { open: boolean; onOpenChange: (open: boolean) 
   const contentEvents = useContentEvents();
   useEffect(
     () =>
-      contentEvents.subscribe(() => {
+      contentEvents.subscribe((event) => {
+        // Renaming or recoloring a speaker changes no task.
+        if (event.type === "speakersChanged") return;
         void queryClient.invalidateQueries({ queryKey: queryKeys.tasksAll });
       }),
     [contentEvents, queryClient],

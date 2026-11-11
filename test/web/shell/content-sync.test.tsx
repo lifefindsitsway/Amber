@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentEventBus } from "../../../src/web/api/content-events.ts";
 import { useContentEvents } from "../../../src/web/api/context.tsx";
 import { queryKeys } from "../../../src/web/api/queries.ts";
+import { contentKeys } from "../../../src/web/pages/content/content-data.ts";
 import { noteKeys } from "../../../src/web/notes/note-keys.ts";
 import { searchKeys } from "../../../src/web/search/search.ts";
 import { useContentEventSync } from "../../../src/web/shell/content-sync.ts";
@@ -98,5 +99,43 @@ describe("useContentEventSync", () => {
     for (const key of SHOWN) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
     expect(client.getQueryData(queryKeys.content("c1"))).toEqual({ id: "c1" });
     expect(client.getQueryData(noteKeys.content("c1"))).toEqual({ items: [] });
+  });
+});
+
+describe("useContentEventSync on speaker changes", () => {
+  it("refreshes only that Content's speaker list, not its photos or versions, when another tab changed them", async () => {
+    mockApi({});
+    let client: QueryClient | undefined;
+    let bus: ContentEventBus | undefined;
+    renderApp(<Harness onReady={(c, b) => ((client = c), (bus = b))} />);
+    await waitFor(() => expect(screen.getByTestId("open").textContent).toBe("c-open"));
+    if (client === undefined || bus === undefined) throw new Error("not ready");
+    seed(client);
+    client.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    client.setQueryData(contentKeys.speakers("c2"), { items: [] });
+    client.setQueryData(contentKeys.revisions("c1"), { items: [] });
+    client.setQueryData(contentKeys.revisions("c2"), { items: [] });
+    client.setQueryData(contentKeys.speakerAvatar("c1", "s1", 1), "blob");
+    remote({ type: "speakersChanged", contentId: "c1" });
+    expect(client.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.revisions("c1"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(contentKeys.speakerAvatar("c1", "s1", 1))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(contentKeys.speakers("c2"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(contentKeys.revisions("c2"))?.isInvalidated).toBe(false);
+    for (const key of SHOWN) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+    expect(client.getQueryData(queryKeys.content("c1"))).toEqual({ id: "c1" });
+    expect(client.getQueryData(noteKeys.content("c1"))).toEqual({ items: [] });
+  });
+
+  it("leaves a speaker event of this tab to whoever published it", async () => {
+    mockApi({});
+    let client: QueryClient | undefined;
+    let bus: ContentEventBus | undefined;
+    renderApp(<Harness onReady={(c, b) => ((client = c), (bus = b))} />);
+    await waitFor(() => expect(screen.getByTestId("open").textContent).toBe("c-open"));
+    if (client === undefined || bus === undefined) throw new Error("not ready");
+    client.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    act(() => bus?.publish({ type: "speakersChanged", contentId: "c1" }));
+    expect(client.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(false);
   });
 });

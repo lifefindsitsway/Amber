@@ -28,6 +28,7 @@ const full: UserSettings = {
   defaultOutputLanguage: "ja",
   platformCookieBrowser: "edge",
   chatWebSearchMode: "auto",
+  asrDiarization: false,
   updatedAt: T0,
 };
 
@@ -38,7 +39,7 @@ describe("user settings repository", () => {
     insertRow(db, "user_settings", {
       user_id: "alice", theme: "blue", language: "zh-CN", shortcuts_json: "{}", platform_cookie_browser: "chrome:/tmp/elsewhere", chat_web_search_mode: "force", updated_at: T0,
     });
-    expect(get("alice")).toEqual({ userId: "alice", theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: T0 });
+    expect(get("alice")).toEqual({ userId: "alice", theme: "light", language: "zh-CN", shortcuts: {}, asrDiarization: true, updatedAt: T0 });
   });
 
   it("round-trips the eye-care themes", () => {
@@ -52,7 +53,7 @@ describe("user settings repository", () => {
     repository.withTransaction((scope) => scope.userSettings.put(full));
     expect(get("alice")).toEqual(full);
     expect(get("bob")).toBeUndefined();
-    const minimal: UserSettings = { userId: "bob", theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: T0 };
+    const minimal: UserSettings = { userId: "bob", theme: "light", language: "zh-CN", shortcuts: {}, asrDiarization: true, updatedAt: T0 };
     repository.withTransaction((scope) => scope.userSettings.put(minimal));
     expect(get("bob")).toEqual(minimal);
   });

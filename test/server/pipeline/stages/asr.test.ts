@@ -3,15 +3,18 @@ import { writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { DiarizationRequest } from "../../../../src/shared/dto/speaker.ts";
+import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
 import { RetranscribeService } from "../../../../src/server/application/retranscribe.ts";
 import { LocalFileStore } from "../../../../src/server/adapters/file-store/local-file-store.ts";
 import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../../src/server/domain/media-asset.ts";
 import type { AsrModelRef } from "../../../../src/server/domain/model-ref.ts";
-import type { TranscriptRevision } from "../../../../src/server/domain/transcript.ts";
+import { assDialogue } from "../../../../src/server/domain/export/ass.ts";
+import { checkTranscriptInvariants, type TranscriptRevision } from "../../../../src/server/domain/transcript.ts";
 import { latestAttempts, taskWait } from "../../../../src/server/pipeline/projection.ts";
-import { asrPollDelayMs, AsrStageExecutor, JOB_ENDED_CODES } from "../../../../src/server/pipeline/stages/asr.ts";
-import { ASR_JOB_MAX_WAIT_HOURS, ASR_POLL_INTERVAL_MAX_MS, ASR_POLL_INTERVAL_MS, RETRY_MAX } from "../../../../src/shared/defaults.ts";
+import { asrPollDelayMs, AsrStageExecutor, JOB_ENDED_CODES, normalizeSentences } from "../../../../src/server/pipeline/stages/asr.ts";
+import { ASR_JOB_MAX_WAIT_HOURS, ASR_POLL_INTERVAL_MAX_MS, ASR_POLL_INTERVAL_MS, RETRY_MAX, SPEAKERS_PER_CONTENT_MAX } from "../../../../src/shared/defaults.ts";
 import type { LocalMediaIngest } from "../../../../src/server/ports/local-media-ingest.ts";
 import { isUlid } from "../../../../src/shared/ids.ts";
 import { fakeAsrResult, FakeAsrFactory } from "../../../fixtures/asr/fake-asr.ts";
@@ -88,7 +91,10 @@ function setup(extra: Partial<StageDeps> = {}): { stack: MediaStack; fake: FakeA
  * Imports the 3 s fixture without auto-proofreading, choosing the given ASR model, else the
  * user's default as the new-Task page preselects it; returns the Task and Content ids.
  */
-async function importFixture(stack: MediaStack, options: { subtitle?: string; asrModelRef?: AsrModelRef } = {}): Promise<{ taskId: string; contentId: string }> {
+async function importFixture(
+  stack: MediaStack,
+  options: { subtitle?: string; asrModelRef?: AsrModelRef; diarization?: DiarizationRequest } = {},
+): Promise<{ taskId: string; contentId: string }> {
   const { withAudio } = mediaFixtures();
   let initialSubtitle: { path: string; grant: ReturnType<MediaStack["grant"]>; language: string } | undefined;
   if (options.subtitle !== undefined) {
@@ -100,7 +106,7 @@ async function importFixture(stack: MediaStack, options: { subtitle?: string; as
   const created = await stack.localImport.importLocalFile(LOCAL, {
     path: withAudio.path,
     grant: stack.grant(withAudio.path),
-    settings: { autoProofread: false, ...(asrModelRef === undefined ? {} : { asrModelRef }) },
+    settings: { autoProofread: false, ...(asrModelRef === undefined ? {} : { asrModelRef }), ...(options.diarization === undefined ? {} : { diarization: options.diarization }) },
     allowDuplicate: true,
     ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
   });
@@ -496,6 +502,8 @@ describe("asr stage with a job provider", { timeout: 15_000 }, () => {
     expect(JSON.parse(payload?.payloadJson ?? "null")).toEqual({
       handle: { version: 1, provider: "fake", jobId: "job-1", submittedAt: expect.any(Number) },
       usageId: usageOf(stack, taskId)[0]?.id,
+      // The import froze the setting's `preferred`; the fake model offers no identification.
+      diarization: { effective: false, status: "unsupported" },
     });
     const [awaited] = unitsByKey(stack, taskId, "asr:await");
     expect(awaited).toMatchObject({ status: "succeeded", outputRef: `tmp/tasks/${taskId}/asr-${awaited?.id}.json` });
@@ -809,7 +817,11 @@ describe("asr stage job usage", { timeout: 15_000 }, () => {
     // Nothing reported a remote end state, so none is claimed.
     expect(row).not.toHaveProperty("jobOutcome");
     const [submit] = submitUnits(stack, taskId);
-    expect(recordOf(stack, submit?.id as string)).toEqual({ handle: expect.objectContaining({ jobId: "job-1" }), usageId: row?.id });
+    expect(recordOf(stack, submit?.id as string)).toEqual({
+      handle: expect.objectContaining({ jobId: "job-1" }),
+      usageId: row?.id,
+      diarization: { effective: false, status: "unsupported" },
+    });
   });
 
   it("fills the row from the remote end state the query reported, field by field", async () => {
@@ -959,5 +971,543 @@ describe("asrPollDelayMs", () => {
     expect(asrPollDelayMs(1, Number.MAX_SAFE_INTEGER, middle)).toBe(10 * ASR_POLL_INTERVAL_MAX_MS);
     expect(asrPollDelayMs(1, undefined, () => 0)).toBe(Math.round(ASR_POLL_INTERVAL_MS * 0.9));
     expect(asrPollDelayMs(1, undefined, () => 1)).toBe(Math.round(ASR_POLL_INTERVAL_MS * 1.1));
+  });
+});
+
+describe("normalizeSentences", () => {
+  const seg = (startMs: number, endMs: number, text: string, speakerId?: string) => ({ startMs, endMs, text, ...(speakerId === undefined ? {} : { speakerId }) });
+
+  it("clips overlapping sentences to the previous end and merges an instant one into its neighbour, as before", () => {
+    const { sentences, merged } = normalizeSentences([seg(0, 1000, "a"), seg(800, 1800, "b"), seg(1800, 1800, "c"), seg(1900, 2500, "d")]);
+    expect(sentences).toEqual([seg(0, 1000, "a"), seg(1000, 1800, "b c"), seg(1900, 2500, "d")]);
+    expect(merged).toBe(1);
+  });
+
+  it("gives the same result as the plain rules for any input without speakers, in whatever order it arrives", () => {
+    let state = 11;
+    const next = (): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 2 ** 32;
+    };
+    // Reference: the clip-to-last-pushed and merge rules written out once more.
+    const plain = (raw: ReadonlyArray<ReturnType<typeof seg>>) => {
+      const ordered = raw
+        .map((segment) => ({ startMs: Math.max(0, Math.round(segment.startMs)), endMs: Math.round(segment.endMs), text: segment.text.trim() }))
+        .filter((segment) => segment.text !== "")
+        .map((segment, index) => ({ segment, index }))
+        .sort((a, b) => a.segment.startMs - b.segment.startMs || a.index - b.index)
+        .map(({ segment }) => segment);
+      const out: Array<{ startMs: number; endMs: number; text: string }> = [];
+      let pending: { startMs: number; endMs: number; text: string } | undefined;
+      let merged = 0;
+      const join = (left: string, right: string): string => `${left} ${right}`;
+      for (const segment of ordered) {
+        const previous = out.at(-1);
+        let current = { ...segment, startMs: previous === undefined ? segment.startMs : Math.max(segment.startMs, previous.endMs) };
+        if (pending !== undefined) {
+          current = { ...current, startMs: Math.min(pending.startMs, current.startMs), text: join(pending.text, current.text) };
+          pending = undefined;
+        }
+        if (current.endMs > current.startMs) {
+          out.push(current);
+          continue;
+        }
+        merged += 1;
+        if (previous === undefined) pending = current;
+        else {
+          previous.text = join(previous.text, current.text);
+          previous.endMs = Math.max(previous.endMs, current.endMs);
+        }
+      }
+      if (pending !== undefined) out.push({ ...pending, endMs: pending.startMs + 1 });
+      return { sentences: out, merged };
+    };
+    for (let round = 0; round < 60; round += 1) {
+      const raw = Array.from({ length: 12 }, (_, index) => {
+        const startMs = Math.floor(next() * 5000);
+        return seg(startMs, startMs + (next() < 0.2 ? 0 : Math.floor(next() * 1500)), `t${index}`);
+      });
+      expect(normalizeSentences(raw)).toEqual(plain(raw));
+    }
+  });
+
+  it("keeps sentences of different speakers overlapping: no clipping, no merging", () => {
+    const { sentences, merged } = normalizeSentences([seg(0, 5000, "long", "0"), seg(2000, 2600, "yes", "1"), seg(2600, 2600, "hm", "1"), seg(4000, 6000, "more", "0")]);
+    expect(sentences).toEqual([seg(0, 5000, "long", "0"), seg(2000, 2600, "yes hm", "1"), seg(5000, 6000, "more", "0")]);
+    expect(merged).toBe(1);
+  });
+
+  it("clips against the previous sentence of the same speaker, not the last one pushed", () => {
+    const { sentences } = normalizeSentences([seg(0, 3000, "a", "0"), seg(1000, 1500, "b", "1"), seg(2000, 4000, "c", "0")]);
+    expect(sentences.map((sentence) => [sentence.speakerId, sentence.startMs, sentence.endMs])).toEqual([
+      ["0", 0, 3000],
+      ["1", 1000, 1500],
+      ["0", 3000, 4000],
+    ]);
+  });
+
+  it("never merges an instant sentence into one of another speaker, and keeps it citable", () => {
+    const { sentences, merged } = normalizeSentences([seg(0, 1000, "a", "0"), seg(500, 500, "ok", "1"), seg(1200, 2000, "b", "0")]);
+    expect(sentences.map((sentence) => [sentence.speakerId, sentence.text, sentence.startMs, sentence.endMs])).toEqual([
+      ["0", "a", 0, 1000],
+      ["1", "ok", 500, 501],
+      ["0", "b", 1200, 2000],
+    ]);
+    // Counted as repaired like a lone instant sentence always was, though nothing was merged into another speaker.
+    expect(merged).toBe(1);
+    for (const sentence of sentences) expect(sentence.endMs).toBeGreaterThan(sentence.startMs);
+  });
+
+  it("treats sentences without a speaker as a stream of their own, clipped only against each other", () => {
+    const { sentences } = normalizeSentences([seg(0, 1000, "a", "0"), seg(900, 1500, "b"), seg(1200, 2000, "c")]);
+    expect(sentences.map((sentence) => [sentence.speakerId, sentence.startMs, sentence.endMs])).toEqual([
+      ["0", 0, 1000],
+      [undefined, 900, 1500],
+      [undefined, 1500, 2000],
+    ]);
+  });
+
+  it("keeps a sentence without a speaker separate, with its own time, between sentences of speakers", () => {
+    const { sentences, merged } = normalizeSentences([seg(0, 10_000, "A", "0"), seg(2000, 3000, "B", "1"), seg(4000, 5000, "U")]);
+    expect(sentences).toEqual([seg(0, 10_000, "A", "0"), seg(2000, 3000, "B", "1"), seg(4000, 5000, "U")]);
+    expect(merged).toBe(0);
+  });
+
+  it("keeps the overlap of a sentence without a speaker with one of a speaker", () => {
+    const { sentences } = normalizeSentences([seg(0, 5000, "A", "0"), seg(4000, 6000, "U")]);
+    expect(sentences).toEqual([seg(0, 5000, "A", "0"), seg(4000, 6000, "U")]);
+  });
+
+  it("does not let an instant sentence of a speaker pull a later sentence's start earlier", () => {
+    const { sentences } = normalizeSentences([seg(0, 3000, "A", "0"), seg(1000, 1000, "B", "1"), seg(4000, 5000, "B2", "1")]);
+    expect(sentences.map((sentence) => [sentence.speakerId, sentence.text, sentence.startMs, sentence.endMs])).toEqual([
+      ["0", "A", 0, 3000],
+      ["1", "B", 1000, 1001],
+      ["1", "B2", 4000, 5000],
+    ]);
+  });
+
+  it("still merges an instant sentence into the previous one of its own speaker", () => {
+    const { sentences, merged } = normalizeSentences([seg(0, 1000, "a", "1"), seg(500, 900, "b", "0"), seg(1000, 1000, "c", "1")]);
+    expect(sentences.map((sentence) => [sentence.speakerId, sentence.text, sentence.startMs, sentence.endMs])).toEqual([
+      ["1", "a c", 0, 1000],
+      ["0", "b", 500, 900],
+    ]);
+    expect(merged).toBe(1);
+  });
+
+  it("keeps a speakerless instant sentence waiting for the next speakerless one, but never merges it into a speaker's", () => {
+    expect(normalizeSentences([seg(100, 100, "x"), seg(200, 900, "y")]).sentences).toEqual([seg(100, 900, "x y")]);
+    expect(normalizeSentences([seg(100, 100, "x"), seg(200, 900, "y", "0")]).sentences).toEqual([seg(100, 101, "x"), seg(200, 900, "y", "0")]);
+  });
+});
+
+describe("asr stage speaker identification", () => {
+  const SUPPORT = { speakerCount: { min: 2, max: 8, semantics: "reference" as const }, recommendedMaxDurationSec: 60 };
+  const TURNS = fakeAsrResult({
+    segments: [
+      { startMs: 0, endMs: 1200, text: "欢迎来到生成式软件工程。", speakerId: "1" },
+      { startMs: 1500, endMs: 2600, text: "今天讲提示词。", speakerId: "0" },
+    ],
+    words: [
+      { text: "欢迎", startMs: 0, endMs: 300, speakerId: "1" },
+      { text: "来到", startMs: 300, endMs: 600, speakerId: "1" },
+      { text: "生成式软件工程。", startMs: 600, endMs: 1200, speakerId: "1" },
+      { text: "今天", startMs: 1500, endMs: 1800, speakerId: "0" },
+      { text: "讲", startMs: 1800, endMs: 2000, speakerId: "0" },
+      { text: "提示词。", startMs: 2000, endMs: 2600, speakerId: "0" },
+    ],
+  });
+
+  function offering(extra: Partial<StageDeps> = {}, support: typeof SUPPORT | null = SUPPORT) {
+    const made = setup(extra);
+    if (support !== null) made.fake.capabilities = { ...made.fake.capabilities, diarization: support };
+    return made;
+  }
+
+  function asrGeneration(stack: MediaStack, contentId: string) {
+    return (revisionsOf(stack, contentId)[0] as TranscriptRevision).generation;
+  }
+
+  function speakersOf(stack: MediaStack, contentId: string) {
+    return stack.h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, contentId));
+  }
+
+  function segmentsOf(stack: MediaStack, contentId: string) {
+    const [revision] = revisionsOf(stack, contentId);
+    return stack.h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, revision?.id as string));
+  }
+
+  /** Rewrites a Task's request as one stored before speaker identification existed (no `diarization`). */
+  function asLegacyRequest(stack: MediaStack, taskId: string): void {
+    const { diarization: _gone, ...rest } = JSON.parse(taskOf(stack.h, taskId).requestJson) as Record<string, unknown>;
+    stack.h.db.exec("DROP TRIGGER task_request_immutable");
+    stack.h.db.prepare("UPDATE task SET request_json = ? WHERE id = ?").run(canonicalJson(rest), taskId);
+  }
+
+  function digestOfSubmit(stack: MediaStack, taskId: string): string {
+    return workUnitsOf(stack.h, taskId).find((unit) => unit.key === "asr:submit")?.inputDigest as string;
+  }
+
+  it("sends the request with identification when the model offers it, and records status applied with the count asked for", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack, { diarization: { mode: "required", speakerCount: 3 } });
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input.diarization).toEqual({ speakerCount: 3 });
+    expect(asrGeneration(stack, contentId)).toEqual({ kind: "asr", asrProfileId: expect.any(String), modelId: "scribe_v2", diarization: { status: "applied", requestedSpeakerCount: 3 } });
+  });
+
+  it("sends an empty request part when no count was given, and the setting's preferred mode identifies too", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input.diarization).toEqual({});
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "applied" } });
+    expect(JSON.parse(taskOf(stack.h, taskId).requestJson)).toMatchObject({ diarization: { mode: "preferred" } });
+  });
+
+  it("registers one speaker per label in order of first appearance and stores only their ULIDs in the segments", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const speakers = speakersOf(stack, contentId);
+    expect(speakers.map((speaker) => speaker.ordinal)).toEqual([1, 2]);
+    expect(speakers.every((speaker) => isUlid(speaker.id))).toBe(true);
+    const segments = segmentsOf(stack, contentId);
+    // The first label seen ("1") is the first speaker; the labels themselves are nowhere.
+    expect(segments.map((segment) => segment.speakerId)).toEqual([speakers[0]?.id, speakers[1]?.id]);
+    const stored = stack.h.db.prepare("SELECT speaker_id FROM transcript_segment").all() as Array<{ speaker_id: string | null }>;
+    expect(stored.every((row) => row.speaker_id === null || isUlid(row.speaker_id))).toBe(true);
+    expect(JSON.stringify(segments)).not.toContain('"speakerId":"1"');
+  });
+
+  it("records no_speakers when identification took place but the result names nobody", async () => {
+    const { stack, fake } = offering();
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input.diarization).toEqual({});
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "no_speakers" } });
+    expect(speakersOf(stack, contentId)).toEqual([]);
+  });
+
+  it("records off and sends nothing when the setting is off, whether or not the model offers identification", async () => {
+    const { stack, fake } = offering();
+    stack.h.userSettings.patch(LOCAL, { asrDiarization: false });
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input).not.toHaveProperty("diarization");
+    expect(JSON.parse(taskOf(stack.h, taskId).requestJson)).toMatchObject({ diarization: { mode: "off" } });
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "off" } });
+  });
+
+  it("records unsupported and transcribes normally when preferred identification meets a model without it", async () => {
+    const { stack, fake } = offering({}, null);
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input).not.toHaveProperty("diarization");
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "unsupported" } });
+  });
+
+  it("records over_recommended and transcribes normally when the audio is longer than the model recommends", async () => {
+    const { stack, fake } = offering({}, { ...SUPPORT, recommendedMaxDurationSec: 2 });
+    const { taskId, contentId } = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 3 } });
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input).not.toHaveProperty("diarization");
+    expect(asrGeneration(stack, contentId)).toEqual(expect.objectContaining({ diarization: { status: "over_recommended", requestedSpeakerCount: 3 } }));
+  });
+
+  it("makes a speaker count outside the model's range unsatisfiable: preferred goes on without, never clamped", async () => {
+    const { stack, fake } = offering({}, { ...SUPPORT, speakerCount: { min: 2, max: 2, semantics: "reference" } });
+    const { taskId, contentId } = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 5 } });
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input).not.toHaveProperty("diarization");
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "unsupported", requestedSpeakerCount: 5 } });
+  });
+
+  it.each([
+    ["the model does not offer it", null, undefined, "unsupported"],
+    ["the audio is longer than recommended", { ...SUPPORT, recommendedMaxDurationSec: 2 }, undefined, "over_recommended"],
+    ["the speaker count is outside the range", { ...SUPPORT, speakerCount: { min: 2, max: 3, semantics: "reference" as const } }, 5, "speaker_count"],
+  ])("fails a required request before anything is sent when %s", async (_name, support, speakerCount, reason) => {
+    const { stack, fake } = offering({}, support);
+    const { taskId } = await importFixture(stack, { diarization: { mode: "required", ...(speakerCount === undefined ? {} : { speakerCount }) } });
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("failed");
+    expect(stageRunsOf(stack.h, taskId).find((run) => run.stage === "asr")?.error).toMatchObject({
+      code: "asr_failed.diarization_unavailable",
+      retryDisposition: "never",
+      details: { reason },
+    });
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.requestStarts).toHaveLength(0);
+    expect(usageOf(stack, taskId)).toEqual([]);
+  });
+
+  it("keeps the digest it always had when identification does not take place, and changes it when it does", async () => {
+    const { stack, fake } = offering({}, null);
+    const off = await importFixture(stack, { diarization: { mode: "off" } });
+    const unsupported = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 3 } });
+    // A request stored before the field existed has none.
+    const legacy = await importFixture(stack);
+    asLegacyRequest(stack, legacy.taskId);
+    stack.h.scheduler.start();
+    for (const { taskId } of [off, unsupported, legacy]) expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    // The digest of a request without identification, pinned as the layout the stage has always
+    // hashed: these keys in this order, and nothing about speakers.
+    const [asset] = stack.h.repository.withTransaction((scope) => scope.mediaAssets.listByContent(LOCAL.userId, off.contentId));
+    const profileId = stack.h.repository.withTransaction((scope) => scope.asrProfiles.list(LOCAL.userId))[0]?.id;
+    const pinned = `{"asrProfileId":"${profileId}","audio":"${asset?.fingerprint}","baseURL":null,"language":null,"model":"scribe_v2","provider":"elevenlabs","terms":[]}`;
+    expect(digestOfSubmit(stack, off.taskId)).toBe(`sha256:${createHash("sha256").update(pinned).digest("hex")}`);
+    expect(digestOfSubmit(stack, off.taskId)).toBe(digestOfSubmit(stack, legacy.taskId));
+    expect(digestOfSubmit(stack, unsupported.taskId)).toBe(digestOfSubmit(stack, legacy.taskId));
+    expect(fake.calls).toHaveLength(3);
+
+    fake.capabilities = { ...fake.capabilities, diarization: SUPPORT };
+    const counted3 = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 3 } });
+    const counted4 = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 4 } });
+    const uncounted = await importFixture(stack, { diarization: { mode: "preferred" } });
+    for (const { taskId } of [counted3, counted4, uncounted]) expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const digests = [counted3, counted4, uncounted].map(({ taskId }) => digestOfSubmit(stack, taskId));
+    expect(new Set([...digests, digestOfSubmit(stack, legacy.taskId)]).size).toBe(4);
+  });
+
+  it("reads a request without the field as off", async () => {
+    const { stack, fake } = offering();
+    const { taskId, contentId } = await importFixture(stack);
+    asLegacyRequest(stack, taskId);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(fake.calls[0]?.input).not.toHaveProperty("diarization");
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "off" } });
+  });
+
+  it("keeps the frozen mode and count when a re-run switches to another model", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [amberError("asr_failed", "gone", { code: "asr_failed.model_unavailable" }), TURNS];
+    const { taskId } = await importFixture(stack, { diarization: { mode: "required", speakerCount: 3 } });
+    stack.h.scheduler.start();
+    await waitFor(() => stageStatuses(stack.h, taskId)["asr"] === "failed");
+    const other = configureAsr(stack.h, LOCAL.userId, { asDefault: false, name: "other" });
+    stack.h.tasks.retryStage(LOCAL, taskId, { stage: "asr", asrModelRef: other });
+    await waitFor(() => stageStatuses(stack.h, taskId)["asr"] === "succeeded");
+    expect(fake.calls.map((call) => [call.profileId === other.asrProfileId, call.input.diarization])).toEqual([
+      [false, { speakerCount: 3 }],
+      [true, { speakerCount: 3 }],
+    ]);
+  });
+
+  it("assigns words of overlapping sentences by speaker and drops, with a count, those it cannot place", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [
+      fakeAsrResult({
+        segments: [
+          { startMs: 0, endMs: 5000, text: "我们来看一下这个方案", speakerId: "0" },
+          { startMs: 2000, endMs: 3000, text: "好的", speakerId: "1" },
+        ],
+        words: [
+          { text: "我们", startMs: 0, endMs: 1000, speakerId: "0" },
+          { text: "好的", startMs: 2100, endMs: 2900, speakerId: "1" },
+          { text: "来看", startMs: 2200, endMs: 2800, speakerId: "0" },
+          { text: "一下", startMs: 2300, endMs: 2700 },
+          { text: "方案", startMs: 3500, endMs: 4500, speakerId: "0" },
+        ],
+      }),
+    ];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const segments = segmentsOf(stack, contentId);
+    expect(segments.map((segment) => [segment.startMs, segment.endMs])).toEqual([
+      [0, 5000],
+      [2000, 3000],
+    ]);
+    expect(segments.map((segment) => segment.words?.map((word) => word.text))).toEqual([["我们", "来看", "方案"], ["好的"]]);
+    expect(revisionsOf(stack, contentId)[0]?.timingFidelity).toBe("exact_words");
+    expect(asrResultJson(stack, taskId)).toMatchObject({ reasons: ["speaker_overlap_words_dropped"], speakerOverlapWordsDropped: 1 });
+    // The labels that placed the words are not stored with them.
+    expect(JSON.stringify(segments.flatMap((segment) => segment.words ?? []))).not.toContain("speakerId");
+  });
+
+  it("accepts a sentence left without words in an exact_words revision, and the karaoke line falls back to its text", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [
+      fakeAsrResult({
+        segments: [
+          { startMs: 0, endMs: 5000, text: "第一人说话", speakerId: "0" },
+          { startMs: 2000, endMs: 3000, text: "插话", speakerId: "1" },
+        ],
+        words: [
+          { text: "第一人", startMs: 100, endMs: 1000, speakerId: "0" },
+          { text: "说话", startMs: 3500, endMs: 4500, speakerId: "0" },
+          { text: "插话", startMs: 2200, endMs: 2800 },
+        ],
+      }),
+    ];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const [revision] = revisionsOf(stack, contentId);
+    const segments = segmentsOf(stack, contentId);
+    expect(segments[1]?.words).toEqual([]);
+    expect(checkTranscriptInvariants(revision as TranscriptRevision, segments)).toEqual([]);
+    const cue = { startMs: 2000, endMs: 3000, text: "插话", words: segments[1]?.words ?? [] };
+    expect(assDialogue(cue, { karaoke: true })).toBe(assDialogue({ startMs: 2000, endMs: 3000, text: "插话" }, { karaoke: false }));
+  });
+
+  it("registers no speaker rows when publishing fails after they were written", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    stack.h.db.exec("CREATE TRIGGER fail_revision BEFORE INSERT ON transcript_revision BEGIN SELECT RAISE(ABORT, 'no revisions today'); END");
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("failed");
+    expect(speakersOf(stack, contentId)).toEqual([]);
+    expect(revisionsOf(stack, contentId)).toEqual([]);
+  });
+
+  it("leaves the labels beyond the Content's room unassigned and says so", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.repository.withTransaction((scope) =>
+      scope.speakers.insert(
+        LOCAL.userId,
+        contentId,
+        Array.from({ length: SPEAKERS_PER_CONTENT_MAX - 1 }, () => ({ id: stack.h.newId() })),
+        1,
+      ),
+    );
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const segments = segmentsOf(stack, contentId);
+    // Only one id fit: the first label got it, the second stays unassigned.
+    expect(speakersOf(stack, contentId)).toHaveLength(SPEAKERS_PER_CONTENT_MAX);
+    expect(segments[0]?.speakerId).toBeDefined();
+    expect(segments[1]?.speakerId).toBeUndefined();
+    expect(asrResultJson(stack, taskId)["reasons"]).toContain("speakers_truncated");
+  });
+
+  it("records no_speakers when every label fell outside the Content's room", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.repository.withTransaction((scope) =>
+      scope.speakers.insert(LOCAL.userId, contentId, Array.from({ length: SPEAKERS_PER_CONTENT_MAX }, () => ({ id: stack.h.newId() })), 1),
+    );
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(segmentsOf(stack, contentId).every((segment) => segment.speakerId === undefined)).toBe(true);
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "no_speakers" } });
+    expect(asrResultJson(stack, taskId)["reasons"]).toContain("speakers_truncated");
+  });
+
+  it.each([
+    ["off", { mode: "off" as const }, SUPPORT],
+    ["unsupported", { mode: "preferred" as const }, null],
+    ["over_recommended", { mode: "preferred" as const }, { ...SUPPORT, recommendedMaxDurationSec: 2 }],
+  ])("registers no speakers when identification is %s even if the upstream names some", async (status, diarization, support) => {
+    const { stack, fake } = offering({}, support);
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack, { diarization });
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    expect(speakersOf(stack, contentId)).toEqual([]);
+    const segments = segmentsOf(stack, contentId);
+    expect(segments.every((segment) => segment.speakerId === undefined)).toBe(true);
+    // The labels are gone from the words too, so overlap handling cannot see them.
+    expect(JSON.stringify(segments)).not.toContain("speakerId");
+    expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status } });
+  });
+
+  describe("with a job provider", { timeout: 15_000 }, () => {
+    function offeringJob(support: typeof SUPPORT | null = SUPPORT) {
+      const fake = new FakeAsrFactory();
+      fake.delivery = "job";
+      if (support !== null) fake.capabilities = { ...fake.capabilities, diarization: support };
+      const stack = createMediaStack();
+      open.push(stack);
+      stack.h.executors.asr = new AsrStageExecutor({
+        repository: stack.h.repository,
+        files: stack.files,
+        ingest: stack.ingest,
+        asr: (provider) => (provider === fake.descriptor.provider ? fake : undefined),
+        newId: stack.h.newId,
+        random: () => 0.5,
+      });
+      configureAsr(stack.h);
+      return { stack, fake };
+    }
+
+    const submitRecord = (stack: MediaStack, taskId: string): Record<string, unknown> => {
+      const [unit] = workUnitsOf(stack.h, taskId).filter((candidate) => candidate.key === "asr:submit");
+      const payload = stack.h.repository.withTransaction((scope) => scope.workUnits.getResult(LOCAL.userId, unit?.id as string));
+      return JSON.parse(payload?.payloadJson ?? "null") as Record<string, unknown>;
+    };
+
+    async function settled(stack: MediaStack, taskId: string): Promise<void> {
+      await waitFor(() => stageStatuses(stack.h, taskId)["asr"] === "succeeded" || stageStatuses(stack.h, taskId)["asr"] === "failed", 15_000);
+    }
+
+    it("sends identification with the submission, keeps the decision in the submit record and publishes with it after waiting", async () => {
+      const { stack, fake } = offeringJob();
+      fake.pollOutcomes = [{ state: "pending", retryAfterMs: 1 }, { state: "done", result: TURNS }];
+      const { taskId, contentId } = await importFixture(stack, { diarization: { mode: "preferred", speakerCount: 4 } });
+      stack.h.scheduler.start();
+      await settled(stack, taskId);
+      expect(stageStatuses(stack.h, taskId)["asr"]).toBe("succeeded");
+      expect(fake.submits[0]?.input.diarization).toEqual({ speakerCount: 4 });
+      expect(submitRecord(stack, taskId)["diarization"]).toEqual({ effective: true, speakerCount: 4 });
+      expect(fake.polls.length).toBeGreaterThan(1);
+      expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "applied", requestedSpeakerCount: 4 } });
+      expect(speakersOf(stack, contentId)).toHaveLength(2);
+    });
+
+    it("records over_recommended in the submit record and reuses it when the stage is re-entered", async () => {
+      const { stack, fake } = offeringJob({ ...SUPPORT, recommendedMaxDurationSec: 2 });
+      fake.pollOutcomes = [{ state: "pending", retryAfterMs: 1 }, { state: "done", result: fakeAsrResult() }];
+      const { taskId, contentId } = await importFixture(stack);
+      stack.h.scheduler.start();
+      await settled(stack, taskId);
+      expect(fake.submits[0]?.input).not.toHaveProperty("diarization");
+      expect(submitRecord(stack, taskId)["diarization"]).toEqual({ effective: false, status: "over_recommended" });
+      expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "over_recommended" } });
+    });
+
+    it("reads a submit record from before decisions were kept as submitted without identification", async () => {
+      const { stack, fake } = offeringJob();
+      fake.pollOutcomes = [{ state: "pending", retryAfterMs: 1500 }, { state: "done", result: TURNS }];
+      const { taskId, contentId } = await importFixture(stack);
+      stack.h.holdWakes();
+      stack.h.scheduler.start();
+      await waitFor(() => workUnitsOf(stack.h, taskId).some((unit) => unit.key === "asr:await" && unit.retryNotBefore !== undefined));
+      const [unit] = workUnitsOf(stack.h, taskId).filter((candidate) => candidate.key === "asr:submit");
+      const { diarization: _kept, ...older } = submitRecord(stack, taskId);
+      stack.h.db.prepare("UPDATE work_unit_result SET payload_json = ? WHERE work_unit_id = ?").run(JSON.stringify(older), unit?.id);
+      stack.h.releaseWakes();
+      await settled(stack, taskId);
+      expect(stageStatuses(stack.h, taskId)["asr"]).toBe("succeeded");
+      expect(asrGeneration(stack, contentId)).toMatchObject({ diarization: { status: "off" } });
+    });
+
+    it("fails a required request before the upload when the model cannot identify speakers", async () => {
+      const { stack, fake } = offeringJob(null);
+      const { taskId } = await importFixture(stack, { diarization: { mode: "required" } });
+      stack.h.scheduler.start();
+      await settled(stack, taskId);
+      expect(stageRunsOf(stack.h, taskId).find((run) => run.stage === "asr")?.error).toMatchObject({ code: "asr_failed.diarization_unavailable", details: { reason: "unsupported" } });
+      expect(fake.submits).toHaveLength(0);
+      expect(usageOf(stack, taskId)).toEqual([]);
+    });
   });
 });

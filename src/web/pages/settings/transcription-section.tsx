@@ -3,7 +3,7 @@ import { ChevronDown, GripVertical } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ASR_MODEL_ID_PATTERN, ASR_PRESETS, type AsrPreset } from "../../../shared/asr-presets.ts";
-import { ASR_TEST_AUDIO_MS } from "../../../shared/defaults.ts";
+import { ASR_DIARIZATION_DEFAULT, ASR_TEST_AUDIO_MS } from "../../../shared/defaults.ts";
 import {
   asrProfileListDtoSchema,
   type AsrModelTestResultDto,
@@ -23,6 +23,7 @@ import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Switch } from "../../ui/switch.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { ConfirmButton, CredentialInput, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
 
@@ -53,6 +54,7 @@ export function TranscriptionSection() {
       ) : (
         <>
           <DefaultModelBlock profiles={items} />
+          <DiarizationBlock />
           <div className="mb-6">
             <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-asr-profile">
               {t("settings.transcription.addProfile")}
@@ -90,6 +92,29 @@ function DefaultModelBlock({ profiles }: { profiles: readonly AsrProfileDto[] })
         ))}
       </select>
       <p className="mt-2 text-xs text-muted">{t("settings.transcription.defaultModelHint")}</p>
+      <RequestError error={patch.error} />
+    </SettingsBlock>
+  );
+}
+
+/** Whether new transcriptions identify speakers; it only takes effect on official models that offer it. */
+function DiarizationBlock() {
+  const { t } = useTranslation();
+  const settings = useSettings();
+  const patch = usePatchSettings();
+  const on = settings.data?.asrDiarization ?? ASR_DIARIZATION_DEFAULT;
+  return (
+    <SettingsBlock>
+      <Switch className="text-sm font-semibold" checked={on} disabled={settings.data === undefined} onChange={(checked) => {
+          // While a save is out the switch keeps its place (and keyboard focus) but takes no
+          // further toggle: a second patch could land before the first and leave the other value.
+          if (!patch.isPending) patch.mutate({ asrDiarization: checked });
+        }} describedBy="asr-diarization-hint" testId="asr-diarization">
+        {t("speakerTools.settings.diarization")}
+      </Switch>
+      <p id="asr-diarization-hint" className="mt-2 text-xs text-muted">
+        {t("speakerTools.settings.diarizationHint")}
+      </p>
       <RequestError error={patch.error} />
     </SettingsBlock>
   );

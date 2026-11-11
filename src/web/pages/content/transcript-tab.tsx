@@ -1,12 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
-import { isMarked, isOnlyPunctuationChange, joinReading, readingSeparator } from "../../../shared/reading.ts";
+import { isOnlyPunctuationChange } from "../../../shared/reading.ts";
+import { speakerModeFor, speakerShares } from "../../../shared/speaker-turns.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { queryKeys, useProviders, useSettings } from "../../api/queries.ts";
@@ -17,8 +19,7 @@ import { searchKeys, termRanges } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
 import { elementOf } from "../../ui/dom-selection.ts";
-import { DecoratedText } from "../../notes/decorated-text.tsx";
-import { notesBySegment, type SentenceNote } from "../../notes/note-anchor.ts";
+import { notesBySegment } from "../../notes/note-anchor.ts";
 import { useOptionalNotesUi } from "../../notes/note-ui-context.tsx";
 import { useContentNotes } from "../../notes/queries.ts";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
@@ -28,21 +29,29 @@ import { useContentPage } from "./content-context.tsx";
 import {
   contentKeys,
   readableRevisions,
-  readerRows,
   revisionGroups,
-  segmentAt,
+  segmentsAt,
   useChapters,
   useRevisions,
   useSegments,
   visibleRevisions,
   type Paragraph,
-  type ReaderRow,
 } from "./content-data.ts";
 import { DraftEditor } from "./draft-editor.tsx";
-import { revisionBasis, revisionLabel } from "./labels.ts";
+import { revisionLabel } from "./labels.ts";
+import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
+import { PARAGRAPH_GAP_EM, READER_MEASURE_EM, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
+import { useStickyTurn } from "./reader-sticky.ts";
+import { StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
+import { ReaderTypographyPopover, type ReaderTypographyChange } from "./reader-typography-popover.tsx";
+import { READER_TYPOGRAPHY_DEFAULTS, useReaderTypography, type ReaderTypography } from "./reader-typography.ts";
 import { RevisionActions } from "./revision-actions-dialog.tsx";
+import { revisionInfo } from "./revision-info.ts";
 import { useLocatedSegment } from "./same-sentence.ts";
+import type { ScrollAnchor } from "./scroll-anchor.ts";
+import { isChineseLanguage } from "./sentence-editor.tsx";
 import { useSentenceMenu } from "./sentence-menu.tsx";
+import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { VirtualRows, type VirtualRowsHandle } from "./virtual-rows.tsx";
 
 /**
@@ -80,6 +89,18 @@ export function TranscriptTab() {
   const [editing, setEditing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  // The ASR revision whose speakers the editor is to bring into the current text.
+  const [applyFrom, setApplyFrom] = useState<string | undefined>(undefined);
+  const applyParam = params.get("applySpeakers");
+  // A link asking to apply speakers opens the editor on it, and is spent: the address does not keep asking.
+  useEffect(() => {
+    if (applyParam === null) return;
+    setApplyFrom(applyParam);
+    setEditing(true);
+    const next = new URLSearchParams(params);
+    next.delete("applySpeakers");
+    setParams(next, { replace: true });
+  }, [applyParam, params, setParams]);
 
   if (revisions.isPending) return <Loading />;
   if (revisions.isError) {
@@ -112,7 +133,20 @@ export function TranscriptTab() {
   };
   if (editing) {
     // Keyed by version: switching to another one closes this editor (keeping its last edits) and opens a fresh one.
-    return <DraftEditor key={revision.id} base={revision} primaryRevisionId={primaryId} onClose={() => setEditing(false)} />;
+    // Applying speakers always edits the current text: a newer ASR original being read is only the source of the speakers.
+    const base = applyFrom === undefined ? revision : (readable.find((item) => item.id === primaryId) ?? revision);
+    return (
+      <DraftEditor
+        key={base.id}
+        base={base}
+        primaryRevisionId={primaryId}
+        {...(applyFrom === undefined ? {} : { applySpeakersFrom: applyFrom })}
+        onClose={() => {
+          setEditing(false);
+          setApplyFrom(undefined);
+        }}
+      />
+    );
   }
   // A shown revision that sits behind a toggle (a deep link, say) opens that toggle.
   const historyOpen = showHistory || groups.history.has(revision.id);
@@ -142,7 +176,14 @@ export function TranscriptTab() {
       toggles={toggles}
       onPick={pick}
       onDeleted={unpick}
-      onEdit={() => setEditing(true)}
+      onEdit={() => {
+        setApplyFrom(undefined);
+        setEditing(true);
+      }}
+      onApplySpeakers={(sourceRevisionId) => {
+        setApplyFrom(sourceRevisionId);
+        setEditing(true);
+      }}
     />
   );
 }
@@ -189,6 +230,8 @@ export function RevisionToggleBar(props: { toggles: RevisionToggles }) {
   );
 }
 
+const COPY_ITEM_CLASS = "cursor-pointer rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken";
+
 function TranscriptReader(props: {
   revision: TranscriptRevisionListItemDto;
   /** The revisions the picker lists. */
@@ -203,6 +246,8 @@ function TranscriptReader(props: {
   search: string;
   onPick: (id: string) => void;
   onEdit: () => void;
+  /** Opens the editor on the apply-speakers flow for the given ASR revision. */
+  onApplySpeakers: (sourceRevisionId: string) => void;
 }) {
   const { t } = useTranslation();
   const client = useApi();
@@ -219,10 +264,16 @@ function TranscriptReader(props: {
   const parent = useSegments(showChanges ? revision.parentRevisionId : undefined);
   const located = useLocatedSegment(revision.id);
   const reader = useRef<VirtualRowsHandle>(null);
-  const menuTarget = useSentenceMenu<HTMLDivElement>((segmentId) => segments.data?.find((segment) => segment.id === segmentId), { explainSentence: false });
   const notesUi = useOptionalNotesUi();
   const notes = useContentNotes(page.content.id, revision.id);
   const pinned = useDragPin();
+  const [typography, setTypography, resetTypography] = useReaderTypography();
+  // The element the rows scroll in, as state: it only exists once the sentences have loaded.
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const narrow = useIsNarrow(host);
+  // The sentence the user last clicked to play: the primary highlight while it still covers the playing moment.
+  const [pinnedId, setPinnedId] = useState<string | undefined>(undefined);
+  const pinnedEntered = useRef(false);
 
   const proofread = useMutation({
     mutationFn: () =>
@@ -237,18 +288,103 @@ function TranscriptReader(props: {
 
   const list = segments.data ?? [];
   const currentChapters = chapters.data?.current;
-  const rows = useMemo(() => readerRows(list, currentChapters?.chapters ?? []), [list, currentChapters]);
+  const noteItems = notes.data?.items;
+  const placed = useMemo(() => notesBySegment(noteItems ?? [], list), [noteItems, list]);
+  // Speakers are only asked for when a sentence names one, so a text without speakers costs no request.
+  const hasSpeakerSentences = useMemo(() => list.some((segment) => segment.speakerId !== undefined), [list]);
+  const speakers = useSpeakers(page.content.id, hasSpeakerSentences);
+  const speakerList = speakers.data?.items;
+  // Whether the revision is read by speakers is decided by its data; the user's switch only hides the turns.
+  // Memoised: the player's time re-renders this view several times a second.
+  const speakerMode = useMemo(() => hasSpeakerSentences && speakerList !== undefined && speakerModeFor(list, speakerList), [hasSpeakerSentences, list, speakerList]);
+  const showTurns = speakerMode && typography.showSpeakers;
+  const speakerById = useMemo(() => new Map((speakerList ?? []).map((speaker) => [speaker.id, speaker])), [speakerList]);
+  const shares = useMemo(() => new Map(speakerShares(showTurns ? list : []).map((share) => [share.speakerId, share])), [showTurns, list]);
+  const sections = useMemo(() => readerSections(list, currentChapters?.chapters ?? []), [list, currentChapters]);
+  const rows = useMemo(
+    () =>
+      viewRows(sections, {
+        turns: showTurns,
+        // A sentence with a note or a search hit needs room, which a compact turn does not give it.
+        hasMarks: (segment) => (placed.get(segment.id)?.length ?? 0) > 0 || (props.search !== "" && termRanges(segment.text, props.search).length > 0),
+      }),
+    [sections, showTurns, placed, props.search],
+  );
   // The outline lists the headings the reader actually shows, so every entry has a row to scroll to.
   const outline = useMemo(() => rows.flatMap((row, index) => (row.kind === "chapter" ? [{ index, startMs: row.startMs, title: row.title }] : [])), [rows]);
   const changes = useMemo(
     () => (showChanges && parent.data !== undefined ? changedSegments(revision, list, parent.data) : new Map<string, "ai" | "user">()),
     [showChanges, parent.data, revision, list],
   );
-  const noteItems = notes.data?.items;
-  const placed = useMemo(() => notesBySegment(noteItems ?? [], list), [noteItems, list]);
   const unmapped = noteItems?.filter((note) => note.view === null).length ?? 0;
   const notesLink = `/notes?contentId=${encodeURIComponent(page.content.id)}`;
-  const current = capabilities.timeTracking === "supported" ? segmentAt(list, time) : undefined;
+  const tracking = capabilities.timeTracking === "supported";
+  const { primary: current, others: overlapping } = segmentsAt(list, tracking ? time : undefined, pinnedId);
+  const overlapKey = overlapping.map((segment) => segment.id).join(",");
+  const overlapIds = useMemo(() => new Set(overlapKey === "" ? [] : overlapKey.split(",")), [overlapKey]);
+  const turnMarker = useStickyTurn(host, showTurns && !narrow, rows);
+
+  // The pin ends when playback has been inside the sentence and then left it.
+  useEffect(() => {
+    if (pinnedId === undefined) return;
+    const target = list.find((segment) => segment.id === pinnedId);
+    const inside = target !== undefined && time !== undefined && target.startMs <= time && time < target.endMs;
+    if (inside) pinnedEntered.current = true;
+    else if (pinnedEntered.current) {
+      pinnedEntered.current = false;
+      setPinnedId(undefined);
+    }
+  }, [pinnedId, time, list]);
+
+  // A font size, line height or layout change resizes every row: keep the first visible row where it was.
+  // The anchor is taken just before the change and used by the very next commit; a change that
+  // never lands (nothing differs, or the preference cannot be stored yet) must not leave it
+  // behind to pull the view back later, so it is dropped once the change has had its turn.
+  const anchorBeforeChange = useRef<ScrollAnchor | undefined>(undefined);
+  const rememberAnchor = (): void => {
+    anchorBeforeChange.current = reader.current?.anchor();
+    setTimeout(() => {
+      anchorBeforeChange.current = undefined;
+    }, 0);
+  };
+  const changeTypography = (change: ReaderTypographyChange): void => {
+    const next = { ...typography, ...change };
+    if (next.fontSize === typography.fontSize && next.lineHeight === typography.lineHeight && next.showSpeakers === typography.showSpeakers) return;
+    rememberAnchor();
+    setTypography(change);
+  };
+  const resetReaderTypography = (): void => {
+    const unchanged =
+      typography.fontSize === READER_TYPOGRAPHY_DEFAULTS.fontSize &&
+      typography.lineHeight === READER_TYPOGRAPHY_DEFAULTS.lineHeight &&
+      typography.showSpeakers === READER_TYPOGRAPHY_DEFAULTS.showSpeakers;
+    if (!unchanged) rememberAnchor();
+    resetTypography();
+  };
+  // Every commit consumes the anchor, but only one that really resized the rows puts it back: re-measuring
+  // a windowed list for a commit that changed nothing would only make it jump.
+  const layoutKey = `${typography.fontSize} ${typography.lineHeight} ${showTurns}`;
+  const committedLayout = useRef(layoutKey);
+  useLayoutEffect(() => {
+    const anchor = anchorBeforeChange.current;
+    anchorBeforeChange.current = undefined;
+    const resized = committedLayout.current !== layoutKey;
+    committedLayout.current = layoutKey;
+    if (resized && anchor !== undefined) reader.current?.restoreAnchor(anchor);
+  });
+
+  const turnContext = useMemo<TurnContext>(
+    () => ({ contentId: page.content.id, speakers: speakerById, shares, typography: { fontSize: typography.fontSize, lineHeight: typography.lineHeight }, narrow }),
+    [page.content.id, speakerById, shares, typography.fontSize, typography.lineHeight, narrow],
+  );
+  // `名字：` (full-width colon for Chinese text) in front of a speaker's words; nothing for a speaker the list does not know.
+  const speakerPrefix = (speakerId: string | undefined): string => {
+    const speaker = speakerId === undefined ? undefined : speakerById.get(speakerId);
+    if (speaker === undefined) return "";
+    return t(isChineseLanguage(revision.language) ? "speakerReader.copy.prefixCjk" : "speakerReader.copy.prefixOther", { name: speakerLabel(t, speaker) });
+  };
+  const copyBody = (): void => void copyText(readingText(rows));
+  const copyWithSpeakers = (): void => void copyText(readingTextWithSpeakers(sections, speakerPrefix));
   const targetIndex =
     located.segmentId === undefined ? undefined : rows.findIndex((row) => row.kind === "paragraph" && row.paragraph.segments.some((s) => s.id === located.segmentId));
   const configured = (providers.data?.items.length ?? 0) > 0;
@@ -284,6 +420,8 @@ function TranscriptReader(props: {
   };
 
   const onSentence = (segment: TranscriptSegmentDto): void => {
+    pinnedEntered.current = false;
+    setPinnedId(segment.id);
     page.select({ revisionId: revision.id, segmentId: segment.id }, segment.startMs);
   };
   // A heading seeks to the first sentence under it, so the selection lands on a real sentence.
@@ -292,21 +430,30 @@ function TranscriptReader(props: {
     const first = next?.kind === "paragraph" ? next.paragraph.segments[0] : undefined;
     if (first !== undefined) onSentence(first);
   };
+  const menuTarget = useSentenceMenu<HTMLDivElement>((segmentId) => segments.data?.find((segment) => segment.id === segmentId), {
+    explainSentence: false,
+    // Playing from the menu is a click on the sentence: it leads the highlight while sentences overlap.
+    onPlay: (segmentId) => {
+      const segment = segments.data?.find((item) => item.id === segmentId);
+      if (segment !== undefined) onSentence(segment);
+    },
+    ...(speakerMode ? { speakerPrefixOf: (segmentId: string) => speakerPrefix(segments.data?.find((segment) => segment.id === segmentId)?.speakerId) } : {}),
+  });
 
   return (
     <div ref={menuTarget} className="flex h-full min-h-0 flex-col" data-revision-id={revision.id} data-explainable data-notes>
-      <AsrBanner contentId={page.content.id} revisions={props.readable} primaryId={props.primaryId} />
+      <AsrBanner contentId={page.content.id} revisions={props.readable} primaryId={props.primaryId} onApplySpeakers={props.onApplySpeakers} />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
         <select
           aria-label={t("contentView.transcript.version")}
           className="h-7 max-w-80 rounded border border-line bg-surface px-1 text-xs"
           value={revision.id}
           onChange={(event) => props.onPick(event.target.value)}
-          title={revisionBasis(revision, props.readable, t)}
+          title={revisionInfo(revision, props.readable, t)}
           data-testid="transcript-version"
         >
           {props.revisions.map((item) => (
-            <option key={item.id} value={item.id} title={revisionBasis(item, props.readable, t)}>
+            <option key={item.id} value={item.id} title={revisionInfo(item, props.readable, t)}>
               {revisionLabel(item, props.primaryId, t, undefined, props.readable)}
             </option>
           ))}
@@ -338,10 +485,33 @@ function TranscriptReader(props: {
           <Pencil size={14} />
           {t("common.action.edit")}
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => void copyText(readingText(rows))}>
-          <Copy size={14} />
-          {t("common.action.copy")}
-        </Button>
+        {speakerMode ? (
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <Button size="sm" variant="ghost" data-testid="transcript-copy">
+                <Copy size={14} />
+                {t("speakerReader.copy.menu")}
+                <ChevronDown size={12} aria-hidden="true" />
+              </Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-44 rounded-md border border-line bg-surface p-1 text-sm shadow-lg">
+                <DropdownMenu.Item className={COPY_ITEM_CLASS} onSelect={copyBody} data-testid="transcript-copy-body">
+                  {t("speakerReader.copy.body")}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className={COPY_ITEM_CLASS} onSelect={copyWithSpeakers} data-testid="transcript-copy-speakers">
+                  {t("speakerReader.copy.withSpeakers")}
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={copyBody} data-testid="transcript-copy">
+            <Copy size={14} />
+            {t("common.action.copy")}
+          </Button>
+        )}
+        <ReaderTypographyPopover value={typography} speakerMode={speakerMode} onChange={changeTypography} onReset={resetReaderTypography} />
         <Link
           to={notesLink}
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium whitespace-nowrap hover:bg-sunken"
@@ -384,40 +554,44 @@ function TranscriptReader(props: {
       ) : null}
       {proofread.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={proofread.error.error} /></div> : null}
       {setPrimary.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={setPrimary.error.error} /></div> : null}
-      {segments.isPending ? (
+      {segments.isPending || (hasSpeakerSentences && speakers.isPending) ? (
         <Loading />
       ) : (
-        <div className="relative min-h-0 flex-1" onMouseDown={pinned.start}>
+        <div ref={setHost} className="relative min-h-0 flex-1" onMouseDown={pinned.start}>
           <VirtualRows
             ref={reader}
-            className="absolute inset-0 px-4 py-2"
+            // The right padding keeps the text clear of the floating jump buttons at any font size.
+            className="absolute inset-0 py-2 pr-14 pl-4"
             testId="transcript-reader"
             items={rows}
-            keyOf={rowKey}
+            keyOf={viewRowKey}
             estimateSize={96}
             scrollToIndex={targetIndex}
             pinnedIndex={pinned.index}
-            render={(row, index) =>
-              row.kind === "chapter" ? (
-                <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />
+            render={(row, index) => {
+              if (row.kind === "chapter") return <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />;
+              const sentences: SentenceViewProps = {
+                selectedId: located.segmentId,
+                currentId: current?.id,
+                overlapIds,
+                changes,
+                search: props.search,
+                notes: placed,
+                onOpenNotes,
+                onSentence,
+              };
+              const onSeekParagraph = (): void => {
+                const first = row.paragraph.segments[0];
+                if (first !== undefined) onSentence(first);
+              };
+              return row.turn === undefined ? (
+                <ParagraphView {...sentences} paragraph={row.paragraph} typography={typography} onSeekParagraph={onSeekParagraph} />
               ) : (
-                <ParagraphView
-                  paragraph={row.paragraph}
-                  selectedId={located.segmentId}
-                  currentId={current?.id}
-                  changes={changes}
-                  search={props.search}
-                  notes={placed}
-                  onOpenNotes={onOpenNotes}
-                  onSeekParagraph={() => {
-                    const first = row.paragraph.segments[0];
-                    if (first !== undefined) onSentence(first);
-                  }}
-                  onSentence={onSentence}
-                />
-              )
-            }
+                <TurnParagraph {...sentences} context={turnContext} paragraph={row.paragraph} turn={row.turn} onSeekParagraph={onSeekParagraph} />
+              );
+            }}
           />
+          {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
           {rows.length > 0 ? (
             <div className="absolute right-6 bottom-4 flex flex-col gap-2">
               <ReaderJump label={t("contentView.transcript.toTop")} onClick={() => reader.current?.scrollToTop()} testId="reader-to-top">
@@ -450,18 +624,6 @@ function ReaderJump(props: { label: string; onClick: () => void; testId: string;
   );
 }
 
-/** Chapters without a sentence are dropped before this, so a start time names one heading. */
-function rowKey(row: ReaderRow): string {
-  return row.kind === "chapter" ? `chapter:${row.startMs}` : (row.paragraph.segments[0]?.id ?? String(row.paragraph.startMs));
-}
-
-/** What the copy button takes: the view as read, headings on their own line, blocks a blank line apart. */
-function readingText(rows: readonly ReaderRow[]): string {
-  return rows
-    .map((row) => (row.kind === "chapter" ? row.title : joinReading(row.paragraph.segments.map((s) => s.text), row.paragraph.segments.some(isMarked))))
-    .join("\n\n");
-}
-
 /** A chapter start inside the reading view: a boundary above paragraphs, named and seekable. */
 function ChapterHeading(props: { startMs: number; title: string; onSeek: () => void }) {
   return (
@@ -474,55 +636,14 @@ function ChapterHeading(props: { startMs: number; title: string; onSeek: () => v
   );
 }
 
-function ParagraphView(props: {
-  paragraph: Paragraph;
-  selectedId: string | undefined;
-  currentId: string | undefined;
-  changes: Map<string, "ai" | "user">;
-  search: string;
-  notes: ReadonlyMap<string, SentenceNote[]>;
-  onOpenNotes: (segmentId: string, noteIds: string[]) => void;
-  onSeekParagraph: () => void;
-  onSentence: (segment: TranscriptSegmentDto) => void;
-}) {
+/** A paragraph of the plain reading view (no speaker turns): its time, then its sentences run on. */
+function ParagraphView(props: SentenceViewProps & { paragraph: Paragraph; typography: Pick<ReaderTypography, "fontSize" | "lineHeight">; onSeekParagraph: () => void }) {
   return (
-    <p className="py-2 text-sm leading-7">
+    <p className="break-words" style={{ ...readerBodyStyle(props.typography), maxWidth: `${READER_MEASURE_EM}em`, paddingBottom: `${PARAGRAPH_GAP_EM}em` }}>
       <button type="button" className="mr-2 font-mono text-xs text-accent hover:underline" data-reading-time onClick={props.onSeekParagraph}>
         {formatDuration(props.paragraph.startMs)}
       </button>
-      {props.paragraph.segments.map((segment, index) => {
-        const change = props.changes.get(segment.id);
-        const marks = [
-          segment.id === props.selectedId ? "bg-accent-soft ring-1 ring-accent/50" : "",
-          segment.id === props.currentId ? "underline decoration-accent decoration-2" : "",
-          change === "ai" ? "bg-sky-500/15" : change === "user" ? "bg-emerald-500/15" : "",
-        ].join(" ");
-        // The separator is a bare text node so it is neither clickable nor marked as changed.
-        const previous = index === 0 ? undefined : props.paragraph.segments[index - 1];
-        return (
-          <Fragment key={segment.id}>
-            {previous === undefined ? null : readingSeparator(previous.text, segment.text, isMarked(previous))}
-            <span
-              data-segment-id={segment.id}
-              {...(segment.id === props.currentId ? { "data-testid": "current-sentence" } : {})}
-              {...(segment.id === props.selectedId ? { "aria-current": "true" as const } : {})}
-              className={`cursor-pointer rounded hover:bg-sunken ${marks}`}
-              onClick={() => {
-                // The click that ends a drag selection is not a request to play from here.
-                if (window.getSelection()?.isCollapsed === false) return;
-                props.onSentence(segment);
-              }}
-            >
-              <DecoratedText
-                text={segment.text}
-                notes={props.notes.get(segment.id) ?? []}
-                search={props.search === "" ? [] : termRanges(segment.text, props.search)}
-                onOpenNotes={(noteIds) => props.onOpenNotes(segment.id, noteIds)}
-              />
-            </span>
-          </Fragment>
-        );
-      })}
+      <SentenceRuns {...props} segments={props.paragraph.segments} />
     </p>
   );
 }

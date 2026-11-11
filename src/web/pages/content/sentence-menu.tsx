@@ -1,4 +1,4 @@
-import { Clock, Copy, MessageCircleQuestion, Play } from "lucide-react";
+import { Clock, Copy, MessageCircleQuestion, Play, Users } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { SegmentId } from "../../../shared/ids.ts";
@@ -54,7 +54,16 @@ export function explainSelectionEntries(
  */
 export function useSentenceMenu<T extends Element = HTMLElement>(
   sentenceOf: (segmentId: string) => SentenceData | undefined,
-  options: { explainSentence: boolean },
+  options: {
+    explainSentence: boolean;
+    /** Plays from the sentence in the view's own way (it may keep state of its own); without it the page selects and seeks. */
+    onPlay?: (segmentId: string) => void;
+    /**
+     * Present when the view reads by speakers: adds "copy this sentence with its speaker", the
+     * text led by what this returns (`名字：`, empty for a sentence nobody was assigned to).
+     */
+    speakerPrefixOf?: (segmentId: string) => string;
+  },
 ) {
   const { t } = useTranslation();
   const page = useContentPage();
@@ -72,6 +81,8 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
       composer?.explain(draft, question);
       window.getSelection()?.removeAllRanges();
     };
+    // Read when the menu is built, like the sentence itself: the action does not depend on the view staying as it is.
+    const speakerPrefix = options.speakerPrefixOf?.(segmentId);
     const selectionEntries = composer === undefined ? [] : explainSelectionEntries(hit, t, explain);
     return {
       kind: "text",
@@ -81,7 +92,7 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
           id: "play-from-here",
           label: t("common.menu.playFromHere"),
           icon: <Play size={14} aria-hidden="true" />,
-          onSelect: () => page.select({ revisionId, segmentId }, sentence.startMs),
+          onSelect: () => (options.onPlay === undefined ? page.select({ revisionId, segmentId }, sentence.startMs) : options.onPlay(segmentId)),
         },
         { id: "copy-sentence", label: t("common.menu.copySentence"), icon: <Copy size={14} aria-hidden="true" />, onSelect: () => void copyText(sentence.text) },
         {
@@ -90,6 +101,16 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
           icon: <Clock size={14} aria-hidden="true" />,
           onSelect: () => void copyText(sentenceWithTime(sentence)),
         },
+        ...(speakerPrefix === undefined
+          ? []
+          : [
+              {
+                id: "copy-sentence-with-speaker",
+                label: t("speakerReader.copy.sentenceWithSpeaker"),
+                icon: <Users size={14} aria-hidden="true" />,
+                onSelect: () => void copyText(`${speakerPrefix}${sentence.text}`),
+              },
+            ]),
         ...(composer === undefined || !options.explainSentence
           ? []
           : [

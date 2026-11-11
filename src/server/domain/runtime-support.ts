@@ -85,6 +85,8 @@ export interface UserSettings {
   platformCookieBrowser?: CookieBrowser;
   /** The chat's remembered web search setting; absent = off. */
   chatWebSearchMode?: ChatWebSearchSetting;
+  /** Whether new transcriptions identify speakers where the model offers it; frozen into each request at submission. */
+  asrDiarization: boolean;
   updatedAt: number;
 }
 

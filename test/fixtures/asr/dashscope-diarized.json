@@ -1,0 +1,67 @@
+{
+  "sanitized": true,
+  "_fixture": "Synthetic Chinese result file with speaker identification, following the documented structure of the Alibaba Cloud Model Studio recorded-file recognition HTTP API (read 2026-11-09): transcripts[].sentences[] with an integer speaker_id counted from 0, words[] with millisecond times. Speaker 1 interjects inside speaker 0's second sentence, so the two overlap. Timing and text are invented.",
+  "file_url": "oss://dashscope-instant/example/interview.flac",
+  "properties": {
+    "audio_format": "flac",
+    "channels": [0],
+    "original_sampling_rate": 16000,
+    "original_duration_in_milliseconds": 9000
+  },
+  "transcripts": [
+    {
+      "channel_id": 0,
+      "content_duration_in_milliseconds": 8600,
+      "text": "请先介绍一下自己。我在做软件工程的研究。对。然后加入了这个团队。",
+      "sentences": [
+        {
+          "begin_time": 100,
+          "end_time": 1900,
+          "text": "请先介绍一下自己。",
+          "sentence_id": 1,
+          "speaker_id": 0,
+          "words": [
+            { "begin_time": 100, "end_time": 700, "text": "请先", "punctuation": "" },
+            { "begin_time": 700, "end_time": 1300, "text": "介绍一下", "punctuation": "" },
+            { "begin_time": 1300, "end_time": 1900, "text": "自己", "punctuation": "。" }
+          ]
+        },
+        {
+          "begin_time": 2200,
+          "end_time": 6200,
+          "text": "我在做软件工程的研究。",
+          "sentence_id": 2,
+          "speaker_id": 1,
+          "words": [
+            { "begin_time": 2200, "end_time": 3000, "text": "我在做", "punctuation": "" },
+            { "begin_time": 3000, "end_time": 4200, "text": "软件工程", "punctuation": "" },
+            { "begin_time": 4200, "end_time": 5000, "text": "的", "punctuation": "" },
+            { "begin_time": 5400, "end_time": 6200, "text": "研究", "punctuation": "。" }
+          ]
+        },
+        {
+          "begin_time": 4400,
+          "end_time": 5000,
+          "text": "对。",
+          "sentence_id": 3,
+          "speaker_id": 0,
+          "words": [
+            { "begin_time": 4400, "end_time": 5000, "text": "对", "punctuation": "。" }
+          ]
+        },
+        {
+          "begin_time": 6500,
+          "end_time": 8600,
+          "text": "然后加入了这个团队。",
+          "sentence_id": 4,
+          "speaker_id": 1,
+          "words": [
+            { "begin_time": 6500, "end_time": 7300, "text": "然后", "punctuation": "" },
+            { "begin_time": 7300, "end_time": 8000, "text": "加入了", "punctuation": "" },
+            { "begin_time": 8000, "end_time": 8600, "text": "这个团队", "punctuation": "。" }
+          ]
+        }
+      ]
+    }
+  ]
+}

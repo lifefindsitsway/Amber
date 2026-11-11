@@ -30,7 +30,7 @@ import { createTask } from "../pipeline/task-state.ts";
 import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, multipartRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { QuotaReservation, StorageQuota } from "./storage-quota.ts";
-import { asrModelRefForSubmission } from "./settings.ts";
+import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
 import { resolveTemplateRef } from "./summary-templates.ts";
 import type { TaskControl } from "./tasks.ts";
 
@@ -55,6 +55,8 @@ export interface LocalImportServiceOptions {
   ingest: LocalMediaIngest;
   disk: DiskUsageProbe;
   settings: InstanceSettingsSource;
+  /** The ASR providers' descriptors, for checking a speaker identification request against the chosen model; the shared presets by default. */
+  asrDescriptors?: AsrDescriptorSource;
   /** Per-user storage limits of uploads; without it uploads are bounded by the disk watermark only. */
   quota?: StorageQuota;
   /** Local mode only: the verifier of file dialog grants. */
@@ -461,6 +463,11 @@ export class LocalImportService {
     }
     const templateRef = resolveTemplateRef(scope, owner, settings.templateId, "settings.templateId");
     const asrModelRef = asrModelRefForSubmission(scope, owner, settings.asrModelRef, "settings.asrModelRef");
+    const diarization = diarizationForSubmission(scope, owner, settings.diarization, {
+      asrModelRef,
+      ...(this.options.asrDescriptors === undefined ? {} : { descriptorOf: this.options.asrDescriptors }),
+      ...(asset.durationMs === undefined ? {} : { durationMs: asset.durationMs }),
+    });
     if (asset.fingerprint !== undefined && !input.allowDuplicate) {
       // A Content in the trash still holds its file; one outside it is the better answer.
       const candidates = scope.mediaAssets
@@ -508,6 +515,7 @@ export class LocalImportService {
       ...(settings.outputLanguage === undefined ? {} : { outputLanguage: settings.outputLanguage }),
       autoProofread: settings.autoProofread,
       templateRef,
+      diarization,
       ...(initialSubtitleRevisionId === undefined ? {} : { initialSubtitleRevisionId }),
     };
     const task = createTask(scope, outbox, {

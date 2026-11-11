@@ -17,6 +17,7 @@ import type { AsrProviderProfile } from "../../../../../src/server/domain/provid
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse, type OutboundStreamBody } from "../../../../../src/server/ports/outbound-http.ts";
 import { ASR_HTTP_TIMEOUT_MIN } from "../../../../../src/shared/defaults.ts";
 import { asrResponse, KNOWN_MISHEARD_TERMS } from "../../../../fixtures/asr/index.ts";
+import segmentsGolden from "../../../../fixtures/asr/elevenlabs-segments-golden.json" with { type: "json" };
 
 const API_KEY = "<elevenlabs-test-key>";
 const AUDIO = new Uint8Array(Array.from({ length: 70_000 }, (_, index) => index % 251));
@@ -169,8 +170,9 @@ describe("ElevenLabs descriptor and capabilities", () => {
 
   it("gives every model the same limits, and refuses a model not on the profile or without a family", () => {
     const { factory } = setup(() => ({ body: asrResponse("en") }));
+    // The known models add speaker identification (at most 32 speakers); a typed-in model never has it.
     for (const model of ELEVENLABS_DESCRIPTOR.models) {
-      expect(factory.create(PROFILE, model).capabilities).toEqual(ELEVENLABS_CAPABILITIES);
+      expect(factory.create(PROFILE, model).capabilities).toEqual({ ...ELEVENLABS_CAPABILITIES, diarization: { speakerCount: { min: 1, max: 32, semantics: "maximum" } } });
     }
     const custom = { ...PROFILE, models: [{ modelId: "scribe_v3", family: "scribe" }, { modelId: "scribe_v4" }, { modelId: "scribe_v5", family: "whisper" }] };
     expect(factory.create(custom, "scribe_v3").capabilities).toEqual(ELEVENLABS_CAPABILITIES);
@@ -280,6 +282,27 @@ describe("transcribe request", () => {
     expect(Buffer.compare(file?.content as Buffer, Buffer.from(AUDIO))).toBe(0);
   });
 
+  it("sends diarize=true, and num_speakers only when a count is given; never roles or a threshold", async () => {
+    const fieldsOf = async (diarization?: { speakerCount?: number }) => {
+      const { http, provider } = setup(() => ({ body: asrResponse("diarized") }));
+      await provider.transcribe({ audio: ASSET, terminology: [], ...(diarization === undefined ? {} : { diarization }) }, options());
+      const { request, bytes } = http.captured[0] as Captured;
+      return parts(bytes as Buffer, (request.body as OutboundStreamBody).contentType).map((part) => [part.name, part.content.toString("utf8")]);
+    };
+    expect(await fieldsOf()).toContainEqual(["diarize", "false"]);
+    expect((await fieldsOf()).map(([name]) => name)).not.toContain("num_speakers");
+    const open = await fieldsOf({});
+    expect(open).toContainEqual(["diarize", "true"]);
+    expect(open.map(([name]) => name)).not.toContain("num_speakers");
+    const counted = await fieldsOf({ speakerCount: 7 });
+    expect(counted).toContainEqual(["diarize", "true"]);
+    expect(counted).toContainEqual(["num_speakers", "7"]);
+    for (const names of [open, counted].map((fields) => fields.map(([name]) => name))) {
+      expect(names).not.toContain("detect_speaker_roles");
+      expect(names).not.toContain("diarization_threshold");
+    }
+  });
+
   it("leaves language_code out when the language does not map and sends no keyterms without terms", async () => {
     const { http, provider } = setup(() => ({ body: asrResponse("en") }));
     await provider.transcribe({ audio: ASSET, terminology: [] }, options());
@@ -387,6 +410,29 @@ describe("transcribe answer", () => {
       expect(segment.startMs).toBeLessThan(segment.endMs);
       expect(segment.startMs).toBeGreaterThanOrEqual(result.segments[index - 1]?.endMs ?? 0);
     }
+  });
+
+  it("gives the same sentences as before speaker identification for every fixture without speakers", () => {
+    for (const [name, expected] of Object.entries(segmentsGolden)) {
+      const result = canonicalFromResponse(asrResponse(name as "en" | "mixed" | "zh-synthetic" | "zh-recorded"), { model: "scribe_v2" });
+      expect(result.segments, name).toEqual(expected.segments);
+      expect(result.words?.every((word) => !("speakerId" in word)), name).toBe(true);
+    }
+  });
+
+  it("labels sentences and words with the speaker, inherits a missing label from its neighbours and keeps the overlap", () => {
+    const result = canonicalFromResponse(asrResponse("diarized"), { model: "scribe_v2" });
+    expect(result.segments).toEqual([
+      { startMs: 500, endMs: 2200, text: "Please introduce yourself.", speakerId: "speaker_0" },
+      { startMs: 2600, endMs: 4900, text: "I work on software engineering", speakerId: "speaker_1" },
+      { startMs: 4300, endMs: 4800, text: "Right.", speakerId: "speaker_0" },
+      { startMs: 5000, endMs: 5900, text: "and research.", speakerId: "speaker_1" },
+    ]);
+    // "on" had no label and sits between two words of speaker_1.
+    expect(result.words?.find((word) => word.text === "on")?.speakerId).toBe("speaker_1");
+    expect(result.words?.map((word) => word.speakerId)).toEqual([
+      "speaker_0", "speaker_0", "speaker_0", "speaker_1", "speaker_1", "speaker_1", "speaker_1", "speaker_1", "speaker_0", "speaker_1", "speaker_1",
+    ]);
   });
 
   it("merges a Chinese transcript with the Chinese parameters (mixed with English terms)", async () => {

@@ -21,6 +21,7 @@ import type { Collection, CollectionItem } from "../domain/collection.ts";
 import type { Content, ContentSource, ImportBatch } from "../domain/content.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { Note } from "../domain/note.ts";
+import type { ContentSpeaker, SpeakerAvatar } from "../domain/speaker.ts";
 import type { AsrProviderProfile, OtherModelProfile, PlatformAccount, ProviderProfile } from "../domain/provider-profile.ts";
 import type { TokenUsageFeature } from "../../shared/enums.ts";
 import type { TerminologyEntry, TerminologyScope, TerminologySet } from "../domain/terminology.ts";
@@ -336,6 +337,45 @@ export interface TranscriptRepository {
   listArchived(ownerUserId: string, contentId: string): Array<{ revisionId: string; archivedAt: number }>;
   /** Archives the revision at `archivedAt`, or restores it when `archivedAt` is undefined; idempotent either way. */
   setArchived(ownerUserId: string, revisionId: string, archivedAt: number | undefined): void;
+}
+
+/** A change to a speaker: `null` clears the name or the photo; absent fields stay. */
+export interface SpeakerPatch {
+  name?: string | null;
+  colorIndex?: number;
+  avatar?: SpeakerAvatar | null;
+}
+
+/**
+ * The speakers of the owner's Contents. Invariant: a speaker id is unique within its Content
+ * only, so every call names the Content; `ordinal` is unique within the Content and given in
+ * the same transaction as `MAX(ordinal) + 1`. Speakers are never deleted on their own; they go
+ * with their Content. Names arrive normalized and photos checked; the repository stores them.
+ */
+export interface SpeakerRepository {
+  /** In `ordinal` order. */
+  list(ownerUserId: string, contentId: string): ContentSpeaker[];
+  get(ownerUserId: string, contentId: string, speakerId: string): ContentSpeaker | undefined;
+  /**
+   * Adds speakers in the given order at the next ordinals; a speaker without `colorIndex` gets
+   * `defaultSpeakerColorIndex(ordinal)`. Throws unless the Content is the owner's and every id
+   * is new to it. The caller enforces `SPEAKERS_PER_CONTENT_MAX`.
+   */
+  insert(ownerUserId: string, contentId: string, speakers: ReadonlyArray<{ id: string; name?: string; colorIndex?: number }>, now: number): ContentSpeaker[];
+  /** Applies the patch; a new photo raises the photo version. `undefined` when there is no such speaker. */
+  update(ownerUserId: string, contentId: string, speakerId: string, patch: SpeakerPatch, now: number): ContentSpeaker | undefined;
+  /** The stored photo with its version, when the speaker has one. */
+  getAvatar(ownerUserId: string, contentId: string, speakerId: string): (SpeakerAvatar & { version: number }) | undefined;
+  /** How many speakers the Content has. */
+  count(ownerUserId: string, contentId: string): number;
+  /** Ids named by a sentence of an unarchived revision of the Content or by its transcript draft. */
+  usedIds(ownerUserId: string, contentId: string): Set<string>;
+  /**
+   * Named speakers of the owner's Contents other than `excludeContentId` whose name contains
+   * `query` (case-insensitive; every named one when blank), most recently changed first, at
+   * most `limit`, with the title of their Content.
+   */
+  suggestions(ownerUserId: string, query: string, excludeContentId: string | undefined, limit: number): Array<ContentSpeaker & { contentTitle?: string }>;
 }
 
 /**
@@ -1006,6 +1046,7 @@ export interface RepositoryScope {
   collections: CollectionRepository;
   mediaAssets: MediaAssetRepository;
   transcripts: TranscriptRepository;
+  speakers: SpeakerRepository;
   revisionReferences: RevisionReferenceRepository;
   secretEnvelopes: SecretEnvelopeStore;
   importBatches: ImportBatchRepository;

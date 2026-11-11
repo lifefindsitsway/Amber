@@ -24,7 +24,7 @@ const RESULT_URL = "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/resu
 const AUDIO = new Uint8Array(Array.from({ length: 40_000 }, (_, index) => index % 253));
 const QWEN = "qwen-audio-3.1-asr-flash-filetrans";
 
-const fixture = (name: "zh" | "en"): string => readFileSync(join(import.meta.dirname, `../../../../fixtures/asr/dashscope-${name}.json`), "utf8");
+const fixture = (name: "zh" | "en" | "diarized"): string => readFileSync(join(import.meta.dirname, `../../../../fixtures/asr/dashscope-${name}.json`), "utf8");
 
 function profile(models: ReadonlyArray<string | AsrModelEntry> = [QWEN, "fun-asr"]): AsrProviderProfile {
   const entries = models.map((model) => (typeof model === "string" ? { modelId: model } : model));
@@ -207,10 +207,15 @@ function parts(bytes: Buffer, contentType: string): Array<{ name: string; filena
   return result;
 }
 
-async function submit(provider: AsrJobProvider, terminology = [...KNOWN_MISHEARD_TERMS], language: string | undefined = "zh-CN") {
+async function submit(
+  provider: AsrJobProvider,
+  terminology = [...KNOWN_MISHEARD_TERMS],
+  language: string | undefined = "zh-CN",
+  diarization?: { speakerCount?: number },
+) {
   const events: string[] = [];
   const handle = await provider.submit(
-    { audio: ASSET, terminology, ...(language === undefined ? {} : { language }) },
+    { audio: ASSET, terminology, ...(language === undefined ? {} : { language }), ...(diarization === undefined ? {} : { diarization }) },
     { signal: signal(), onRequestStart: () => events.push("paid") },
   );
   return { handle, events };
@@ -220,6 +225,14 @@ describe("descriptor and per-model capabilities", () => {
   it("publishes the shared preset", () => {
     expect(DASHSCOPE_DESCRIPTOR).toBe(ASR_PRESETS.dashscope);
     expect(DASHSCOPE_DESCRIPTOR.models).toEqual([QWEN, "fun-asr"]);
+  });
+
+  it("declares speaker identification for the known models only: 2 to 100 speakers as a reference, up to two hours", () => {
+    const support = { speakerCount: { min: 2, max: 100, semantics: "reference" }, recommendedMaxDurationSec: 7200 };
+    expect(setup(routes(), QWEN).provider.capabilities.diarization).toEqual(support);
+    expect(setup(routes(), "fun-asr").provider.capabilities.diarization).toEqual(support);
+    const typed = setup(routes(), "fun-asr-2026", [{ modelId: "fun-asr-2026", family: "fun_asr" }]).provider.capabilities;
+    expect(typed.diarization).toBeUndefined();
   });
 
   it("declares terminology bias for qwen-audio and not for fun-asr, both as jobs", () => {
@@ -310,6 +323,26 @@ describe("submit", () => {
       vocabulary: Object.fromEntries(KNOWN_MISHEARD_TERMS.map((entry) => [entry.term, 4])),
     });
     expect(typeof request.parameters["special_word_filter"]).toBe("string");
+  });
+
+  it("sends diarization_enabled only when identification is requested, and speaker_count only when a count is given", async () => {
+    const parametersOf = (http: StubHttp): Record<string, unknown> =>
+      (JSON.parse((http.captured.find((entry) => entry.request.url.endsWith("/asr/transcription")) as Captured).request.body as string) as { parameters: Record<string, unknown> }).parameters;
+    for (const model of [QWEN, "fun-asr"]) {
+      const without = setup(routes(), model);
+      await submit(without.provider as AsrJobProvider, [], "zh");
+      expect(parametersOf(without.http)["diarization_enabled"]).toBe(false);
+      expect(parametersOf(without.http)).not.toHaveProperty("speaker_count");
+
+      const open = setup(routes(), model);
+      await submit(open.provider as AsrJobProvider, [], "zh", {});
+      expect(parametersOf(open.http)["diarization_enabled"]).toBe(true);
+      expect(parametersOf(open.http)).not.toHaveProperty("speaker_count");
+
+      const counted = setup(routes(), model);
+      await submit(counted.provider as AsrJobProvider, [], "zh", { speakerCount: 5 });
+      expect(parametersOf(counted.http)).toMatchObject({ diarization_enabled: true, speaker_count: 5 });
+    }
   });
 
   it("sends no vocabulary for fun-asr and no hints for a language the model does not list", async () => {
@@ -739,6 +772,45 @@ describe("probe", () => {
 });
 
 describe("result normalization", () => {
+  it("turns the integer speaker_id of a sentence into a string label on the segment and on each of its words", () => {
+    const result = canonicalFromResultFile(fixture("diarized"), { provider: "dashscope", model: QWEN });
+    expect(result.segments.map((segment) => [segment.speakerId, segment.text])).toEqual([
+      ["0", "请先介绍一下自己。"],
+      ["1", "我在做软件工程的研究。"],
+      ["0", "对。"],
+      ["1", "然后加入了这个团队。"],
+    ]);
+    // Sentences of different speakers overlap (the second runs to 6200, the third sits inside it).
+    expect(result.segments[2]?.startMs).toBeLessThan(result.segments[1]?.endMs as number);
+    expect(result.words?.map((word) => [word.text, word.speakerId])).toEqual([
+      ["请先", "0"],
+      ["介绍一下", "0"],
+      ["自己。", "0"],
+      ["我在做", "1"],
+      ["软件工程", "1"],
+      ["的", "1"],
+      ["研究。", "1"],
+      ["对。", "0"],
+      ["然后", "1"],
+      ["加入了", "1"],
+      ["这个团队。", "1"],
+    ]);
+  });
+
+  it("still orders word times within one speaker only, so another speaker's earlier words do not fail the check", () => {
+    const file = JSON.parse(fixture("diarized")) as { transcripts: Array<{ sentences: Array<{ words: Array<{ begin_time: number }> }> }> };
+    expect(canonicalFromResultFile(JSON.stringify(file), { provider: "dashscope", model: QWEN }).words).toHaveLength(11);
+    // Running backwards inside speaker 1's own stream still drops every word.
+    (file.transcripts[0]?.sentences[3]?.words[0] as { begin_time: number }).begin_time = 100;
+    expect(canonicalFromResultFile(JSON.stringify(file), { provider: "dashscope", model: QWEN }).words).toBeUndefined();
+  });
+
+  it("leaves segments and words without a speaker when the file names none", () => {
+    const result = canonicalFromResultFile(fixture("zh"), { provider: "dashscope", model: QWEN });
+    expect(result.segments.every((segment) => !("speakerId" in segment))).toBe(true);
+    expect(result.words?.every((word) => !("speakerId" in word))).toBe(true);
+  });
+
   it("keeps English words with their punctuation and infers English", () => {
     const result = canonicalFromResultFile(fixture("en"), { provider: "dashscope", model: "fun-asr" });
     expect(result.language).toBe("en");

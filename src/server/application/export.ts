@@ -10,6 +10,7 @@ import {
 } from "../../shared/dto/export.ts";
 import type { BurnMode } from "../../shared/enums.ts";
 import { exportFile } from "../../shared/i18n/zh-CN/export-file.ts";
+import type { SpeakerLabelMode } from "../../shared/speakers.ts";
 import { subtitleCues } from "../../shared/subtitle-geometry.ts";
 import type { SubtitleStyle } from "../../shared/subtitle-style.ts";
 import { summaryTemplate } from "../../shared/i18n/zh-CN/summary-templates.ts";
@@ -34,6 +35,7 @@ import {
   type CitationResolver,
 } from "../domain/export/markdown.ts";
 import { ParagraphBuilder, type Paragraph } from "../domain/export/paragraphs.ts";
+import { isChinese, SpeakerLabeler, speakerLabels, speakerPrefix } from "../domain/export/speaker-labels.ts";
 import { srtCue } from "../domain/export/srt.ts";
 import { dateText, dateTimeText, durationText } from "../domain/export/time-format.ts";
 import { txtParagraph } from "../domain/export/txt.ts";
@@ -179,11 +181,16 @@ export class ExportService {
     }
     const file = SUBTITLE_FILES[body.format];
     const filename = exportFilename(titleOf(scope, owner, content), exportFile.untitled, file.extension);
+    // Read once, and only when asked: without `includeSpeakers` the output is what it always was.
+    const speakers: SpeakerNames | undefined =
+      body.includeSpeakers === true
+        ? { names: speakerLabels(scope.speakers.list(owner, content.id)), chinese: isChinese(revision.language), mode: body.speakerLabels ?? "turn" }
+        : undefined;
     if (body.style !== undefined && (body.format === "ass" || body.format === "ass-bilingual")) {
       // A single-language ASS of a translation shows it in the translation's appearance.
       const mode: BurnMode = translation !== undefined ? "bilingual" : revision.kind === "translated" ? "translation" : "original";
       const options = { style: body.style, playRes: FILE_PLAY_RES, textOnly: false };
-      const lines = mode === "translation" ? this.styledAss(owner, mode, undefined, revision.id, options) : this.styledAss(owner, mode, revision.id, translation?.id, options);
+      const lines = mode === "translation" ? this.styledAss(owner, mode, undefined, revision.id, options, speakers?.names) : this.styledAss(owner, mode, revision.id, translation?.id, options, speakers?.names);
       return { filename, contentType: file.contentType, body: lines };
     }
     const cues = this.cuesOf(owner, revision.id, translation?.id);
@@ -191,18 +198,20 @@ export class ExportService {
     let lines: AsyncIterable<string>;
     switch (body.format) {
       case "srt":
-      case "srt-bilingual":
-        lines = mapCues(cues, (cue, index) => srtCue(index + 1, cue));
+      case "srt-bilingual": {
+        const labels = speakers === undefined ? undefined : new SpeakerLabeler(speakers.mode);
+        lines = mapCues(cues, (cue, index) => srtCue(index + 1, cue, labelFor(speakers, labels, cue.speakerId)));
         break;
+      }
       case "vtt":
-        lines = withHeader(VTT_HEADER, mapCues(cues, (cue) => vttCue(cue)));
+        lines = withHeader(VTT_HEADER, mapCues(cues, (cue) => vttCue(cue, nameOf(speakers, cue.speakerId))));
         break;
       case "ass":
       case "ass-bilingual":
-        lines = withHeader(ASS_HEADER, mapCues(cues, (cue) => assDialogue(cue, { karaoke })));
+        lines = withHeader(ASS_HEADER, mapCues(cues, (cue) => assDialogue(cue, { karaoke, ...speakerField(nameOf(speakers, cue.speakerId)) })));
         break;
       case "txt":
-        lines = txtLines(cues);
+        lines = txtLines(cues, speakers);
         break;
     }
     return { filename, contentType: file.contentType, body: lines };
@@ -218,6 +227,7 @@ export class ExportService {
     originalId: string | undefined,
     translationId: string | undefined,
     options: Pick<StyledAssRequest, "style" | "playRes" | "textOnly">,
+    speakerNames?: ReadonlyMap<string, string>,
   ): AsyncGenerator<string> {
     const read = async (revisionId: string | undefined): Promise<TranscriptSegment[]> => {
       const segments: TranscriptSegment[] = [];
@@ -228,8 +238,16 @@ export class ExportService {
       }
       return segments;
     };
-    const cues = subtitleCues(mode, await read(originalId), await read(translationId));
-    yield styledAssDocument(cues, { ...options, mode });
+    const original = await read(originalId);
+    const translation = await read(translationId);
+    const cues = subtitleCues(mode, original, translation);
+    // One cue per sentence of the revision the mode shows, in that order.
+    const shown = mode === "translation" ? translation : original;
+    yield styledAssDocument(cues, {
+      ...options,
+      mode,
+      ...(speakerNames === undefined ? {} : { speakers: { ofCue: shown.map((segment) => segment.speakerId), names: speakerNames } }),
+    });
   }
 
   private markdownFile(scope: RepositoryScope, owner: string, content: Content, body: MarkdownExportRequest): ExportFile {
@@ -257,6 +275,7 @@ export class ExportService {
     const source = content.source.sourceUrl ?? localNameOf(scope, owner, content);
     const exportedAt = this.now();
     const link = (ms: number): string | undefined => (body.backlinks ? backlinkUrl(content.source, ms) : undefined);
+    const speakerNames = body.includeSpeakers === true && transcript !== undefined ? speakerLabels(scope.speakers.list(owner, content.id)) : undefined;
     const service = this;
 
     async function* lines(): AsyncGenerator<string> {
@@ -284,7 +303,7 @@ export class ExportService {
         const label = revisionLabelText(transcript);
         yield `\n## ${fillText(exportFile.transcript, { revision: label })}\n\n`;
         let pending = "";
-        for await (const piece of service.transcriptPieces(owner, transcript.id, chapters, link)) {
+        for await (const piece of service.transcriptPieces(owner, transcript.id, chapters, link, speakerNames)) {
           yield pending;
           pending = piece;
         }
@@ -376,9 +395,16 @@ export class ExportService {
     revisionId: string,
     chapters: ChapterRevision | undefined,
     link: (ms: number) => string | undefined,
+    speakerNames?: ReadonlyMap<string, string>,
   ): AsyncGenerator<string> {
     const starts = chapters === undefined ? [] : [...chapters.chapters].sort((a, b) => a.startMs - b.startMs);
-    const line = (paragraph: Paragraph): string => transcriptParagraphLine(markdownStamp(paragraph.startMs, link(paragraph.startMs)), paragraph.text);
+    // The first paragraph of each speaker's turn names the speaker; a chapter heading starts a new turn, as in the reading view.
+    const turns = new SpeakerLabeler("turn");
+    const line = (paragraph: Paragraph): string => {
+      const labelled = turns.next(paragraph.speakerId);
+      const speaker = labelled && paragraph.speakerId !== undefined ? speakerNames?.get(paragraph.speakerId) : undefined;
+      return transcriptParagraphLine(markdownStamp(paragraph.startMs, link(paragraph.startMs)), paragraph.text, speaker);
+    };
     const builder = new ParagraphBuilder();
     let next = 0;
     for await (const cue of this.cuesOf(owner, revisionId)) {
@@ -392,6 +418,7 @@ export class ExportService {
         if (closed !== undefined) {
           yield line(closed);
         }
+        turns.restart();
         yield transcriptChapterHeading(opened);
       }
       const closed = builder.push(cue);
@@ -518,12 +545,39 @@ async function* paragraphsOf(cues: AsyncIterable<ExportCue>): AsyncGenerator<Par
   }
 }
 
-async function* txtLines(cues: AsyncIterable<ExportCue>): AsyncGenerator<string> {
+async function* txtLines(cues: AsyncIterable<ExportCue>, speakers: SpeakerNames | undefined): AsyncGenerator<string> {
+  const labels = speakers === undefined ? undefined : new SpeakerLabeler(speakers.mode);
   let first = true;
   for await (const paragraph of paragraphsOf(cues)) {
-    yield txtParagraph(paragraph, first);
+    yield txtParagraph(paragraph, first, labelFor(speakers, labels, paragraph.speakerId));
     first = false;
   }
+}
+
+/** What the speaker options of a subtitle export resolve to. */
+interface SpeakerNames {
+  names: ReadonlyMap<string, string>;
+  /** The exported revision is Chinese: names are followed by a full-width colon. */
+  chinese: boolean;
+  mode: SpeakerLabelMode;
+}
+
+/** The display name of a cue's speaker; absent for unassigned sentences and without `includeSpeakers`. */
+function nameOf(speakers: SpeakerNames | undefined, speakerId: string | undefined): string | undefined {
+  return speakerId === undefined ? undefined : speakers?.names.get(speakerId);
+}
+
+/** `exactOptionalPropertyTypes`-safe `{ speaker }` for a name that may be absent. */
+function speakerField(name: string | undefined): { speaker?: string } {
+  return name === undefined ? {} : { speaker: name };
+}
+
+/** The `名字：` prefix of the next item of a line-based format, or nothing when it is not labelled. */
+function labelFor(speakers: SpeakerNames | undefined, labeler: SpeakerLabeler | undefined, speakerId: string | undefined): string {
+  if (speakers === undefined || labeler === undefined) return "";
+  const labelled = labeler.next(speakerId);
+  const name = nameOf(speakers, speakerId);
+  return labelled && name !== undefined ? speakerPrefix(name, speakers.chinese) : "";
 }
 
 /**

@@ -43,7 +43,7 @@ function stubAsr(calls: MediaAsset[]): AsrSyncProvider {
   return {
     id: "stub",
     capabilities: {
-      wordTimestamps: true, segmentTimestamps: true, diarization: false, terminologyBias: false,
+      wordTimestamps: true, segmentTimestamps: true, terminologyBias: false,
       maxFileBytes: 1, maxDurationSec: 1, chunkingStrategy: "providerManaged", delivery: "sync",
     },
     async transcribe(input) {

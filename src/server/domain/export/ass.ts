@@ -42,14 +42,23 @@ export function assText(text: string): string {
 }
 
 /**
+ * A speaker name for the `Name` field. The field ends at the next comma, so commas become
+ * full-width ones; line breaks would end the event, so they become spaces.
+ */
+export function assName(name: string | undefined): string {
+  return name === undefined ? "" : name.replace(/,/g, "，").replace(/\r\n|\r|\n/g, " ");
+}
+
+/**
  * One `Dialogue` line. A bilingual cue stays a single event — `原文\N{\rTranslation}译文` —
  * because two events would overlap on screen. `karaoke` adds `{\k}` tags from real word
  * timing to the original line only; callers enable it for `exact_words` revisions alone.
+ * `speaker` fills the `Name` field.
  */
-export function assDialogue(cue: ExportCue, options: { karaoke: boolean }): string {
+export function assDialogue(cue: ExportCue, options: { karaoke: boolean; speaker?: string }): string {
   const original = options.karaoke && cue.words !== undefined && cue.words.length > 0 ? karaokeText(cue) : assText(subtitleGlyphText(cue.text));
   const text = cue.translation === undefined ? original : `${original}\\N{\\rTranslation}${assText(subtitleGlyphText(cue.translation))}`;
-  return `Dialogue: 0,${assTime(cue.startMs)},${assTime(cue.endMs)},Default,,0,0,0,,${text}\n`;
+  return `Dialogue: 0,${assTime(cue.startMs)},${assTime(cue.endMs)},Default,${assName(options.speaker)},0,0,0,,${text}\n`;
 }
 
 /**
@@ -111,6 +120,11 @@ export interface StyledAssOptions {
    * which keeps colour and size but not boxes or positions.
    */
   textOnly: boolean;
+  /**
+   * Speakers for the `Name` field: `ofCue[i]` is the speaker id of the i-th input cue and
+   * `names` gives each id its display name. Absent = no names, as before.
+   */
+  speakers?: { ofCue: readonly (string | undefined)[]; names: ReadonlyMap<string, string> };
 }
 
 const STYLE_FORMAT =
@@ -272,23 +286,56 @@ function eventText(cue: TimedSubtitle, order: SubtitleStyle["appearance"]["bilin
  * the player overlay has none either.
  */
 export function styledAssDocument(cues: readonly TimedSubtitle[], options: StyledAssOptions): string {
+  const slices = sliceCues(cues);
+  const names = sliceSpeakerNames(cues, slices, options.speakers);
   const { appearance, placement } = options.style;
   const position = `{\\an${ALIGNMENT[placement.anchor]}\\pos(${Math.round((placement.xBp / BASIS_POINTS) * options.playRes.width)},${Math.round((placement.yBp / BASIS_POINTS) * options.playRes.height)})}`;
   const box = boxOf(options);
   const boxStyles = box === "block" ? BOX_STYLE : box === "none" ? undefined : { ...GHOST_STYLE, [box]: LINE_STYLE[box] };
   const out = [styledAssHeader(options)];
-  for (const slice of sliceCues(cues)) {
+  for (const [sliceIndex, slice] of slices.entries()) {
+    const name = assName(names?.[sliceIndex]);
     const times = `${assTime(slice.startMs)},${assTime(slice.endMs)}`;
     if (boxStyles !== undefined && box !== "none" && (box === "block" || slice[box] !== undefined)) {
       const background = eventText(slice, appearance.bilingualOrder, boxStyles);
       if (background !== undefined) {
-        out.push(`Dialogue: 0,${times},${background.style},,0,0,0,,${position}${background.text}\n`);
+        out.push(`Dialogue: 0,${times},${background.style},${name},0,0,0,,${position}${background.text}\n`);
       }
     }
     const text = eventText(slice, appearance.bilingualOrder, TEXT_STYLE);
     if (text !== undefined) {
-      out.push(`Dialogue: 1,${times},${text.style},,0,0,0,,${position}${text.text}\n`);
+      out.push(`Dialogue: 1,${times},${text.style},${name},0,0,0,,${position}${text.text}\n`);
     }
   }
   return out.join("");
+}
+
+/**
+ * The speaker name of each slice: the common name of the cues active in it, empty when they
+ * disagree (two speakers, or a speaker and an unassigned sentence, share the slice). Cues are
+ * compared by speaker id, so two speakers who happen to share a name still count as two.
+ * `slices` come from `sliceCues(cues)`, time-ordered and each covering a whole set of cues.
+ */
+function sliceSpeakerNames(
+  cues: readonly TimedSubtitle[],
+  slices: readonly TimedSubtitle[],
+  speakers: StyledAssOptions["speakers"],
+): (string | undefined)[] | undefined {
+  if (speakers === undefined) return undefined;
+  const byStart = cues.map((_, index) => index).sort((a, b) => (cues[a] as TimedSubtitle).startMs - (cues[b] as TimedSubtitle).startMs || a - b);
+  const active = new Set<number>();
+  let next = 0;
+  return slices.map((slice) => {
+    for (const index of [...active]) {
+      if ((cues[index] as TimedSubtitle).endMs <= slice.startMs) active.delete(index);
+    }
+    while (next < byStart.length && (cues[byStart[next] as number] as TimedSubtitle).startMs <= slice.startMs) {
+      const index = byStart[next] as number;
+      if ((cues[index] as TimedSubtitle).endMs > slice.startMs) active.add(index);
+      next += 1;
+    }
+    const ids = new Set([...active].map((index) => speakers.ofCue[index]));
+    const only = ids.size === 1 ? [...ids][0] : undefined;
+    return only === undefined ? undefined : speakers.names.get(only);
+  });
 }

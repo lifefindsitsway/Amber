@@ -1,5 +1,5 @@
 import { CaseSensitive, ChevronDown, ChevronUp, Replace, Search, Undo2, X } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../shared/defaults.ts";
 import { blockedComboOf } from "../../shortcut-registry.tsx";
@@ -21,6 +21,12 @@ import type { DraftSyncSnapshot } from "./use-draft-sync.ts";
 /** A sentence the editor can edit: anything with a text. */
 export interface SentenceItem {
   text: string;
+}
+
+/** One undoable batch: the items before it, and what it did when the caller named it. */
+interface UndoEntry<S> {
+  items: readonly S[];
+  label: string | undefined;
 }
 
 /** Combos the editor answers itself while focus is inside it; outside, the browser's own find stays. */
@@ -79,6 +85,41 @@ export interface SentenceEditorProps<S extends SentenceItem> {
   /** Notices under the toolbar. */
   notices?: ReactNode;
   testId?: string;
+  /**
+   * A column before each sentence's input (the transcript editor's speaker column); absent =
+   * none, the layout as before. Must be stable.
+   */
+  renderLead?: (item: S, index: number) => ReactNode;
+  /**
+   * Indices into `items` of the sentences to show, a filter; absent = all. Hiding is display
+   * only: editing, find, selection, undo and commit keep acting on the full `items` by their
+   * original indices, so a filtered draft never loses a sentence.
+   */
+  visible?: ReadonlySet<number>;
+  /** More toolbar controls, right after the find control. */
+  toolbarExtra?: ReactNode;
+  /**
+   * Actions shown under the active sentence (the one last focused), for example "split here".
+   * Must be stable.
+   */
+  rowActions?: (item: S, index: number) => ReactNode;
+  /** Receives the editor's handle once mounted. */
+  handleRef?: Ref<SentenceEditorHandle<S>>;
+}
+
+/** What a caller may do to the editor from outside: undoable batch changes and scrolling. */
+export interface SentenceEditorHandle<S extends SentenceItem> {
+  /**
+   * Replaces the full items as one undoable batch: the current items join the undo stack
+   * (bounded like every batch) and `label` is what the undo control then says it undoes.
+   * Does nothing while the editor is busy, as the toolbar's own batch actions do.
+   */
+  applyBatch(next: readonly S[], label: string): void;
+  /**
+   * Scrolls the sentence at this original index into view and focuses its input. Does nothing
+   * for a sentence a filter hides.
+   */
+  focusSentence(index: number): void;
 }
 
 /**
@@ -99,19 +140,24 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   const [replacement, setReplacement] = useState("");
   const [current, setCurrent] = useState(0);
   const [active, setActive] = useState<number | undefined>(undefined);
-  const [undo, setUndo] = useState<ReadonlyArray<readonly S[]>>([]);
+  const [undo, setUndo] = useState<ReadonlyArray<UndoEntry<S>>>([]);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false);
 
   // Stable callbacks for the memoized rows read the latest props through refs.
-  const latest = useRef({ items, onItemsChange: props.onItemsChange });
-  latest.current = { items, onItemsChange: props.onItemsChange };
+  const busyNow = useRef(false);
+  const latest = useRef({ items, onItemsChange: props.onItemsChange, visible: props.visible });
+  latest.current = { items, onItemsChange: props.onItemsChange, visible: props.visible };
 
   const texts = useMemo(() => items.map((item) => item.text), [items]);
-  const matches = useMemo(() => (panel.open && panel.mode === "find" ? findMatches(texts, query, caseSensitive) : []), [panel.open, panel.mode, texts, query, caseSensitive]);
+  const { visible } = props;
+  // What find, replace and the filler cleanup look at: hidden sentences read as empty, which
+  // nothing matches, while indices stay those of the full items.
+  const scopeTexts = useMemo(() => (visible === undefined ? texts : texts.map((text, index) => (visible.has(index) ? text : ""))), [texts, visible]);
+  const matches = useMemo(() => (panel.open && panel.mode === "find" ? findMatches(scopeTexts, query, caseSensitive) : []), [panel.open, panel.mode, scopeTexts, query, caseSensitive]);
   const currentMatch = matches.length === 0 ? undefined : matches[Math.min(current, matches.length - 1)];
 
-  const filler = useFillerState(texts, panel.open && panel.mode === "filler" && props.fillers, props.deleteWholeSentences);
+  const filler = useFillerState(scopeTexts, panel.open && panel.mode === "filler" && props.fillers, props.deleteWholeSentences);
 
   const hitRows = useMemo(() => {
     if (panel.mode === "filler") return new Set(filler.visibleHits.map((hit) => hit.index));
@@ -156,16 +202,35 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
     if (currentMatch !== undefined) reveal(currentMatch.index);
   }, [currentMatch]);
 
-  const batch = (next: readonly S[]): void => {
-    setUndo((stack) => [...stack, items].slice(-DRAFT_BATCH_UNDO_DEPTH));
-    props.onItemsChange(next);
+  const batch = (next: readonly S[], label?: string): void => {
+    const before = latest.current.items;
+    setUndo((stack) => [...stack, { items: before, label }].slice(-DRAFT_BATCH_UNDO_DEPTH));
+    latest.current.onItemsChange(next);
   };
   const undoLast = (): void => {
     const previous = undo.at(-1);
     if (previous === undefined) return;
     setUndo(undo.slice(0, -1));
-    props.onItemsChange(previous);
+    props.onItemsChange(previous.items);
   };
+  const undoLabel = undo.at(-1)?.label;
+
+  useImperativeHandle(
+    props.handleRef,
+    () => ({
+      applyBatch: (next, label) => {
+        // The same moments the toolbar's own batch actions are off: saving a commit, a conflict.
+        if (!busyNow.current) batch(next, label);
+      },
+      focusSentence: (index) => {
+        if (latest.current.visible?.has(index) === false) return;
+        reveal(index);
+        enterSentence(index);
+      },
+    }),
+    // The functions read everything through refs, state setters and stable callbacks.
+    [],
+  );
 
   const openPanel = (mode: "find" | "filler", replace: boolean): void => {
     setPanel((state) => ({ open: true, mode, replace: replace || (state.open && state.replace) }));
@@ -232,6 +297,7 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   };
 
   const busy = props.busy || props.sync.phase !== "editing" && props.sync.phase !== "saving";
+  busyNow.current = busy;
 
   return (
     <div ref={container} className="flex h-full min-h-0 flex-col" onKeyDown={onEditorKey} data-testid={props.testId ?? "sentence-editor"}>
@@ -248,7 +314,16 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
             <Search size={14} />
             {t("editor.toolbar.find")}
           </Button>
-          <Button size="sm" variant="ghost" disabled={undo.length === 0 || busy} title={t("editor.toolbar.undoHint")} onClick={undoLast} data-testid="editor-undo">
+          {props.toolbarExtra}
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={undo.length === 0 || busy}
+            title={undoLabel === undefined ? t("editor.toolbar.undoHint") : t("editor.toolbar.undoLabeled", { label: undoLabel })}
+            {...(undoLabel === undefined ? {} : { "aria-label": t("editor.toolbar.undoLabeled", { label: undoLabel }) })}
+            onClick={undoLast}
+            data-testid="editor-undo"
+          >
             <Undo2 size={14} />
             {t("editor.toolbar.undo")}
           </Button>
@@ -287,6 +362,11 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
       )}
       {panel.open ? (
         <section className="flex flex-col gap-2 border-b border-line bg-sunken/40 px-4 py-2 text-xs" aria-label={t("editor.find.panel")} data-testid="find-panel">
+          {visible === undefined ? null : (
+            <p className="text-muted" role="status" data-testid="find-scope-note">
+              {t("editor.find.filteredScope", { count: visible.size })}
+            </p>
+          )}
           {props.fillers ? (
             <div className="flex gap-1" role="tablist">
               {(["find", "filler"] as const).map((mode) => (
@@ -352,7 +432,8 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
       ) : null}
       {props.notices}
       <ol className="@container min-h-0 flex-1 overflow-auto px-3 py-2" data-testid="sentence-rows">
-        {items.map((item, index) => (
+        {items.map((item, index) =>
+          visible !== undefined && !visible.has(index) ? null : (
           <SentenceRow
             key={props.keyOf(item, index)}
             item={item}
@@ -364,12 +445,15 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
             layout={props.layout}
             renderHeader={props.renderHeader}
             renderSource={props.renderSource}
+            renderLead={props.renderLead}
+            rowActions={props.rowActions}
             textLabel={props.textLabel}
             onText={onText}
             onActive={setActive}
             onPick={onPickRow}
           />
-        ))}
+          ),
+        )}
       </ol>
       <ConfirmDialog
         open={confirmExit}
@@ -763,6 +847,8 @@ interface RowProps<S extends SentenceItem> {
   layout: "compact" | "bilingual";
   renderHeader: (item: S, index: number) => ReactNode;
   renderSource: ((item: S, index: number) => ReactNode) | undefined;
+  renderLead: ((item: S, index: number) => ReactNode) | undefined;
+  rowActions: ((item: S, index: number) => ReactNode) | undefined;
   textLabel: (item: S, index: number) => string;
   onText: (index: number, text: string) => void;
   onActive: (index: number) => void;
@@ -787,6 +873,31 @@ const SentenceRow = memo(function SentenceRow<S extends SentenceItem>(props: Row
       onFocus={() => props.onActive(index)}
     />
   );
+  const lead = props.renderLead === undefined ? null : <div className="shrink-0" data-row-control="">{props.renderLead(item, index)}</div>;
+  const bilingualBody = (
+    <>
+      <div className="font-mono text-[11px] text-muted">{props.renderHeader(item, index)}</div>
+      <div className="grid gap-1.5 @min-[960px]:grid-cols-2 @min-[960px]:gap-4">
+        {props.renderSource === undefined ? null : <div className="text-sm leading-6 text-muted select-text">{props.renderSource(item, index)}</div>}
+        {input}
+      </div>
+    </>
+  );
+  const bilingual =
+    props.renderLead === undefined ? (
+      <div className="flex flex-col gap-1">{bilingualBody}</div>
+    ) : (
+      <div className="flex items-start gap-2">
+        {lead}
+        <div className="flex min-w-0 flex-1 flex-col gap-1">{bilingualBody}</div>
+      </div>
+    );
+  const actions =
+    props.isActive && props.rowActions !== undefined ? (
+      <div className="mt-1 flex flex-wrap items-center gap-1.5" data-row-control="" data-testid="row-actions">
+        {props.rowActions(item, index)}
+      </div>
+    ) : null;
   return (
     <li
       className={`my-0.5 rounded-md border-l-2 px-2 py-1.5 [contain-intrinsic-size:auto_3.5rem] [content-visibility:auto] ${props.hasHit ? "border-l-accent" : "border-l-transparent"} ${ring}`}
@@ -794,23 +905,23 @@ const SentenceRow = memo(function SentenceRow<S extends SentenceItem>(props: Row
       {...(props.isCurrentHit ? { "data-current-hit": "true" } : {})}
       {...(props.hasHit ? { "data-has-hit": "true" } : {})}
       onClick={(event) => {
-        if (!(event.target instanceof HTMLTextAreaElement)) props.onPick(index);
+        if (event.target instanceof HTMLTextAreaElement) return;
+        // Controls of the lead column and the row actions, and portalled menus opened from them
+        // (React bubbles their clicks here), act on their own and must keep the focus.
+        if (!(event.target instanceof Element) || !event.currentTarget.contains(event.target) || event.target.closest("[data-row-control]") !== null) return;
+        props.onPick(index);
       }}
     >
       {props.layout === "compact" ? (
         <div className="flex items-start gap-2">
           <span className="w-14 shrink-0 pt-1.5 font-mono text-xs text-muted">{props.renderHeader(item, index)}</span>
+          {lead}
           {input}
         </div>
       ) : (
-        <div className="flex flex-col gap-1">
-          <div className="font-mono text-[11px] text-muted">{props.renderHeader(item, index)}</div>
-          <div className="grid gap-1.5 @min-[960px]:grid-cols-2 @min-[960px]:gap-4">
-            {props.renderSource === undefined ? null : <div className="text-sm leading-6 text-muted select-text">{props.renderSource(item, index)}</div>}
-            {input}
-          </div>
-        </div>
+        bilingual
       )}
+      {actions}
     </li>
   );
 }) as <S extends SentenceItem>(props: RowProps<S>) => ReactNode;

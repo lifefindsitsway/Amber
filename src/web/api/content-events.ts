@@ -1,14 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { contentKeys } from "../pages/content/content-data.ts";
 import { noteKeys } from "../notes/note-keys.ts";
 import { searchKeys } from "../search/search.ts";
 import { queryKeys } from "./queries.ts";
 
 /**
- * A Content moved into the trash, out of it, or purged for good. Other tabs of the same
- * user show the same lists, so the change is broadcast to them as well.
+ * A Content moved into the trash, out of it, or purged for good, or had its speakers
+ * changed. Other tabs of the same user show the same lists and pages, so the change is
+ * broadcast to them as well.
  */
 export interface ContentEvent {
-  type: "trashed" | "restored" | "purged";
+  type: "trashed" | "restored" | "purged" | "speakersChanged";
   contentId: string;
 }
 
@@ -20,7 +22,7 @@ export interface ContentEventOrigin {
 type Listener = (event: ContentEvent, origin: ContentEventOrigin) => void;
 
 const CONTENT_CHANNEL = "amber-content";
-const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>(["trashed", "restored", "purged"]);
+const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>(["trashed", "restored", "purged", "speakersChanged"]);
 
 /** Messages from other tabs are untrusted input in shape: anything else is ignored. */
 function contentEventOf(data: unknown): ContentEvent | undefined {
@@ -105,4 +107,22 @@ export async function forgetContent(queryClient: QueryClient, contentId: string)
   queryClient.removeQueries({ queryKey: queryKeys.content(contentId), type: "inactive" });
   queryClient.removeQueries({ queryKey: noteKeys.contentAll(contentId) });
   await queryClient.invalidateQueries({ queryKey: queryKeys.content(contentId), exact: true });
+}
+
+/**
+ * Re-reads a Content's speaker list. Photo queries sit under the same prefix, but their keys
+ * carry the photo version, so a changed photo already has a new key and unchanged photos
+ * must not be downloaded again: only the list key itself is invalidated.
+ */
+export async function refreshSpeakerViews(queryClient: QueryClient, contentId: string): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: contentKeys.speakers(contentId), exact: true });
+}
+
+/**
+ * A Content's speakers changed in this tab: its speaker list is read again here, and other
+ * tabs are told to do the same.
+ */
+export function publishSpeakersChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string): void {
+  void refreshSpeakerViews(queryClient, contentId);
+  bus.publish({ type: "speakersChanged", contentId });
 }

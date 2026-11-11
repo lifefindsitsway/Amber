@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { transcriptRevisionDtoSchema } from "./content.ts";
 import { modelRefSchema } from "./model-ref.ts";
+import { SPEAKER_REVIEW_RESOLUTIONS, SPEAKER_REVIEW_STATES } from "../speakers.ts";
 
 const idSchema = z.string().min(1);
 const msSchema = z.number().int().nonnegative();
@@ -30,9 +31,13 @@ export type TranscriptSegmentPageDto = z.infer<typeof transcriptSegmentPageDtoSc
 
 /**
  * One sentence of a draft. `id` is the client's own handle for it across autosaves; the
- * committed `manual` revision always gets new segment ids. Timing and sources are only
- * checked on commit. Invariant: a committed revision and its segments never change, and
+ * committed `manual` revision always gets new segment ids. Timing, sources and speakers are
+ * only checked on commit. Invariant: a committed revision and its segments never change, and
  * every segment id is globally unique.
+ *
+ * `speakerId`: a speaker of the Content, `null` = unassigned; absent (a draft saved before
+ * drafts carried speakers) = the speaker of the first source sentence. `speakerReview` is how
+ * applying speakers left the sentence; it lives in the draft only and never reaches a revision.
  */
 export const transcriptDraftSegmentSchema = z
   .object({
@@ -41,6 +46,8 @@ export const transcriptDraftSegmentSchema = z
     endMs: z.number().int(),
     text: z.string(),
     sourceSegmentIds: z.array(idSchema),
+    speakerId: idSchema.nullable().exactOptional(),
+    speakerReview: z.enum(SPEAKER_REVIEW_STATES).exactOptional(),
   })
   .strict();
 
@@ -77,7 +84,18 @@ export type TranscriptDraftDto = z.infer<typeof transcriptDraftDtoSchema>;
  * no longer at `draftVersion`, and with `conflict.primary_changed` when the primary is no
  * longer `expectedPrimaryRevisionId`; never a silent overwrite.
  */
-export const draftCommitRequestSchema = z.object({ expectedPrimaryRevisionId: idSchema, draftVersion: draftVersionSchema }).strict();
+export const draftCommitRequestSchema = z
+  .object({
+    expectedPrimaryRevisionId: idSchema,
+    draftVersion: draftVersionSchema,
+    /**
+     * What to do with sentences still marked `needs_review`: keep their suggested speakers as
+     * confirmed by the user, or unassign them. Absent = unassign, so an unconfirmed speaker is
+     * never taken as confirmed silently.
+     */
+    speakerReview: z.enum(SPEAKER_REVIEW_RESOLUTIONS).exactOptional(),
+  })
+  .strict();
 export type DraftCommitRequest = z.infer<typeof draftCommitRequestSchema>;
 
 export const SEGMENT_MAP_METHODS = ["lineage", "overlap", "nearest", "none"] as const;

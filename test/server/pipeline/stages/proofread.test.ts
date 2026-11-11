@@ -199,6 +199,8 @@ function seedContent(
     createdAt: 1,
   };
   h.repository.withTransaction((scope) => {
+    // Sentences name only speakers registered for their Content.
+    scope.speakers.insert(LOCAL.userId, contentId, [{ id: "a" }], 1);
     scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
     scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 2);
   });

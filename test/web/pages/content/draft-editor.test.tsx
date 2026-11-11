@@ -1,9 +1,13 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { useContentEvents } from "../../../../src/web/api/context.tsx";
+import type { ContentEvent } from "../../../../src/web/api/content-events.ts";
 import { ContentPageProvider } from "../../../../src/web/pages/content/content-context.tsx";
 import { DraftEditor, draftFromSegments } from "../../../../src/web/pages/content/draft-editor.tsx";
 import { contentDetail, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
+import { commitBodies, editorRoutes, puts as speakerPuts, renderSpeakerEditor, talk } from "../../../fixtures/web/speaker-editor.tsx";
 
 const NOT_FOUND = { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } };
 
@@ -36,7 +40,12 @@ const puts = (calls: RecordedCall[]) => calls.filter((call) => call.method === "
 
 describe("DraftEditor", () => {
   it("starts from the base sentences, each pointing at its source", () => {
-    expect(draftFromSegments(SEGMENTS)[1]).toEqual({ id: "s2", startMs: 4_000, endMs: 8_000, text: "先看向量库。", sourceSegmentIds: ["s2"] });
+    expect(draftFromSegments(SEGMENTS)[1]).toEqual({ id: "s2", startMs: 4_000, endMs: 8_000, text: "先看向量库。", sourceSegmentIds: ["s2"], speakerId: null });
+  });
+
+  it("states each sentence's speaker in a new draft: the source's, or null for none", () => {
+    const draft = draftFromSegments([segment("a", 0, 0, 1_000, "甲", { speakerId: "spk-a" }), segment("b", 1, 1_000, 2_000, "乙")]);
+    expect(draft.map((item) => item.speakerId)).toEqual(["spk-a", null]);
   });
 
   it("saves before committing, names the draft version, and shows a changed primary instead of overwriting", async () => {
@@ -172,5 +181,126 @@ describe("DraftEditor", () => {
     await waitFor(() => expect(screen.getByTestId("draft-save-status").textContent).toBe("自动保存"));
     fireEvent.click(screen.getByTestId("draft-exit"));
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("DraftEditor and speakers", () => {
+  it("saves a new draft with every sentence stating its speaker", async () => {
+    const { calls } = mockApi(editorRoutes());
+    renderSpeakerEditor();
+    fireEvent.change(await screen.findByDisplayValue("第1句内容。"), { target: { value: "改过。" } });
+    await waitFor(() => expect(speakerPuts(calls)).toHaveLength(1), { timeout: 3000 });
+    expect(speakerPuts(calls)[0]?.segments.map((item) => item["speakerId"])).toEqual(["spk-a", "spk-a", "spk-b", "spk-b", "spk-b", "spk-a"]);
+  });
+
+  it("keeps an older draft's sentences as they are, speakers absent, while showing the source's speakers", async () => {
+    const old = talk().map((item) => ({ id: item.id, startMs: item.startMs, endMs: item.endMs, text: item.text, sourceSegmentIds: [item.id] }));
+    const { calls } = mockApi({
+      ...editorRoutes(),
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "r1", version: 2, segments: old, updatedAt: 1 } },
+    });
+    renderSpeakerEditor();
+    fireEvent.change(await screen.findByDisplayValue("第1句内容。"), { target: { value: "改过。" } });
+    await waitFor(() => expect(screen.getAllByTestId("speaker-lead")[2]?.getAttribute("aria-label")).toBe("发言人：林雪"));
+    await waitFor(() => expect(speakerPuts(calls)).toHaveLength(1), { timeout: 3000 });
+    for (const sent of speakerPuts(calls)[0]?.segments ?? []) expect(sent).not.toHaveProperty("speakerId");
+  });
+
+  it("keeps speakerReview through a save and a reload of the draft", async () => {
+    const reviewed = talk().map((item, index) => ({ id: item.id, startMs: item.startMs, endMs: item.endMs, text: item.text, sourceSegmentIds: [item.id], speakerId: item.speakerId ?? null, speakerReview: index === 2 ? ("needs_review" as const) : ("auto" as const) }));
+    let stored: unknown = reviewed;
+    let version = 3;
+    const { calls } = mockApi({
+      ...editorRoutes(),
+      "GET /api/contents/c1/transcript/draft": () => ({ body: { id: "d1", contentId: "c1", baseRevisionId: "r1", version, segments: stored, updatedAt: 1 } }),
+      "PUT /api/contents/c1/transcript/draft": (call) => {
+        stored = (call.body as { segments: unknown }).segments;
+        version += 1;
+        return { body: { id: "d1", contentId: "c1", ...(call.body as object), version, updatedAt: 1 } };
+      },
+    });
+    renderSpeakerEditor();
+    fireEvent.change(await screen.findByDisplayValue("第1句内容。"), { target: { value: "改过。" } });
+    await waitFor(() => expect(speakerPuts(calls)).toHaveLength(1), { timeout: 3000 });
+    expect(speakerPuts(calls)[0]?.segments.map((item) => item["speakerReview"])).toEqual(["auto", "auto", "needs_review", "auto", "auto", "auto"]);
+    cleanup();
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("改过。");
+    await waitFor(() => expect(screen.getAllByTestId("speaker-lead-review")).toHaveLength(1));
+    expect(screen.getByTestId("draft-review-count").textContent).toBe("需确认 1");
+  });
+
+  it("filters a 2,888-sentence draft to the sentences to confirm, edits and reassigns some, and commits all 2,888 as they were otherwise", async () => {
+    const total = 2_888;
+    const toConfirm = new Set(Array.from({ length: 50 }, (_, index) => index * 57 + 3));
+    const draft = Array.from({ length: total }, (_, index) => ({
+      id: `n${index}`,
+      startMs: index * 1_000,
+      endMs: index * 1_000 + 900,
+      text: `第${index}句。`,
+      sourceSegmentIds: [`n${index}`],
+      speakerId: index % 7 < 3 ? "spk-a" : "spk-b",
+      speakerReview: toConfirm.has(index) ? ("needs_review" as const) : ("auto" as const),
+    }));
+    const { calls } = mockApi({
+      ...editorRoutes(),
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "r1", version: 5, segments: draft, updatedAt: 1 } },
+    });
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第0句。");
+    fireEvent.click(screen.getByTestId("draft-review-count"));
+    await waitFor(() => expect(screen.getAllByTestId("speaker-lead")).toHaveLength(50));
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain(`50 / ${total.toLocaleString()}`);
+    const confirmed = [...toConfirm].sort((a, b) => a - b);
+    // Three texts edited, and three speakers changed with the digit keys, all inside the filtered view.
+    const edited = new Set([confirmed[0] as number, confirmed[1] as number, confirmed[49] as number]);
+    for (const index of edited) fireEvent.change(screen.getByDisplayValue(`第${index}句。`), { target: { value: `改${index}。` } });
+    const reassigned = new Map<number, string>();
+    const targets = [10, 25, 40].map((position) => ({ index: confirmed[position] as number, lead: screen.getAllByTestId("speaker-lead")[position] as HTMLElement }));
+    for (const { index, lead } of targets) {
+      const was = draft[index]?.speakerId;
+      reassigned.set(index, was === "spk-a" ? "spk-b" : "spk-a");
+      fireEvent.keyDown(lead, { key: was === "spk-a" ? "2" : "1" });
+    }
+    await waitFor(() => expect(screen.getAllByTestId("speaker-lead")).toHaveLength(47));
+    expect(screen.getByTestId("draft-review-count").textContent).toBe("需确认 47");
+
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    fireEvent.click(await screen.findByTestId("commit-review-accept"));
+    await waitFor(() => expect(commitBodies(calls)).toHaveLength(1));
+    expect(commitBodies(calls)[0]).toEqual({ expectedPrimaryRevisionId: "r1", draftVersion: 1, speakerReview: "accept_suggestions" });
+
+    // Every sentence, hidden or not, is what it was except the six that were touched.
+    const last = speakerPuts(calls).at(-1)?.segments ?? [];
+    expect(last).toHaveLength(total);
+    const expected = draft.map((original, index) => ({
+      ...original,
+      ...(edited.has(index) ? { text: `改${index}。` } : {}),
+      ...(reassigned.has(index) ? { speakerId: reassigned.get(index) } : {}),
+    }));
+    for (const index of reassigned.keys()) delete (expected[index] as { speakerReview?: string }).speakerReview;
+    expect(last).toEqual(expected);
+  }, 60_000);
+
+  it("tells the user's other tabs about the speakers when it commits", async () => {
+    const seen: ContentEvent[] = [];
+    function Listen() {
+      const events = useContentEvents();
+      useEffect(() => events.subscribe((event) => seen.push(event)), [events]);
+      return null;
+    }
+    const { calls } = mockApi(editorRoutes());
+    renderSpeakerEditor({
+      wrap: (children) => (
+        <>
+          <Listen />
+          {children}
+        </>
+      ),
+    });
+    fireEvent.change(await screen.findByDisplayValue("第1句内容。"), { target: { value: "改过。" } });
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    await waitFor(() => expect(commitBodies(calls)).toHaveLength(1));
+    await waitFor(() => expect(seen).toContainEqual({ type: "speakersChanged", contentId: "c1" }));
   });
 });

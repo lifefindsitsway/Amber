@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ASR_DIARIZATION_DEFAULT } from "../defaults.ts";
 import { CHAT_WEB_SEARCH_SETTINGS } from "../enums.ts";
 import { SHORTCUT_ACTIONS } from "../shortcuts.ts";
 import { asrModelRefSchema, modelRefSchema } from "./model-ref.ts";
@@ -27,6 +28,8 @@ export const userSettingsDtoSchema = z.object({
   platformCookieBrowser: z.enum(COOKIE_BROWSERS).exactOptional(),
   /** The chat's remembered web search setting; absent = off. */
   chatWebSearchMode: z.enum(CHAT_WEB_SEARCH_SETTINGS).exactOptional(),
+  /** Whether new transcriptions identify speakers where the model offers it; the server always sends it. */
+  asrDiarization: z.boolean().default(ASR_DIARIZATION_DEFAULT),
   updatedAt: z.number().int().nonnegative(),
 });
 export type UserSettingsDto = z.infer<typeof userSettingsDtoSchema>;
@@ -47,6 +50,7 @@ export const userSettingsPatchSchema = z
     defaultOutputLanguage: z.string().min(1).nullable().exactOptional(),
     platformCookieBrowser: z.enum(COOKIE_BROWSERS).nullable().exactOptional(),
     chatWebSearchMode: z.enum(CHAT_WEB_SEARCH_SETTINGS).nullable().exactOptional(),
+    asrDiarization: z.boolean().exactOptional(),
   })
   .strict();
 export type UserSettingsPatch = z.infer<typeof userSettingsPatchSchema>;

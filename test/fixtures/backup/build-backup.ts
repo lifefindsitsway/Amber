@@ -200,7 +200,7 @@ export async function buildSourceLibrary(options: SourceOptions = {}): Promise<S
   }
   h.repository.withTransaction((scope) => {
     const current = scope.userSettings.get(LOCAL.userId);
-    scope.userSettings.put({ ...(current ?? { userId: LOCAL.userId, language: "zh-CN", shortcuts: {} }), theme: "dark", updatedAt: 10 });
+    scope.userSettings.put({ ...(current ?? { userId: LOCAL.userId, language: "zh-CN", shortcuts: {}, asrDiarization: true }), theme: "dark", updatedAt: 10 });
   });
   const file = h.file;
   const dir = h.dir;

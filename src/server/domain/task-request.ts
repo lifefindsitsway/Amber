@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { asrModelRefSchema, modelRefSchema } from "../../shared/dto/model-ref.ts";
+import { diarizationRequestSchema, type DiarizationRequest } from "../../shared/dto/speaker.ts";
 import { CACHE_MEDIA_TYPES, CACHE_QUALITY_TIERS } from "../../shared/cache-file-name.ts";
 import { BURN_MODES, CACHE_MEDIA_QUALITIES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_CONTAINERS, type TaskKind } from "../../shared/enums.ts";
 import { subtitleStyleSchema } from "../../shared/subtitle-style.ts";
@@ -24,7 +25,9 @@ export const promptRefsSchema = z.record(z.string().min(1), z.object({ id: z.str
  * with a new Content; it describes where the Content came from, not what to
  * do with it, so it does not take part in intent comparison. `asrModelRef` is the ASR
  * model chosen at submission; without it, a Content that needs transcription waits for
- * one to be chosen.
+ * one to be chosen. `diarization` is the speaker identification frozen at submission (the
+ * request's own, else the user's setting); requests stored before it existed lack it and
+ * are read as `off`. It does not take part in intent comparison either.
  */
 export const processContentRequestSchema = z
   .object({
@@ -37,6 +40,7 @@ export const processContentRequestSchema = z
     autoProofread: z.boolean(),
     templateRef: templateRefSchema.exactOptional(),
     initialSubtitleRevisionId: z.string().min(1).exactOptional(),
+    diarization: diarizationRequestSchema.exactOptional(),
   })
   .strict();
 export type ProcessContentRequest = z.infer<typeof processContentRequestSchema>;
@@ -91,13 +95,14 @@ export type SummarizeCollectionRequest = z.infer<typeof summarizeCollectionReque
 /**
  * `Task.requestJson` of a `retranscribe` Task, schema version 1: the ASR model chosen at
  * submission. Without one the stage waits for configuration and the model is supplied
- * through retry-stage.
+ * through retry-stage. `diarization` as for `process_content`.
  */
 export const retranscribeRequestSchema = z
   .object({
     requestSchemaVersion: z.literal(1),
     kind: z.literal("retranscribe"),
     asrModelRef: asrModelRefSchema.exactOptional(),
+    diarization: diarizationRequestSchema.exactOptional(),
   })
   .strict();
 export type RetranscribeRequest = z.infer<typeof retranscribeRequestSchema>;
@@ -300,6 +305,8 @@ export interface TaskRequestView {
   templateRef?: { id: string; version: number };
   targetLanguages?: string[];
   promptRefs?: Record<string, PromptRef>;
+  /** Absent = `off`. A re-run keeps it even when it switches the model. */
+  diarization?: DiarizationRequest;
 }
 
 const requestViewSchema = z.object({
@@ -309,6 +316,7 @@ const requestViewSchema = z.object({
   templateRef: templateRefSchema.exactOptional(),
   targetLanguages: z.array(z.string().min(1)).exactOptional(),
   promptRefs: promptRefsSchema.exactOptional(),
+  diarization: diarizationRequestSchema.exactOptional(),
 });
 
 export function taskRequestView(requestJson: string): TaskRequestView {
@@ -342,7 +350,9 @@ export function sameIntent(kind: TaskKind, requestJson: string, other: { kind: T
   return kind === other.kind && intentOf(requestJson) === intentOf(other.requestJson);
 }
 
-const NOT_INTENT = new Set(["initialSubtitleRevisionId"]);
+// Speaker identification is how to transcribe, not what to import: a re-import that differs
+// only in it is the same intent.
+const NOT_INTENT = new Set(["initialSubtitleRevisionId", "diarization"]);
 
 /**
  * Intent fields whose values differ between two requests of the same kind, ignoring the

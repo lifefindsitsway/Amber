@@ -13,11 +13,13 @@ import { normalizeTermKey, type TerminologyEntry } from "../../../src/server/dom
  * - `elevenlabs-mixed.json`: Chinese with English terms (spacing tokens around Latin words).
  * - `elevenlabs-zh-synthetic.json`: a Chinese word stream; one sentence over the character
  *   limit with a comma, one with neither punctuation nor a pause before the next, a long pause.
+ * - `elevenlabs-diarized.json`: English with `speaker_id` on the words: two speakers, one word
+ *   without a label inside a run of one speaker, and an interjection of the other that overlaps.
  * - `elevenlabs-zh-recorded.json`: a real answer, redacted; see its `_fixture`
  *   field for source and licence. Its Chinese tokens carry the punctuation that ends a word
  *   at the start of the next token.
  */
-export function asrResponse(name: "en" | "mixed" | "zh-synthetic" | "zh-recorded"): string {
+export function asrResponse(name: "en" | "mixed" | "zh-synthetic" | "zh-recorded" | "diarized"): string {
   return readFileSync(join(import.meta.dirname, `elevenlabs-${name}.json`), "utf8");
 }
 

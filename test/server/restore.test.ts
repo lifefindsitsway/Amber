@@ -21,6 +21,7 @@ import {
 import { RESTORED_ORIGINALS_DIR_PREFIX } from "../../src/shared/backup.ts";
 import { BACKUP_HEADER_MAX_BYTES, BACKUP_MANIFEST_MAX_BYTES } from "../../src/shared/defaults.ts";
 import { RESTORE_PROGRESS_PREFIX, restoreApplyReportSchema, type RestoreApplyReport } from "../../src/shared/dto/backup.ts";
+import type { SegmentId } from "../../src/shared/ids.ts";
 import { defaultSubtitleAppearance } from "../../src/shared/subtitle-style.ts";
 import {
   archiveEntries,
@@ -734,10 +735,11 @@ afterEach(async () => {
   for (const h of roundTripHarnesses.splice(0)) await h.close();
 });
 
-async function exportLibrary(options: { includeOriginals: boolean; includeCache: boolean }) {
+async function exportLibrary(options: { includeOriginals: boolean; includeCache: boolean }, prepare?: (h: Harness, library: Awaited<ReturnType<typeof seedLibrary>>) => void) {
   const h = createHarness();
   roundTripHarnesses.push(h);
   const library = await seedLibrary(h);
+  prepare?.(h, library);
   const stack = createExportStack(h);
   const archive = join(stack.destinationDir, "迁移.amberbackup");
   const accepted = stack.service.start({ grant: stack.grant(archive), ...options, uiPreferences: { "amber.player.volume": "0.4" } });
@@ -795,6 +797,39 @@ describe("backup export → restore round trip", () => {
     expect(notes.items).toHaveLength(1);
     const readiness = (await restored.send({ method: "GET", url: "/api/backup/restore-readiness" })).json() as { fresh: boolean };
     expect(readiness.fresh).toBe(false);
+  });
+
+  it("restores speakers with their photos and the draft that names them", async () => {
+    const photo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 8, 0, 0, 0, 8, 8, 6, 0, 0, 0]);
+    let named = "";
+    let plain = "";
+    const { library, archive } = await exportLibrary({ includeOriginals: false, includeCache: false }, (h, seeded) => {
+      named = h.newId();
+      plain = h.newId();
+      h.repository.withTransaction((scope) => {
+        scope.speakers.insert(LOCAL.userId, seeded.contentId, [{ id: named, name: "Ann", colorIndex: 5 }, { id: plain }], 3);
+        scope.speakers.update(LOCAL.userId, seeded.contentId, named, { avatar: { mime: "image/png", bytes: new Uint8Array(photo) } }, 4);
+        const [first] = scope.transcripts.listSegments(LOCAL.userId, seeded.fixture.corrected.revision.id);
+        scope.transcripts.putDraft(LOCAL.userId, {
+          id: h.newId(), contentId: seeded.contentId, baseRevisionId: seeded.fixture.corrected.revision.id, version: 1, updatedAt: 5,
+          segments: [{ startMs: 0, endMs: 900, text: "草稿", sourceSegmentIds: [first?.id as SegmentId], speakerId: named, speakerReview: "needs_review" }],
+        }, null);
+      });
+    });
+    const dataDir = await composedFreshTarget();
+    const report = applyRestore({ archive, dataDir });
+    if (!report.ok) throw new Error(JSON.stringify(report.error));
+
+    const restored = await composeOn(dataDir);
+    const listed = (await restored.send({ method: "GET", url: `/api/contents/${library.contentId}/speakers` })).json() as { items: Array<Record<string, unknown>> };
+    expect(listed.items).toEqual([
+      { id: named, ordinal: 1, name: "Ann", colorIndex: 5, avatarVersion: 1, used: true },
+      { id: plain, ordinal: 2, colorIndex: 1, used: false },
+    ]);
+    const avatar = await restored.send({ method: "GET", url: `/api/contents/${library.contentId}/speakers/${named}/avatar` });
+    expect([avatar.statusCode, avatar.headers["content-type"], avatar.rawPayload.equals(photo)]).toEqual([200, "image/png", true]);
+    const draft = (await restored.send({ method: "GET", url: `/api/contents/${library.contentId}/transcript/draft` })).json() as { segments: Array<Record<string, unknown>> };
+    expect(draft.segments[0]).toMatchObject({ speakerId: named, speakerReview: "needs_review" });
   });
 
   it("restores without the files: the original is missing and the cache evicted", async () => {

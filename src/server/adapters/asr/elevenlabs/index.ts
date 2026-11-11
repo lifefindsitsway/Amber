@@ -1,4 +1,4 @@
-import { ASR_PRESETS, asrModelFamily } from "../../../../shared/asr-presets.ts";
+import { ASR_PRESETS, asrDiarizationSupport, asrModelFamily } from "../../../../shared/asr-presets.ts";
 import { ASR_HTTP_TIMEOUT_MIN } from "../../../../shared/defaults.ts";
 import type { CanonicalAsrResult } from "../../../domain/asr.ts";
 import { amberError } from "../../../domain/errors.ts";
@@ -19,7 +19,7 @@ import type { SecretStore } from "../../../ports/secret-store.ts";
 import { httpError, transportError } from "./errors.ts";
 import { fromElevenLabsLanguage, toElevenLabsLanguage } from "./language.ts";
 import { multipartStream } from "../shared/multipart.ts";
-import { mergeSentences, sentenceParamsFor, type MergeWord, type MergedSentence, type SentenceParams } from "./sentences.ts";
+import { mergeSentences, resolveSpeakers, sentenceParamsFor, type MergeWord, type MergedSentence, type SentenceParams } from "./sentences.ts";
 
 export { DEFAULT_SENTENCE_PARAMS, mergeSentences, sentenceParamsFor, ZH_SENTENCE_PARAMS, type SentenceParams } from "./sentences.ts";
 export { fromElevenLabsLanguage, toElevenLabsLanguage } from "./language.ts";
@@ -47,7 +47,6 @@ const UPLOAD_PROGRESS_SHARE = 0.5;
 export const ELEVENLABS_CAPABILITIES: AsrProviderCapabilities & { delivery: "sync" } = {
   wordTimestamps: true,
   segmentTimestamps: false,
-  diarization: true,
   terminologyBias: true,
   maxFileBytes: 5 * 1000 ** 3,
   maxDurationSec: 10 * 3600,
@@ -146,7 +145,9 @@ class ElevenLabsAsrProvider implements AsrSyncProvider {
     this.profile = profile;
     this.modelId = modelId;
     this.spec = spec;
-    this.capabilities = spec.capabilities;
+    // Only the models Amber knows declare speaker identification; a typed-in one never does.
+    const diarization = asrDiarizationSupport(ELEVENLABS_DESCRIPTOR, modelId);
+    this.capabilities = diarization === undefined ? spec.capabilities : { ...spec.capabilities, diarization };
     this.options = options;
   }
 
@@ -157,7 +158,9 @@ class ElevenLabsAsrProvider implements AsrSyncProvider {
     const fields: Array<readonly [string, string]> = [
       ["model_id", this.modelId],
       ["timestamps_granularity", "word"],
-      ["diarize", "false"],
+      ["diarize", input.diarization === undefined ? "false" : "true"],
+      // An upper bound on speakers; leaving it out lets the service use the most the model can tell apart.
+      ...(input.diarization?.speakerCount === undefined ? [] : [["num_speakers", String(input.diarization.speakerCount)] as const]),
       ["tag_audio_events", "false"],
       // Raw ASR is evidence: filler words are left to proofreading, never dropped here.
       ...(this.spec.noVerbatimParam ? [["no_verbatim", "false"] as const] : []),
@@ -299,8 +302,13 @@ export function canonicalFromResponse(
     }
     spaceBefore = false;
   }
-  const segments = merge(words, sentenceParamsFor(language));
-  const transcriptWords: TranscriptWord[] = words.map(({ text: wordText, startMs, endMs }) => ({ text: wordText, startMs, endMs }));
+  const params = sentenceParamsFor(language);
+  const segments = merge(words, params);
+  // The words carry the speaker the sentences were built with (a label inherited from the
+  // neighbours included), so overlapping sentences of different speakers can claim their own.
+  const transcriptWords: Array<TranscriptWord & { speakerId?: string }> = resolveSpeakers(words, params).map(
+    ({ text: wordText, startMs, endMs, speakerId }) => ({ text: wordText, startMs, endMs, ...(speakerId === undefined ? {} : { speakerId }) }),
+  );
   return {
     text: parsed.text,
     language,

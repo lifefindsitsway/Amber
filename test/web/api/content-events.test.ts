@@ -1,5 +1,7 @@
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { ContentEventBus, type ContentEvent, type ContentEventOrigin } from "../../../src/web/api/content-events.ts";
+import { ContentEventBus, publishSpeakersChanged, type ContentEvent, type ContentEventOrigin } from "../../../src/web/api/content-events.ts";
+import { contentKeys } from "../../../src/web/pages/content/content-data.ts";
 
 /**
  * A stand-in for `BroadcastChannel` shared by every bus in the test, as tabs share one
@@ -104,6 +106,42 @@ describe("ContentEventBus", () => {
     unsubscribe();
     bus.publish({ type: "trashed", contentId: "c5" });
     expect(listener).not.toHaveBeenCalled();
+    bus.close();
+  });
+});
+
+describe("publishSpeakersChanged", () => {
+  it("invalidates the speaker list of that Content here and tells the other tab, which hears it as remote", () => {
+    const { open } = fakeBroadcastChannel();
+    const here = new ContentEventBus();
+    const there = new ContentEventBus();
+    const heard = record(here);
+    const elsewhere = record(there);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    queryClient.setQueryData(contentKeys.speakerAvatar("c1", "s1", 1), "blob");
+    queryClient.setQueryData(contentKeys.speakers("c2"), { items: [] });
+    publishSpeakersChanged(here, queryClient, "c1");
+    expect(queryClient.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(true);
+    // A photo's key carries its version, so its bytes are not fetched again.
+    expect(queryClient.getQueryState(contentKeys.speakerAvatar("c1", "s1", 1))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(contentKeys.speakers("c2"))?.isInvalidated).toBe(false);
+    expect(heard).toEqual([[{ type: "speakersChanged", contentId: "c1" }, { remote: false }]]);
+    expect(elsewhere).toEqual([[{ type: "speakersChanged", contentId: "c1" }, { remote: true }]]);
+    here.close();
+    there.close();
+    expect(open.size).toBe(0);
+  });
+
+  it("is accepted from another tab only with a content id", () => {
+    const { deliver } = fakeBroadcastChannel();
+    const bus = new ContentEventBus();
+    const heard = record(bus);
+    deliver({ type: "speakersChanged" });
+    deliver({ type: "speakersChanged", contentId: "" });
+    expect(heard).toEqual([]);
+    deliver({ type: "speakersChanged", contentId: "c9" });
+    expect(heard).toEqual([[{ type: "speakersChanged", contentId: "c9" }, { remote: true }]]);
     bus.close();
   });
 });

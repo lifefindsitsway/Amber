@@ -1,6 +1,10 @@
-import { THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
+import { ASR_PRESETS, asrDiarizationSupport, type AsrPreset } from "../../shared/asr-presets.ts";
+import type { AsrProviderId } from "../../shared/enums.ts";
+import { ASR_DIARIZATION_DEFAULT, THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
+import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import type { UserSettingsDto, UserSettingsPatch } from "../../shared/dto/settings.ts";
 import { effectiveShortcuts, normalizeShortcut, SHORTCUT_ACTIONS, SHORTCUT_DEFAULTS, shortcutProblems, type ShortcutAction } from "../../shared/shortcuts.ts";
+import { decideDiarization } from "../domain/asr-diarization.ts";
 import { amberError } from "../domain/errors.ts";
 import type { AsrModelRef, ModelRef } from "../domain/model-ref.ts";
 import type { UserSettings } from "../domain/runtime-support.ts";
@@ -16,7 +20,7 @@ export interface SettingsServiceOptions {
 
 /** What a user who never saved preferences has: the named defaults. */
 export function defaultSettings(userId: string, now: number): UserSettings {
-  return { userId, theme: THEME_DEFAULT, language: UI_LANGUAGE_DEFAULT, shortcuts: {}, updatedAt: now };
+  return { userId, theme: THEME_DEFAULT, language: UI_LANGUAGE_DEFAULT, shortcuts: {}, asrDiarization: ASR_DIARIZATION_DEFAULT, updatedAt: now };
 }
 
 /**
@@ -52,6 +56,47 @@ export function asrModelRefForSubmission(scope: RepositoryScope, owner: string, 
     invalid(detail, problem);
   }
   return { asrProfileId: requested.asrProfileId, modelId: requested.modelId };
+}
+
+/** Where a provider's descriptor comes from; the services default to the shared presets the adapters export. */
+export type AsrDescriptorSource = (provider: AsrProviderId) => AsrPreset | undefined;
+
+const defaultAsrDescriptor: AsrDescriptorSource = (provider) => ASR_PRESETS[provider];
+
+/**
+ * The speaker identification a submission is frozen with: the requested one, else `preferred`
+ * or `off` by the user's setting at this moment. When an ASR model is already chosen the
+ * request is checked against it before anything is queued: a speaker count outside the
+ * model's range is refused (never clamped), and a `required` request is refused when the model
+ * cannot identify speakers, the Content's known duration is past what the model recommends,
+ * or the count is out of range. Without a chosen model nothing can be checked yet; the stage
+ * checks again on the actual audio.
+ */
+export function diarizationForSubmission(
+  scope: RepositoryScope,
+  owner: string,
+  requested: DiarizationRequest | undefined,
+  check: { asrModelRef: AsrModelRef | undefined; durationMs?: number; descriptorOf?: AsrDescriptorSource },
+): DiarizationRequest {
+  if (requested === undefined) {
+    const enabled = scope.userSettings.get(owner)?.asrDiarization ?? ASR_DIARIZATION_DEFAULT;
+    return { mode: enabled ? "preferred" : "off" };
+  }
+  const profile = check.asrModelRef === undefined ? undefined : scope.asrProfiles.get(owner, check.asrModelRef.asrProfileId);
+  if (check.asrModelRef !== undefined && profile !== undefined && requested.mode !== "off") {
+    const descriptor = (check.descriptorOf ?? defaultAsrDescriptor)(profile.provider);
+    const support = descriptor === undefined ? undefined : asrDiarizationSupport(descriptor, check.asrModelRef.modelId);
+    const decision = decideDiarization(requested, support, check.durationMs);
+    // A `preferred` request that merely cannot be honored goes ahead without; one whose
+    // speaker count lies outside the model's range is a mistake to refuse.
+    if (!decision.effective && decision.reason !== undefined && (requested.mode === "required" || decision.reason === "speaker_count")) {
+      throw amberError("invalid_request", "speaker identification cannot be done with this model or audio", {
+        code: "invalid_request.diarization_unavailable",
+        details: { reason: decision.reason },
+      });
+    }
+  }
+  return requested.speakerCount === undefined ? { mode: requested.mode } : { mode: requested.mode, speakerCount: requested.speakerCount };
 }
 
 /** Settings as returned; a default ASR model that no longer names one of the owner's is left out. */
@@ -129,6 +174,9 @@ export class SettingsService {
       }
       if (body.chatWebSearchMode !== undefined) {
         assign(next, "chatWebSearchMode", body.chatWebSearchMode ?? undefined);
+      }
+      if (body.asrDiarization !== undefined) {
+        next.asrDiarization = body.asrDiarization;
       }
       if (body.shortcuts !== undefined) {
         next.shortcuts = mergeShortcuts(next.shortcuts, body.shortcuts);

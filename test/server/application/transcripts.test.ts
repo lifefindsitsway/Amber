@@ -3,6 +3,7 @@ import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { projectionSnapshot } from "../../fixtures/search/corpus.ts";
+import { insertSummary as insertCurrentSummary, MODEL_SNAPSHOT } from "../../fixtures/pipeline/summary-data.ts";
 import { lectureTranscripts, type TranscriptFixture } from "../../fixtures/transcripts/lecture.ts";
 import { countRows, insertRow, tableNames } from "../../tools/sqlite.ts";
 
@@ -934,5 +935,300 @@ describe("TranscriptService draft versions", () => {
     h.transcripts.putDraft(LOCAL, contentId, { ...body, expectedVersion: 1 });
     h.transcripts.discardDraft(LOCAL, contentId);
     expect(await codeOf(() => h.transcripts.discardDraft(LOCAL, contentId))).toEqual({ code: "not_found" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Speakers in drafts and commits
+
+interface SpeakerLecture {
+  contentId: string;
+  fixture: TranscriptFixture;
+  /** Two speakers of the Content: the first names the first two sentences of the originals, the second the rest. */
+  a: string;
+  b: string;
+}
+
+/**
+ * The lecture with two speakers registered and named by the ASR original and its proofread
+ * (sentences 1-2 by A, 3-4 by B), a summary, chapters and highlights built from the
+ * proofread, and the proofread as primary.
+ */
+function speakerLecture(h: Harness): SpeakerLecture {
+  const contentId = createLocalContent(h);
+  const fixture = lectureTranscripts(contentId);
+  const [a, b] = [h.newId(), h.newId()] as [string, string];
+  const speakerOf = (ordinal: number) => (ordinal < 2 ? a : b);
+  for (const part of [fixture.asr, fixture.corrected]) {
+    part.segments.forEach((segment, ordinal) => void (segment.speakerId = speakerOf(ordinal)));
+  }
+  const first = fixture.corrected.segments[0]?.id as SegmentId;
+  h.repository.withTransaction((scope) => {
+    scope.speakers.insert(LOCAL.userId, contentId, [{ id: a, name: "Ann" }, { id: b, name: "Bo" }], 1);
+    for (const { revision, segments } of [fixture.platform, fixture.asr, fixture.corrected]) {
+      scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+    }
+    scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.corrected.revision.id, 2);
+    const chapterRevisionId = h.newId();
+    scope.chapters.insertAiRevision(LOCAL.userId, contentId, {
+      id: chapterRevisionId, artifactId: h.newId(), transcriptRevisionId: fixture.corrected.revision.id,
+      chapters: [{ startMs: 0, endMs: 1000, title: "One", startSegmentId: first }],
+      modelRef: MODEL_SNAPSHOT, promptRef: { id: "chapter.ai", version: 1 }, promptSnapshot: "x", quality: "normal", createdAt: 3,
+    });
+    scope.chapters.setCurrent(LOCAL.userId, contentId, chapterRevisionId);
+    const highlightRevisionId = h.newId();
+    scope.highlights.insertRevision(LOCAL.userId, contentId, {
+      id: highlightRevisionId, artifactId: h.newId(), transcriptRevisionId: fixture.corrected.revision.id, items: [{ segmentId: first, score: 80, text: "引入" }],
+      modelRef: MODEL_SNAPSHOT, promptRef: { id: "highlight.default", version: 1 }, promptSnapshot: "x", quality: "normal", createdAt: 5,
+    });
+    scope.highlights.setCurrent(LOCAL.userId, contentId, highlightRevisionId);
+  });
+  insertCurrentSummary(h, { contentId, transcriptRevisionId: fixture.corrected.revision.id });
+  return { contentId, fixture, a, b };
+}
+
+/** Whether the summary, chapters and highlights built from the proofread still read as fresh. */
+function artifactsFresh(h: Harness, contentId: string): boolean[] {
+  return [
+    h.summaries.list(LOCAL, contentId).templates[0]?.stale === false,
+    h.chapters.get(LOCAL, contentId).current?.stale === false,
+    h.highlights.get(LOCAL, contentId).current?.stale === false,
+  ];
+}
+
+const speakersOf = (h: Harness, revisionId: string) => segmentsOf(h, revisionId).map((segment) => segment.speakerId);
+
+/** A draft of `baseId` that keeps every sentence and names `speakers[i]` for sentence i (`undefined`: no field). */
+function draftWith(
+  h: Harness,
+  contentId: string,
+  baseId: string,
+  speakers: ReadonlyArray<string | null | undefined>,
+  review: ReadonlyArray<"auto" | "needs_review" | undefined> = [],
+  expectedVersion: number | null = null,
+) {
+  return h.transcripts.putDraft(LOCAL, contentId, {
+    baseRevisionId: baseId,
+    expectedVersion,
+    segments: segmentsOf(h, baseId).map((segment, index) => {
+      const speakerId = speakers[index];
+      const speakerReview = review[index];
+      return {
+        startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id],
+        ...(speakerId === undefined ? {} : { speakerId }),
+        ...(speakerReview === undefined ? {} : { speakerReview }),
+      };
+    }),
+  });
+}
+
+const commitAgainstPrimary = (h: Harness, contentId: string, draftVersion = 1, speakerReview?: "accept_suggestions" | "unassign") =>
+  h.transcripts.commitDraft(LOCAL, contentId, {
+    expectedPrimaryRevisionId: primaryOf(h, contentId) as string,
+    draftVersion,
+    ...(speakerReview === undefined ? {} : { speakerReview }),
+  });
+
+describe("TranscriptService drafts carry speakers", () => {
+  it("keeps speakerId (including null) and speakerReview through autosave and reopening, and leaves absent fields absent", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a } = speakerLecture(h);
+    const saved = draftWith(h, contentId, fixture.corrected.revision.id, [a, null, undefined, "not-checked-at-save"], ["auto", "needs_review", undefined, "needs_review"]);
+    const expected = [
+      { speakerId: a, speakerReview: "auto" },
+      { speakerId: null, speakerReview: "needs_review" },
+      {},
+      { speakerId: "not-checked-at-save", speakerReview: "needs_review" },
+    ];
+    const pick = (draft: { segments: Array<{ speakerId?: string | null; speakerReview?: string }> }) =>
+      draft.segments.map((segment) => ({ ...("speakerId" in segment ? { speakerId: segment.speakerId } : {}), ...("speakerReview" in segment ? { speakerReview: segment.speakerReview } : {}) }));
+    expect(pick(saved)).toEqual(expected);
+    expect(pick(h.transcripts.getDraft(LOCAL, contentId))).toEqual(expected);
+  });
+});
+
+describe("TranscriptService commit with speakers", () => {
+  it("commits the speakers of the draft as a manual primary in the same lineage, with the derived artifacts still fresh", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
+    // Sentence 1 moves to B, 2 stays with A, 3 is unassigned, 4 stays with B.
+    draftWith(h, contentId, corrected, [b, a, null, b]);
+    const committed = commitAgainstPrimary(h, contentId);
+
+    expect(committed).toMatchObject({ kind: "manual", parentRevisionId: corrected });
+    expect(primaryOf(h, contentId)).toBe(committed.id);
+    expect(speakersOf(h, committed.id)).toEqual([b, a, undefined, b]);
+    expect(segmentsOf(h, committed.id).every((segment) => !("speakerReview" in segment))).toBe(true);
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
+    expect(countRows(h.db, "transcript_draft")).toBe(0);
+    // The first commit folds nothing: every earlier revision is still there.
+    expect(h.repository.withTransaction((scope) => scope.transcripts.listRevisions(LOCAL.userId, contentId)).map((revision) => revision.kind).sort()).toEqual(["asr", "corrected", "manual", "platform"]);
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("folds only the intermediate manual revision on the next commit, never the platform, asr or proofread ones", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    draftWith(h, contentId, corrected, [b, a, b, b]);
+    const first = commitAgainstPrimary(h, contentId);
+    draftWith(h, contentId, first.id, [a, a, a, b]);
+    const second = commitAgainstPrimary(h, contentId);
+
+    expect(second.parentRevisionId).toBe(corrected);
+    expect(revisionOf(h, first.id)).toBeUndefined();
+    expect(speakersOf(h, second.id)).toEqual([a, a, a, b]);
+    for (const kept of [fixture.platform, fixture.asr, fixture.corrected]) {
+      expect(revisionOf(h, kept.revision.id)).toBeDefined();
+    }
+    expect(speakersOf(h, corrected)).toEqual([a, a, b, b]);
+    expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
+    expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+
+  it("refuses a speaker of another Content, or one that does not exist, committing nothing", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    const other = createLocalContent(h);
+    const foreign = h.repository.withTransaction((scope) => scope.speakers.insert(LOCAL.userId, other, [{ id: h.newId(), name: "Zed" }], 1)[0]?.id) as string;
+    for (const named of [foreign, "no-such-speaker"]) {
+      draftWith(h, contentId, corrected, [a, a, named, a], [], null);
+      const error = await codeOf(() => commitAgainstPrimary(h, contentId, 1));
+      expect(error).toEqual({ code: "invalid_request" });
+      expect(primaryOf(h, contentId)).toBe(corrected);
+      expect(h.transcripts.getDraft(LOCAL, contentId).version).toBe(1);
+      h.transcripts.discardDraft(LOCAL, contentId);
+    }
+    expect(h.repository.withTransaction((scope) => scope.transcripts.listRevisions(LOCAL.userId, contentId))).toHaveLength(3);
+  });
+
+  it("gives a draft saved before drafts had speakers the first source sentence's speaker, and honors null as unassigned", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const base = segmentsOf(h, fixture.corrected.revision.id);
+    h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: fixture.corrected.revision.id, expectedVersion: null,
+      segments: [
+        // Merges sentences 1 and 3: the first source (A) decides.
+        { startMs: 0, endMs: 15000, text: "合并", sourceSegmentIds: [base[0]?.id as string, base[2]?.id as string] },
+        { startMs: 15500, endMs: 16000, text: "有说话人", sourceSegmentIds: [base[3]?.id as string] },
+        { startMs: 16000, endMs: 17000, text: "显式未分配", sourceSegmentIds: [base[3]?.id as string], speakerId: null },
+        { startMs: 17000, endMs: 18000, text: "无来源", sourceSegmentIds: [] },
+        { startMs: 18000, endMs: 19000, text: "显式指定", sourceSegmentIds: [], speakerId: a },
+      ],
+    });
+    const committed = commitAgainstPrimary(h, contentId);
+    expect(speakersOf(h, committed.id)).toEqual([a, b, undefined, undefined, a]);
+  });
+
+  it("unassigns sentences waiting for review unless the suggestions are accepted, and counts the accepted ones", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    const speakers = [a, b, b, null];
+    const review = ["auto", "needs_review", "needs_review", "needs_review"] as const;
+    const generationOf = (revisionId: string) => revisionOf(h, revisionId)?.generation;
+
+    for (const choice of [undefined, "unassign"] as const) {
+      draftWith(h, contentId, corrected, speakers, review);
+      const committed = commitAgainstPrimary(h, contentId, 1, choice);
+      expect(speakersOf(h, committed.id)).toEqual([a, undefined, undefined, undefined]);
+      expect(generationOf(committed.id)).toEqual({ kind: "manual" });
+      expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
+    }
+
+    draftWith(h, contentId, corrected, speakers, review);
+    const accepted = commitAgainstPrimary(h, contentId, 1, "accept_suggestions");
+    // The fourth sentence waits for review but has no suggestion: nothing to accept there.
+    expect(speakersOf(h, accepted.id)).toEqual([a, b, b, undefined]);
+    expect(generationOf(accepted.id)).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2 } });
+    expect(segmentsOf(h, accepted.id).every((segment) => !("speakerReview" in segment))).toBe(true);
+    expect(h.transcripts.segments(LOCAL, accepted.id, { limit: 10 }).items.map((item) => item.speakerId)).toEqual([a, b, b, undefined]);
+  });
+
+  it("records no accepted count when nothing waited for review, even if the suggestions are accepted", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    draftWith(h, contentId, fixture.corrected.revision.id, [a, a, b, b], ["auto", "auto", undefined, undefined]);
+    const committed = commitAgainstPrimary(h, contentId, 1, "accept_suggestions");
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    expect(speakersOf(h, committed.id)).toEqual([a, a, b, b]);
+  });
+
+  it("counts as accepted only the sentences whose draft names a speaker; one that inherits its source's speaker was never a suggestion", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    // Sentences 1 and 2 name a speaker, 3 has no field (inherits B from its source), 4 is unassigned; all wait for review.
+    draftWith(h, contentId, fixture.corrected.revision.id, [b, a, undefined, null], ["needs_review", "needs_review", "needs_review", "needs_review"]);
+    const committed = commitAgainstPrimary(h, contentId, 1, "accept_suggestions");
+    expect(speakersOf(h, committed.id)).toEqual([b, a, b, undefined]);
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2 } });
+  });
+
+  it("keeps the commit conflicts: a changed draft or primary refuses the commit and leaves the speakers alone", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    draftWith(h, contentId, corrected, [b, b, b, b]);
+    draftWith(h, contentId, corrected, [a, b, b, b], [], 1);
+    expect(await codeOf(() => commitAgainstPrimary(h, contentId, 1))).toEqual({ code: "conflict.draft_changed", details: { currentVersion: 2 } });
+    expect(await codeOf(() => h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: fixture.asr.revision.id, draftVersion: 2, speakerReview: "accept_suggestions" }))).toEqual({
+      code: "conflict.primary_changed",
+      details: { currentPrimaryRevisionId: corrected },
+    });
+    expect(primaryOf(h, contentId)).toBe(corrected);
+    expect(speakersOf(h, corrected)).toEqual([a, a, b, b]);
+    expect(h.transcripts.getDraft(LOCAL, contentId).segments.map((segment) => segment.speakerId)).toEqual([a, b, b, b]);
+    expect(commitAgainstPrimary(h, contentId, 2)).toMatchObject({ kind: "manual" });
+  });
+
+  it("still lets later revisions inherit the speakers of a manual one, and the database still refuses a speaker of another Content", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    draftWith(h, contentId, fixture.corrected.revision.id, [b, a, a, b]);
+    const manual = commitAgainstPrimary(h, contentId);
+    const inherit = (kind: "corrected" | "translated", language: string) => {
+      const parent = segmentsOf(h, manual.id);
+      const id = h.newId();
+      const revision: TranscriptRevision = {
+        id, contentId, kind, parentRevisionId: manual.id, language, timingFidelity: "inherited_segment",
+        generation: { kind: "manual" }, segmentCount: parent.length, createdAt: 9,
+      };
+      const segments = parent.map((segment, ordinal) => ({ ...segment, id: h.newId() as SegmentId, revisionId: id, ordinal, sourceSegmentIds: [segment.id] }));
+      h.repository.withTransaction((scope) => scope.transcripts.insertRevision(LOCAL.userId, revision, segments));
+      return id;
+    };
+    const proofread = inherit("corrected", "zh-CN");
+    const translated = inherit("translated", "en");
+    expect(speakersOf(h, proofread)).toEqual([b, a, a, b]);
+    expect(speakersOf(h, translated)).toEqual([b, a, a, b]);
+
+    const other = createLocalContent(h);
+    const foreign = h.repository.withTransaction((scope) => scope.speakers.insert(LOCAL.userId, other, [{ id: h.newId() }], 1)[0]?.id) as string;
+    const stray = segmentsOf(h, manual.id).map((segment, ordinal) => ({ ...segment, id: h.newId() as SegmentId, ordinal, speakerId: foreign }));
+    const id = h.newId();
+    expect(() =>
+      h.repository.withTransaction((scope) =>
+        scope.transcripts.insertRevision(
+          LOCAL.userId,
+          { id, contentId, kind: "corrected", parentRevisionId: manual.id, language: "zh-CN", timingFidelity: "inherited_segment", generation: { kind: "manual" }, segmentCount: stray.length, createdAt: 9 },
+          stray.map((segment) => ({ ...segment, revisionId: id, sourceSegmentIds: [] })),
+        ),
+      ),
+    ).toThrow();
   });
 });

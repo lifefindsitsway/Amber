@@ -6,7 +6,7 @@ import { MODEL_SNAPSHOT } from "../pipeline/summary-data.ts";
 /** Six hours plus 1.234 s: hour digits must survive every format. */
 export const SIX_HOURS_MS = 6 * 3_600_000 + 1234;
 
-interface Line {
+export interface ExportLine {
   startMs: number;
   endMs: number;
   text: string;
@@ -19,7 +19,7 @@ interface Line {
  * pause between its words, a Chinese one, a sentence a long pause later (a new paragraph),
  * one at 99:59, one at 100:00 and one past six hours.
  */
-export const ASR_LINES: readonly Line[] = [
+export const ASR_LINES: readonly ExportLine[] = [
   {
     startMs: 1000,
     endMs: 2600,
@@ -57,7 +57,7 @@ function revisionWith(
   h: Harness,
   contentId: string,
   base: Omit<TranscriptRevision, "id" | "contentId" | "segmentCount" | "createdAt">,
-  lines: readonly Line[],
+  lines: readonly ExportLine[],
   parents: readonly TranscriptSegment[] = [],
   // Local noon: revision labels print local time, so the expected text holds in every time zone.
   createdAt = new Date(2026, 9, 1, 12).getTime(),
@@ -83,21 +83,28 @@ function revisionWith(
  * translation of the proofread child, a current core summary citing two sentences plus an
  * unresolved marker, and current AI chapters.
  */
-export function seedExportContent(h: Harness, userId = LOCAL.userId, source: "bilibili" | "local" = "bilibili"): ExportFixture {
+export function seedExportContent(
+  h: Harness,
+  userId = LOCAL.userId,
+  source: "bilibili" | "local" = "bilibili",
+  options: { lines?: readonly ExportLine[]; speakerNames?: Readonly<Record<string, string>>; language?: string } = {},
+): ExportFixture {
+  const lines = options.lines ?? ASR_LINES;
+  const language = options.language ?? "zh-CN";
   const contentId = h.newId();
-  const asr = revisionWith(h, contentId, { kind: "asr", language: "zh-CN", timingFidelity: "exact_words", generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe" } }, ASR_LINES);
+  const asr = revisionWith(h, contentId, { kind: "asr", language, timingFidelity: "exact_words", generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe" } }, lines);
   const corrected = revisionWith(
     h,
     contentId,
-    { kind: "corrected", parentRevisionId: asr.revision.id, language: "zh-CN", timingFidelity: "inherited_segment", generation: { kind: "llm", modelRef: MODEL_SNAPSHOT, promptRef: { id: "proofread.text", version: 1 }, promptSnapshot: "<p>" } },
-    ASR_LINES.map(({ words: _words, ...line }) => ({ ...line, text: line.text.replace("Hello", "Hi") })),
+    { kind: "corrected", parentRevisionId: asr.revision.id, language, timingFidelity: "inherited_segment", generation: { kind: "llm", modelRef: MODEL_SNAPSHOT, promptRef: { id: "proofread.text", version: 1 }, promptSnapshot: "<p>" } },
+    lines.map(({ words: _words, ...line }) => ({ ...line, text: line.text.replace("Hello", "Hi") })),
     asr.segments,
   );
   const translated = revisionWith(
     h,
     contentId,
     { kind: "translated", parentRevisionId: corrected.revision.id, language: "en", timingFidelity: "segment_only", generation: { kind: "llm", modelRef: MODEL_SNAPSHOT, promptRef: { id: "translate.subtitles", version: 1 }, promptSnapshot: "<t>" } },
-    ASR_LINES.map(({ words: _words, ...line }, index) => ({ ...line, text: `EN ${index + 1}` })),
+    lines.map(({ words: _words, ...line }, index) => ({ ...line, text: `EN ${index + 1}` })),
     corrected.segments,
   );
   const summaryRevisionId = h.newId();
@@ -116,6 +123,14 @@ export function seedExportContent(h: Harness, userId = LOCAL.userId, source: "bi
       createdAt: 1,
       updatedAt: 1,
     });
+    // Sentences name only speakers registered for their Content.
+    const speakerIds = [...new Set(lines.flatMap((line) => (line.speakerId === undefined ? [] : [line.speakerId])))];
+    scope.speakers.insert(
+      userId,
+      contentId,
+      speakerIds.map((id) => ({ id, ...(options.speakerNames?.[id] === undefined ? {} : { name: options.speakerNames[id] }) })),
+      1,
+    );
     for (const { revision, segments } of [asr, corrected, translated]) {
       scope.transcripts.insertRevision(userId, revision, segments);
     }

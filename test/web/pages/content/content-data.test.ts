@@ -16,6 +16,7 @@ import {
   rootOf,
   rootsOf,
   segmentAt,
+  segmentsAt,
   translationCurrents,
   useContentTaskRefresh,
   useLatestRedos,
@@ -52,6 +53,42 @@ describe("paragraphsOf", () => {
     expect(segmentAt(segments, 1_500)?.id).toBe("b");
     expect(segmentAt(segments, undefined)).toBeUndefined();
     expect(readableRevisions([revision("r1"), revision("t1", { kind: "translated" })]).map((item) => item.id)).toEqual(["r1"]);
+  });
+});
+
+describe("segmentsAt", () => {
+  const plain = [segment("a", 0, 0, 1_000, "一"), segment("b", 1, 1_000, 2_000, "二")];
+  const overlapping = [segment("a", 0, 0, 10_000, "长话"), segment("b", 1, 2_000, 3_000, "插话"), segment("c", 2, 2_500, 6_000, "再插")];
+
+  it("equals segmentAt without overlap, with nothing else highlighted", () => {
+    for (const ms of [0, 999, 1_000, 1_500, 5_000, undefined]) {
+      const found = segmentsAt(plain, ms);
+      expect(found.primary).toBe(segmentAt(plain, ms));
+      expect(found.others).toEqual([]);
+    }
+    expect(segmentsAt(plain, 1_500, "a").primary?.id).toBe("b");
+  });
+
+  it("highlights the latest-starting sentence and weakly the rest", () => {
+    expect(segmentsAt(overlapping, 2_200).primary?.id).toBe("b");
+    expect(segmentsAt(overlapping, 2_200).others.map((item) => item.id)).toEqual(["a"]);
+    const found = segmentsAt(overlapping, 2_700);
+    expect(found.primary?.id).toBe("c");
+    expect(found.others.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(segmentsAt(overlapping, 9_000).primary?.id).toBe("a");
+  });
+
+  it("prefers the pinned sentence while it still covers the time", () => {
+    expect(segmentsAt(overlapping, 2_700, "a").primary?.id).toBe("a");
+    expect(segmentsAt(overlapping, 2_700, "a").others.map((item) => item.id)).toEqual(["b", "c"]);
+    // The pinned sentence ended: back to the latest-starting one.
+    expect(segmentsAt(overlapping, 4_000, "b").primary?.id).toBe("c");
+    expect(segmentsAt(overlapping, 4_000, "missing").primary?.id).toBe("c");
+  });
+
+  it("has no primary in a gap or without a time", () => {
+    expect(segmentsAt(overlapping, 20_000)).toEqual({ primary: undefined, others: [] });
+    expect(segmentsAt(overlapping, undefined)).toEqual({ primary: undefined, others: [] });
   });
 });
 

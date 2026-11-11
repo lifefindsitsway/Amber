@@ -79,6 +79,8 @@ function transcript(
     createdAt: 1,
   };
   h.repository.withTransaction((scope) => {
+    // Sentences name only speakers registered for their Content.
+    if (scope.speakers.get(LOCAL.userId, contentId, "A") === undefined) scope.speakers.insert(LOCAL.userId, contentId, [{ id: "A" }], 1);
     scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
     scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 2);
   });

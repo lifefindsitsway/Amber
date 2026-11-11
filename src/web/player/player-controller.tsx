@@ -205,6 +205,11 @@ export function usePlayerController(): PlayerController {
   return controller;
 }
 
+/** The controller when a page provides one, else `undefined`; for views that also work without a player. */
+export function useOptionalPlayerController(): PlayerController | undefined {
+  return useContext(ControllerContext);
+}
+
 /** Current playback time, or undefined when the player cannot report it. */
 export function usePlayerTime(): number | undefined {
   const controller = usePlayerController();

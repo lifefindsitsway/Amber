@@ -4,7 +4,7 @@ import { BREAKPOINT_DRAWER_PX } from "../../../../src/shared/defaults.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { markdownExportBody, subtitleExportBody, translationsOf } from "../../../../src/web/pages/content/export-dialog.tsx";
 import { resetSubtitlePrefsMemory, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
-import { contentRoutes, revision } from "../../../fixtures/web/content-data.ts";
+import { contentRoutes, revision, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
 const MARKDOWN = "# 第一讲\n";
@@ -40,6 +40,23 @@ describe("export request bodies", () => {
     });
     expect(subtitleExportBody("srt", "r1", "t1")).toEqual({ format: "srt", revisionId: "r1" });
     expect(subtitleExportBody("ass-bilingual", "r1", "t1")).toEqual({ format: "ass-bilingual", revisionId: "r1", translationRevisionId: "t1" });
+  });
+
+  it("adds speaker fields only when speakers are asked for", () => {
+    expect(markdownExportBody({ summaryTemplateId: undefined, chapters: false, transcriptRevisionId: "r1", subtitlesRevisionId: undefined, backlinks: true, includeSpeakers: true })).toEqual({
+      format: "markdown",
+      sections: { transcript: { revisionId: "r1" } },
+      backlinks: true,
+      includeSpeakers: true,
+    });
+    // Speakers are about the transcript section: without it there is nothing to name them in.
+    expect(markdownExportBody({ summaryTemplateId: "summary.core", chapters: false, transcriptRevisionId: undefined, subtitlesRevisionId: undefined, backlinks: true, includeSpeakers: true })).not.toHaveProperty("includeSpeakers");
+    expect(subtitleExportBody("srt", "r1", undefined, { labels: "every" })).toEqual({ format: "srt", revisionId: "r1", includeSpeakers: true, speakerLabels: "every" });
+    expect(subtitleExportBody("txt", "r1", undefined, { labels: "turn" })).toEqual({ format: "txt", revisionId: "r1", includeSpeakers: true, speakerLabels: "turn" });
+    expect(subtitleExportBody("srt-bilingual", "r1", "t1", { labels: "turn" })).toEqual({ format: "srt-bilingual", revisionId: "r1", translationRevisionId: "t1", includeSpeakers: true, speakerLabels: "turn" });
+    // VTT and ASS name the speaker on every cue anyway.
+    expect(subtitleExportBody("vtt", "r1", undefined, { labels: "every" })).toEqual({ format: "vtt", revisionId: "r1", includeSpeakers: true });
+    expect(subtitleExportBody("ass", "r1", undefined, { labels: "every" })).toEqual({ format: "ass", revisionId: "r1", includeSpeakers: true });
   });
 
   it("pairs a revision only with translations made from it", () => {
@@ -140,5 +157,74 @@ describe("ExportDialog", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     fireEvent.click(await screen.findByTestId("summary-export"));
     await waitFor(() => expect((screen.getByTestId("export-translation") as HTMLSelectElement).value).toBe("t3"));
+  });
+});
+
+describe("ExportDialog speakers", () => {
+  const spoken = [segment("s1", 0, 0, 4_000, "今天讲检索。", { speakerId: "p1" }), segment("s2", 1, 4_000, 8_000, "先看向量库。", { speakerId: "p2" })];
+  const r1 = revision("r1", { kind: "asr", segmentCount: 2 });
+  const withSpeakers = () => ({
+    ...contentRoutes(),
+    "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [r1] } },
+    "GET /api/transcript/revisions/r1/segments": { body: { revision: r1, items: spoken } },
+    "POST /api/contents/c1/export": { file: { filename: "第一讲.srt", text: "1\n" } },
+  });
+  const post = (calls: Array<{ method: string; body?: unknown }>) => calls.filter((call) => call.method === "POST").at(-1)?.body;
+
+  it("offers speakers for a version that has them, ticked, and sends them with the chosen labelling", async () => {
+    captureDownloads();
+    const { calls } = mockApi(withSpeakers());
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    const toggle = (await screen.findByTestId("export-speakers")) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    const labels = screen.getByTestId("export-speaker-labels") as HTMLSelectElement;
+    expect(labels.value).toBe("turn");
+    // The scope of the labelling is plain text beside the control, not a hover tip.
+    const hint = screen.getByTestId("export-speaker-labels-hint");
+    expect(hint.textContent).toBe("只作用于 SRT 与 TXT。");
+    expect(labels.getAttribute("aria-describedby")).toBe(hint.id);
+    fireEvent.click(screen.getByTestId("export-format-srt"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "srt", revisionId: "r1", includeSpeakers: true, speakerLabels: "turn" }));
+    fireEvent.change(screen.getByTestId("export-speaker-labels"), { target: { value: "every" } });
+    fireEvent.click(screen.getByTestId("export-format-txt"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "txt", revisionId: "r1", includeSpeakers: true, speakerLabels: "every" }));
+    fireEvent.click(screen.getByTestId("export-format-vtt"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "vtt", revisionId: "r1", includeSpeakers: true }));
+  });
+
+  it("sends the plain body once the user unticks the speakers", async () => {
+    captureDownloads();
+    const { calls } = mockApi(withSpeakers());
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    fireEvent.click(await screen.findByTestId("export-speakers"));
+    expect(screen.queryByTestId("export-speaker-labels")).toBeNull();
+    expect(screen.queryByTestId("export-speaker-labels-hint")).toBeNull();
+    fireEvent.click(screen.getByTestId("export-format-srt"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "srt", revisionId: "r1" }));
+  });
+
+  it("names the speakers in the Markdown transcript section, ticked by default", async () => {
+    captureDownloads();
+    const { calls } = mockApi({ ...withSpeakers(), "POST /api/contents/c1/export": { file: { filename: "第一讲.md", text: "# 第一讲\n" } } });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    expect(((await screen.findByTestId("export-markdown-speakers")) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("export-markdown"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "markdown", sections: { summary: { templateId: "summary.core" }, chapters: true, transcript: { revisionId: "r1" } }, backlinks: true, includeSpeakers: true }));
+    fireEvent.click(screen.getByTestId("export-markdown-speakers"));
+    fireEvent.click(screen.getByTestId("export-markdown"));
+    await waitFor(() => expect(post(calls)).not.toHaveProperty("includeSpeakers"));
+  });
+
+  it("shows no speaker controls for a version without speakers", async () => {
+    mockApi(contentRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    await screen.findByTestId("export-format-srt");
+    await waitFor(() => expect(screen.queryByTestId("export-speakers")).toBeNull());
+    expect(screen.queryByTestId("export-markdown-speakers")).toBeNull();
+    expect(screen.queryByTestId("export-speaker-labels")).toBeNull();
   });
 });

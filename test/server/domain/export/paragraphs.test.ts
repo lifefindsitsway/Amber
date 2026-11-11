@@ -114,11 +114,27 @@ describe("ParagraphBuilder", () => {
     ];
     const expected = readingParagraphs(sentences.map((sentence) => ({ ...sentence, text: sentence.text.replace(/\s*\n\s*/gu, " ") }))).map((paragraph) => ({
       startMs: paragraph.startMs,
+      ...(paragraph.speakerId === undefined ? {} : { speakerId: paragraph.speakerId }),
       text: joinReading(
         paragraph.segments.map((segment) => segment.text),
         paragraph.segments.some(isMarked),
       ),
     }));
     expect(paragraphs(sentences)).toEqual(expected);
+  });
+
+  it("records the speaker of a paragraph, and a speaker change always starts one", () => {
+    const out = paragraphs([
+      { startMs: 0, endMs: 500, text: "一。", speakerId: "a" },
+      { startMs: 600, endMs: 900, text: "二。", speakerId: "a" },
+      { startMs: 1000, endMs: 1500, text: "三。", speakerId: "b" },
+      { startMs: 1600, endMs: 1900, text: "四。" },
+    ]);
+    expect(out).toEqual([
+      { startMs: 0, text: "一。二。", speakerId: "a" },
+      { startMs: 1000, text: "三。", speakerId: "b" },
+      { startMs: 1600, text: "四。" },
+    ]);
+    expect("speakerId" in (out[2] as object)).toBe(false);
   });
 });

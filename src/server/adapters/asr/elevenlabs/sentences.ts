@@ -49,34 +49,87 @@ const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hang
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 /**
- * Groups words into sentences with a fixed rule order: a word ending in
+ * The speaker of every word. A word keeps the label the service gave it. A word without one
+ * inherits only when the nearest labelled word before it and the nearest after it name the
+ * same speaker and both are closer than the pause threshold; otherwise it stays unknown, so
+ * a long silence or a change of voice never lends a speaker to a word nobody attributed.
+ * Without any label the words come back untouched.
+ */
+export function resolveSpeakers(words: readonly MergeWord[], params: Pick<SentenceParams, "pauseMs">): readonly MergeWord[] {
+  if (words.every((word) => word.speakerId === undefined)) {
+    return words;
+  }
+  const previousLabelled: number[] = [];
+  let last = -1;
+  words.forEach((word, index) => {
+    previousLabelled.push(last);
+    if (word.speakerId !== undefined) {
+      last = index;
+    }
+  });
+  const nextLabelled: number[] = new Array<number>(words.length).fill(-1);
+  let following = -1;
+  for (let index = words.length - 1; index >= 0; index -= 1) {
+    nextLabelled[index] = following;
+    if ((words[index] as MergeWord).speakerId !== undefined) {
+      following = index;
+    }
+  }
+  return words.map((word, index) => {
+    if (word.speakerId !== undefined) {
+      return word;
+    }
+    const before = words[previousLabelled[index] as number];
+    const after = words[nextLabelled[index] as number];
+    if (
+      before?.speakerId !== undefined &&
+      before.speakerId === after?.speakerId &&
+      word.startMs - before.endMs < params.pauseMs &&
+      after.startMs - word.endMs < params.pauseMs
+    ) {
+      return { ...word, speakerId: before.speakerId };
+    }
+    return word;
+  });
+}
+
+/**
+ * Groups words into sentences with a fixed rule order: a change of speaker (including
+ * between a known and an unknown one) ends the sentence; a word ending in
  * sentence-final punctuation ends the sentence; otherwise a pause of `pauseMs` or more
  * before the next word does; a sentence that would outgrow `maxDurationMs` or `maxUnits`
  * is cut where the speaker most likely paused: after clause punctuation if it has any,
  * else at its longest gap between words (see `overflowCut`).
  *
- * Sentences come out ordered and non-overlapping, each with `startMs < endMs`: a start is
- * moved to the previous sentence's end when words overlap, and a zero-length sentence is
- * given one millisecond.
+ * Each sentence has `startMs < endMs`. Sentences of one speaker (or all without one) come
+ * out ordered and non-overlapping: a start is moved to that stream's previous end when
+ * words overlap, and a zero-length sentence is given one millisecond. Sentences of
+ * different speakers keep their real times and may overlap.
  */
-export function mergeSentences(words: readonly MergeWord[], params: SentenceParams): MergedSentence[] {
+export function mergeSentences(rawWords: readonly MergeWord[], params: SentenceParams): MergedSentence[] {
+  const words = resolveSpeakers(rawWords, params);
   const sentences: MergedSentence[] = [];
-  let previousEnd = 0;
+  // The previous end of each speaker's own sentences; unknown speakers share one stream.
+  const previousEnds = new Map<string | undefined, number>();
   const flush = (group: readonly MergeWord[]): void => {
     const first = group[0];
     const last = group.at(-1);
     if (first === undefined || last === undefined) {
       return;
     }
-    const startMs = Math.max(first.startMs, previousEnd);
+    const startMs = Math.max(first.startMs, previousEnds.get(first.speakerId) ?? 0);
     const endMs = Math.max(last.endMs, startMs + 1);
     const text = group.map((word, index) => (index > 0 && word.spaceBefore ? ` ${word.text}` : word.text)).join("").trim();
     sentences.push({ startMs, endMs, text, ...(first.speakerId === undefined ? {} : { speakerId: first.speakerId }) });
-    previousEnd = endMs;
+    previousEnds.set(first.speakerId, endMs);
   };
 
   let current: MergeWord[] = [];
   words.forEach((word, index) => {
+    if (current.length > 0 && (current[0] as MergeWord).speakerId !== word.speakerId) {
+      flush(current);
+      current = [];
+    }
     if (current.length > 0 && overflows(current, word, params)) {
       const cut = overflowCut(current, word);
       flush(current.slice(0, cut));

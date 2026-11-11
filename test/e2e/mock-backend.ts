@@ -33,6 +33,7 @@ import { handleChat } from "./mock-chat.ts";
 import { handleOtherModels, OtherModelsState } from "./mock-other-models.ts";
 import { handleOutputs } from "./mock-outputs.ts";
 import { handleSearch } from "./mock-search.ts";
+import { handleSpeakers } from "./mock-speakers.ts";
 import { handleTrash, TrashState, type LibraryContent, type MockTrash } from "./mock-trash.ts";
 
 /**
@@ -210,7 +211,7 @@ const TEMPLATES = [
   { id: "summary.terms", builtin: true, name: "summaryTemplate.terms", currentVersion: 1, deleted: false },
 ];
 
-function summaries(revisionId: string, contentId: string, generated: boolean) {
+export function summaries(revisionId: string, contentId: string, generated: boolean) {
   const cited = segmentId(revisionId, CITED_INDEX);
   return contentSummariesDtoSchema.parse({
     templates: TEMPLATES.map((template, index) => ({
@@ -848,6 +849,7 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
       mutations.push({ method, path, body: request.postDataJSON() as unknown });
     }
     if (
+      (await handleSpeakers(route, request, url)) ||
       (await handleTrash(trash, route, request, url)) ||
       (await handleNotes(notesState, route, request, url)) ||
       (await handleSearch(route, request, url, (contentId) => trash.hidden(contentId))) ||

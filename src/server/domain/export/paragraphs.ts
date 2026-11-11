@@ -5,6 +5,8 @@ import { oneLine } from "./cues.ts";
 export interface Paragraph {
   startMs: number;
   text: string;
+  /** The speaker of the paragraph's sentences; a change of speaker always starts a paragraph. */
+  speakerId?: string;
 }
 
 /**
@@ -28,7 +30,7 @@ export class ParagraphBuilder {
       this.current = undefined;
     }
     if (this.current === undefined) {
-      this.current = { startMs: sentence.startMs, text };
+      this.current = { startMs: sentence.startMs, text, ...(sentence.speakerId === undefined ? {} : { speakerId: sentence.speakerId }) };
     } else if (text !== "") {
       this.current.text = this.current.text === "" ? text : `${this.current.text}${readingSeparator(this.current.text, text, isMarked(sentence))}${text}`;
     }

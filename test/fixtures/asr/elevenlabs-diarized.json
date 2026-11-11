@@ -1,0 +1,166 @@
+{
+  "sanitized": true,
+  "_fixture": "synthetic; response structure per https://elevenlabs.io/docs/api-reference/speech-to-text/convert (2026-11-09) with diarize=true: words carry speaker_id strings, one word has none, and speaker_0 interjects while speaker_1 is still talking; invented timing and text",
+  "language_code": "eng",
+  "language_probability": 0.98,
+  "text": "Please introduce yourself. I work on software engineering Right. and research.",
+  "words": [
+    {
+      "text": "Please",
+      "type": "word",
+      "start": 0.5,
+      "end": 0.9,
+      "logprob": -0.05,
+      "speaker_id": "speaker_0"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 0.9,
+      "end": 0.95,
+      "logprob": 0.0
+    },
+    {
+      "text": "introduce",
+      "type": "word",
+      "start": 0.95,
+      "end": 1.5,
+      "logprob": -0.05,
+      "speaker_id": "speaker_0"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 1.5,
+      "end": 1.55,
+      "logprob": 0.0
+    },
+    {
+      "text": "yourself.",
+      "type": "word",
+      "start": 1.55,
+      "end": 2.2,
+      "logprob": -0.05,
+      "speaker_id": "speaker_0"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 2.2,
+      "end": 2.6,
+      "logprob": 0.0
+    },
+    {
+      "text": "I",
+      "type": "word",
+      "start": 2.6,
+      "end": 2.8,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 2.8,
+      "end": 2.85,
+      "logprob": 0.0
+    },
+    {
+      "text": "work",
+      "type": "word",
+      "start": 2.85,
+      "end": 3.2,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 3.2,
+      "end": 3.25,
+      "logprob": 0.0
+    },
+    {
+      "text": "on",
+      "type": "word",
+      "start": 3.25,
+      "end": 3.4,
+      "logprob": -0.05
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 3.4,
+      "end": 3.45,
+      "logprob": 0.0
+    },
+    {
+      "text": "software",
+      "type": "word",
+      "start": 3.45,
+      "end": 4.0,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 4.0,
+      "end": 4.05,
+      "logprob": 0.0
+    },
+    {
+      "text": "engineering",
+      "type": "word",
+      "start": 4.05,
+      "end": 4.9,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 4.9,
+      "end": 4.3,
+      "logprob": 0.0
+    },
+    {
+      "text": "Right.",
+      "type": "word",
+      "start": 4.3,
+      "end": 4.8,
+      "logprob": -0.05,
+      "speaker_id": "speaker_0"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 4.8,
+      "end": 5.0,
+      "logprob": 0.0
+    },
+    {
+      "text": "and",
+      "type": "word",
+      "start": 5.0,
+      "end": 5.2,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    },
+    {
+      "text": " ",
+      "type": "spacing",
+      "start": 5.2,
+      "end": 5.25,
+      "logprob": 0.0
+    },
+    {
+      "text": "research.",
+      "type": "word",
+      "start": 5.25,
+      "end": 5.9,
+      "logprob": -0.05,
+      "speaker_id": "speaker_1"
+    }
+  ]
+}

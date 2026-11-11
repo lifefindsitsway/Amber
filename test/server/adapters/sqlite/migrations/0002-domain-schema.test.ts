@@ -172,6 +172,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const firstSegment = transcripts.corrected.segments[0]?.id;
   row("transcript_draft", { id: nextId(), content_id: content, base_revision_id: primary, segments_json: json([]), updated_at: T0 });
   row("transcript_revision_archive", { revision_id: transcripts.asr.revision.id, content_id: content, archived_at: T0 });
+  row("content_speaker", { content_id: content, id: nextId(), user_id: userId, ordinal: 1, color_index: 0, created_at: T0, updated_at: T0 });
   row("reference_text", { id: nextId(), content_id: content, origin: "md_import", text: "# notes", created_at: T0 });
   row("note", {
     id: nextId(), user_id: userId, content_id: content, transcript_revision_id: primary, start_segment_id: firstSegment,

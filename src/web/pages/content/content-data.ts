@@ -31,6 +31,9 @@ export const contentKeys = {
   latestRedos: (contentId: string, stages: readonly RedoStage[]) => ["content", contentId, "latest-redos", ...stages] as const,
   cacheTask: (contentId: string) => ["content", contentId, "cache-task"] as const,
   segments: (revisionId: string) => ["segments", revisionId] as const,
+  /** The Content's speakers; the photo keys sit under it, so invalidating it refreshes the photos too. */
+  speakers: (contentId: string) => ["content", contentId, "speakers"] as const,
+  speakerAvatar: (contentId: string, speakerId: string, version: number) => ["content", contentId, "speakers", speakerId, "avatar", version] as const,
 };
 
 export function useContentDetail(contentId: string) {
@@ -250,6 +253,29 @@ export function readerRows(segments: readonly TranscriptSegmentDto[], chapters: 
 export function segmentAt(segments: readonly TranscriptSegmentDto[], ms: number | undefined): TranscriptSegmentDto | undefined {
   if (ms === undefined) return undefined;
   return segments.find((segment) => segment.startMs <= ms && ms < segment.endMs);
+}
+
+/**
+ * Every sentence covering `ms`, split into the one to highlight and the rest. Overlapping
+ * sentences (one speaker interrupting another) cover the same moment: the primary is the one
+ * the user just clicked (`pinnedId`) while it still covers `ms`, else the one that started
+ * last, so an interjection is highlighted for as long as it lasts. Without overlap the
+ * primary is exactly `segmentAt`'s result and `others` is empty.
+ */
+export function segmentsAt(
+  segments: readonly TranscriptSegmentDto[],
+  ms: number | undefined,
+  pinnedId?: string,
+): { primary: TranscriptSegmentDto | undefined; others: TranscriptSegmentDto[] } {
+  if (ms === undefined) return { primary: undefined, others: [] };
+  const covering = segments.filter((segment) => segment.startMs <= ms && ms < segment.endMs);
+  let primary = pinnedId === undefined ? undefined : covering.find((segment) => segment.id === pinnedId);
+  if (primary === undefined) {
+    for (const segment of covering) {
+      if (primary === undefined || segment.startMs >= primary.startMs) primary = segment;
+    }
+  }
+  return { primary, others: covering.filter((segment) => segment !== primary) };
 }
 
 /** Revisions a reader may pick for 原文细读: everything but translations. */

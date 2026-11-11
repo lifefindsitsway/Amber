@@ -15,6 +15,10 @@ import { notes } from "./ui-notes.ts";
 import { search } from "./ui-search.ts";
 import { settings } from "./ui-settings.ts";
 import { shell } from "./ui-shell.ts";
+import { speakerEditor } from "./ui-speaker-editor.ts";
+import { speakerIdentity } from "./ui-speaker-identity.ts";
+import { speakerReader } from "./ui-speaker-reader.ts";
+import { speakerTools } from "./ui-speaker-tools.ts";
 import { trash } from "./ui-trash.ts";
 import { usage } from "./ui-usage.ts";
 
@@ -41,4 +45,8 @@ export const zhCN = {
   trash,
   backup,
   usage,
+  speakerIdentity,
+  speakerReader,
+  speakerEditor,
+  speakerTools,
 } as const;

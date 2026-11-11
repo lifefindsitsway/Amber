@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { ASR_PRESETS, asrModelFamily } from "../../../../shared/asr-presets.ts";
+import { ASR_PRESETS, asrDiarizationSupport, asrModelFamily } from "../../../../shared/asr-presets.ts";
 import { ASR_HTTP_TIMEOUT_MIN, ASR_RESULT_MAX_MB } from "../../../../shared/defaults.ts";
 import { asrJobHandleSchema, type CanonicalAsrResult } from "../../../domain/asr.ts";
 import { amberError } from "../../../domain/errors.ts";
@@ -54,7 +54,6 @@ const ALIYUN_HOST_SUFFIX = ".aliyuncs.com";
 const SHARED_CAPABILITIES = {
   wordTimestamps: true,
   segmentTimestamps: true,
-  diarization: true,
   // The upload space `getPolicy` grants (1024 MB measured for both models), below the
   // service's own 2 GB; each submission checks the size the policy names again.
   maxFileBytes: 1024 * BYTES_PER_MB,
@@ -297,7 +296,9 @@ class DashscopeAsrProvider implements AsrJobProvider {
   constructor(profile: AsrProviderProfile, modelId: string, spec: FamilySpec, options: DashscopeAsrProviderFactoryOptions) {
     this.modelId = modelId;
     this.spec = spec;
-    this.capabilities = spec.capabilities;
+    // Only the models Amber knows declare speaker identification; a typed-in one never does.
+    const diarization = asrDiarizationSupport(DASHSCOPE_DESCRIPTOR, modelId);
+    this.capabilities = diarization === undefined ? spec.capabilities : { ...spec.capabilities, diarization };
     this.options = options;
     this.client = new DashscopeClient(profile, options);
   }
@@ -351,7 +352,9 @@ class DashscopeAsrProvider implements AsrJobProvider {
       input: { file_urls: [`oss://${key}`] },
       parameters: {
         channel_id: [0],
-        diarization_enabled: false,
+        diarization_enabled: input.diarization !== undefined,
+        // A reference for the algorithm; the stage only passes it inside the model's range.
+        ...(input.diarization?.speakerCount === undefined ? {} : { speaker_count: input.diarization.speakerCount }),
         // The HTTP API types this as a string holding JSON; switching the reserved filter
         // off keeps the raw transcript complete (it is evidence).
         special_word_filter: JSON.stringify({ system_reserved_filter: false }),

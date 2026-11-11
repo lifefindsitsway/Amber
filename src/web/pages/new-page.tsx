@@ -16,6 +16,7 @@ import { ApiError, type ApiClient } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
 import { queryKeys, useAsrProfiles, useCollections, useProviders, useSettings, useVersion } from "../api/queries.ts";
 import { ErrorView } from "../components/error-view.tsx";
+import { diarizationNoteKey, diarizationOffer } from "../components/asr-diarization.ts";
 import { AsrModelSelect, initialAsrModelRef } from "../components/asr-model-select.tsx";
 import { pickLocalFile, type PickedFile } from "../desktop/bridge.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
@@ -169,6 +170,8 @@ export function NewPage() {
   const asrOptions = asrProfiles.data?.items ?? [];
   const asrModelRef = asrChoice === undefined ? initialAsrModelRef(asrOptions, settings.data?.defaultAsrModelRef) : (asrChoice ?? undefined);
   const asrSetting = asrModelRef === undefined ? {} : { asrModelRef };
+  // What the speaker identification setting will do with this model; the length of what is imported is not known yet.
+  const diarizationNote = diarizationNoteKey(settings.data?.asrDiarization === true, diarizationOffer(asrOptions, asrModelRef, undefined));
   const templateId = templateChoice ?? settings.data?.defaultSummaryTemplateId ?? FALLBACK_TEMPLATE_ID;
   const outputLanguage = languageChoice ?? settings.data?.defaultOutputLanguage ?? settings.data?.language ?? UI_LANGUAGE_DEFAULT;
   const languageOptions = [...new Set([...Object.keys(languageNames), outputLanguage])];
@@ -531,18 +534,25 @@ export function NewPage() {
                 </select>
               </label>
               {asrOptions.length === 0 ? null : (
-                <label className="flex flex-col gap-1 text-sm">
-                  {t("shell.newPage.asrModel")}
-                  <AsrModelSelect
-                    profiles={asrOptions}
-                    value={asrModelRef}
-                    onChange={(ref) => setAsrChoice(ref ?? null)}
-                    className={FIELD}
-                    label={t("shell.newPage.asrModel")}
-                    noneLabel={t("shell.newPage.noAsrModel")}
-                    testId="new-asr-model"
-                  />
-                </label>
+                <div className="flex flex-col gap-1">
+                  <label className="flex flex-col gap-1 text-sm">
+                    {t("shell.newPage.asrModel")}
+                    <AsrModelSelect
+                      profiles={asrOptions}
+                      value={asrModelRef}
+                      onChange={(ref) => setAsrChoice(ref ?? null)}
+                      className={FIELD}
+                      label={t("shell.newPage.asrModel")}
+                      noneLabel={t("shell.newPage.noAsrModel")}
+                      testId="new-asr-model"
+                    />
+                  </label>
+                  {diarizationNote === undefined ? null : (
+                    <p className="text-xs text-muted" data-testid="new-diarization-note">
+                      {t(`speakerTools.note.${diarizationNote}`)}
+                    </p>
+                  )}
+                </div>
               )}
               <label className="flex flex-col gap-1 text-sm">
                 {t("shell.newPage.outputLanguage")}

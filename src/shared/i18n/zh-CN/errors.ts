@@ -79,6 +79,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "asr_failed.job_failed": "语音转写服务处理这段音频失败，请从这步重跑（会重新提交）",
   "asr_failed.job_expired": "转写作业在服务端已不存在或已过期，请从这步重跑（会重新提交）",
   "asr_failed.model_unavailable": "所配置的转写模型不存在，或在所选地域不可用，请检查配置",
+  "asr_failed.diarization_unavailable": "所选模型或这段音频的时长不支持识别发言人，未发出转写请求；可关闭「识别发言人」后重新转录",
   "asr_quota.free_tier_exhausted": "该模型的免费额度已用完，且账号开启了「免费额度用完即停」；请换用其它模型，或在阿里云百炼控制台关闭该开关后从这步重跑",
   "conflict.mutation_lane": "已有一个「{{task}}」任务正在进行，与这次操作冲突；请等它结束，或在左下角「任务」里取消后再试",
   "conflict.duplicate_file": "已有相同的文件，可选择仍然导入",
@@ -123,6 +124,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "invalid_request.note_anchor": "选中的文字已无法定位，请重新选择",
   "invalid_request.note_span": "一条笔记最多跨 {{limit}} 句",
   "invalid_request.note_limit": "这条内容的笔记已达 {{limit}} 条上限",
+  "invalid_request.diarization_unavailable": "无法按要求识别发言人：所选模型不支持、音频时长超过建议上限，或人数超出范围",
   "invalid_request.prompt_protocol": "提示词缺少必须保留的内容，或含有无法识别的插值槽",
   // Filled with the matching `cacheDirErrors` text by the sidecar.
   "invalid_request.cache_dir": "{{message}}",

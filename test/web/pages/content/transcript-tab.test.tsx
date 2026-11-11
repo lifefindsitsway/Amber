@@ -1,13 +1,15 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useLocation } from "react-router";
-import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT } from "../../../../src/shared/defaults.ts";
+import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../src/shared/reader-typography.ts";
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { changedSegments } from "../../../../src/web/pages/content/transcript-tab.tsx";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
+import { mountReader, SPEAKER_SEGMENTS, speakerRoutes, TYPOGRAPHY_KEY } from "../../../fixtures/web/reader-speakers.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 
@@ -739,5 +741,388 @@ describe("TranscriptTab version list: history, archive, delete, missing links an
     const later = revision("r5", { kind: "asr", createdAt: 10 });
     await open("/contents/c1?tab=transcript", routes([asr, m2, later], "m2"));
     expect(screen.queryByTestId("asr-banner")).toBeNull();
+  });
+});
+
+describe("TranscriptTab speakers: copy and apply-speakers link", () => {
+  async function openSpeakers(language?: string, route = "/contents/c1?tab=transcript&revision=r1") {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mockApi(speakerRoutes(language === undefined ? {} : { language }));
+    renderApp(
+      <>
+        <ContentPage />
+        <LocationProbe />
+      </>,
+      { route, path: "/contents/:id" },
+    );
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    await waitFor(() => expect(reader.querySelector("[data-segment-id='g1']")).not.toBeNull());
+    return { reader, writeText };
+  }
+
+  const pickCopy = async (id: "transcript-copy-body" | "transcript-copy-speakers") => {
+    fireEvent.keyDown(screen.getByTestId("transcript-copy"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId(id));
+  };
+
+  it("splits 复制 into the body alone and the body with each turn opening with its speaker's name", async () => {
+    const { writeText } = await openSpeakers();
+    expect(screen.getByTestId("transcript-copy").textContent).toBe("复制");
+    await pickCopy("transcript-copy-body");
+    expect(writeText).toHaveBeenLastCalledWith(
+      "开场\n\n今天讲检索。先看向量库。\n\n嗯。\n\n对，重排序是第二步，要把粗排的结果再精排一遍。\n\n第二段仍然是他在讲，所以还在同一个发言轮次里。\n\n这一句没有人认领，所以它属于未分配的轮次。\n\n正文\n\n再看重排序，它决定了最终展示给用户的排列顺序。",
+    );
+    await pickCopy("transcript-copy-speakers");
+    expect(writeText).toHaveBeenLastCalledWith(
+      "开场\n\n陈明：今天讲检索。先看向量库。\n\n发言人 2：嗯。\n\n陈明：对，重排序是第二步，要把粗排的结果再精排一遍。\n\n第二段仍然是他在讲，所以还在同一个发言轮次里。\n\n这一句没有人认领，所以它属于未分配的轮次。\n\n正文\n\n陈明：再看重排序，它决定了最终展示给用户的排列顺序。",
+    );
+  });
+
+  it("uses a half-width colon and a space for a revision that is not Chinese", async () => {
+    const { writeText } = await openSpeakers("en");
+    await pickCopy("transcript-copy-speakers");
+    expect(writeText.mock.calls.at(-1)?.[0]).toContain("陈明: 今天讲检索。");
+    expect(writeText.mock.calls.at(-1)?.[0]).toContain("发言人 2: 嗯。");
+  });
+
+  it("copies with speakers even while the turns are hidden", async () => {
+    localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: false }));
+    const { reader, writeText } = await openSpeakers();
+    expect(reader.querySelector("[data-turn-key]")).toBeNull();
+    await pickCopy("transcript-copy-speakers");
+    expect(writeText.mock.calls.at(-1)?.[0]).toContain("陈明：今天讲检索。");
+  });
+
+  it("opens the editor for ?applySpeakers=<revision> and spends the parameter", async () => {
+    const { calls } = mockApi(speakerRoutes());
+    renderApp(
+      <>
+        <ContentPage />
+        <LocationProbe />
+      </>,
+      { route: "/contents/c1?tab=transcript&revision=r1&applySpeakers=r5", path: "/contents/:id" },
+    );
+    // The editor replaces the reading view, and the address no longer asks for it.
+    await waitFor(() => expect(screen.getByTestId("location").textContent).not.toContain("applySpeakers"), { timeout: 5_000 });
+    expect(screen.getByTestId("location").textContent).toContain("revision=r1");
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/c1/transcript/draft")).toBe(true), { timeout: 5_000 });
+    expect(screen.queryByTestId("transcript-reader")).toBeNull();
+  });
+});
+
+describe("TranscriptTab keeps the reading position when the typography changes", () => {
+  type Change = "font" | "lineHeight" | "speakers";
+
+  type Typography = { fontSize: number; lineHeight: number; turns: boolean };
+
+  /** Where the list sits on screen: its top edge, the height it shows and the padding above its first row. */
+  const LIST_TOP = 100;
+  const VIEWPORT = 300;
+  const PADDING = 8;
+  /**
+   * A reader stops scrolling a while before reaching for the typography: longer than the list
+   * takes to stop counting as scrolling after its last scroll event.
+   */
+  const READING_PAUSE_MS = 200;
+
+  /** The typography the rows are drawn with, read from the first row's paragraph (or the turn holding it). */
+  function typographyOf(reader: HTMLElement): Typography {
+    const body = reader.querySelector<HTMLElement>("[data-row-index] p");
+    const holder = body?.closest<HTMLElement>("[data-turn-key]") ?? body;
+    return {
+      fontSize: Number.parseFloat(holder?.style.fontSize || String(READER_FONT_SIZE_DEFAULT)),
+      lineHeight: Number.parseFloat(holder?.style.lineHeight || String(READER_LINE_HEIGHT_DEFAULT)),
+      turns: reader.querySelector("[data-turn-key]") !== null,
+    };
+  }
+
+  /**
+   * Lays the list out like a browser would, for every row as soon as it mounts: a row's height
+   * follows the typography the rows carry, and the virtualizer reads the same height. A plain
+   * row sits below every row before it; a windowed row where its transform puts it. Both sit
+   * below the list's padding, and move with its scroll position.
+   */
+  function layOut(heightOf: (typography: Typography) => number): void {
+    const rectOf = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this.getAttribute("data-testid") === "transcript-reader") return DOMRect.fromRect({ x: 0, y: LIST_TOP, width: 600, height: VIEWPORT });
+      const reader = this.closest<HTMLElement>("[data-testid='transcript-reader']");
+      if (reader === null || !this.hasAttribute("data-row-index")) return rectOf.call(this);
+      const height = heightOf(typographyOf(reader));
+      const translated = /translateY\((-?[\d.]+)px\)/.exec((this as HTMLElement).style.transform)?.[1];
+      const start = translated === undefined ? Number(this.getAttribute("data-row-index")) * height : Number(translated);
+      return DOMRect.fromRect({ x: 0, y: LIST_TOP + PADDING + start - reader.scrollTop, width: 600, height });
+    });
+    const offsetHeightOf = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")?.get;
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("data-testid") === "transcript-reader") return VIEWPORT;
+      const reader = this.closest<HTMLElement>("[data-testid='transcript-reader']");
+      if (reader !== null && this.hasAttribute("data-row-index")) return Math.round(heightOf(typographyOf(reader)));
+      return offsetHeightOf?.call(this) ?? 0;
+    });
+    const offsetTopOf = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop")?.get;
+    vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+      // The box the windowed rows are positioned in starts below the list's padding.
+      if (this.parentElement?.getAttribute("data-testid") === "transcript-reader" && !this.hasAttribute("data-row-index")) return PADDING;
+      return offsetTopOf?.call(this) ?? 0;
+    });
+  }
+
+  /**
+   * jsdom neither scrolls on `scrollTo` nor fires a scroll event when a script sets the scroll
+   * position; a browser does both, the event before the next frame. The virtualizer follows the
+   * scroll position only through that event.
+   */
+  function scrollLikeABrowser(reader: HTMLElement): void {
+    let top = 0;
+    Object.defineProperty(reader, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => {
+        const next = Math.max(0, value);
+        if (next === top) return;
+        top = next;
+        setTimeout(() => reader.dispatchEvent(new Event("scroll")), 0);
+      },
+    });
+    reader.scrollTo = ((options: ScrollToOptions) => {
+      reader.scrollTop = options.top ?? top;
+    }) as typeof reader.scrollTo;
+  }
+
+  /** The first row with room below the list's top edge and where its top sits: what the reader keeps in place. */
+  function firstVisible(reader: HTMLElement): { key: string; offset: number } {
+    const top = reader.getBoundingClientRect().top;
+    for (const row of reader.querySelectorAll<HTMLElement>("[data-row-key]")) {
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > top) return { key: row.dataset["rowKey"] as string, offset: rect.top - top };
+    }
+    throw new Error("no visible row");
+  }
+  const offsetOf = (reader: HTMLElement, key: string): number | undefined => {
+    const row = [...reader.querySelectorAll<HTMLElement>("[data-row-key]")].find((candidate) => candidate.dataset["rowKey"] === key);
+    return row === undefined ? undefined : row.getBoundingClientRect().top - reader.getBoundingClientRect().top;
+  };
+  const rowHeight = (reader: HTMLElement): number => (reader.querySelector("[data-row-index]") as HTMLElement).getBoundingClientRect().height;
+
+  async function openPopover(): Promise<HTMLElement> {
+    const open = screen.queryByTestId("reader-typography-popover");
+    if (open !== null) return open;
+    fireEvent.click(screen.getByRole("button", { name: "Aa 阅读排版" }));
+    return screen.findByTestId("reader-typography-popover");
+  }
+
+  async function change(kind: Change): Promise<void> {
+    const popover = await openPopover();
+    // The user arrives asynchronously; a change made before that is not stored, so it is repeated until it is.
+    await waitFor(() => {
+      if (kind === "font") fireEvent.click(within(popover).getByRole("button", { name: "增大字号" }));
+      else if (kind === "lineHeight") fireEvent.click(within(popover).getByRole("radio", { name: "2.0" }));
+      else fireEvent.click(within(popover).getByRole("switch", { name: "显示发言人" }));
+      expect(localStorage.getItem(TYPOGRAPHY_KEY)).not.toBeNull();
+    });
+  }
+
+  const sentences = (count: number, speakers: boolean) =>
+    Array.from({ length: count }, (_, index) =>
+      segment(`p${index}`, index, index * PARAGRAPH_GAP_MS * 2, index * PARAGRAPH_GAP_MS * 2 + 1_000, `第${index}段。`, speakers ? { speakerId: index % 2 === 0 ? "sp1" : "sp2" } : {}),
+    );
+
+  /**
+   * Opens a list of 200 rows (windowed) or 12 (plain) and waits until it is drawn with the
+   * typography `stored` holds (the defaults when nothing is stored) and, with speakers, their
+   * turns: the stored typography only applies once the user has loaded.
+   */
+  async function openList(windowed: boolean, speakers: boolean, stored?: Partial<ReaderTypography>) {
+    // A windowed row is 400px at the defaults, a little less without the turn headers; a plain one about 80px.
+    const windowedBase = (turns: boolean): number => (turns || !speakers ? 400 : 360);
+    layOut(({ fontSize, lineHeight, turns }) =>
+      windowed
+        ? windowedBase(turns) * (fontSize / READER_FONT_SIZE_DEFAULT) * (lineHeight / READER_LINE_HEIGHT_DEFAULT)
+        : fontSize * lineHeight * 3 + (turns ? 40 : 0),
+    );
+    const typography = { ...READER_TYPOGRAPHY_DEFAULTS, ...stored };
+    if (stored !== undefined) localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify(typography));
+    mockApi({ ...speakerRoutes({ segments: sentences(windowed ? 200 : 12, speakers) }), "GET /api/contents/c1/chapters": { body: { revisions: [] } } });
+    const mounted = mountReader();
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    scrollLikeABrowser(reader);
+    await waitFor(() => expect(reader.querySelector("[data-segment-id='p2']")).not.toBeNull(), { timeout: 5_000 });
+    const expected: Typography = { fontSize: typography.fontSize, lineHeight: typography.lineHeight, turns: speakers && typography.showSpeakers };
+    await waitFor(() => expect(typographyOf(reader)).toEqual(expected), { timeout: 5_000 });
+    return { ...mounted, reader };
+  }
+
+  /** Scrolls the anchor row half a row above the list's top edge, then pauses as a reader does. */
+  async function scrollToAnchor(reader: HTMLElement): Promise<{ key: string; offset: number }> {
+    const anchorIndex = 2;
+    act(() => {
+      reader.scrollTop = Math.round(rowHeight(reader) * (anchorIndex + 0.5));
+    });
+    await act(() => new Promise((resolve) => setTimeout(resolve, READING_PAUSE_MS)));
+    const before = firstVisible(reader);
+    expect(before.key).toBe(`p${anchorIndex}`);
+    return before;
+  }
+
+  /** The anchor row is mounted and back at its distance from the top, and the rows really changed size, so it was kept by correction and not by luck. */
+  async function expectKept(reader: HTMLElement, before: { key: string; offset: number }, heightBefore: number): Promise<void> {
+    await waitFor(
+      () => {
+        const offset = offsetOf(reader, before.key);
+        expect(offset).not.toBeUndefined();
+        expect(offset).toBeCloseTo(before.offset, 0);
+      },
+      { timeout: 5_000 },
+    );
+    expect(rowHeight(reader)).not.toBe(heightBefore);
+  }
+
+  describe.each([
+    ["a plain list", false],
+    ["a windowed list", true],
+  ])("in %s", (_name, windowed) => {
+    it.each<[string, Change, boolean]>([
+      ["font size", "font", false],
+      ["line height", "lineHeight", false],
+      ["line height with speakers", "lineHeight", true],
+      ["showing the speakers", "speakers", true],
+    ])("puts the first visible row back at the same distance from the top after changing the %s", async (_label, kind, speakers) => {
+      const { reader } = await openList(windowed, speakers);
+      const before = await scrollToAnchor(reader);
+      const heightBefore = rowHeight(reader);
+      await change(kind);
+      await expectKept(reader, before, heightBefore);
+    });
+
+    it("puts the first visible row back at the same distance from the top after 恢复默认", async () => {
+      const { reader } = await openList(windowed, false, { fontSize: READER_FONT_SIZE_DEFAULT + 4 });
+      const before = await scrollToAnchor(reader);
+      const heightBefore = rowHeight(reader);
+      const popover = await openPopover();
+      fireEvent.click(within(popover).getByRole("button", { name: "恢复默认" }));
+      expect(localStorage.getItem(TYPOGRAPHY_KEY)).toBeNull();
+      await expectKept(reader, before, heightBefore);
+      expect(typographyOf(reader).fontSize).toBe(READER_FONT_SIZE_DEFAULT);
+    });
+  });
+
+  describe("a change that does not land", () => {
+    it("leaves no anchor behind to pull the view back at a later render when the preference cannot be stored yet", async () => {
+      layOut(({ fontSize, lineHeight }) => fontSize * lineHeight * 3);
+      mockApi({
+        ...speakerRoutes({ segments: sentences(12, false) }),
+        "GET /api/auth/me": { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } },
+      });
+      const { controller } = mountReader();
+      const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+      await waitFor(() => expect(reader.querySelector("[data-segment-id='p2']")).not.toBeNull());
+      reader.scrollTop = 200;
+      fireEvent.click(screen.getByRole("button", { name: "Aa 阅读排版" }));
+      fireEvent.click(await screen.findByRole("button", { name: "增大字号" }));
+      expect(localStorage.getItem(TYPOGRAPHY_KEY)).toBeNull();
+      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      reader.scrollTop = 321;
+      act(() => controller.reportTime(500));
+      expect(reader.scrollTop).toBe(321);
+    });
+
+    it("leaves no anchor behind for 恢复默认 when everything is already at its default", async () => {
+      const { reader, controller } = await openList(false, false);
+      const popover = await openPopover();
+      act(() => {
+        reader.scrollTop = 200;
+      });
+      fireEvent.click(within(popover).getByRole("button", { name: "恢复默认" }));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      act(() => {
+        reader.scrollTop = 333;
+      });
+      act(() => controller.reportTime(500));
+      expect(reader.scrollTop).toBe(333);
+    });
+  });
+});
+
+describe("TranscriptTab sentence menu with speakers", () => {
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges();
+  });
+
+  async function open(options: Parameters<typeof speakerRoutes>[0] = {}, ready = "g1") {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mockApi(speakerRoutes(options));
+    renderApp(
+      <ContextMenuHost blockNative={false}>
+        <ContentPage />
+      </ContextMenuHost>,
+      { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" },
+    );
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    await waitFor(() => expect(reader.querySelector(`[data-segment-id='${ready}']`)).not.toBeNull());
+    return { reader, writeText };
+  }
+
+  it("adds 复制这句（含发言人） in speaker mode, led by the speaker's name", async () => {
+    const { reader, writeText } = await open();
+    expect(rightClick(reader.querySelector("[data-segment-id='g1']") as HTMLElement)).toBe(true);
+    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）", "复制这句（含发言人）"]);
+    fireEvent.click(screen.getByTestId("context-menu-item-copy-sentence-with-speaker"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("陈明：今天讲检索。"));
+  });
+
+  it("leads an unnamed speaker's sentence with 发言人 N, uses a half-width colon for other languages and adds nothing for an unassigned sentence", async () => {
+    const { reader, writeText } = await open({ language: "en" });
+    rightClick(reader.querySelector("[data-segment-id='g3']") as HTMLElement);
+    fireEvent.click(screen.getByTestId("context-menu-item-copy-sentence-with-speaker"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("发言人 2: 嗯。"));
+    rightClick(reader.querySelector("[data-segment-id='g6']") as HTMLElement);
+    fireEvent.click(screen.getByTestId("context-menu-item-copy-sentence-with-speaker"));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("这一句没有人认领，所以它属于未分配的轮次。"));
+  });
+
+  it("is not offered when the text is not read by speakers", async () => {
+    const plain = SEGMENTS.map((item) => ({ ...item }));
+    const { reader } = await open({ segments: plain }, "s1");
+    rightClick(reader.querySelector("[data-segment-id='s1']") as HTMLElement);
+    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）"]);
+  });
+});
+
+describe("TranscriptTab version info and applying speakers", () => {
+  it("shows how the speakers of a version came about on its option and on the picker", async () => {
+    mockApi(speakerRoutes({ revision: { kind: "asr", generation: { diarization: { status: "applied" } } } }));
+    mountReader();
+    const picker = (await screen.findByTestId("transcript-version", {}, { timeout: 5_000 })) as HTMLSelectElement;
+    await waitFor(() => expect(picker.title).toContain("发言人识别：已识别发言人"));
+    expect((picker.options[0] as HTMLOptionElement).title).toContain("发言人识别：已识别发言人");
+  });
+
+  it("shows how many sentences took their speaker from an accepted suggestion", async () => {
+    mockApi(speakerRoutes({ revision: { kind: "manual", generation: { speakerReview: { acceptedSuggestions: 12 } } } }));
+    mountReader();
+    const picker = (await screen.findByTestId("transcript-version", {}, { timeout: 5_000 })) as HTMLSelectElement;
+    await waitFor(() => expect(picker.title).toContain("12 句按建议归属，未逐句核对"));
+  });
+
+  it("applies speakers to the current text even while a newer recognition is being read", async () => {
+    const current = revision("r1", { kind: "manual", createdAt: 1 });
+    const recognized = revision("r5", { kind: "asr", createdAt: 5 });
+    const { calls } = mockApi({
+      ...speakerRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [current, recognized] } },
+      "GET /api/transcript/revisions/r1/segments": { body: { revision: current, items: SEGMENTS } },
+      "GET /api/transcript/revisions/r5/segments": { body: { revision: recognized, items: SPEAKER_SEGMENTS.map((item) => ({ ...item, revisionId: "r5" })) } },
+    });
+    mountReader({ route: "/contents/c1?tab=transcript&revision=r5&applySpeakers=r5" });
+    // The draft starts from the current text (r1), and the recognition is offered as the source of the speakers.
+    const dialog = await screen.findByRole("dialog", {}, { timeout: 5_000 });
+    expect((await within(dialog).findAllByRole("option", { name: /ASR 原稿/ })).length).toBeGreaterThan(0);
+    const draftAt = calls.findIndex((call) => call.path === "/api/contents/c1/transcript/draft");
+    expect(draftAt).toBeGreaterThanOrEqual(0);
+    const afterDraft = calls.slice(draftAt).map((call) => call.path.split("?")[0]);
+    expect(afterDraft).toContain("/api/transcript/revisions/r1/segments");
   });
 });

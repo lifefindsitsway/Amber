@@ -6,7 +6,7 @@ import type { StageRunDto, TaskDetailDto, TaskDto } from "../../../src/shared/dt
 
 // DTO builders for shell, new page and task flow tests; values are synthetic.
 
-export const SETTINGS: UserSettingsDto = { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 };
+export const SETTINGS: UserSettingsDto = { theme: "light", language: "zh-CN", shortcuts: {}, asrDiarization: true, updatedAt: 1 };
 
 export function content(id: string, overrides: Partial<ContentDto> = {}): ContentDto {
   return { id, source: { kind: "youtube" }, title: `内容 ${id}`, processingStatus: "succeeded", collections: [], createdAt: 1, updatedAt: 1, ...overrides };

@@ -55,6 +55,37 @@ const file = (name: string, data: Buffer, filename = "lecture.mp4"): UploadPart 
 const fixtureBytes = (name: "withAudio" | "noAudio" | "audioOnly") => readFileSync(mediaFixtures()[name].path);
 const SRT = Buffer.from("1\n00:00:00,500 --> 00:00:02,000\n第一句\n\n2\n00:00:02,000 --> 00:00:03,000\n第二句\n");
 
+describe("speaker identification of an import", () => {
+  const settingsPart = (settings: object) => field("settings", JSON.stringify({ autoProofread: false, ...settings }));
+
+  it("freezes the request's own mode, else preferred or off by the user's setting", async () => {
+    const s = stack();
+    const frozen = async (settings: object): Promise<unknown> => {
+      const result = await s.localImport.upload(LOCAL, partsOf(settingsPart(settings), field("allowDuplicate", "true"), file("file", fixtureBytes("withAudio"))));
+      const request = JSON.parse(taskOf(s.h, result.body.taskIds[0] as string).requestJson) as { diarization?: unknown };
+      s.h.tasks.cancel(LOCAL, result.body.taskIds[0] as string);
+      return request.diarization;
+    };
+    expect(await frozen({})).toEqual({ mode: "preferred" });
+    s.h.userSettings.patch(LOCAL, { asrDiarization: false });
+    expect(await frozen({})).toEqual({ mode: "off" });
+    expect(await frozen({ diarization: { mode: "required", speakerCount: 3 } })).toEqual({ mode: "required", speakerCount: 3 });
+  });
+
+  it("refuses a required request the chosen model cannot honor for the file, writing nothing", async () => {
+    const s = stack();
+    s.h.repository.withTransaction((scope) =>
+      scope.asrProfiles.insert({ id: "typed", userId: LOCAL.userId, name: "typed", provider: "dashscope", models: [{ modelId: "fun-asr-2026" }], createdAt: 1 }),
+    );
+    const refused = await failure(
+      s.localImport.upload(LOCAL, partsOf(settingsPart({ asrModelRef: { asrProfileId: "typed", modelId: "fun-asr-2026" }, diarization: { mode: "required" } }), file("file", fixtureBytes("withAudio")))),
+    );
+    expect(refused).toMatchObject({ code: "invalid_request.diarization_unavailable", details: { reason: "unsupported" } });
+    expect(countRows(s.h.db, "content")).toBe(0);
+    await expectNothingLeft(s);
+  });
+});
+
 describe("upload", () => {
   it("streams the media part into a managed upload and creates everything in one go", async () => {
     const s = stack();
@@ -80,6 +111,7 @@ describe("upload", () => {
       promptRefs: builtinPromptRefs("process_content"),
       autoProofread: false,
       templateRef: { id: "summary.core", version: 1 },
+      diarization: { mode: "preferred" },
       initialSubtitleRevisionId: revision?.id,
     });
     expect(s.h.repository.withTransaction((scope) => scope.importBatches.get(LOCAL.userId, result.body.importBatchId))).toMatchObject({ sourceType: "upload", totalItems: 1 });

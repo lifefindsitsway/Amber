@@ -3,16 +3,19 @@ import { Download, FileUp, Mic } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
+import { ASR_DIARIZATION_DEFAULT } from "../../../shared/defaults.ts";
 import { subtitleImportResponseSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import { STYLED_EXPORT_FORMATS, type SubtitleExportFormat, type SubtitleExportRequest } from "../../../shared/dto/export.ts";
 import type { AsrModelRefDto } from "../../../shared/dto/model-ref.ts";
+import type { DiarizationRequest } from "../../../shared/dto/speaker.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import type { SubtitleStyle } from "../../../shared/subtitle-style.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { useAsrProfiles, useMe, useSettings } from "../../api/queries.ts";
+import { diarizationOffer } from "../../components/asr-diarization.ts";
 import { AsrModelSelect, asrModelOptions, initialAsrModelRef } from "../../components/asr-model-select.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { useDesktop } from "../../desktop/use-desktop.ts";
@@ -28,9 +31,11 @@ import { FilePicker } from "../../ui/file-picker.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { BurnDialog, BurnTracker } from "./burn-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, revisionGroups, segmentAt, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
-import { subtitleExportBody } from "./export-dialog.tsx";
-import { revisionBasis, revisionLabel } from "./labels.ts";
+import { contentKeys, revisionGroups, segmentsAt, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
+import { subtitleExportBody, type SubtitleSpeakerChoice } from "./export-dialog.tsx";
+import { revisionLabel } from "./labels.ts";
+import { revisionInfo } from "./revision-info.ts";
+import { DIARIZATION_UNAVAILABLE_CODE, DiarizationOptions, DiarizationUnavailableNotice, useDiarizationChoice } from "./retranscribe-diarization.tsx";
 import { AsrBanner } from "./asr-banner.tsx";
 import { RevisionActions } from "./revision-actions-dialog.tsx";
 import { RevisionToggleBar, type RevisionToggles } from "./transcript-tab.tsx";
@@ -38,6 +43,10 @@ import { TranslationDraftEditor } from "./translation-draft-editor.tsx";
 import { TranslationEditButton, useUnarchiveAndEdit } from "./translation-tab.tsx";
 import { useLocatedSegment } from "./same-sentence.ts";
 import { useSentenceMenu } from "./sentence-menu.tsx";
+import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
+import { speakerModeFor } from "../../../shared/speaker-turns.ts";
+import { speakerColorVars } from "./speakers/speaker-colors.ts";
+import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { VirtualRows } from "./virtual-rows.tsx";
 
 /**
@@ -56,13 +65,17 @@ export function subtitleDownloads(revision: TranscriptRevisionDto): Array<{ form
 
 /**
  * The export body of one download choice. ASS files carry the player's current subtitle
- * appearance and position; the other formats have no styling.
+ * appearance and position; the other formats have no styling. A version with speakers names
+ * them, on the first cue of each turn: the menu has no options, so it takes the export
+ * dialog's defaults.
  */
 export function subtitleDownloadBody(
   item: { format: SubtitleExportFormat; revisionId: string; translationRevisionId?: string },
   style: SubtitleStyle,
+  hasSpeakers = false,
 ): SubtitleExportRequest {
-  const body = subtitleExportBody(item.format, item.revisionId, item.translationRevisionId);
+  const speakers: SubtitleSpeakerChoice | undefined = hasSpeakers ? { labels: "turn" } : undefined;
+  const body = subtitleExportBody(item.format, item.revisionId, item.translationRevisionId, speakers);
   return STYLED_EXPORT_FORMATS.has(item.format) ? { ...body, style } : body;
 }
 
@@ -77,6 +90,7 @@ export function SubtitlesTab() {
   const time = usePlayerTime();
   const [picked, setPicked] = useState<string | undefined>(undefined);
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   // A search hit opens the page with its query, which keeps narrowing the rows here.
   const [filter, setFilter] = useState(() => params.get("search") ?? "");
   const [follow, setFollow] = useState(true);
@@ -137,10 +151,12 @@ export function SubtitlesTab() {
   // The same starting choice as the new page: the default while it can be picked, else none.
   const asrModelRef = asrChoice ?? initialAsrModelRef(asrOptions, settings.data?.defaultAsrModelRef);
   const noAsr = asrProfiles.isSuccess && asrModelOptions(asrOptions).length === 0;
+  const diarizationOffered = diarizationOffer(asrOptions, asrModelRef, page.content.durationMs);
+  const diarization = useDiarizationChoice(diarizationOffered, settings.data?.asrDiarization ?? ASR_DIARIZATION_DEFAULT);
   const retranscribe = useMutation({
-    mutationFn: () =>
+    mutationFn: (request: DiarizationRequest) =>
       client.post(`/api/contents/${encodeURIComponent(page.content.id)}/transcript/retranscribe`, taskAcceptedDtoSchema, {
-        body: asrModelRef === undefined ? {} : { asrModelRef },
+        body: { ...(asrModelRef === undefined ? {} : { asrModelRef }), diarization: request },
         idempotent: true,
       }),
     onSuccess: () => {
@@ -153,7 +169,13 @@ export function SubtitlesTab() {
     const needle = filter.trim().toLowerCase();
     return needle === "" ? list : list.filter((segment) => segment.text.toLowerCase().includes(needle));
   }, [list, filter]);
-  const current = tracking ? segmentAt(list, time) : undefined;
+  // Overlapping sentences (one speaker cutting in) cover the same moment; the list follows the primary one.
+  const current = tracking ? segmentsAt(list, time).primary : undefined;
+  const hasSpeakers = list.some((segment) => segment.speakerId !== undefined);
+  const speakers = useSpeakers(page.content.id, hasSpeakers);
+  const speakerById = useMemo(() => new Map((speakers.data?.items ?? []).map((speaker) => [speaker.id, speaker])), [speakers.data]);
+  // The same rule as the reading view: with one anonymous speaker there are no turns worth marking.
+  const speakerMode = useMemo(() => speakerModeFor(list, speakers.data?.items ?? []), [list, speakers.data]);
   const followId = tracking && follow ? current?.id : undefined;
   const targetId = located.segmentId ?? followId;
   const targetIndex = targetId === undefined ? undefined : visible.findIndex((segment) => segment.id === targetId);
@@ -176,7 +198,12 @@ export function SubtitlesTab() {
 
   return (
     <div ref={menuTarget} className="flex h-full min-h-0 flex-col" {...(revision === undefined ? {} : { "data-revision-id": revision.id })}>
-      <AsrBanner contentId={page.content.id} revisions={all} primaryId={primaryId} />
+      <AsrBanner
+        contentId={page.content.id}
+        revisions={all}
+        primaryId={primaryId}
+        onApplySpeakers={(sourceRevisionId) => navigate({ search: `?tab=transcript&applySpeakers=${encodeURIComponent(sourceRevisionId)}` })}
+      />
       {/* Two rows whose leading selects share one column, so they line up and keep the same width.
           The column leaves the other controls 16rem, about what either row needs to stay on one line. */}
       <div className="grid grid-cols-[minmax(11rem,min(22.5rem,calc(100%_-_16.75rem)))_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2" data-testid="subtitles-toolbar">
@@ -187,11 +214,11 @@ export function SubtitlesTab() {
               className="h-7 w-full min-w-0 rounded border border-line bg-surface px-1 text-xs"
               value={revision.id}
               onChange={(event) => setPicked(event.target.value)}
-              title={revisionBasis(revision, all, t, i18n)}
+              title={revisionInfo(revision, all, t, i18n)}
               data-testid="subtitles-version"
             >
               {listed.map((item) => (
-                <option key={item.id} value={item.id} title={revisionBasis(item, all, t, i18n)}>
+                <option key={item.id} value={item.id} title={revisionInfo(item, all, t, i18n)}>
                   {revisionLabel(item, primaryId, t, i18n, all)}
                 </option>
               ))}
@@ -231,7 +258,7 @@ export function SubtitlesTab() {
             {t("contentView.subtitles.import")}
           </Button>
         </div>
-        <div className="min-w-0" data-testid="subtitles-toolbar-asr">
+        <div className="flex min-w-0 flex-col gap-1.5" data-testid="subtitles-toolbar-asr">
           {noAsr || asrProfiles.isPending ? null : (
             <AsrModelSelect
               profiles={asrOptions}
@@ -243,6 +270,7 @@ export function SubtitlesTab() {
               testId="retranscribe-model"
             />
           )}
+          {noAsr || asrProfiles.isPending ? null : <DiarizationOptions offer={diarizationOffered} choice={diarization} settingPending={settings.isPending} />}
           {noAsr ? (
             <Link to="/settings/transcription" className="text-xs text-accent hover:underline" data-testid="retranscribe-configure">
               {t("contentView.subtitles.configureAsr")}
@@ -253,9 +281,9 @@ export function SubtitlesTab() {
           <Button
             size="sm"
             variant="ghost"
-            disabled={retranscribe.isPending || noAsr || asrProfiles.isPending || asrModelRef === undefined}
+            disabled={retranscribe.isPending || noAsr || asrProfiles.isPending || settings.isPending || asrModelRef === undefined || diarization.invalidCount}
             title={t("contentView.subtitles.retranscribeHint")}
-            onClick={() => retranscribe.mutate()}
+            onClick={() => retranscribe.mutate(diarization.request())}
             data-testid="retranscribe"
           >
             <Mic size={14} />
@@ -275,7 +303,7 @@ export function SubtitlesTab() {
                     key={item.format}
                     className="cursor-pointer rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken data-disabled:cursor-default data-disabled:opacity-50"
                     disabled={STYLED_EXPORT_FORMATS.has(item.format) && userId === undefined}
-                    onSelect={() => download.mutate(subtitleDownloadBody(item, style))}
+                    onSelect={() => download.mutate(subtitleDownloadBody(item, style, hasSpeakers))}
                     data-testid={`subtitles-download-${item.format}`}
                   >
                     {t(`contentView.export.format.${item.format}`)}
@@ -284,6 +312,11 @@ export function SubtitlesTab() {
                 <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-xs text-muted" data-testid="subtitles-ass-hint">
                   {t("contentView.subtitles.assCanvasHint")}
                 </DropdownMenu.Label>
+                {hasSpeakers ? (
+                  <DropdownMenu.Label className="max-w-56 px-2 pt-1 pb-1 text-xs text-muted" data-testid="subtitles-speakers-hint">
+                    {t("speakerTools.export.quickHint")}
+                  </DropdownMenu.Label>
+                ) : null}
               </DropdownMenu.Content>
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
@@ -302,7 +335,24 @@ export function SubtitlesTab() {
       {missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
       {download.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={download.error.error} /></div> : null}
-      {retranscribe.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={retranscribe.error.error} /></div> : null}
+      {retranscribe.error instanceof ApiError ? (
+        <div className="px-4 pt-2">
+          {retranscribe.error.error.code === DIARIZATION_UNAVAILABLE_CODE ? (
+            <DiarizationUnavailableNotice
+              error={retranscribe.error.error}
+              offer={diarizationOffered}
+              busy={retranscribe.isPending}
+              onContinue={() => {
+                diarization.setOn(false);
+                retranscribe.mutate({ mode: "off" });
+              }}
+              onCancel={() => retranscribe.reset()}
+            />
+          ) : (
+            <ErrorView error={retranscribe.error.error} />
+          )}
+        </div>
+      ) : null}
       {unarchiveAndEdit.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={unarchiveAndEdit.error.error} /></div> : null}
       {burnTaskId === undefined ? null : (
         <div className="px-4 pt-2">
@@ -321,19 +371,41 @@ export function SubtitlesTab() {
           keyOf={(segment) => segment.id}
           estimateSize={36}
           scrollToIndex={targetIndex}
-          render={(segment) => {
+          render={(segment, index) => {
             const isCurrent = segment.id === current?.id;
             const isSelected = segment.id === located.segmentId;
+            // The first row of a turn names its speaker; rows are compared as listed, so a
+            // filter that hides a turn's first row still names the speaker on the first one left.
+            const speaker = segment.speakerId === undefined ? undefined : speakerById.get(segment.speakerId);
+            const turnStart = speaker !== undefined && (index === 0 || visible[index - 1]?.speakerId !== segment.speakerId);
+            // Sentences nobody was assigned to form a turn of their own, marked neutrally as in the reading view.
+            const unassignedStart = speakerMode && segment.speakerId === undefined && (index === 0 || visible[index - 1]?.speakerId !== undefined);
+            const tagClass = `mb-0.5 flex min-w-0 items-center gap-1.5 text-xs font-medium ${index === 0 ? "" : "mt-1"}`;
             return (
               <button
                 type="button"
                 data-segment-id={segment.id}
                 {...(isCurrent ? { "data-testid": "current-sentence" } : {})}
-                className={`flex w-full gap-3 px-4 py-1.5 text-left text-sm hover:bg-sunken ${isSelected ? "bg-accent-soft" : ""} ${isCurrent ? "font-medium text-accent" : ""}`}
+                className={`flex w-full flex-col px-4 py-1.5 text-left text-sm hover:bg-sunken ${isSelected ? "bg-accent-soft" : ""} ${isCurrent ? "font-medium text-accent" : ""}`}
                 onClick={() => onRow(segment)}
               >
-                <span className="w-14 shrink-0 font-mono text-xs text-muted">{formatDuration(segment.startMs)}</span>
-                <Highlighted text={segment.text} ranges={termRanges(segment.text, filter)} className="min-w-0 flex-1" />
+                {unassignedStart ? (
+                  <span className={`${tagClass} text-muted`} data-testid="subtitle-turn-tag" data-unassigned="true">
+                    <SpeakerAvatar unassigned size={16} decorative />
+                    <span className="truncate" data-testid="subtitle-turn-name">{t("speakerIdentity.unassigned")}</span>
+                  </span>
+                ) : null}
+                {turnStart ? (
+                  // Above the row, not inside the text column, so the timestamps and the text keep their columns.
+                  <span className={tagClass} style={{ color: speakerColorVars(speaker.colorIndex).fg }} data-testid="subtitle-turn-tag" data-speaker-id={speaker.id}>
+                    <SpeakerAvatar contentId={page.content.id} speaker={speaker} size={16} decorative />
+                    <span className="truncate" data-testid="subtitle-turn-name">{speakerLabel(t, speaker)}</span>
+                  </span>
+                ) : null}
+                <span className="flex w-full gap-3">
+                  <span className="w-14 shrink-0 font-mono text-xs text-muted">{formatDuration(segment.startMs)}</span>
+                  <Highlighted text={segment.text} ranges={termRanges(segment.text, filter)} className="min-w-0 flex-1" />
+                </span>
               </button>
             );
           }}

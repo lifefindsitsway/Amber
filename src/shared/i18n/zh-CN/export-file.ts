@@ -17,6 +17,11 @@ export const exportFile = {
   noCoreSummary: "（尚无核心总结）",
   collectionSummaryHidden: "合集归纳暂不可用：有内容在回收站中",
   untitled: "未命名",
+  /** Name of a speaker nobody named: `{{ordinal}}` counts from 1 within the Content. */
+  speakerDefault: "发言人 {{ordinal}}",
+  /** A speaker's name in front of a line, for Chinese text (full-width colon) and for other languages. */
+  speakerPrefixCjk: "{{name}}：",
+  speakerPrefixOther: "{{name}}: ",
   /** Titles of the subtitle tracks muxed into an exported video. */
   subtitleTrack: {
     bilingual: "Amber 双语",

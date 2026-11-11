@@ -56,6 +56,25 @@ describe("POST /api/contents/:id/export", () => {
     }
   });
 
+  it("takes the speaker options of a subtitle or Markdown export, and refuses unknown values", async () => {
+    const { h, app, fixture } = await setup();
+    const url = `/api/contents/${fixture.contentId}/export`;
+    const revisionId = fixture.corrected.revision.id;
+    const post = (payload: Record<string, unknown>) => app.inject({ method: "POST", url, headers: auth, payload });
+
+    const body = { format: "srt", revisionId, includeSpeakers: true, speakerLabels: "every" } as const;
+    const response = await post(body);
+    expect(response.statusCode).toBe(200);
+    // Nobody is assigned in this fixture, so the flag changes nothing.
+    expect(response.body).toBe(await text(h.exports.exportContent(LOCAL, fixture.contentId, { format: "srt", revisionId })));
+    expect((await post({ format: "markdown", sections: { transcript: { revisionId } }, backlinks: false, includeSpeakers: true })).statusCode).toBe(200);
+    expect((await post({ format: "vtt", revisionId, includeSpeakers: false })).statusCode).toBe(200);
+
+    expect((await post({ format: "srt", revisionId, speakerLabels: "all" })).statusCode).toBe(400);
+    expect((await post({ format: "srt", revisionId, includeSpeakers: "yes" })).statusCode).toBe(400);
+    expect((await post({ format: "markdown", sections: { transcript: { revisionId } }, backlinks: false, speakerLabels: "turn" })).statusCode).toBe(400);
+  });
+
   it("refuses with a JSON error before streaming", async () => {
     const { app, fixture } = await setup();
     const url = `/api/contents/${fixture.contentId}/export`;

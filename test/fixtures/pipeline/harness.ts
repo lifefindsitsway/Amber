@@ -503,7 +503,7 @@ export function configureAsr(
     harness.repository.withTransaction((scope) => {
       const current = scope.userSettings.get(userId);
       scope.userSettings.put({
-        ...(current ?? { userId, theme: "light", language: "zh-CN", shortcuts: {} }),
+        ...(current ?? { userId, theme: "light", language: "zh-CN", shortcuts: {}, asrDiarization: true }),
         defaultAsrModelRef: ref,
         updatedAt: Date.now(),
       });

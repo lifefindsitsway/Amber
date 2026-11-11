@@ -40,6 +40,7 @@ describe("filterUiPreferences", () => {
       "amber.subtitle.placement.local": JSON.stringify(defaultSubtitlePlacement()),
       [`amber.subtitle.placement.local.${CONTENT}`]: JSON.stringify(defaultSubtitlePlacement()),
       [`amber.subtitle.track.local.${CONTENT}`]: JSON.stringify({ version: 1, mode: "bilingual" }),
+      "amber.reader.typography.local": JSON.stringify({ version: 1, fontSize: 24, lineHeight: 1.8, showSpeakers: false }),
       "amber.player.volume": "0.35",
       "amber.player.muted": "1",
       "amber.player.autoplay": "0",
@@ -105,7 +106,31 @@ describe("filterUiPreferences", () => {
     expect(dropped.every((entry) => entry.key > lastAccepted)).toBe(true);
   });
 
+  it("drops a reader typography with an invalid value or an unsafe user id, and leaves other keys alone", () => {
+    const valid = JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true });
+    const { accepted, dropped } = filterUiPreferences({
+      "amber.reader.typography.ok": valid,
+      "amber.reader.typography.fontsize": JSON.stringify({ version: 1, fontSize: 33, lineHeight: 1.7, showSpeakers: true }),
+      "amber.reader.typography.lineheight": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.75, showSpeakers: true }),
+      "amber.reader.typography.extra": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, color: "red" }),
+      "amber.reader.typography.broken": "{nope",
+      "amber.reader.typography.": valid,
+      "amber.reader.typography.a.b": valid,
+      "amber.player.muted": "1",
+    });
+    expect(accepted).toEqual({ "amber.reader.typography.ok": valid, "amber.player.muted": "1" });
+    expect(dropped).toEqual([
+      { key: "amber.reader.typography.", reason: "not_allowed" },
+      { key: "amber.reader.typography.a.b", reason: "not_allowed" },
+      { key: "amber.reader.typography.broken", reason: "invalid_value" },
+      { key: "amber.reader.typography.extra", reason: "invalid_value" },
+      { key: "amber.reader.typography.fontsize", reason: "invalid_value" },
+      { key: "amber.reader.typography.lineheight", reason: "invalid_value" },
+    ]);
+  });
+
   it("recognises whitelisted keys only", () => {
+    expect(isBackupPreferenceKey("amber.reader.typography.u1")).toBe(true);
     expect(isBackupPreferenceKey("amber.player.volume")).toBe(true);
     expect(isBackupPreferenceKey("amber.updates.autoCheck")).toBe(false);
     expect(isBackupPreferenceKey("amber.subtitle.track.local.not-a-content")).toBe(false);

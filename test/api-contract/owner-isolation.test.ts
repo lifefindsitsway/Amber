@@ -34,6 +34,7 @@ interface AliceIds {
   segmentId: string;
   correctedSegmentId: string;
   noteId: string;
+  speakerId: string;
   summaryArtifactId: string;
   summaryRevisionId: string;
   chapterRevisionId: string;
@@ -261,6 +262,19 @@ const MATRIX: Record<string, Entry> = {
       },
     },
   ]),
+  "GET /api/contents/:id/speakers": owned((ids) => [get(`/api/contents/${ids.contentId}/speakers`)]),
+  "POST /api/contents/:id/speakers": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/speakers`, payload: { name: "bob speaker" } }]),
+  "PATCH /api/contents/:id/speakers/:sid": owned((ids) => [
+    { method: "PATCH", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}`, payload: { name: "taken" } },
+    { method: "PATCH", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}`, payload: { avatar: null } },
+    { method: "PATCH", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}`, payload: { copyFrom: { contentId: ids.contentId, speakerId: ids.speakerId } } },
+  ]),
+  "GET /api/contents/:id/speakers/:sid/avatar": owned((ids) => [get(`/api/contents/${ids.contentId}/speakers/${ids.speakerId}/avatar`)]),
+  "GET /api/speakers/suggestions": {
+    kind: "self",
+    reason: "suggests only the caller's own named speakers; none of A's, whatever the query",
+    requests: (ids) => [get("/api/speakers/suggestions"), get(`/api/speakers/suggestions?q=${MARK}`), get(`/api/speakers/suggestions?q=${MARK}&contentId=${ids.contentId}`)],
+  },
   "PATCH /api/notes/:id": owned((ids) => [
     { method: "PATCH", url: `/api/notes/${ids.noteId}`, payload: { color: "green" } },
     { method: "PATCH", url: `/api/notes/${ids.noteId}`, payload: { comment: null } },
@@ -424,6 +438,7 @@ function seedAlice(userId: string, bobId: string): AliceIds {
   const assetId = newId();
   const bobCollectionId = newId();
   const noteId = newId();
+  const speakerId = newId();
   const threadId = newId();
   const chatAnswerId = newId();
   const storageRef = `assets/${userId}/${contentId}/${assetId}`;
@@ -500,6 +515,8 @@ function seedAlice(userId: string, bobId: string): AliceIds {
       endSegmentId: noted?.id as string, endOffset: 2, quote: noted?.text.slice(0, 2) ?? "", mark: "background", color: "yellow",
       comment: `${MARK} note`, createdAt: now, updatedAt: now,
     });
+    scope.speakers.insert(userId, contentId, [{ id: speakerId, name: `${MARK} host` }], now);
+    scope.speakers.update(userId, contentId, speakerId, { avatar: { mime: "image/png", bytes: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } }, now);
     scope.search.syncContent(userId, contentId);
     scope.search.syncCollection(userId, collectionId);
     return artifactId;
@@ -518,7 +535,7 @@ function seedAlice(userId: string, bobId: string): AliceIds {
   });
   return {
     userId, contentId, asrRevisionId: transcripts.asr.revision.id, correctedRevisionId: transcripts.corrected.revision.id, segmentId: transcripts.asr.segments[0]?.id as string,
-    correctedSegmentId: segments[0]?.id as string, noteId,
+    correctedSegmentId: segments[0]?.id as string, noteId, speakerId,
     summaryArtifactId, summaryRevisionId, chapterRevisionId, collectionId, collectionItemId, taskId, workUnitId, assetId, assetFile, providerId, asrProfileId, otherModelsId, templateId, bobCollectionId,
     threadId, chatAnswerId,
   };
@@ -690,6 +707,14 @@ describe("user B against every server route holding user A's ids", () => {
     }
     const groups = await stack.send(get("/api/notes/groups"), alice);
     expect(groups.json()).toMatchObject({ total: 1, items: [{ contentId: ids.contentId, count: 1 }] });
+    // Her speaker and its photo, and her own speaker as a suggestion (none is left out here: no Content is named).
+    const speakers = await stack.send(get(`/api/contents/${ids.contentId}/speakers`), alice);
+    expect(speakers.json()).toMatchObject({ items: [{ id: ids.speakerId, name: `${MARK} host`, avatarVersion: 1 }] });
+    const avatar = await stack.send(get(`/api/contents/${ids.contentId}/speakers/${ids.speakerId}/avatar`), alice);
+    expect([avatar.statusCode, avatar.headers["content-type"]]).toEqual([200, "image/png"]);
+    expect((await stack.send(get(`/api/speakers/suggestions?q=${MARK}`), alice)).json()).toMatchObject({
+      items: [{ contentId: ids.contentId, speakerId: ids.speakerId, name: `${MARK} host` }],
+    });
     const ranged = await stack.send({ method: "GET", url: `/api/media/${ids.assetId}`, headers: { range: "bytes=0-9" } }, alice);
     expect(ranged.statusCode).toBe(206);
     expect(ranged.body).toBe(MARK.slice(0, 10));

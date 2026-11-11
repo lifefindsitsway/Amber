@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isValidCacheFileName } from "./cache-file-name.ts";
 import { BACKUP_UI_PREFERENCE_MAX_BYTES, BACKUP_UI_PREFERENCES_MAX_BYTES } from "./defaults.ts";
 import { NOTE_COLORS, PLAYER_END_BEHAVIORS } from "./enums.ts";
+import { readerTypographySchema } from "./reader-typography.ts";
 import { trackPrefSchema } from "./subtitle-prefs.ts";
 import { subtitleAppearanceSchema, subtitlePlacementSchema } from "./subtitle-style.ts";
 
@@ -106,7 +107,7 @@ export const backupManifestSchema = z
 export type BackupManifest = z.infer<typeof backupManifestSchema>;
 
 // UI preferences a backup may carry: subtitle appearance / placement / track,
-// player and note colours. Each key pattern names the parser its value must pass; the
+// reader typography, player and note colours. Each key pattern names the parser its value must pass; the
 // subtitle track accepts every stored format, since the player reads older ones too.
 
 const USER_ID = "[0-9A-Za-z_-]{1,64}";
@@ -131,6 +132,7 @@ const PREFERENCE_RULES: ReadonlyArray<{ key: RegExp; valid: (value: string) => b
   { key: new RegExp(`^amber\\.subtitle\\.appearance\\.${USER_ID}$`, "u"), valid: jsonOf(subtitleAppearanceSchema) },
   { key: new RegExp(`^amber\\.subtitle\\.placement\\.${USER_ID}(?:\\.${CONTENT_ID})?$`, "u"), valid: jsonOf(subtitlePlacementSchema) },
   { key: new RegExp(`^amber\\.subtitle\\.track\\.${USER_ID}\\.${CONTENT_ID}$`, "u"), valid: jsonOf(trackPrefSchema) },
+  { key: new RegExp(`^amber\\.reader\\.typography\\.${USER_ID}$`, "u"), valid: jsonOf(readerTypographySchema) },
   { key: /^amber\.player\.volume$/u, valid: (value) => /^\d+(?:\.\d+)?$/u.test(value) && Number(value) <= 1 },
   { key: /^amber\.player\.(?:muted|autoplay)$/u, valid: oneOf(["0", "1"]) },
   { key: /^amber\.player\.endBehavior$/u, valid: oneOf(PLAYER_END_BEHAVIORS) },

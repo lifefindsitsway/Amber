@@ -17,6 +17,7 @@ export const editor = {
     find: "查找",
     undo: "撤销",
     undoHint: "撤销上一次批量修改（全部替换、删除所选、语气词清理）",
+    undoLabeled: "撤销：{{label}}",
     discard: "放弃草稿",
     discardConfirm: "确认放弃草稿",
     discardHint: "草稿里尚未完成的修改会被丢弃，无法恢复。",
@@ -30,6 +31,7 @@ export const editor = {
   },
   find: {
     panel: "查找与替换",
+    filteredScope: "仅在当前筛选的 {{count}} 句中查找与替换",
     modeFind: "查找",
     modeFiller: "语气词",
     query: "查找",

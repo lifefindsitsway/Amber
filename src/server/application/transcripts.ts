@@ -72,6 +72,8 @@ function draftDto(draft: TranscriptDraft): TranscriptDraftDto {
       endMs: segment.endMs,
       text: segment.text,
       sourceSegmentIds: [...segment.sourceSegmentIds],
+      ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
+      ...(segment.speakerReview === undefined ? {} : { speakerReview: segment.speakerReview }),
     })),
     updatedAt: draft.updatedAt,
   };
@@ -165,8 +167,9 @@ export class TranscriptService {
    * Autosave: replaces the Content's single draft, but only at the version the editor last
    * saw (`null`: there must be no draft yet), so a second window or a save arriving after a
    * commit or discard is refused instead of overwriting or reviving the draft. Only the shape
-   * and the base revision are checked here; timing and sources are checked when the draft is
-   * committed, so a draft may pass through intermediate states while it is being edited.
+   * and the base revision are checked here; timing, sources and speakers are checked when the
+   * draft is committed, so a draft may pass through intermediate states while it is being
+   * edited. Speaker fields are stored exactly as sent.
    */
   putDraft(principal: RequestPrincipal, contentId: string, body: TranscriptDraftRequest): TranscriptDraftDto {
     const owner = principal.userId;
@@ -184,6 +187,8 @@ export class TranscriptService {
           endMs: segment.endMs,
           text: segment.text,
           sourceSegmentIds: segment.sourceSegmentIds as SegmentId[],
+          ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
+          ...(segment.speakerReview === undefined ? {} : { speakerReview: segment.speakerReview }),
         })),
         updatedAt: this.now(),
       };
@@ -202,6 +207,13 @@ export class TranscriptService {
    * editor was opened; that is a conflict for the user to resolve, never a silent
    * overwrite. The draft must still be at `draftVersion`, so what is committed is what the
    * editor last saved. Revision, primary pointer and draft removal commit together.
+   *
+   * Speakers: a sentence takes the speaker its draft names (`null` = unassigned); a draft
+   * saved before drafts carried speakers has none named, and the sentence keeps its first
+   * source's speaker. Every named speaker must belong to this Content. A sentence still
+   * waiting for review keeps its suggested speaker only when the request accepts the
+   * suggestions (counted in the revision's generation); otherwise it is committed unassigned,
+   * so an unconfirmed speaker never passes for a confirmed one.
    */
   commitDraft(principal: RequestPrincipal, contentId: string, body: DraftCommitRequest): TranscriptRevisionDto {
     const owner = principal.userId;
@@ -223,6 +235,7 @@ export class TranscriptService {
       if (draft.segments.length === 0) {
         invalidDraft("segments", "a revision needs at least one segment");
       }
+      const contentSpeakers = new Set(scope.speakers.list(owner, contentId).map((speaker) => speaker.id));
       let previousStart = -Infinity;
       draft.segments.forEach((segment, index) => {
         const at = `segments.${index}`;
@@ -235,6 +248,9 @@ export class TranscriptService {
         previousStart = segment.startMs;
         if (segment.sourceSegmentIds.some((source) => !baseSegments.has(source))) {
           invalidDraft(`${at}.sourceSegmentIds`, "sources must be sentences of the base revision");
+        }
+        if (typeof segment.speakerId === "string" && !contentSpeakers.has(segment.speakerId)) {
+          invalidDraft(`${at}.speakerId`, "speakers must be speakers of this content");
         }
       });
 
@@ -260,9 +276,25 @@ export class TranscriptService {
       const revisionId = this.newId();
       // The editor works sentence by sentence; paragraphing is carried over from the base.
       const paragraphStarts = inheritedParagraphStarts(baseSegments, draft.segments);
+      const acceptSuggestions = body.speakerReview === "accept_suggestions";
+      let acceptedSuggestions = 0;
       const segments: TranscriptSegment[] = draft.segments.map((segment, ordinal) => {
         const first = segment.sourceSegmentIds[0];
-        const speakerId = first === undefined ? undefined : baseSegments.get(first)?.speakerId;
+        let speakerId: string | undefined;
+        if (segment.speakerId === undefined) {
+          speakerId = first === undefined ? undefined : baseSegments.get(first)?.speakerId;
+        } else {
+          speakerId = segment.speakerId ?? undefined;
+        }
+        if (segment.speakerReview === "needs_review") {
+          if (acceptSuggestions) {
+            // Only a speaker the draft names is a suggestion; one inherited from the source
+            // sentence was never put up for review.
+            acceptedSuggestions += typeof segment.speakerId === "string" ? 1 : 0;
+          } else {
+            speakerId = undefined;
+          }
+        }
         const paragraphStart = paragraphStarts[ordinal];
         return {
           id: this.newId() as SegmentId,
@@ -284,7 +316,7 @@ export class TranscriptService {
         parentRevisionId: anchorId,
         language: base.language,
         timingFidelity: timingFidelityFor("manual"),
-        generation: { kind: "manual" },
+        generation: { kind: "manual", ...(acceptedSuggestions > 0 ? { speakerReview: { acceptedSuggestions } } : {}) },
         segmentCount: segments.length,
         createdAt: now,
       };

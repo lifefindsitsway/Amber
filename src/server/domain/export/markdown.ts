@@ -49,9 +49,20 @@ export function transcriptChapterHeading(title: string): string {
   return `### ${oneLine(title)}\n\n`;
 }
 
-/** A reading paragraph of the transcript section: `**[mm:ss](link)** text`. */
-export function transcriptParagraphLine(stamp: string, text: string): string {
-  return `**${stamp}** ${text}\n\n`;
+/**
+ * A reading paragraph of the transcript section: `**[mm:ss](link)** text`, and for the
+ * first paragraph of a speaker's turn `**名字** · **[mm:ss](link)** text`.
+ */
+export function transcriptParagraphLine(stamp: string, text: string, speaker?: string): string {
+  return `${speaker === undefined ? "" : `**${markdownInline(speaker)}** · `}**${stamp}** ${text}\n\n`;
+}
+
+/**
+ * A name as literal inline Markdown on one line: characters that could open emphasis, a
+ * link, code, HTML or a character reference are backslash-escaped.
+ */
+export function markdownInline(text: string): string {
+  return oneLine(text).replace(/[\\`*_\[\]<>&~|]/g, "\\$&");
 }
 
 /** A line of the subtitle section: `[mm:ss] text`, never linked. */

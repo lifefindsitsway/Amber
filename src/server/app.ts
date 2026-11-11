@@ -24,6 +24,7 @@ import type { InstanceSettingsService } from "./application/instance-settings.ts
 import type { LocalImportService } from "./application/local-import.ts";
 import type { MediaAssetService } from "./application/media-assets.ts";
 import type { NoteService } from "./application/notes.ts";
+import type { SpeakerService } from "./application/speakers.ts";
 import type { PlatformAccountService } from "./application/platform-accounts.ts";
 import type { PlatformQrLoginService } from "./application/platform-qr-login.ts";
 import type { RelinkService } from "./application/relink.ts";
@@ -69,6 +70,7 @@ import { registerContentRoutes, registerLocalFileRoute, registerUploadRoute } fr
 import { registerInstanceSettingsRoutes } from "./api/routes/instance-settings.ts";
 import { registerMediaDeleteRoute, registerMediaPlaybackRoutes } from "./api/routes/media.ts";
 import { registerNoteRoutes } from "./api/routes/notes.ts";
+import { registerSpeakerRoutes } from "./api/routes/speakers.ts";
 import { registerOtherModelRoutes } from "./api/routes/other-models.ts";
 import { registerPlatformAccountRoutes } from "./api/routes/platform-accounts.ts";
 import { registerProviderRoutes } from "./api/routes/providers.ts";
@@ -162,6 +164,8 @@ export interface AppDeps {
   webSearch?: WebSearchService;
   /** Notes on transcript text. */
   notes?: NoteService;
+  /** Speaker identities of a Content and their photos. */
+  speakers?: SpeakerService;
   /** "Proofread again", "regenerate chapters", "recompute highlights" and "translate". */
   derivedTasks?: DerivedTaskService;
   /** Upload [server] or local-file [client] import. */
@@ -342,6 +346,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.notes !== undefined) {
     registerNoteRoutes(app, { notes: deps.notes });
+  }
+  if (deps.speakers !== undefined) {
+    registerSpeakerRoutes(app, { speakers: deps.speakers });
   }
   if (deps.asrProfiles !== undefined) {
     registerAsrProfileRoutes(app, { asrProfiles: deps.asrProfiles });

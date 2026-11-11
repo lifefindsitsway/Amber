@@ -8,6 +8,7 @@ import { sqliteCollectionRepository } from "./repositories/collections.ts";
 import { sqliteContentRepository } from "./repositories/contents.ts";
 import { sqliteHighlightRepository } from "./repositories/highlights.ts";
 import { sqliteIdempotencyRepository } from "./repositories/idempotency.ts";
+import { sqliteSpeakerRepository } from "./repositories/speakers.ts";
 import { sqliteWebSearchProfileRepository } from "./repositories/web-search-profiles.ts";
 import { sqliteImportBatchRepository } from "./repositories/import-batches.ts";
 import { sqliteInstanceSettingsRepository } from "./repositories/instance-settings.ts";
@@ -55,6 +56,7 @@ export class SqliteRepository implements Repository {
       collections: sqliteCollectionRepository(db),
       mediaAssets: sqliteMediaAssetRepository(db),
       transcripts: sqliteTranscriptRepository(db),
+      speakers: sqliteSpeakerRepository(db),
       revisionReferences: sqliteRevisionReferenceRepository(db),
       secretEnvelopes: sqliteSecretEnvelopeStore(db),
       importBatches: sqliteImportBatchRepository(db),

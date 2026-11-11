@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
+import { ASR_DIARIZATION_DEFAULT, THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
 import { ProviderService } from "../../../src/server/application/providers.ts";
 import { defaultSummaryTemplateIdOf, outputLanguageFor } from "../../../src/server/application/settings.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
@@ -91,6 +91,21 @@ describe("patching settings", () => {
     expect(errorOf(() => h.userSettings.patch(BOB, { defaultModelRef: modelRef }))).toEqual({ code: "invalid_request", detail: "defaultModelRef" });
     expect(errorOf(() => h.userSettings.patch(LOCAL, { chatModelRef: { ...modelRef, modelId: "missing" } }))).toEqual({ code: "invalid_request", detail: "chatModelRef" });
     expect(h.userSettings.patch(LOCAL, { defaultSummaryTemplateId: "summary.terms" }).defaultSummaryTemplateId).toBe("summary.terms");
+  });
+});
+
+describe("the speaker identification setting", () => {
+  it("starts at the named default, is changed by a patch and round-trips through reads", () => {
+    const h = harness();
+    expect(h.userSettings.get(LOCAL).asrDiarization).toBe(ASR_DIARIZATION_DEFAULT);
+    const off = h.userSettings.patch(LOCAL, { asrDiarization: !ASR_DIARIZATION_DEFAULT });
+    expect(off.asrDiarization).toBe(!ASR_DIARIZATION_DEFAULT);
+    expect(h.userSettings.get(LOCAL).asrDiarization).toBe(!ASR_DIARIZATION_DEFAULT);
+    // Other fields leave it alone, and a patch is per user.
+    h.userSettings.patch(LOCAL, { theme: "dark" });
+    expect(h.userSettings.get(LOCAL).asrDiarization).toBe(!ASR_DIARIZATION_DEFAULT);
+    expect(h.userSettings.get(BOB).asrDiarization).toBe(ASR_DIARIZATION_DEFAULT);
+    expect(h.userSettings.patch(LOCAL, { asrDiarization: ASR_DIARIZATION_DEFAULT }).asrDiarization).toBe(ASR_DIARIZATION_DEFAULT);
   });
 });
 

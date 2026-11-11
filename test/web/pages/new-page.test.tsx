@@ -481,3 +481,46 @@ describe("NewPage transcription model", () => {
     expect(await submittedAsr({ "GET /api/asr-profiles": { body: { items: [] } } })).toEqual({ shown: undefined, first: undefined, sent: undefined });
   });
 });
+
+describe("NewPage speaker identification note", () => {
+  const profile = (provider: string, modelId: string, extra: Record<string, unknown> = {}) => ({
+    id: "a1",
+    name: "转录",
+    provider,
+    models: [{ modelId, available: true }],
+    ...extra,
+    credentialStatus: "configured",
+    hasCredential: true,
+    inUse: false,
+    createdAt: 1,
+  });
+  const ref = { asrProfileId: "a1", modelId: "fun-asr" };
+
+  async function noteFor(items: unknown[], settings: Record<string, unknown>): Promise<string | null> {
+    mockApi({
+      ...baseRoutes(),
+      "GET /api/asr-profiles": { body: { items } },
+      "GET /api/settings": { body: { ...SETTINGS, ...settings } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    await waitFor(() => expect(screen.queryByTestId("new-asr-model")).not.toBeNull());
+    // Both queries have to land before the note can be told from "not yet".
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return screen.queryByTestId("new-diarization-note")?.textContent ?? null;
+  }
+
+  it("says the model will identify speakers when the setting is on and the model offers it", async () => {
+    expect(await noteFor([profile("dashscope", "fun-asr")], { asrDiarization: true, defaultAsrModelRef: ref })).toBe("将识别发言人");
+  });
+
+  it("says a model without identification does not identify, whatever the content length", async () => {
+    expect(await noteFor([profile("dashscope", "typed-in-model")], { asrDiarization: true, defaultAsrModelRef: { asrProfileId: "a1", modelId: "typed-in-model" } })).toBe("此模型不识别发言人");
+  });
+
+  it("says nothing while the setting is off or no model is chosen", async () => {
+    expect(await noteFor([profile("dashscope", "fun-asr")], { asrDiarization: false, defaultAsrModelRef: ref })).toBeNull();
+    cleanup();
+    expect(await noteFor([profile("dashscope", "fun-asr")], { asrDiarization: true })).toBeNull();
+  });
+});

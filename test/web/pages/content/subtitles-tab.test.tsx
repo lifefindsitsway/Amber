@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX, SAVE_NOTICE_DISMISS_MS } from "../../../../src/shared/defaults.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../../src/shared/subtitle-style.ts";
@@ -6,7 +6,7 @@ import { resetSubtitlePrefsMemory, writeAppearance, writePlacement } from "../..
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { subtitleDownloads } from "../../../../src/web/pages/content/subtitles-tab.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
-import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision } from "../../../fixtures/web/content-data.ts";
+import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment } from "../../../fixtures/web/content-data.ts";
 import { fakeShell } from "../../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
@@ -375,6 +375,8 @@ describe("re-transcribing", () => {
     await waitFor(() =>
       expect(calls.find((call) => call.method === "POST" && call.path.endsWith("/retranscribe"))?.body).toEqual({
         asrModelRef: { asrProfileId: "a1", modelId: "qwen-audio-3.1-asr-flash-filetrans" },
+        // The setting is on by default, so the switch starts on.
+        diarization: { mode: "required" },
       }),
     );
   });
@@ -448,5 +450,291 @@ describe("SubtitlesTab translation editing", () => {
     expect(edit.textContent).toBe("编辑译文");
     fireEvent.click(edit);
     expect(await screen.findByTestId("translation-draft-editor")).toBeTruthy();
+  });
+});
+
+describe("SubtitlesTab speakers", () => {
+  const speakers = [
+    { id: "p1", ordinal: 1, name: "林老师", colorIndex: 0, used: true },
+    { id: "p2", ordinal: 2, colorIndex: 1, used: true },
+  ];
+  const rows = [
+    segment("s1", 0, 0, 4_000, "今天讲检索。", { speakerId: "p1" }),
+    segment("s2", 1, 4_000, 8_000, "先看向量库。", { speakerId: "p1" }),
+    segment("s3", 2, 8_000, 12_000, "为什么？", { speakerId: "p2" }),
+    segment("s4", 3, 12_000, 16_000, "再看重排序。", { speakerId: "p1" }),
+    segment("s5", 4, 16_000, 20_000, "没有归属的一句。"),
+  ];
+  const asrRevision = revision("r1", { kind: "asr", generation: { kind: "asr", modelId: "fun-asr", diarization: { status: "applied" } }, segmentCount: rows.length });
+
+  function speakerRoutes() {
+    return {
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [asrRevision] } },
+      "GET /api/transcript/revisions/r1/segments": { body: { revision: asrRevision, items: rows } },
+      "GET /api/contents/c1/speakers": { body: { items: speakers } },
+    };
+  }
+
+  it("tags the first row of each turn with the speaker and leaves the other rows alone", async () => {
+    mockApi(speakerRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const list = await screen.findByTestId("subtitle-rows");
+    await waitFor(() => expect(list.querySelectorAll("[data-testid=subtitle-turn-tag]")).toHaveLength(4));
+    const tagged = [...list.querySelectorAll("[data-segment-id]")].map((row) => [row.getAttribute("data-segment-id"), row.querySelector("[data-testid=subtitle-turn-name]")?.textContent ?? null]);
+    // A speaker coming back after someone else starts a new turn; sentences nobody was assigned to are a neutral turn of their own.
+    expect(tagged).toEqual([["s1", "林老师"], ["s2", null], ["s3", "发言人 2"], ["s4", "林老师"], ["s5", "未分配"]]);
+    expect(list.querySelector("[data-segment-id=s5] [data-testid=subtitle-turn-tag]")?.getAttribute("data-unassigned")).toBe("true");
+    // Timestamps stay a column of their own beside the text.
+    expect(list.querySelector("[data-segment-id=s2]")?.textContent).toBe("0:04先看向量库。");
+    expect(list.querySelector("[data-segment-id=s1] [data-testid=subtitle-turn-tag]")?.getAttribute("data-speaker-id")).toBe("p1");
+  });
+
+  it("leaves unassigned sentences unmarked while a single anonymous speaker does not make a turn layout", async () => {
+    mockApi({ ...speakerRoutes(), "GET /api/contents/c1/speakers": { body: { items: [speakers[1]] } }, "GET /api/transcript/revisions/r1/segments": { body: { revision: asrRevision, items: [segment("s1", 0, 0, 4_000, "只有一人。", { speakerId: "p2" }), segment("s2", 1, 4_000, 8_000, "没有归属。")] } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const list = await screen.findByTestId("subtitle-rows");
+    await waitFor(() => expect(list.querySelectorAll("[data-segment-id]")).toHaveLength(2));
+    await waitFor(() => expect(list.querySelector("[data-segment-id=s1] [data-testid=subtitle-turn-tag]")).not.toBeNull());
+    expect(list.querySelector("[data-unassigned]")).toBeNull();
+  });
+
+  it("downloads a version with speakers naming them on the first cue of each turn, as the export dialog does by default", async () => {
+    const { calls } = mockApi({
+      ...speakerRoutes(),
+      "GET /api/auth/me": { body: { userId: "u1", role: "admin", mode: "local", mustChangePassword: false } },
+      "POST /api/contents/c1/export": { file: { filename: "第一讲.srt", text: "1\n" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    await waitFor(() => expect(screen.getByTestId("subtitle-rows").querySelectorAll("[data-testid=subtitle-turn-tag]")).toHaveLength(4));
+    for (const format of ["srt", "vtt"] as const) {
+      fireEvent.keyDown(screen.getByTestId("subtitles-download"), { key: "Enter" });
+      expect((await screen.findByTestId("subtitles-speakers-hint")).textContent).toBe("导出的字幕会标出发言人，SRT 和 TXT 只在换人时标一次。要每句都标或不带发言人，请到「总结」页点「导出」。");
+      fireEvent.click(await screen.findByTestId(`subtitles-download-${format}`));
+    }
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(2));
+    // VTT names every cue with its own voice tag, so it takes no label mode.
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([
+      { format: "srt", revisionId: "r1", includeSpeakers: true, speakerLabels: "turn" },
+      { format: "vtt", revisionId: "r1", includeSpeakers: true },
+    ]);
+  });
+
+  it("leaves speakers out of the download, and its hint out of the menu, for a version without speakers", async () => {
+    const { calls } = mockApi({ ...contentRoutes(), "POST /api/contents/c1/export": { file: { filename: "第一讲.srt", text: "1\n" } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    await waitFor(() => expect(screen.getByTestId("subtitle-rows").querySelectorAll("[data-segment-id]")).toHaveLength(3));
+    fireEvent.keyDown(screen.getByTestId("subtitles-download"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("subtitles-download-srt"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(screen.queryByTestId("subtitles-speakers-hint")).toBeNull();
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ format: "srt", revisionId: "r1" });
+  });
+
+  it("shows no tags for a revision without speakers", async () => {
+    mockApi(contentRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const list = await screen.findByTestId("subtitle-rows");
+    await waitFor(() => expect(list.querySelectorAll("[data-segment-id]")).toHaveLength(3));
+    expect(list.querySelector("[data-testid=subtitle-turn-tag]")).toBeNull();
+    expect(list.querySelector("[data-unassigned]")).toBeNull();
+  });
+
+  it("repeats the tag on the first row left of a turn when the filter hides its first row", async () => {
+    mockApi(speakerRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles&search=" + encodeURIComponent("向量"), path: "/contents/:id" });
+    const list = await screen.findByTestId("subtitle-rows");
+    await waitFor(() => expect(list.querySelectorAll("[data-segment-id]")).toHaveLength(1));
+    await waitFor(() => expect(list.querySelector("[data-segment-id=s2] [data-testid=subtitle-turn-name]")?.textContent).toBe("林老师"));
+  });
+
+  it("leads the new-recognition banner's speaker action to the transcript tab", async () => {
+    const manual = revision("m1", { kind: "manual", parentRevisionId: "r1", createdAt: 5 });
+    const newer = revision("r2", { kind: "asr", createdAt: 9, generation: { kind: "asr", diarization: { status: "applied" } }, segmentCount: rows.length });
+    mockApi({
+      ...speakerRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "m1", revisions: [asrRevision, manual, newer] } },
+      "GET /api/transcript/revisions/m1/segments": { body: { revision: manual, items: [] } },
+      "GET /api/transcript/revisions/r2/segments": { body: { revision: newer, items: rows } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("asr-banner-apply-speakers"));
+    await waitFor(() => expect(screen.getByTestId("output-tab-transcript").getAttribute("aria-selected")).toBe("true"));
+  });
+
+  it("states how the speakers of a version were identified in its version info", async () => {
+    mockApi(speakerRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const version = (await screen.findByTestId("subtitles-version")) as HTMLSelectElement;
+    expect(version.title).toBe("发言人识别：已识别发言人");
+  });
+});
+
+describe("SubtitlesTab re-transcribe speaker options", () => {
+  const profile = (id: string, provider: string, modelIds: string[]) => ({
+    id,
+    name: id === "bl" ? "百炼" : "ElevenLabs",
+    provider,
+    models: modelIds.map((modelId) => ({ modelId, available: true })),
+    credentialStatus: "configured",
+    hasCredential: true,
+    inUse: false,
+    createdAt: 1,
+  });
+  const profiles = [profile("bl", "dashscope", ["fun-asr", "custom-asr"]), profile("el", "elevenlabs", ["scribe_v2"])];
+  const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
+  const settings = (extra: Record<string, unknown> = {}) => ({ body: { theme: "light", language: "zh-CN", shortcuts: {}, defaultAsrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, updatedAt: 1, ...extra } });
+
+  function routes(extra: Record<string, unknown> = {}, duration = 600_000, settingsExtra: Record<string, unknown> = {}) {
+    return {
+      ...contentRoutes(contentDetail({ durationMs: duration })),
+      "GET /api/asr-profiles": { body: { items: profiles } },
+      "GET /api/settings": settings(settingsExtra),
+      "POST /api/contents/c1/transcript/retranscribe": { status: 202, body: { taskId: "t9" } },
+      ...extra,
+    };
+  }
+  const posted = (calls: Array<{ method: string; path: string; body?: unknown }>) => calls.filter((call) => call.method === "POST" && call.path.endsWith("/retranscribe")).map((call) => call.body);
+
+  async function opened(extra: Record<string, unknown> = {}, duration?: number, settingsExtra?: Record<string, unknown>) {
+    const api = mockApi(routes(extra, duration, settingsExtra));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    const select = (await screen.findByTestId("retranscribe-model")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe(key("bl", "fun-asr")));
+    return { ...api, select, toggle: (await screen.findByTestId("diarization-switch")) as HTMLInputElement };
+  }
+
+  it("starts from the setting and asks for identification with a reference count for a 百炼 model", async () => {
+    const { calls, toggle } = await opened();
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    expect(screen.getByText("参考人数 2–100")).toBeTruthy();
+    const count = screen.getByLabelText("参考人数（2–100）") as HTMLInputElement;
+    expect(count.placeholder).toBe("自动");
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "required" } }]));
+    fireEvent.change(count, { target: { value: "3" } });
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(calls).at(-1)).toEqual({ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "required", speakerCount: 3 } }));
+  });
+
+  it("words the count as an upper bound for an ElevenLabs model", async () => {
+    const { select } = await opened();
+    fireEvent.change(select, { target: { value: key("el", "scribe_v2") } });
+    const count = (await screen.findByLabelText("最多人数（1–32）")) as HTMLInputElement;
+    expect(screen.getByText("最多")).toBeTruthy();
+    expect(screen.getByText("人")).toBeTruthy();
+    expect(count.closest("label")?.getAttribute("data-semantics")).toBe("maximum");
+  });
+
+  it("sends off when the switch is turned off, and starts off when the setting is", async () => {
+    const first = await opened();
+    fireEvent.click(first.toggle);
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(first.calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "off" } }]));
+    expect(screen.queryByTestId("diarization-count")).toBeNull();
+    cleanup();
+    const second = await opened({}, undefined, { asrDiarization: false });
+    expect(second.toggle.checked).toBe(false);
+  });
+
+  it("disables the switch with the reason for a model that does not offer identification", async () => {
+    const { select, calls } = await opened();
+    fireEvent.change(select, { target: { value: key("bl", "custom-asr") } });
+    await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
+    const toggle = screen.getByTestId("diarization-switch") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    expect(screen.getByTestId("diarization-reason").textContent).toBe("此模型不识别发言人");
+    expect(toggle.getAttribute("aria-describedby")).toBe(screen.getByTestId("diarization-reason").id);
+    expect(toggle.closest("label")?.title).toBe("此模型不识别发言人");
+    // Still wanted by the user's setting, so it is a preference the server records as unsupported, not a plain off.
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "custom-asr" }, diarization: { mode: "preferred" } }]));
+  });
+
+  it("sends off for a locked switch the user had turned off, or whose setting is off", async () => {
+    const first = await opened();
+    fireEvent.click(first.toggle);
+    fireEvent.change(first.select, { target: { value: key("bl", "custom-asr") } });
+    await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(first.calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "custom-asr" }, diarization: { mode: "off" } }]));
+    cleanup();
+    const second = await opened({}, undefined, { asrDiarization: false });
+    fireEvent.change(second.select, { target: { value: key("bl", "custom-asr") } });
+    await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(second.calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "custom-asr" }, diarization: { mode: "off" } }]));
+  });
+
+  it("sends a preference for a content longer than the model recommends", async () => {
+    const { toggle, calls } = await opened({}, 7_200_001);
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    await waitFor(() => expect(posted(calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "preferred" } }]));
+  });
+
+  it("waits for the settings before the switch and the button can be used", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const api = mockApi({
+      ...routes(),
+      "GET /api/asr-profiles": { body: { items: profiles } },
+    });
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (String(input) === "/api/settings") await gate;
+      return original(input, init);
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    // Nothing to pick or send yet: the default model arrives with the settings.
+    await screen.findByTestId("subtitles-toolbar");
+    expect((screen.getByTestId("retranscribe") as HTMLButtonElement).disabled).toBe(true);
+    release();
+    const toggle = (await screen.findByTestId("diarization-switch")) as HTMLInputElement;
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    await waitFor(() => expect((screen.getByTestId("retranscribe") as HTMLButtonElement).disabled).toBe(false));
+    expect(posted(api.calls)).toEqual([]);
+  });
+
+  it("disables the switch for a content longer than the model recommends", async () => {
+    const { toggle } = await opened({}, 7_200_001);
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    expect(screen.getByTestId("diarization-reason").textContent).toBe("时长超过建议上限，不识别发言人");
+  });
+
+  it("keeps a speaker count outside the model's range from being sent", async () => {
+    const { calls } = await opened();
+    fireEvent.change(screen.getByLabelText("参考人数（2–100）"), { target: { value: "1" } });
+    expect((await screen.findByTestId("diarization-count-error")).textContent).toBe("人数需为 2–100 之间的整数");
+    expect((screen.getByTestId("retranscribe") as HTMLButtonElement).disabled).toBe(true);
+    expect(posted(calls)).toEqual([]);
+  });
+
+  it("explains a refusal and lets the user continue without identification or cancel", async () => {
+    let attempts = 0;
+    const { calls } = await opened({
+      "POST /api/contents/c1/transcript/retranscribe": () => {
+        attempts += 1;
+        return attempts === 1
+          ? { status: 400, body: { error: { class: "invalid_request", code: "invalid_request.diarization_unavailable", retryDisposition: "never", userMessage: "", details: { reason: "over_recommended" } } } }
+          : { status: 202, body: { taskId: "t9" } };
+      },
+    });
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    const notice = await screen.findByTestId("diarization-unavailable");
+    expect(notice.getAttribute("data-reason")).toBe("over_recommended");
+    expect(notice.textContent).toContain("内容时长超过该模型建议识别发言人的上限");
+    fireEvent.click(within(notice).getByTestId("diarization-cancel"));
+    await waitFor(() => expect(screen.queryByTestId("diarization-unavailable")).toBeNull());
+
+    // Cancelling sent nothing more; asking again is refused again, and continuing without identification resubmits with it off.
+    expect(posted(calls)).toHaveLength(1);
+    attempts = 0;
+    fireEvent.click(screen.getByTestId("retranscribe"));
+    fireEvent.click(await within(await screen.findByTestId("diarization-unavailable")).findByRole("button", { name: "不识别发言人，继续转录" }));
+    await waitFor(() => expect(posted(calls).at(-1)).toEqual({ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "off" } }));
+    await waitFor(() => expect(screen.queryByTestId("diarization-unavailable")).toBeNull());
+    expect((screen.getByTestId("diarization-switch") as HTMLInputElement).checked).toBe(false);
   });
 });

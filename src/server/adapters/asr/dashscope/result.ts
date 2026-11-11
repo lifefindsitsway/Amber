@@ -54,10 +54,14 @@ function bare(text: string): string {
  * punctuation are ignored. A result whose words cannot be trusted keeps its sentences only,
  * with `segment_only` timing, rather than mixing real and doubtful word times.
  */
-function consistentWords(sentences: readonly ResultSentence[]): TranscriptWord[] | undefined {
-  const words: TranscriptWord[] = [];
-  let previousStart = 0;
+function consistentWords(sentences: readonly ResultSentence[]): Array<TranscriptWord & { speakerId?: string }> | undefined {
+  const words: Array<TranscriptWord & { speakerId?: string }> = [];
+  // Word starts are monotonic within one speaker's stream: sentences of different speakers
+  // may overlap, so a word of one may start before a word of another.
+  const previousStarts = new Map<string, number>();
   for (const sentence of sentences) {
+    const stream = sentence.speaker_id === undefined ? "" : String(sentence.speaker_id);
+    let previousStart = previousStarts.get(stream) ?? 0;
     const sentenceWords = sentence.words ?? [];
     if (sentenceWords.length === 0) {
       return undefined;
@@ -76,8 +80,16 @@ function consistentWords(sentences: readonly ResultSentence[]): TranscriptWord[]
       }
       kept += 1;
       previousStart = word.begin_time;
+      previousStarts.set(stream, previousStart);
       spelled += text;
-      words.push({ text, startMs: Math.round(word.begin_time), endMs: Math.round(word.end_time) });
+      // The word carries its sentence's speaker so that, where sentences of different
+      // speakers overlap, the service layer can tell which sentence it belongs to.
+      words.push({
+        text,
+        startMs: Math.round(word.begin_time),
+        endMs: Math.round(word.end_time),
+        ...(sentence.speaker_id === undefined ? {} : { speakerId: String(sentence.speaker_id) }),
+      });
     }
     if (kept === 0 || bare(spelled) !== bare(sentence.text)) {
       return undefined;

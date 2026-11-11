@@ -62,7 +62,7 @@ describe("REFINED_ERROR_CODES", () => {
 
 describe("REFINED_ERROR_CODE_REGISTRY", () => {
   it("registers exactly the catalogue refined codes", () => {
-    expect(EXPECTED_REFINED_CODES).toHaveLength(94);
+    expect(EXPECTED_REFINED_CODES).toHaveLength(96);
     expect([...REFINED_ERROR_CODES].sort()).toEqual(EXPECTED_REFINED_CODES.map((entry) => entry.code).sort());
   });
 
@@ -75,9 +75,9 @@ describe("REFINED_ERROR_CODE_REGISTRY", () => {
     });
   });
 
-  it("overrides the class default for exactly 23 codes", () => {
+  it("overrides the class default for exactly 24 codes", () => {
     const overriding = EXPECTED_REFINED_CODES.filter((entry) => entry.retryDisposition !== null || entry.action !== null).map((entry) => entry.code);
-    expect(overriding).toHaveLength(23);
+    expect(overriding).toHaveLength(24);
     expect(REFINED_ERROR_CODES.filter((code) => "retryDisposition" in REFINED_ERROR_CODE_REGISTRY[code] || "action" in REFINED_ERROR_CODE_REGISTRY[code]).sort()).toEqual(
       [...overriding].sort(),
     );

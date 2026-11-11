@@ -3,7 +3,7 @@ import { THEMES, userSettingsDtoSchema, userSettingsPatchSchema } from "../../..
 
 describe("settings DTOs", () => {
   it("read back the stored overrides and optional choices", () => {
-    const dto = { theme: "light", language: "zh-CN", shortcuts: { omnibox: "Alt+K" }, defaultModelRef: { providerProfileId: "p", modelId: "m" }, updatedAt: 1 };
+    const dto = { theme: "light", language: "zh-CN", shortcuts: { omnibox: "Alt+K" }, defaultModelRef: { providerProfileId: "p", modelId: "m" }, asrDiarization: true, updatedAt: 1 };
     expect(userSettingsDtoSchema.parse(dto)).toEqual(dto);
     expect(userSettingsDtoSchema.safeParse({ ...dto, shortcuts: { paste: "Ctrl+V" } }).success).toBe(false);
   });
@@ -19,6 +19,7 @@ describe("settings DTOs", () => {
       defaultAsrModelRef: { asrProfileId: "a", modelId: "fun-asr" },
       defaultOutputLanguage: "en",
       platformCookieBrowser: "firefox",
+      asrDiarization: false,
       updatedAt: 1,
     };
     expect(THEMES).toEqual(expect.arrayContaining(["bean-green", "parchment"]));

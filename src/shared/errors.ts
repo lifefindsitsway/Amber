@@ -269,6 +269,9 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "asr_failed.job_expired": { retryDisposition: "never" },
   // The configured model does not exist, or is not offered in the profile's region.
   "asr_failed.model_unavailable": { retryDisposition: "never", action: "configure_asr" },
+  // Speaker identification was required but the model or the extracted audio does not allow it;
+  // raised before the paid request. `reason` is a DiarizationUnavailableReason.
+  "asr_failed.diarization_unavailable": { retryDisposition: "never", detailsKeys: ["reason"] },
   // The account's free quota for the model is used up and it is set to stop there.
   "asr_quota.free_tier_exhausted": { retryDisposition: "never" },
   // Answered with HTTP 416 instead of the 400 of its class.
@@ -293,6 +296,9 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.note_anchor": {},
   "invalid_request.note_span": { detailsKeys: ["limit"] },
   "invalid_request.note_limit": { detailsKeys: ["limit"] },
+  // Speaker identification was required at submission but cannot be honored; `reason` is a
+  // DiarizationUnavailableReason.
+  "invalid_request.diarization_unavailable": { detailsKeys: ["reason"] },
   // A custom system prompt that lacks a placeholder or protocol fragment of its builtin text,
   // adds an unknown placeholder, or is empty or too long; `missing` / `unknown` list them as written.
   "invalid_request.prompt_protocol": { detailsKeys: ["missing", "unknown"] },

@@ -15,6 +15,7 @@ import {
 import { importRequestSchema, importResponseSchema, inspectRequestSchema, inspectResponseSchema } from "../../../shared/dto/import.ts";
 import { localFileRequestSchema } from "../../../shared/dto/local-media.ts";
 import { asrModelRefSchema } from "../../../shared/dto/model-ref.ts";
+import { diarizationRequestSchema } from "../../../shared/dto/speaker.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../../../shared/enums.ts";
 import type { ContentService } from "../../application/contents.ts";
@@ -31,7 +32,7 @@ export const TEXT_BODY_LIMIT_BYTES = SUBTITLE_IMPORT_MAX_BYTES * 2;
 
 const contentParamsSchema = z.object({ id: z.string().min(1) });
 /** `retranscribe` may name the ASR profile to use (else the default applies); a client may also send no body at all. */
-const retranscribeRequestSchema = z.object({ asrModelRef: asrModelRefSchema.exactOptional() }).strict();
+const retranscribeRequestSchema = z.object({ asrModelRef: asrModelRefSchema.exactOptional(), diarization: diarizationRequestSchema.exactOptional() }).strict();
 /** `ids=a,b,c`: deduplicated, an empty entry is malformed rather than skipped. */
 const contentIdsSchema = z
   .string()
@@ -136,7 +137,7 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
       const { id } = parseInput(contentParamsSchema, request.params, "params");
       const body = parseInput(retranscribeRequestSchema, request.body ?? {}, "body");
       const key = idempotencyKeyOf(request);
-      const result = await retranscribe.retranscribe(principalOf(request), id, key, body.asrModelRef);
+      const result = await retranscribe.retranscribe(principalOf(request), id, key, body.asrModelRef, body.diarization);
       return sendValidated(reply, result.status, taskAcceptedDtoSchema, result.body);
     });
   }

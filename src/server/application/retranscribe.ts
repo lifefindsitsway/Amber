@@ -1,4 +1,5 @@
 import { monotonicFactory } from "ulid";
+import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
@@ -16,7 +17,7 @@ import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { availableMediaSource } from "../pipeline/stages/source-media.ts";
 import { createTask } from "../pipeline/task-state.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
-import { asrModelRefForSubmission } from "./settings.ts";
+import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
 import type { TaskControl } from "./tasks.ts";
 
 export const RETRANSCRIBE_ROUTE = "POST /api/contents/:id/transcript/retranscribe";
@@ -27,6 +28,8 @@ export interface RetranscribeServiceOptions {
   control: Pick<TaskControl, "kick">;
   disk: DiskUsageProbe;
   settings: InstanceSettingsSource;
+  /** The ASR providers' descriptors, for checking a speaker identification request against the chosen model; the shared presets by default. */
+  asrDescriptors?: AsrDescriptorSource;
   now?: () => number;
   newId?: () => string;
 }
@@ -54,13 +57,14 @@ export class RetranscribeService {
     contentId: string,
     idempotencyKey?: string,
     asrModelRef?: AsrModelRef,
+    diarization?: DiarizationRequest,
   ): Promise<IdempotentResult<TaskAcceptedDto>> {
     const owner = principal.userId;
     const context = {
       userId: owner,
       route: RETRANSCRIBE_ROUTE,
       key: idempotencyKey,
-      requestDigest: jsonRequestDigest(asrModelRef === undefined ? { contentId } : { contentId, asrModelRef }),
+      requestDigest: jsonRequestDigest({ contentId, ...(asrModelRef === undefined ? {} : { asrModelRef }), ...(diarization === undefined ? {} : { diarization }) }),
     };
     const replay = this.options.repository.withTransaction((scope) =>
       idempotencyKey === undefined ? undefined : scope.idempotency.get(owner, RETRANSCRIBE_ROUTE, idempotencyKey),
@@ -80,7 +84,20 @@ export class RetranscribeService {
         // Frozen at submission: the requested model; without one the stage waits for the
         // user to choose one. The default is the picker's business, not ours.
         const frozen = asrModelRefForSubmission(scope, owner, asrModelRef);
-        const request: RetranscribeRequest = { requestSchemaVersion: 1, kind: "retranscribe", ...(frozen === undefined ? {} : { asrModelRef: frozen }) };
+        // Speaker identification is frozen the same way: the request's own, else by the user's
+        // setting now. A model already chosen is checked here so that a request that cannot be
+        // honored is refused before it is queued.
+        const identification = diarizationForSubmission(scope, owner, diarization, {
+          asrModelRef: frozen,
+          ...(this.options.asrDescriptors === undefined ? {} : { descriptorOf: this.options.asrDescriptors }),
+          ...(content.durationMs === undefined ? {} : { durationMs: content.durationMs }),
+        });
+        const request: RetranscribeRequest = {
+          requestSchemaVersion: 1,
+          kind: "retranscribe",
+          ...(frozen === undefined ? {} : { asrModelRef: frozen }),
+          diarization: identification,
+        };
         const requestJson = canonicalJson(request);
         if (!isPlatform(content.source.kind) && availableMediaSource(scope, owner, contentId) === undefined) {
           throw amberError("media_missing", "no media to take audio from");

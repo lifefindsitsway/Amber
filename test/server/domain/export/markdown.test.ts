@@ -3,6 +3,7 @@ import {
   chapterLine,
   fillText,
   headerLine,
+  markdownInline,
   markdownStamp,
   renderCitations,
   subtitleLine,
@@ -31,5 +32,18 @@ describe("Markdown export pieces", () => {
     expect(chapterLine("[00:00]", "开场", undefined)).toBe("- [00:00] 开场\n");
     expect(transcriptParagraphLine("[00:01]", "段落")).toBe("**[00:01]** 段落\n\n");
     expect(subtitleLine(61_000, "一\n二")).toBe("[01:01] 一 二\n");
+  });
+
+  it("names the speaker before the time stamp of a turn's first paragraph", () => {
+    expect(transcriptParagraphLine("[00:01](u)", "段落", "张三")).toBe("**张三** · **[00:01](u)** 段落\n\n");
+    expect(transcriptParagraphLine("[00:01]", "段落", undefined)).toBe(transcriptParagraphLine("[00:01]", "段落"));
+  });
+
+  it("escapes Markdown in a speaker name and keeps it on one line", () => {
+    expect(markdownInline("**x_y**")).toBe("\\*\\*x\\_y\\*\\*");
+    expect(markdownInline("[a](b) <i>&amp; `c` ~d~ e|f")).toBe("\\[a\\](b) \\<i\\>\\&amp; \\`c\\` \\~d\\~ e\\|f");
+    expect(markdownInline("a\\b")).toBe("a\\\\b");
+    expect(markdownInline("甲\n乙 👨‍👩‍👧")).toBe("甲 乙 👨‍👩‍👧");
+    expect(transcriptParagraphLine("[00:01]", "段落", "**x_y**")).toBe("**\\*\\*x\\_y\\*\\*** · **[00:01]** 段落\n\n");
   });
 });

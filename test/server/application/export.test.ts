@@ -7,7 +7,7 @@ import { API_PAGE_SIZE_MAX } from "../../../src/shared/defaults.ts";
 import type { ContentExportRequest } from "../../../src/shared/dto/export.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle } from "../../../src/shared/subtitle-style.ts";
-import { addLocalFile, seedExportCollection, seedExportContent, type ExportFixture } from "../../fixtures/export/export-data.ts";
+import { addLocalFile, ASR_LINES, seedExportCollection, seedExportContent, type ExportFixture, type ExportLine } from "../../fixtures/export/export-data.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 
 const NOW = new Date(2026, 9, 1, 12).getTime();
@@ -457,5 +457,203 @@ describe("ExportService, styled ASS", () => {
         }),
       ).class,
     ).toBe("invalid_request");
+  });
+});
+
+describe("ExportService with speakers", () => {
+  const A = "spk-a";
+  const B = "spk-b";
+  /** Sentences 0-1 are A, 2-3 are B, 4 nobody, 5 A again; a long pause precedes 2, 3 and 5. */
+  const OWNERS = [A, A, B, B, undefined, A] as const;
+  const withSpeakers = (owners: ReadonlyArray<string | undefined>): ExportLine[] =>
+    ASR_LINES.map((line, index) => ({ ...line, ...(owners[index] === undefined ? {} : { speakerId: owners[index] as string }) }));
+
+  function setupSpeakers(options: { owners?: ReadonlyArray<string | undefined>; names?: Record<string, string>; language?: string } = {}): { exports: ExportService; fixture: ExportFixture } {
+    const h = createHarness();
+    open.push(h);
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+      lines: withSpeakers(options.owners ?? OWNERS),
+      speakerNames: options.names ?? { [A]: "张三" },
+      ...(options.language === undefined ? {} : { language: options.language }),
+    });
+    return { exports: new ExportService({ repository: h.repository, version: VERSION, now: () => NOW }), fixture };
+  }
+
+  const exportText = (exports: ExportService, fixture: ExportFixture, body: Record<string, unknown>): Promise<string> =>
+    text(exports.exportContent(LOCAL, fixture.contentId, body as ContentExportRequest));
+  const subtitle = (fixture: ExportFixture, format: string, extra: Record<string, unknown> = {}) => ({ format, revisionId: fixture.corrected.revision.id, ...extra });
+
+  it("labels the first cue of each turn in SRT by default, with a full-width colon for a Chinese revision", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true }));
+    const lines = srt.split("\n\n").map((cue) => cue.split("\n")[2]);
+    expect(lines.slice(0, 6)).toEqual(["张三：Hi world.", "你好世界", "发言人 2：第二段{\\b1}开始", "九十九分", "一百分", "张三：六小时"]);
+    expect(await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true, speakerLabels: "turn" }))).toBe(srt);
+  });
+
+  it("labels every cue with speakerLabels every, but never an unassigned one", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true, speakerLabels: "every" }));
+    expect(srt.split("\n\n").slice(0, 6).map((cue) => cue.split("\n")[2])).toEqual([
+      "张三：Hi world.",
+      "张三：你好世界",
+      "发言人 2：第二段{\\b1}开始",
+      "发言人 2：九十九分",
+      "一百分",
+      "张三：六小时",
+    ]);
+  });
+
+  it("uses `Name: ` for a revision that is not Chinese and never labels the translation line", async () => {
+    const { exports, fixture } = setupSpeakers({ language: "en" });
+    const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true }));
+    expect(srt.startsWith("1\n00:00:01,000 --> 00:00:02,600\n张三: Hi world.\n\n")).toBe(true);
+    const bilingual = await exportText(
+      exports,
+      fixture,
+      subtitle(fixture, "srt-bilingual", { translationRevisionId: fixture.translated.revision.id, includeSpeakers: true, speakerLabels: "every" }),
+    );
+    expect(bilingual.startsWith("1\n00:00:01,000 --> 00:00:02,600\n张三: Hi world.\nEN 1\n\n2\n00:00:03,000 --> 00:00:04,000\n张三: 你好世界\nEN 2\n\n")).toBe(true);
+    expect(bilingual).not.toMatch(/\n(张三|发言人 2)[:：] EN/);
+  });
+
+  it("writes voice tags in VTT for every cue with a speaker", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const vtt = await exportText(exports, fixture, subtitle(fixture, "vtt", { includeSpeakers: true, speakerLabels: "turn" }));
+    const bodies = vtt.split("\n\n").slice(1, 7).map((cue) => cue.split("\n")[1]);
+    expect(bodies).toEqual(["<v 张三>Hi world.", "<v 张三>你好世界", "<v 发言人 2>第二段{\\b1}开始", "<v 发言人 2>九十九分", "一百分", "<v 张三>六小时"]);
+  });
+
+  it("labels TXT paragraphs: the first of each turn by default, each with every", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const turn = await exportText(exports, fixture, subtitle(fixture, "txt", { includeSpeakers: true }));
+    expect(turn).toBe("张三：Hi world. 你好世界\n\n发言人 2：第二段{\\b1}开始\n\n九十九分\n\n一百分\n\n张三：六小时\n");
+    const every = await exportText(exports, fixture, subtitle(fixture, "txt", { includeSpeakers: true, speakerLabels: "every" }));
+    expect(every).toBe("张三：Hi world. 你好世界\n\n发言人 2：第二段{\\b1}开始\n\n发言人 2：九十九分\n\n一百分\n\n张三：六小时\n");
+  });
+
+  it("fills the Name field in the fixed-style ASS, bilingual too", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const names = (ass: string) => dialogues(ass).map((line) => line.split(",")[4]);
+    expect(names(await exportText(exports, fixture, subtitle(fixture, "ass", { includeSpeakers: true })))).toEqual(["张三", "张三", "发言人 2", "发言人 2", "", "张三"]);
+    const bilingual = await exportText(exports, fixture, subtitle(fixture, "ass-bilingual", { translationRevisionId: fixture.translated.revision.id, includeSpeakers: true }));
+    expect(dialogues(bilingual)[0]).toBe("Dialogue: 0,0:00:01.00,0:00:02.60,Default,张三,0,0,0,,Hi world.\\N{\\rTranslation}EN 1");
+    // The exact-words original keeps its karaoke timing next to the name.
+    expect(dialogues(await exportText(exports, fixture, { format: "ass", revisionId: fixture.asr.revision.id, includeSpeakers: true }))[0]).toBe(
+      "Dialogue: 0,0:00:01.00,0:00:02.60,Default,张三,0,0,0,,{\\k40}Hello{\\k20}{\\k90} world.",
+    );
+  });
+
+  it("fills the Name field in styled ASS from the shown revision; a video export's ASS carries no names", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const style = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+    const names = (ass: string) => dialogues(ass).map((line) => line.split(",")[4]);
+    const original = await exportText(exports, fixture, subtitle(fixture, "ass", { style, includeSpeakers: true }));
+    expect(names(original)).toEqual(["张三", "张三", "发言人 2", "发言人 2", "", "张三"]);
+    const bilingual = await exportText(exports, fixture, subtitle(fixture, "ass-bilingual", { style, translationRevisionId: fixture.translated.revision.id, includeSpeakers: true }));
+    expect(names(bilingual)).toEqual(names(original));
+    const translated = await exportText(exports, fixture, { format: "ass", revisionId: fixture.translated.revision.id, style, includeSpeakers: true });
+    expect(names(translated)).toEqual(names(original));
+
+    let burned = "";
+    for await (const piece of exports.styledAssOf(LOCAL.userId, fixture.contentId, { mode: "original", revisionId: fixture.corrected.revision.id, style, playRes: { width: 1920, height: 1080 }, textOnly: false })) {
+      burned += piece;
+    }
+    expect(names(burned)).toEqual(["", "", "", "", "", ""]);
+  });
+
+  it("leaves Name empty for a styled slice that mixes speakers", async () => {
+    const h = createHarness();
+    open.push(h);
+    const lines: ExportLine[] = [
+      { startMs: 0, endMs: 3000, text: "长话", speakerId: A },
+      { startMs: 1000, endMs: 2000, text: "插话", speakerId: B },
+      ...ASR_LINES.slice(2),
+    ];
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", { lines, speakerNames: { [A]: "甲", [B]: "乙" } });
+    const exports = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW });
+    const style = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+    const ass = await exportText(exports, fixture, subtitle(fixture, "ass", { style, includeSpeakers: true }));
+    expect(dialogues(ass).map((line) => line.split(",")[4]).slice(0, 4)).toEqual(["甲", "", "甲", ""]);
+  });
+
+  it("names the first paragraph of each turn in the Markdown transcript, again after a chapter heading", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const body = { format: "markdown", sections: { transcript: { revisionId: fixture.corrected.revision.id } }, backlinks: false, includeSpeakers: true };
+    const plain = await exportText(exports, fixture, body);
+    expect(plain).toContain("\n\n**张三** · **[00:01]** Hi world. 你好世界\n\n**发言人 2** · **[00:09]** 第二段{\\b1}开始\n\n**[99:59]** 九十九分\n\n**[1:40:00]** 一百分\n\n**张三** · **[6:00:01]** 六小时\n");
+    const chaptered = await exportText(exports, fixture, { ...body, sections: { ...body.sections, chapters: true } });
+    // 「收尾」 starts at the sentence of the same speaker: the reading view shows the speaker again there.
+    expect(chaptered).toContain("### 收尾\n\n**发言人 2** · **[99:59]** 九十九分\n\n**[1:40:00]** 一百分\n\n");
+  });
+
+  it("is byte for byte the same without includeSpeakers, with it false, and when no sentence has a speaker", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const h = createHarness();
+    open.push(h);
+    const bare = seedExportContent(h);
+    const bareExports = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW });
+    const style = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+    const requests = (f: ExportFixture): Record<string, unknown>[] => [
+      ...(["srt", "vtt", "txt", "ass"] as const).map((format) => subtitle(f, format)),
+      subtitle(f, "ass", { style }),
+      subtitle(f, "srt-bilingual", { translationRevisionId: f.translated.revision.id }),
+      subtitle(f, "ass-bilingual", { translationRevisionId: f.translated.revision.id, style }),
+      { format: "ass", revisionId: f.asr.revision.id },
+      {
+        format: "markdown",
+        sections: { transcript: { revisionId: f.corrected.revision.id }, chapters: true, subtitles: { revisionId: f.corrected.revision.id } },
+        backlinks: true,
+      },
+    ];
+    const withFlag = (request: Record<string, unknown>, extra: Record<string, unknown>) => ({ ...request, ...extra });
+    for (const [index, request] of requests(fixture).entries()) {
+      const absent = await exportText(exports, fixture, request);
+      expect(await exportText(exports, fixture, withFlag(request, { includeSpeakers: false, speakerLabels: "every" })), `${index} false`).toBe(absent);
+    }
+    for (const [index, request] of requests(bare).entries()) {
+      const absent = await exportText(bareExports, bare, request);
+      expect(await exportText(bareExports, bare, withFlag(request, { includeSpeakers: true })), `${index} no speakers`).toBe(absent);
+      expect(await exportText(bareExports, bare, withFlag(request, { includeSpeakers: true, speakerLabels: "every" })), `${index} no speakers, every`).toBe(absent);
+    }
+    // Known output of the fixture, unchanged by the speaker code.
+    expect(await exportText(bareExports, bare, subtitle(bare, "srt"))).toMatch(/^1\n00:00:01,000 --> 00:00:02,600\nHi world\.\n\n2\n/);
+  });
+
+  it("writes special names safely in every format", async () => {
+    const names = ["Smith, John", "a\nb", "<b>&", "**x_y**", "‮evil", "👨‍👩‍👧"];
+    const ids = names.map((_, index) => `spk-${index}`);
+    const { exports, fixture } = setupSpeakers({ owners: ids, names: Object.fromEntries(ids.map((id, index) => [id, names[index] as string])) });
+    const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true }));
+    expect(srt.split("\n\n").slice(0, 6).map((cue) => cue.split("\n")[2]?.split("：")[0])).toEqual(["Smith, John", "a b", "<b>&", "**x_y**", "evil", "👨‍👩‍👧"]);
+    const vtt = await exportText(exports, fixture, subtitle(fixture, "vtt", { includeSpeakers: true }));
+    expect(vtt.split("\n\n").slice(1, 7).map((cue) => /^<v ([^>]*)>/.exec(cue.split("\n")[1] ?? "")?.[1])).toEqual([
+      "Smith, John",
+      "a b",
+      "&lt;b&gt;&amp;",
+      "**x_y**",
+      "evil",
+      "👨‍👩‍👧",
+    ]);
+    const ass = await exportText(exports, fixture, subtitle(fixture, "ass", { includeSpeakers: true }));
+    expect(dialogues(ass).map((line) => line.split(",")[4])).toEqual(["Smith， John", "a b", "<b>&", "**x_y**", "evil", "👨‍👩‍👧"]);
+    expect(dialogues(ass).every((line) => line.split(",").length === 10)).toBe(true);
+    const markdown = await exportText(exports, fixture, { format: "markdown", sections: { transcript: { revisionId: fixture.corrected.revision.id } }, backlinks: false, includeSpeakers: true });
+    expect([...markdown.matchAll(/^\*\*(.*?)\*\* · \*\*\[/gmu)].map((match) => match[1])).toEqual([
+      "Smith, John",
+      "a b",
+      "\\<b\\>\\&",
+      "\\*\\*x\\_y\\*\\*",
+      "evil",
+      "👨‍👩‍👧",
+    ]);
+    // No control or bidirectional character reaches any file.
+    for (const file of [srt, vtt, ass, markdown]) expect(file).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200E\u200F]/u);
+  });
+
+  it("falls back to 「发言人 N」 for an unnamed speaker by its ordinal in the Content", async () => {
+    const { exports, fixture } = setupSpeakers({ owners: [B, B, A, A, undefined, A], names: {} });
+    const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true }));
+    expect(srt.split("\n\n").slice(0, 3).map((cue) => cue.split("\n")[2])).toEqual(["发言人 1：Hi world.", "你好世界", "发言人 2：第二段{\\b1}开始"]);
   });
 });

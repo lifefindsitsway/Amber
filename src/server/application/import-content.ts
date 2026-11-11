@@ -1,6 +1,7 @@
 import { monotonicFactory } from "ulid";
 import { IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import type { ImportItem, ImportRequest, ImportResponse, InspectResponse } from "../../shared/dto/import.ts";
+import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import { BYTES_PER_MB } from "../../shared/units.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Collection } from "../domain/collection.ts";
@@ -32,7 +33,7 @@ import { createTask } from "../pipeline/task-state.ts";
 import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { PlatformRegistry } from "./platforms.ts";
-import { asrModelRefForSubmission } from "./settings.ts";
+import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
 import { resolveTemplateRef } from "./summary-templates.ts";
 import type { TaskControl } from "./tasks.ts";
 import { restoreTrashed } from "./trash.ts";
@@ -90,6 +91,8 @@ export interface ImportContentServiceOptions {
    * Without it they run directly.
    */
   heavy?: Pick<FairSemaphore, "run">;
+  /** The ASR providers' descriptors, for checking a speaker identification request against the chosen model; the shared presets by default. */
+  asrDescriptors?: AsrDescriptorSource;
   now?: () => number;
   newId?: () => string;
 }
@@ -398,6 +401,11 @@ export class ImportContentService {
     }
     const templateRef = resolveTemplateRef(scope, owner, settings.templateId, "settings.templateId");
     const asrModelRef = asrModelRefForSubmission(scope, owner, settings.asrModelRef, "settings.asrModelRef");
+    // A platform item's duration is not known yet; the stage checks the actual audio.
+    const diarization = diarizationForSubmission(scope, owner, settings.diarization, {
+      asrModelRef,
+      ...(this.options.asrDescriptors === undefined ? {} : { descriptorOf: this.options.asrDescriptors }),
+    });
     const target = body.collection;
     if (target !== undefined && "id" in target && scope.collections.get(owner, target.id) === undefined) {
       throw amberError("not_found", "collection not found");
@@ -441,7 +449,7 @@ export class ImportContentService {
     const platformCollections = new Map<string, Collection>();
 
     for (const item of processed) {
-      const { content, task, createdIds } = this.createOrReuse(scope, outbox, owner, { ...frozen(settings, asrModelRef), templateRef }, batchId, item, now);
+      const { content, task, createdIds } = this.createOrReuse(scope, outbox, owner, { ...frozen(settings, asrModelRef, diarization), templateRef }, batchId, item, now);
       created.push(...createdIds);
       contentIds.push(content.id);
       taskIds.push(task.id);
@@ -497,6 +505,7 @@ export class ImportContentService {
       ...(settings.outputLanguage === undefined ? {} : { outputLanguage: settings.outputLanguage }),
       autoProofread: settings.autoProofread,
       templateRef: settings.templateRef,
+      ...(settings.diarization === undefined ? {} : { diarization: settings.diarization }),
     };
     const found = scope.contents.findByPlatformIdentity(owner, item.source);
     if (found !== undefined) {
@@ -593,8 +602,11 @@ export class ImportContentService {
   }
 }
 
-/** The import settings with the ASR model checked at submission (the requested one, else none). */
-function frozen(settings: ImportRequest["settings"], asrModelRef: AsrModelRef | undefined): ImportRequest["settings"] {
-  const { asrModelRef: _requested, ...rest } = settings;
-  return asrModelRef === undefined ? rest : { ...rest, asrModelRef };
+/**
+ * The import settings with the ASR model checked at submission (the requested one, else none)
+ * and the speaker identification frozen (the requested one, else by the user's setting).
+ */
+function frozen(settings: ImportRequest["settings"], asrModelRef: AsrModelRef | undefined, diarization: DiarizationRequest): ImportRequest["settings"] {
+  const { asrModelRef: _requested, diarization: _asked, ...rest } = settings;
+  return { ...rest, ...(asrModelRef === undefined ? {} : { asrModelRef }), diarization };
 }

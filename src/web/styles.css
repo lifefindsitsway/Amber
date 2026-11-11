@@ -110,6 +110,90 @@ html[data-theme="parchment"] {
   --usage-other: #a89a7c;
 }
 
+/*
+ * Speaker colours: eight slots, each a text/line colour (-fg) and a soft fill (-bg) that
+ * carries the letter avatar, in the same order in every theme. Even slots are the deeper,
+ * saturated steps and odd slots the lighter ones, so neighbours in the order differ in
+ * lightness as well as hue (readers with colour-vision deficiency still tell them apart).
+ * -fg clears 4.5:1 on the surface, panel and sunken grounds and on its own -bg in every
+ * theme; the letter of a monogram is drawn in -fg on -bg. Names always accompany the colour.
+ */
+:root {
+  --speaker-0-fg: #1f4f8e;
+  --speaker-0-bg: #dfe9f6;
+  --speaker-1-fg: #a7401b;
+  --speaker-1-bg: #f8e4dd;
+  --speaker-2-fg: #1c5e3d;
+  --speaker-2-bg: #e1f5eb;
+  --speaker-3-fg: #a5317b;
+  --speaker-3-bg: #f5e1ed;
+  --speaker-4-fg: #105b6a;
+  --speaker-4-bg: #ddf4f8;
+  --speaker-5-fg: #753ec9;
+  --speaker-5-bg: #e9e0f5;
+  --speaker-6-fg: #4e5714;
+  --speaker-6-bg: #f3f6df;
+  --speaker-7-fg: #b6233b;
+  --speaker-7-bg: #f7dee2;
+}
+
+.dark {
+  --speaker-0-fg: #79a6e2;
+  --speaker-0-bg: #213145;
+  --speaker-1-fg: #f3c7b7;
+  --speaker-1-bg: #47291f;
+  --speaker-2-fg: #48c888;
+  --speaker-2-bg: #244233;
+  --speaker-3-fg: #ecbedb;
+  --speaker-3-bg: #422437;
+  --speaker-4-fg: #2ec2e0;
+  --speaker-4-bg: #1e4148;
+  --speaker-5-fg: #d2bfed;
+  --speaker-5-bg: #302343;
+  --speaker-6-fg: #b0c42e;
+  --speaker-6-bg: #404422;
+  --speaker-7-fg: #f2bac4;
+  --speaker-7-bg: #462026;
+}
+
+html[data-theme="bean-green"] {
+  --speaker-0-fg: #194073;
+  --speaker-0-bg: #cbd9eb;
+  --speaker-1-fg: #8c3617;
+  --speaker-1-bg: #edd3c9;
+  --speaker-2-fg: #16492f;
+  --speaker-2-bg: #cee9db;
+  --speaker-3-fg: #8d2a69;
+  --speaker-3-bg: #e9cedf;
+  --speaker-4-fg: #0c4652;
+  --speaker-4-bg: #c9e8ee;
+  --speaker-5-fg: #6632b3;
+  --speaker-5-bg: #d9cde9;
+  --speaker-6-fg: #3d4410;
+  --speaker-6-bg: #e7ebcc;
+  --speaker-7-fg: #9c1e33;
+  --speaker-7-bg: #eccad0;
+}
+
+html[data-theme="parchment"] {
+  --speaker-0-fg: #1c4780;
+  --speaker-0-bg: #d5e1f1;
+  --speaker-1-fg: #973a19;
+  --speaker-1-bg: #f3dbd3;
+  --speaker-2-fg: #185134;
+  --speaker-2-bg: #d7efe3;
+  --speaker-3-fg: #972d70;
+  --speaker-3-bg: #efd7e6;
+  --speaker-4-fg: #0e4e5b;
+  --speaker-4-bg: #d2eef3;
+  --speaker-5-fg: #6e36c1;
+  --speaker-5-bg: #e0d6f0;
+  --speaker-6-fg: #434a11;
+  --speaker-6-bg: #edf1d5;
+  --speaker-7-fg: #a92037;
+  --speaker-7-bg: #f2d4d9;
+}
+
 /* Filled accent surfaces (primary buttons, pressed toggles, badges): the Logo's amber-gold, lit from above. */
 @utility bg-accent-glow {
   background-image: linear-gradient(180deg, #ffd36e 0%, #f5b23a 48%, #e0870f 100%);

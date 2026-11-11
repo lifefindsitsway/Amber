@@ -1,20 +1,32 @@
 import type { TimingFidelity, TranscriptKind } from "../../shared/enums.ts";
 import { isUlid, type SegmentId } from "../../shared/ids.ts";
+import type { DiarizationStatus, SpeakerReviewState } from "../../shared/speakers.ts";
 import type { ModelRefSnapshot, PromptRef } from "./model-ref.ts";
 
 /** Who produced a revision. */
 export type TranscriptGeneration =
   | { kind: "platform"; acquisition: "guest" | "authenticated" }
   | { kind: "imported"; format: "srt" | "vtt" }
-  | { kind: "asr"; asrProfileId: string; modelId: string }
+  /** `diarization` is absent on revisions made before speaker identification was recorded. */
+  | { kind: "asr"; asrProfileId: string; modelId: string; diarization?: AsrDiarizationRecord }
   /**
    * A snapshot, so a proofread or translated revision stays explainable after its Profile is
    * gone. `promptRefs` lists every prompt version that produced the accepted text; absent on
    * revisions stored before it was recorded.
    */
   | { kind: "llm"; modelRef: ModelRefSnapshot; promptRef: PromptRef; promptRefs?: PromptRef[]; promptSnapshot: string }
-  /** `origin` only on a hand-edited translation. */
-  | { kind: "manual"; origin?: ManualTranslationOrigin };
+  /**
+   * `origin` only on a hand-edited translation. `speakerReview` only on a transcript commit
+   * whose user chose to keep the suggested speakers of sentences still waiting for review:
+   * how many there were.
+   */
+  | { kind: "manual"; origin?: ManualTranslationOrigin; speakerReview?: { acceptedSuggestions: number } };
+
+/** What one transcription recorded about speaker identification; fixed when the revision is inserted. */
+export interface AsrDiarizationRecord {
+  status: DiarizationStatus;
+  requestedSpeakerCount?: number;
+}
 
 /**
  * Where a hand-edited translation came from: the machine translation it was first edited
@@ -67,6 +79,7 @@ export interface TranscriptSegment {
   text: string;
   /** Only present on `exact_words` revisions. */
   words?: TranscriptWord[];
+  /** A `ContentSpeaker.id` of the revision's Content; absent = unassigned. */
   speakerId?: string;
   /**
    * Semantic paragraph start, marked by the proofreading model. Absent on revisions
@@ -106,6 +119,10 @@ export interface TranscriptDraft {
     endMs: number;
     text: string;
     sourceSegmentIds: SegmentId[];
+    /** Transcript drafts: `null` = unassigned; absent (saved before drafts had speakers) = the first source sentence's speaker. */
+    speakerId?: string | null;
+    /** How applying speakers left the sentence; never reaches a revision. */
+    speakerReview?: SpeakerReviewState;
   }>;
   updatedAt: number;
 }

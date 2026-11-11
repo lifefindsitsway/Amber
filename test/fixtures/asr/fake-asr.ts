@@ -21,7 +21,6 @@ import { asrModelFamily } from "../../../src/shared/asr-presets.ts";
 export const FAKE_ASR_CAPABILITIES: AsrProviderCapabilities & { delivery: "sync" } = {
   wordTimestamps: true,
   segmentTimestamps: false,
-  diarization: false,
   terminologyBias: true,
   maxFileBytes: 5 * 1024 ** 3,
   maxDurationSec: 10 * 3600,
@@ -77,7 +76,7 @@ export type FakeSubmitOutcome = "job" | Error | ((opts: AsrSubmitOptions) => Pro
  * not resolve with `asr_failed.model_unavailable`.
  */
 export class FakeAsrFactory implements AsrProviderFactory {
-  readonly descriptor: AsrProviderDescriptor = { provider: "elevenlabs", baseUrlPolicy: "any", endpoints: [{ id: "default", baseURL: "https://asr.example.test" }], models: ["scribe_v2", "fake-model"], recommendedModels: ["scribe_v2"], defaultModel: "scribe_v2", families: [{ id: "fake_basic", terminology: false }, { id: "fake", terminology: true }], customModelFamily: "fake_basic", knownModels: { scribe_v2: "fake", "fake-model": "fake" } };
+  readonly descriptor: AsrProviderDescriptor = { provider: "elevenlabs", baseUrlPolicy: "any", endpoints: [{ id: "default", baseURL: "https://asr.example.test" }], models: ["scribe_v2", "fake-model"], recommendedModels: ["scribe_v2"], defaultModel: "scribe_v2", families: [{ id: "fake_basic", terminology: false }, { id: "fake", terminology: true }], customModelFamily: "fake_basic", knownModels: { scribe_v2: "fake", "fake-model": "fake" }, diarization: {} };
   readonly calls: FakeAsrCall[] = [];
   readonly probes: string[] = [];
   capabilities: AsrProviderCapabilities = { ...FAKE_ASR_CAPABILITIES };

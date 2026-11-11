@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ASS_HEADER, assDialogue, assText, styledAssDocument, type StyledAssOptions } from "../../../../src/server/domain/export/ass.ts";
+import { ASS_HEADER, assDialogue, assName, assText, styledAssDocument, type StyledAssOptions } from "../../../../src/server/domain/export/ass.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle } from "../../../../src/shared/subtitle-style.ts";
 
 describe("ASS", () => {
@@ -286,6 +286,63 @@ describe("styled ASS glyphs", () => {
   it("is unchanged for text without curly quotes", () => {
     const document = styledAssDocument([{ startMs: 0, endMs: 1500, original: "a 'b' \"c\"", translation: "原文" }], { ...FILE, style: style() });
     expect(dialogues(document).at(-1)).toBe("Dialogue: 1,0:00:00.00,0:00:01.50,Default,,0,0,0,,{\\an2\\pos(960,994)}a 'b' \"c\"\\N{\\rTranslation}原文");
+  });
+});
+
+describe("ASS speaker names", () => {
+  const cue = { startMs: 0, endMs: 1000, text: "原文" };
+
+  it("fills the Name field of the fixed-style Dialogue, and leaves it empty without a speaker", () => {
+    expect(assDialogue(cue, { karaoke: false, speaker: "张三" })).toBe("Dialogue: 0,0:00:00.00,0:00:01.00,Default,张三,0,0,0,,原文\n");
+    expect(assDialogue(cue, { karaoke: false })).toBe("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,原文\n");
+  });
+
+  it("keeps a name from breaking the field: commas become full-width, line breaks spaces", () => {
+    expect(assName("Smith, John")).toBe("Smith， John");
+    expect(assName("a\nb\r\nc")).toBe("a b c");
+    expect(assName(undefined)).toBe("");
+    expect(assName("**x_y** <b>& 👨‍👩‍👧")).toBe("**x_y** <b>& 👨‍👩‍👧");
+    expect(assDialogue(cue, { karaoke: false, speaker: "A,B" }).split(",")).toHaveLength(10);
+  });
+
+  const speakers = (ofCue: readonly (string | undefined)[]) => ({ ofCue, names: new Map([["a", "甲"], ["b", "乙"], ["a2", "甲"]]) });
+  const doc = (cues: Parameters<typeof styledAssDocument>[0], ofCue?: readonly (string | undefined)[], textOnly = false) =>
+    styledAssDocument(cues, { ...FILE, mode: "original", textOnly, style: style(), ...(ofCue === undefined ? {} : { speakers: speakers(ofCue) }) });
+
+  it("names styled slices and both layers of a boxed slice", () => {
+    const boxed = styledAssDocument([{ startMs: 0, endMs: 1000, original: "x" }], {
+      ...FILE,
+      mode: "original",
+      style: style({ appearance: { background: { ...defaultSubtitleAppearance().background, enabled: true, scope: "both" } } }),
+      speakers: speakers(["a"]),
+    });
+    expect(dialogues(boxed).map((line) => line.split(",")[4])).toEqual(["甲", "甲"]);
+    expect(dialogues(doc([{ startMs: 0, endMs: 1000, original: "x" }], ["a"]))[0]).toContain(",Default,甲,0,0,0,,");
+  });
+
+  it("leaves Name empty for a slice that mixes speakers, or a speaker and an unassigned sentence", () => {
+    const cues = [
+      { startMs: 0, endMs: 3000, original: "长" },
+      { startMs: 1000, endMs: 2000, original: "插" },
+      { startMs: 5000, endMs: 6000, original: "独" },
+    ];
+    expect(dialogues(doc(cues, ["a", "b", undefined])).map((line) => line.split(",")[4])).toEqual(["甲", "", "甲", ""]);
+    // A speaker over an unassigned sentence is mixed too; an unassigned sentence alone has no name.
+    expect(dialogues(doc(cues, ["a", undefined, undefined])).map((line) => line.split(",")[4])).toEqual(["甲", "", "甲", ""]);
+    // The same speaker on both overlapping sentences is still one speaker.
+    expect(dialogues(doc(cues, ["a", "a", "b"])).map((line) => line.split(",")[4])).toEqual(["甲", "甲", "甲", "乙"]);
+  });
+
+  it("compares speakers by id: two speakers with the same name are still two", () => {
+    const cues = [{ startMs: 0, endMs: 2000, original: "一" }, { startMs: 1000, endMs: 3000, original: "二" }];
+    expect(dialogues(doc(cues, ["a", "a2"])).map((line) => line.split(",")[4])).toEqual(["甲", "", "甲"]);
+  });
+
+  it("is byte for byte the output without speakers when none are given or none apply", () => {
+    const cues = [{ startMs: 0, endMs: 3000, original: "长", translation: "T" }, { startMs: 1000, endMs: 2000, original: "插" }];
+    const plain = styledAssDocument(cues, { ...FILE, style: style() });
+    expect(plain).toBe(styledAssDocument(cues, { ...FILE, style: style(), speakers: { ofCue: [undefined, undefined], names: new Map() } }));
+    expect(doc(cues, [undefined, undefined])).toBe(styledAssDocument(cues, { ...FILE, mode: "original", style: style() }));
   });
 });
 

@@ -18,6 +18,7 @@ interface UserSettingsRow {
   default_output_language: string | null;
   platform_cookie_browser: string | null;
   chat_web_search_mode: string | null;
+  asr_diarization: number;
   updated_at: number;
 }
 
@@ -62,6 +63,7 @@ function toSettings(row: UserSettingsRow): UserSettings {
     ...(row.default_output_language === null ? {} : { defaultOutputLanguage: row.default_output_language }),
     ...(cookieBrowser === undefined ? {} : { platformCookieBrowser: cookieBrowser }),
     ...(chatWebSearchMode === undefined ? {} : { chatWebSearchMode }),
+    asrDiarization: row.asr_diarization === 1,
     updatedAt: row.updated_at,
   };
 }
@@ -77,10 +79,10 @@ export function sqliteUserSettingsRepository(db: SqliteConnection): UserSettings
   const put = db.prepare(
     `INSERT OR REPLACE INTO user_settings (
        user_id, theme, language, default_summary_template_id, shortcuts_json, chat_model_ref_json,
-       default_model_ref_json, default_asr_model_ref_json, default_output_language, platform_cookie_browser, chat_web_search_mode, updated_at
+       default_model_ref_json, default_asr_model_ref_json, default_output_language, platform_cookie_browser, chat_web_search_mode, asr_diarization, updated_at
      ) VALUES (
        @user_id, @theme, @language, @default_summary_template_id, @shortcuts_json, @chat_model_ref_json,
-       @default_model_ref_json, @default_asr_model_ref_json, @default_output_language, @platform_cookie_browser, @chat_web_search_mode, @updated_at
+       @default_model_ref_json, @default_asr_model_ref_json, @default_output_language, @platform_cookie_browser, @chat_web_search_mode, @asr_diarization, @updated_at
      )`,
   );
   // `keep` is a JSON array of model ids that stay valid; NULL clears every reference to the Profile.
@@ -121,6 +123,7 @@ export function sqliteUserSettingsRepository(db: SqliteConnection): UserSettings
         default_output_language: settings.defaultOutputLanguage ?? null,
         platform_cookie_browser: settings.platformCookieBrowser ?? null,
         chat_web_search_mode: settings.chatWebSearchMode ?? null,
+        asr_diarization: settings.asrDiarization ? 1 : 0,
         updated_at: settings.updatedAt,
       });
     },

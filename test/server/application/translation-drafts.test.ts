@@ -62,6 +62,9 @@ function setup() {
       createdAt,
     };
     h.repository.withTransaction((scope) => {
+      // Sentences name only speakers registered for their Content.
+      const missing = ["s1", "s2"].filter((id) => scope.speakers.get(LOCAL.userId, contentId, id) === undefined);
+      scope.speakers.insert(LOCAL.userId, contentId, missing.map((id) => ({ id })), 1);
       scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
       const artifact = scope.translations.getArtifact(LOCAL.userId, contentId, language);
       scope.translations.setCurrent(LOCAL.userId, contentId, language, id, artifact?.id ?? h.newId());

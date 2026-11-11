@@ -286,6 +286,41 @@ export const TRANSCRIPT_FILLER_WORDS_ZH = "嗯 呃 额 啊 呢 吧 嘛 呀 哦 �
 /** Batch edits (replace all, delete selected, filler cleanup) the editor can undo. */
 export const DRAFT_BATCH_UNDO_DEPTH = 20;
 
+/** Whether "identify speakers" starts on in the transcription settings. */
+export const ASR_DIARIZATION_DEFAULT = true;
+/** Most speakers one Content may hold; not below the largest speaker count a provider accepts. */
+export const SPEAKERS_PER_CONTENT_MAX = 128;
+/** Longest speaker name, in grapheme clusters. */
+export const SPEAKER_NAME_MAX_GRAPHEMES = 40;
+/** Number of speaker colors; a speaker's `colorIndex` picks one. */
+export const SPEAKER_PALETTE_SIZE = 8;
+/** Side of a speaker photo after the client crops it, in px. */
+export const SPEAKER_AVATAR_PX = 256;
+/** Largest width and height of a speaker photo the server accepts, read from the image header. */
+export const SPEAKER_AVATAR_MAX_PX = 512;
+/** Size cap of one speaker photo (256 KiB). */
+export const SPEAKER_AVATAR_MAX_BYTES = 262144;
+/** Most speaker suggestions returned at once. */
+export const SPEAKER_SUGGESTIONS_MAX = 8;
+/** Share of a sentence's time one source speaker must cover for the sentence to be matched without review. */
+export const SPEAKER_ALIGN_MIN_SHARE = 0.7;
+/** Below this share of sentences overlapping the source at all, the two timelines probably disagree. */
+export const SPEAKER_ALIGN_MIN_COVERAGE = 0.6;
+/** Shortest half a sentence split between two speakers may leave. */
+export const SPEAKER_SPLIT_MIN_MS = 300;
+/** Longest single-sentence turn, in characters, the reading view shows compactly. */
+export const SPEAKER_SHORT_TURN_CHARS = 12;
+/** Smallest body font size of the reading view, in px. */
+export const READER_FONT_SIZE_MIN = 12;
+/** Largest body font size of the reading view, in px. */
+export const READER_FONT_SIZE_MAX = 32;
+/** Body font size the reading view starts with, in px. */
+export const READER_FONT_SIZE_DEFAULT = 16;
+/** Line heights the reading view offers, space-separated, in display order. */
+export const READER_LINE_HEIGHTS = "1.5 1.6 1.7 1.8 2.0";
+/** Line height the reading view starts with; one of `READER_LINE_HEIGHTS`. */
+export const READER_LINE_HEIGHT_DEFAULT = 1.7;
+
 /** Default shortcut of the shortcut help sheet. */
 export const SHORTCUT_HELP_DEFAULT = "Ctrl+/";
 /** Default theme. */

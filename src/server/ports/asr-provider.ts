@@ -1,4 +1,4 @@
-import type { AsrPreset } from "../../shared/asr-presets.ts";
+import type { AsrDiarizationSupport, AsrPreset } from "../../shared/asr-presets.ts";
 import type { CanonicalAsrResult } from "../domain/asr.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { AsrProviderProfile } from "../domain/provider-profile.ts";
@@ -13,7 +13,8 @@ import type { AsrJobOutcome, RequestStartInfo } from "../domain/usage.ts";
 export interface AsrProviderCapabilities {
   wordTimestamps: boolean;
   segmentTimestamps: boolean;
-  diarization: boolean;
+  /** Speaker identification; absent = not offered. Declared only for models Amber knows, never for typed-in ones. */
+  diarization?: AsrDiarizationSupport;
   terminologyBias: boolean;
   maxFileBytes: number;
   maxDurationSec: number;
@@ -39,7 +40,11 @@ export interface AsrTranscribeInput {
   language?: string;
   /** Effective terminology, already truncated deterministically to the declared limits. */
   terminology: TerminologyEntry[];
-  speakerHint?: number;
+  /**
+   * Present = identify speakers in this request; the stage passes it only when the model
+   * declares `diarization` and `speakerCount` lies in its range.
+   */
+  diarization?: { speakerCount?: number };
 }
 
 export interface AsrTranscribeOptions {

@@ -103,6 +103,7 @@ describe("importing a link", () => {
       autoProofread: true,
       kind: "process_content",
       promptRefs: builtinPromptRefs("process_content"),
+      diarization: { mode: "preferred" },
       modelRef,
       outputLanguage: "zh-CN",
       requestSchemaVersion: 1,
@@ -143,6 +144,74 @@ describe("importing a link", () => {
       expect(refused?.userMessage).toContain("settings.asrModelRef");
     }
     expect(countRows(h.db, "task")).toBe(3);
+  });
+
+  describe("speaker identification", () => {
+    const frozenDiarization = async (h: Harness, settings: Record<string, unknown>, n: number) => {
+      const { body } = await h.importContent.import(LOCAL, request(settings, `https://www.bilibili.com/video/${bvid(n)}`));
+      return (JSON.parse(taskOf(h, body.taskIds[0] as string).requestJson) as { diarization?: unknown }).diarization;
+    };
+    const asrProfile = (h: Harness, id: string, modelId: string, provider: "dashscope" | "elevenlabs" = "dashscope") =>
+      h.repository.withTransaction((scope) => scope.asrProfiles.insert({ id, userId: LOCAL.userId, name: id, provider, models: [{ modelId }], createdAt: 1 }));
+
+    it("freezes preferred or off by the user's setting at submission when the request gives none", async () => {
+      const h = harness();
+      expect(await frozenDiarization(h, {}, 10)).toEqual({ mode: "preferred" });
+      h.userSettings.patch(LOCAL, { asrDiarization: false });
+      expect(await frozenDiarization(h, {}, 11)).toEqual({ mode: "off" });
+      h.userSettings.patch(LOCAL, { asrDiarization: true });
+      expect(await frozenDiarization(h, {}, 12)).toEqual({ mode: "preferred" });
+    });
+
+    it("freezes the request's own mode and count as given, whatever the setting", async () => {
+      const h = harness();
+      h.userSettings.patch(LOCAL, { asrDiarization: false });
+      expect(await frozenDiarization(h, { diarization: { mode: "required", speakerCount: 3 } }, 13)).toEqual({ mode: "required", speakerCount: 3 });
+      expect(await frozenDiarization(h, { diarization: { mode: "preferred" } }, 14)).toEqual({ mode: "preferred" });
+    });
+
+    it("refuses a required request on a model that cannot identify speakers, and a count outside its range, before writing anything", async () => {
+      const h = harness();
+      asrProfile(h, "typed", "fun-asr-2026");
+      asrProfile(h, "fun", "fun-asr");
+      const asrModelRef = (asrProfileId: string, modelId: string) => ({ asrProfileId, modelId });
+      const unsupported = await errorOf(() => h.importContent.import(LOCAL, request({ asrModelRef: asrModelRef("typed", "fun-asr-2026"), diarization: { mode: "required" } }, `https://www.bilibili.com/video/${bvid(15)}`)));
+      expect(unsupported).toMatchObject({ code: "invalid_request.diarization_unavailable", details: { reason: "unsupported" } });
+      const counted = await errorOf(() => h.importContent.import(LOCAL, request({ asrModelRef: asrModelRef("fun", "fun-asr"), diarization: { mode: "preferred", speakerCount: 101 } }, `https://www.bilibili.com/video/${bvid(16)}`)));
+      expect(counted).toMatchObject({ code: "invalid_request.diarization_unavailable", details: { reason: "speaker_count" } });
+      expect(countRows(h.db, "task")).toBe(0);
+      expect(countRows(h.db, "content")).toBe(0);
+      // A preferred request on the unsupported model goes through; so does an in-range count.
+      expect(await frozenDiarization(h, { asrModelRef: asrModelRef("typed", "fun-asr-2026"), diarization: { mode: "preferred" } }, 17)).toEqual({ mode: "preferred" });
+      expect(await frozenDiarization(h, { asrModelRef: asrModelRef("fun", "fun-asr"), diarization: { mode: "required", speakerCount: 100 } }, 18)).toEqual({ mode: "required", speakerCount: 100 });
+    });
+
+    it("does not check a required request when no model is chosen yet", async () => {
+      const h = harness();
+      expect(await frozenDiarization(h, { diarization: { mode: "required", speakerCount: 500 } }, 19)).toEqual({ mode: "required", speakerCount: 500 });
+    });
+
+    it("is not part of the intent: a re-import that differs only in it reuses the unfinished Task, which keeps its frozen request", async () => {
+      const h = harness();
+      const first = await h.importContent.import(LOCAL, request({ diarization: { mode: "off" } }));
+      const again = await h.importContent.import(LOCAL, request({ diarization: { mode: "required", speakerCount: 2 } }));
+      expect(again.body.taskIds).toEqual(first.body.taskIds);
+      expect(countRows(h.db, "task")).toBe(1);
+      expect(JSON.parse(taskOf(h, first.body.taskIds[0] as string).requestJson)).toMatchObject({ diarization: { mode: "off" } });
+    });
+
+    it("leaves a regenerate_summary request free of it", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      const first = await h.importContent.import(LOCAL, request({ modelRef, diarization: { mode: "required" } }));
+      await drain(h);
+      givePrimary(h, first.body.contentIds[0] as string);
+      const other = configureLlm(h);
+      const derived = await h.importContent.import(LOCAL, request({ modelRef: other }));
+      const task = taskOf(h, derived.body.taskIds[0] as string);
+      expect(task.kind).toBe("regenerate_summary");
+      expect(JSON.parse(task.requestJson)).not.toHaveProperty("diarization");
+    });
   });
 
   it("stores the canonical URL and needs no network for a single YouTube video", async () => {

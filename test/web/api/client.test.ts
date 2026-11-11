@@ -194,6 +194,20 @@ describe("ApiClient.bytes", () => {
     expect(server["authorization"]).toBeUndefined();
   });
 
+  it("sends the accepted types as the header and checks the response type against the prefix", async () => {
+    const calls = stubBytes(() => new Response(new Uint8Array([1]), { headers: { "content-type": "image/png" } }));
+    const options = { accept: "image/webp, image/png, image/jpeg", acceptPrefix: "image/", maxBytes: 8 };
+    const bytes = await new ApiClient({ baseUrl: "" }, "local").bytes("/api/photo", options);
+    expect([...new Uint8Array(bytes)]).toEqual([1]);
+    expect((calls[0]?.init.headers as Record<string, string>)["accept"]).toBe("image/webp, image/png, image/jpeg");
+    // Without a prefix the whole accept text is the prefix, so a list never matches a single type.
+    const strict = await new ApiClient({ baseUrl: "" }, "local").bytes("/api/photo", { accept: options.accept, maxBytes: 8 }).catch((error: unknown) => error);
+    expect(strict).toBeInstanceOf(ApiError);
+    stubBytes(() => new Response(new Uint8Array([1]), { headers: { "content-type": "text/html" } }));
+    const wrong = await new ApiClient({ baseUrl: "" }, "local").bytes("/api/photo", options).catch((error: unknown) => error);
+    expect(wrong).toBeInstanceOf(ApiError);
+  });
+
   it("hands a server-mode 401 to onUnauthenticated and throws the AppError", async () => {
     stubBytes(() => new Response(JSON.stringify({ error: { class: "unauthenticated", code: "unauthenticated", retryDisposition: "never", userMessage: "" } }), { status: 401 }));
     const client = new ApiClient({ baseUrl: "" }, "server");

@@ -198,3 +198,17 @@ describe("TranslationDraftEditor", () => {
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([`${URL}?version=3`]);
   });
 });
+
+describe("TranslationDraftEditor and speakers", () => {
+  it("has no speaker column, split action, filter or panel: speakers belong to the original transcript", async () => {
+    const { calls } = mockApi({ ...routes(), [`PUT ${URL}`]: saved(1), "GET /api/contents/c1/speakers": { body: { items: [{ id: "spk-a", ordinal: 1, name: "陈明", colorIndex: 0, used: true }] } } });
+    renderEditor();
+    await screen.findByDisplayValue("Today: retrieval.");
+    expect(screen.queryByTestId("speaker-lead")).toBeNull();
+    expect(screen.queryByTestId("speaker-filter")).toBeNull();
+    expect(screen.queryByTestId("speaker-panel-toggle")).toBeNull();
+    fireEvent.focus(screen.getByDisplayValue("Today: retrieval."));
+    expect(screen.queryByTestId("split-button")).toBeNull();
+    expect(calls.some((call) => call.path.includes("/speakers"))).toBe(false);
+  });
+});

@@ -8,17 +8,20 @@ import {
   ASR_POLL_INTERVAL_MAX_MS,
   ASR_POLL_INTERVAL_MS,
   RETRY_MAX,
+  SPEAKERS_PER_CONTENT_MAX,
 } from "../../../shared/defaults.ts";
+import type { DiarizationRequest } from "../../../shared/dto/speaker.ts";
 import type { SegmentId } from "../../../shared/ids.ts";
 import { BYTES_PER_GB } from "../../../shared/units.ts";
 import { ASR_AWAIT_UNIT_KEY, ASR_SUBMIT_UNIT_KEY } from "../../../shared/work-steps.ts";
 import {
-  assignWordsToSentences,
+  assignWordsAcrossSpeakers,
   parseAsrSubmitRecord,
   truncateTerminologyForAsr,
   type AsrSubmitRecord,
   type CanonicalAsrResult,
 } from "../../domain/asr.ts";
+import { decideDiarization, persistedDecision, type DiarizationDecision } from "../../domain/asr-diarization.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
 import type { Content } from "../../domain/content.ts";
 import { amberError, isAmberError } from "../../domain/errors.ts";
@@ -26,7 +29,8 @@ import type { MediaAsset } from "../../domain/media-asset.ts";
 import type { AsrProviderProfile } from "../../domain/provider-profile.ts";
 import type { TerminologyEntry } from "../../domain/terminology.ts";
 import { canonicalLanguageTag } from "../../domain/subtitle-file.ts";
-import { revisionTakesPrimary, type TranscriptRevision, type TranscriptSegment, type TranscriptWord } from "../../domain/transcript.ts";
+import { taskRequestView } from "../../domain/task-request.ts";
+import { revisionTakesPrimary, type AsrDiarizationRecord, type TranscriptRevision, type TranscriptSegment, type TranscriptWord } from "../../domain/transcript.ts";
 import type { AsrJobOutcome, UsageOutcome } from "../../domain/usage.ts";
 import type { WorkUnit } from "../../domain/task.ts";
 import {
@@ -111,6 +115,11 @@ interface Submission {
   content: Content;
   terminology: TerminologyEntry[];
   audio: () => Promise<{ asset: MediaAsset; audioMs: number }>;
+  /**
+   * Whether this submission identifies speakers. Undecided only when a job's submission is
+   * re-entered after it was made, which never takes the audio or sends anything again.
+   */
+  diarization: DiarizationDecision | undefined;
 }
 
 function checkpointRefOf(taskId: string, unit: Pick<UnitIdentity, "id">): string {
@@ -124,14 +133,14 @@ const checkpointSchema = z.object({
   segments: z.array(
     z.object({ startMs: z.number(), endMs: z.number(), text: z.string(), speakerId: z.string().exactOptional() }),
   ),
-  words: z.array(z.object({ text: z.string(), startMs: z.number(), endMs: z.number() })).exactOptional(),
+  words: z.array(z.object({ text: z.string(), startMs: z.number(), endMs: z.number(), speakerId: z.string().exactOptional() })).exactOptional(),
   provider: z.string(),
   model: z.string(),
   rawResponseRef: z.string().exactOptional(),
   durationMs: z.number(),
 });
 
-interface Sentence {
+export interface Sentence {
   startMs: number;
   endMs: number;
   text: string;
@@ -196,9 +205,20 @@ export class AsrStageExecutor implements StageExecutor {
     // was submitted under, whatever the terminology or language became since.
     const anchored = isAsrJobProvider(provider) ? this.submittedUnit(owner, context) : undefined;
     const audio = this.audioOnDemand(context);
+    const requested = taskRequestView(context.task.requestJson).diarization;
+    let diarization: DiarizationDecision | undefined;
     if (anchored === undefined) {
       const { asset, audioMs } = await audio();
       checkProviderLimits(provider, asset, audioMs);
+      // Decided on the audio actually extracted and before anything is sent: a request that
+      // insists on speaker identification never reaches the provider without it.
+      diarization = decideDiarization(requested, provider.capabilities.diarization, audioMs);
+      if (requested?.mode === "required" && !diarization.effective) {
+        throw amberError("asr_failed", "speaker identification was required but cannot be done", {
+          code: "asr_failed.diarization_unavailable",
+          details: { reason: diarization.reason ?? "unsupported" },
+        });
+      }
     }
 
     const effective = repository.withTransaction((scope) => scope.terminology.effectiveFor(owner, content.id));
@@ -220,15 +240,22 @@ export class AsrStageExecutor implements StageExecutor {
       model: modelId,
       // The endpoint is part of the job's identity: a job is only known where it was submitted.
       baseURL: profile.baseURL ?? null,
+      // Part of the request's identity only when identification takes place, so a request
+      // without it keeps the digest it always had.
+      ...(diarization?.effective === true ? { diarization: { speakerCount: diarization.speakerCount ?? null } } : {}),
     };
-    const submission = { context, profile, modelId, content, terminology: terms.entries, audio };
-    const result = isAsrJobProvider(provider)
+    const submission: Submission = { context, profile, modelId, content, terminology: terms.entries, audio, diarization };
+    const transcribed = isAsrJobProvider(provider)
       ? await this.transcribeAsJob(provider, submission, anchored?.inputDigest ?? digestOf(canonicalJson({ ...digestBase, submissionGeneration: this.submissionGeneration(owner, context) })))
-      : await this.transcribeAtOnce(provider, submission, digestOf(canonicalJson(digestBase)));
+      : { result: await this.transcribeAtOnce(provider, submission, digestOf(canonicalJson(digestBase))), diarization };
+    const { result } = transcribed;
 
-    const { revision, segments, merged } = this.buildRevision(content, profile, modelId, result);
+    const { revision, segments, merged, droppedWords } = this.buildRevision(content, profile, modelId, result, requested, transcribed.diarization);
     if (merged > 0) {
       reasons.push("asr_segment_merged");
+    }
+    if (droppedWords > 0) {
+      reasons.push("speaker_overlap_words_dropped");
     }
     if (revision.timingFidelity === "segment_only" && provider.capabilities.wordTimestamps) {
       reasons.push("asr_words_dropped");
@@ -239,9 +266,14 @@ export class AsrStageExecutor implements StageExecutor {
         revisionId: revision.id,
         reasons,
         terminology: { sent: terms.entries.length, droppedTooLong: terms.droppedTooLong, cutOff: terms.cutOff },
+        ...(droppedWords > 0 ? { speakerOverlapWordsDropped: droppedWords } : {}),
       },
       publish: (scope) => {
-        scope.transcripts.insertRevision(owner, revision, segments);
+        const published = this.registerSpeakers(scope, content, segments);
+        if (published.truncated && !reasons.includes("speakers_truncated")) {
+          reasons.push("speakers_truncated");
+        }
+        scope.transcripts.insertRevision(owner, finalRevision(revision, published.segments), published.segments);
         const current = scope.contents.getIncludingTrashed(owner, content.id);
         const primary =
           current?.primaryTranscriptRevisionId === undefined ? undefined : scope.transcripts.getRevision(owner, current.primaryTranscriptRevisionId);
@@ -307,7 +339,11 @@ export class AsrStageExecutor implements StageExecutor {
    * Task slot, until the result is ready and written as the checkpoint. Queries are free,
    * so a crash while waiting just queries again.
    */
-  private async transcribeAsJob(provider: AsrJobProvider, submission: Submission, inputDigest: string): Promise<CanonicalAsrResult> {
+  private async transcribeAsJob(
+    provider: AsrJobProvider,
+    submission: Submission,
+    inputDigest: string,
+  ): Promise<{ result: CanonicalAsrResult; diarization: DiarizationDecision | undefined }> {
     const { context, profile } = submission;
     const taskId = context.task.id;
     const stored = await context.runUnit<AsrSubmitRecord>({
@@ -323,6 +359,9 @@ export class AsrStageExecutor implements StageExecutor {
       throw amberError("internal", "stored ASR job handle does not match its schema");
     }
     const { handle, usageId } = record;
+    // The decision the job was submitted with outranks any made now; a record from before
+    // decisions were kept was submitted without identification.
+    const diarization: DiarizationDecision = record.diarization ?? submission.diarization ?? { effective: false, status: "off" };
     const owner = submission.content.userId;
     const output = await context.runUnit({
       key: ASR_AWAIT_UNIT_KEY,
@@ -353,7 +392,7 @@ export class AsrStageExecutor implements StageExecutor {
         }
       },
     });
-    return this.readCheckpoint(output.outputRef);
+    return { result: await this.readCheckpoint(output.outputRef), diarization };
   }
 
   /** The `asr:submit` unit this attempt already completed, if any. */
@@ -406,7 +445,7 @@ export class AsrStageExecutor implements StageExecutor {
     let result: CanonicalAsrResult;
     try {
       result = await provider.transcribe(
-        { audio: asset, terminology, ...(content.rawLanguage === undefined ? {} : { language: content.rawLanguage }) },
+        { audio: asset, terminology, ...languageOf(content), ...diarizationInput(submission.diarization) },
         { signal, onProgress: span((progress) => context.reportProgress(progress), ASR_EXTRACT_PROGRESS_END, 1), onRequestStart: send.onRequestStart },
       );
     } catch (error) {
@@ -434,7 +473,7 @@ export class AsrStageExecutor implements StageExecutor {
     let handle: AsrJobHandle;
     try {
       handle = await provider.submit(
-        { audio: asset, terminology, ...(content.rawLanguage === undefined ? {} : { language: content.rawLanguage }) },
+        { audio: asset, terminology, ...languageOf(content), ...diarizationInput(submission.diarization) },
         {
           signal,
           onProgress: span((progress) => context.reportProgress(progress), ASR_EXTRACT_PROGRESS_END, ASR_JOB_SUBMITTED_PROGRESS),
@@ -456,7 +495,11 @@ export class AsrStageExecutor implements StageExecutor {
     }
     const usageId = this.newId();
     this.recordUsage(submission, audioMs, "succeeded", send.context(), { id: usageId, jobId: handle.jobId });
-    return { handle: { version: handle.version, provider: handle.provider, jobId: handle.jobId, submittedAt: handle.submittedAt }, usageId };
+    return {
+      handle: { version: handle.version, provider: handle.provider, jobId: handle.jobId, submittedAt: handle.submittedAt },
+      usageId,
+      ...(submission.diarization === undefined ? {} : { diarization: persistedDecision(submission.diarization) }),
+    };
   }
 
   /** One usage row; `extra` carries what only a job or a synchronous call knows (see `syncJobOutcome`). */
@@ -540,16 +583,25 @@ export class AsrStageExecutor implements StageExecutor {
     profile: AsrProviderProfile,
     modelId: string,
     result: CanonicalAsrResult,
-  ): { revision: TranscriptRevision; segments: TranscriptSegment[]; merged: number } {
-    const { sentences, merged } = normalizeSentences(result.segments);
+    requested: DiarizationRequest | undefined,
+    decision: DiarizationDecision | undefined,
+  ): { revision: TranscriptRevision; segments: TranscriptSegment[]; merged: number; droppedWords: number } {
+    // An upstream that names speakers although none were asked for must not create any.
+    const labelled = decision?.effective === true ? result : withoutSpeakers(result);
+    const { sentences, merged } = normalizeSentences(labelled.segments);
     if (sentences.length === 0) {
       // Nothing recognizable was said; the closest existing meaning is "nothing to transcribe".
       throw amberError("media_no_audio", "the ASR result holds no speech");
     }
-    const words = (result.words ?? [])
-      .map((word) => ({ text: word.text, startMs: Math.round(word.startMs), endMs: Math.round(word.endMs) }))
+    const words = (labelled.words ?? [])
+      .map((word) => ({
+        text: word.text,
+        startMs: Math.round(word.startMs),
+        endMs: Math.round(word.endMs),
+        ...(word.speakerId === undefined ? {} : { speakerId: word.speakerId }),
+      }))
       .filter((word) => word.text.trim() !== "" && word.startMs >= 0 && word.startMs <= word.endMs);
-    const assigned = assignWordsToSentences(sentences, words);
+    const { assigned, dropped } = assignWordsAcrossSpeakers(sentences, words);
     const revisionId = this.newId();
     const segments: TranscriptSegment[] = sentences.map((sentence, ordinal) => ({
       id: this.newId() as SegmentId,
@@ -558,22 +610,58 @@ export class AsrStageExecutor implements StageExecutor {
       startMs: sentence.startMs,
       endMs: sentence.endMs,
       text: sentence.text,
-      // Without usable words the revision claims sentence timing only and carries none.
-      ...(words.length > 0 ? { words: assigned[ordinal] as TranscriptWord[] } : {}),
+      // Without usable words the revision claims sentence timing only and carries none. The
+      // speaker labels only served to place words; a revision keeps text and times.
+      ...(words.length > 0
+        ? { words: (assigned[ordinal] as typeof words).map(({ text, startMs, endMs }): TranscriptWord => ({ text, startMs, endMs })) }
+        : {}),
+      // Still the provider's label here; `registerSpeakers` turns labels into identities at publish.
       ...(sentence.speakerId === undefined ? {} : { speakerId: sentence.speakerId }),
       sourceSegmentIds: [],
     }));
+    const identified = sentences.some((sentence) => sentence.speakerId !== undefined);
     const revision: TranscriptRevision = {
       id: revisionId,
       contentId: content.id,
       kind: "asr",
       language: canonicalLanguageTag(result.language) ?? "und",
       timingFidelity: words.length > 0 ? "exact_words" : "segment_only",
-      generation: { kind: "asr", asrProfileId: profile.id, modelId },
+      generation: { kind: "asr", asrProfileId: profile.id, modelId, diarization: diarizationRecord(requested, decision, identified) },
       segmentCount: segments.length,
       createdAt: this.now(),
     };
-    return { revision, segments, merged };
+    return { revision, segments, merged, droppedWords: dropped };
+  }
+
+  /**
+   * Turns the provider's speaker labels into identities: one new ULID per distinct label, in
+   * order of first appearance, registered as the Content's speakers; the segments then carry
+   * only those ids. Runs inside the publishing transaction, so the rows and the revision
+   * that uses them are written together or not at all. Labels beyond the Content's room for
+   * speakers stay unassigned.
+   */
+  private registerSpeakers(scope: RepositoryScope, content: Content, segments: readonly TranscriptSegment[]): { segments: TranscriptSegment[]; truncated: boolean } {
+    const labels = [...new Set(segments.flatMap((segment) => (segment.speakerId === undefined ? [] : [segment.speakerId])))];
+    if (labels.length === 0) {
+      return { segments: [...segments], truncated: false };
+    }
+    const owner = content.userId;
+    const room = Math.max(0, SPEAKERS_PER_CONTENT_MAX - scope.speakers.count(owner, content.id));
+    const ids = new Map(labels.slice(0, room).map((label) => [label, this.newId()]));
+    if (ids.size > 0) {
+      scope.speakers.insert(owner, content.id, [...ids.values()].map((id) => ({ id })), this.now());
+    }
+    return {
+      segments: segments.map((segment) => {
+        if (segment.speakerId === undefined) {
+          return segment;
+        }
+        const { speakerId: label, ...rest } = segment;
+        const id = ids.get(label);
+        return id === undefined ? rest : { ...rest, speakerId: id };
+      }),
+      truncated: labels.length > ids.size,
+    };
   }
 
   private writeRawLanguage(scope: RepositoryScope, content: Content, language: string): void {
@@ -581,6 +669,37 @@ export class AsrStageExecutor implements StageExecutor {
       scope.contents.setMetadata(content.userId, content.id, { rawLanguage: language }, this.now());
     }
   }
+}
+
+/** The result with every speaker label removed, from segments and words alike. */
+function withoutSpeakers(result: CanonicalAsrResult): CanonicalAsrResult {
+  return {
+    ...result,
+    segments: result.segments.map(({ speakerId: _label, ...rest }) => rest),
+    ...(result.words === undefined ? {} : { words: result.words.map(({ speakerId: _label, ...rest }) => rest) }),
+  };
+}
+
+/**
+ * The revision as inserted: identification that took place but left no sentence with a
+ * speaker (every label fell outside the Content's room) is recorded as `no_speakers`.
+ */
+function finalRevision(revision: TranscriptRevision, segments: readonly TranscriptSegment[]): TranscriptRevision {
+  const { generation } = revision;
+  if (generation.kind !== "asr" || generation.diarization?.status !== "applied" || segments.some((segment) => segment.speakerId !== undefined)) {
+    return revision;
+  }
+  return { ...revision, generation: { ...generation, diarization: { ...generation.diarization, status: "no_speakers" } } };
+}
+
+/** What the revision records about speaker identification: the outcome, and the count asked for. */
+function diarizationRecord(requested: DiarizationRequest | undefined, decision: DiarizationDecision | undefined, identified: boolean): AsrDiarizationRecord {
+  const outcome = decision ?? { effective: false as const, status: "off" as const };
+  const status = outcome.effective ? (identified ? "applied" : "no_speakers") : outcome.status;
+  return {
+    status,
+    ...(requested === undefined || requested.mode === "off" || requested.speakerCount === undefined ? {} : { requestedSpeakerCount: requested.speakerCount }),
+  };
 }
 
 /**
@@ -595,6 +714,18 @@ export function asrPollDelayMs(attempt: number, retryAfterMs: number | undefined
       ? Math.min(ASR_POLL_INTERVAL_MAX_MS, ASR_POLL_INTERVAL_MS * POLL_BACKOFF_FACTOR ** Math.max(0, attempt - 1))
       : Math.min(Math.max(0, retryAfterMs), RETRY_AFTER_CAP_FACTOR * ASR_POLL_INTERVAL_MAX_MS);
   return Math.round(base * (1 + (random() * 2 - 1) * POLL_JITTER));
+}
+
+function languageOf(content: Content): { language?: string } {
+  return content.rawLanguage === undefined ? {} : { language: content.rawLanguage };
+}
+
+/** The request's identification part: present only when this submission identifies speakers. */
+function diarizationInput(decision: DiarizationDecision | undefined): { diarization?: { speakerCount?: number } } {
+  if (decision?.effective !== true) {
+    return {};
+  }
+  return { diarization: decision.speakerCount === undefined ? {} : { speakerCount: decision.speakerCount } };
 }
 
 /** Provider limits are checked locally before anything is sent; the audio is never degraded to fit. */
@@ -636,7 +767,14 @@ function failedOutcome(error: unknown, signal: AbortSignal): UsageOutcome | unde
   return signal.aborted ? "outcome_unknown" : "failed";
 }
 
-function normalizeSentences(raw: CanonicalAsrResult["segments"]): { sentences: Sentence[]; merged: number } {
+/**
+ * Sentences ordered by start with the invariants enforced. Each speaker's sentences form a
+ * stream of their own, and sentences without a speaker form one more: clipping to the
+ * previous end and merging only ever happen inside a stream, so overlap between streams is
+ * kept as recognized. Without speakers there is one stream and the rules are the plain
+ * ones. The result is ordered by start, which per-stream clipping can disturb.
+ */
+export function normalizeSentences(raw: CanonicalAsrResult["segments"]): { sentences: Sentence[]; merged: number } {
   const ordered = raw
     .map((segment) => ({
       startMs: Math.max(0, Math.round(segment.startMs)),
@@ -649,10 +787,22 @@ function normalizeSentences(raw: CanonicalAsrResult["segments"]): { sentences: S
     .sort((a, b) => a.segment.startMs - b.segment.startMs || a.index - b.index)
     .map(({ segment }) => segment);
   const sentences: Sentence[] = [];
+  // The latest sentence of each stream.
+  const latest = new Map<string | undefined, Sentence>();
+  const push = (sentence: Sentence): void => {
+    sentences.push(sentence);
+    latest.set(sentence.speakerId, sentence);
+  };
+  // Only a speakerless instant sentence with nothing before it waits to be merged into the
+  // next speakerless one; a sentence of a speaker is never pulled into another's.
   let pending: Sentence | undefined;
   let merged = 0;
   for (const segment of ordered) {
-    const previous = sentences.at(-1);
+    if (pending !== undefined && segment.speakerId !== undefined) {
+      push({ ...pending, endMs: pending.startMs + 1 });
+      pending = undefined;
+    }
+    const previous = latest.get(segment.speakerId);
     const startMs = previous === undefined ? segment.startMs : Math.max(segment.startMs, previous.endMs);
     let current: Sentence = { ...segment, startMs };
     if (pending !== undefined) {
@@ -660,22 +810,28 @@ function normalizeSentences(raw: CanonicalAsrResult["segments"]): { sentences: S
       pending = undefined;
     }
     if (current.endMs > current.startMs) {
-      sentences.push(current);
+      push(current);
       continue;
     }
     merged += 1;
-    if (previous === undefined) {
-      pending = current;
-    } else {
+    if (previous !== undefined) {
       previous.text = joinText(previous.text, current.text);
       previous.endMs = Math.max(previous.endMs, current.endMs);
+    } else if (current.speakerId === undefined) {
+      pending = current;
+    } else {
+      // Nothing of this speaker before it to merge into, and it must not pull a later
+      // sentence's start earlier: it stays a sentence of its own, as short as is valid.
+      push({ ...current, endMs: current.startMs + 1 });
     }
   }
   if (pending !== undefined) {
     // Everything recognized fits in one instant: the shortest valid span keeps the text
     // citable (start < end) without moving its start.
-    sentences.push({ ...pending, endMs: pending.startMs + 1 });
+    push({ ...pending, endMs: pending.startMs + 1 });
   }
+  // A stable sort: already ordered input (no speakers) is left exactly as it is.
+  sentences.sort((a, b) => a.startMs - b.startMs);
   return { sentences, merged };
 }
 
