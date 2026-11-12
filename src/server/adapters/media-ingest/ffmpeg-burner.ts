@@ -132,7 +132,7 @@ async function assertReadable(path: string): Promise<void> {
 
 /**
  * VideoBurner over the bundled ffmpeg: libass's
- * `ass` filter with the bundled fonts directory, audio copied, MP4 with the index up
+ * `subtitles` filter with the bundled fonts directory, audio copied, MP4 with the index up
  * front so the saved file starts playing at once. The encoder list is probed once per
  * instance (one per process); every listed encoder of `ENCODER_ORDER` is tried in turn
  * until one encodes.
@@ -211,7 +211,11 @@ export class FfmpegVideoBurner implements VideoBurner {
     const profile = ENCODER_PROFILES[encoder];
     const geometry = options?.geometry;
     const prefix = geometry !== undefined && needsSquarePixels(geometry) ? SQUARE_PIXELS : "";
-    const filter = `${prefix}ass=filename=${escapeFilterValue(input.subtitle)}:fontsdir=${escapeFilterValue(this.options.fontsDir)}${profile.filterSuffix}`;
+    // Styled subtitles arrive already broken to the wrap width; libass only wraps what an
+    // estimate missed. Unicode line breaking (the `ass` filter wraps at spaces only, so
+    // Chinese ran off the picture) with end-of-line filling: its balancing style moves the
+    // glyph before a non-space break onto the next line, putting a comma at a line's start.
+    const filter = `${prefix}subtitles=filename=${escapeFilterValue(input.subtitle)}:fontsdir=${escapeFilterValue(this.options.fontsDir)}:wrap_unicode=1:force_style=WrapStyle=1${profile.filterSuffix}`;
     const args = [
       "-hide_banner", "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1", "-y",
       ...profile.global,

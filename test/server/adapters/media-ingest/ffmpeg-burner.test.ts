@@ -122,7 +122,7 @@ describe("FfmpegVideoBurner with a scripted ffmpeg", () => {
     const x264 = encodes[1]?.args ?? [];
     expect(x264.join(" ")).toContain("-c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -c:a copy -movflags +faststart -f mp4");
     expect(argAfter(x264, "-i")).toBe(`file:${video}`);
-    expect(argAfter(x264, "-vf")).toBe(`ass=filename=${escapeFilterValue(subtitle)}:fontsdir=${escapeFilterValue("/opt/amber/fonts")}`);
+    expect(argAfter(x264, "-vf")).toBe(`subtitles=filename=${escapeFilterValue(subtitle)}:fontsdir=${escapeFilterValue("/opt/amber/fonts")}:wrap_unicode=1:force_style=WrapStyle=1`);
     expect(progress).toEqual([0.5, 1, 1]);
 
     await burner.burn({ video, subtitle }, { path: out }, () => undefined, signal());
@@ -147,14 +147,14 @@ describe("FfmpegVideoBurner with a scripted ffmpeg", () => {
     const args = runner.specs.filter((spec) => spec.args.includes("-c:v")).at(-1)?.args ?? [];
     expect(args.join(" ")).toContain(`-i file:${video} -map 0:V:0 -map 0:a? -vf`);
     expect(argAfter(args, "-vf")).toBe(
-      `scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1,ass=filename=${escapeFilterValue(subtitle)}:fontsdir=${escapeFilterValue("/opt/amber/fonts")}`,
+      `scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1,subtitles=filename=${escapeFilterValue(subtitle)}:fontsdir=${escapeFilterValue("/opt/amber/fonts")}:wrap_unicode=1:force_style=WrapStyle=1`,
     );
     expect(args.join(" ")).toContain("-pix_fmt yuv420p -c:a copy -c:a:0 copy -c:a:1 aac -b:a:1 192k -movflags +faststart -f mp4");
 
     // Square, even pixels need no scaling.
     await burner.burn({ video, subtitle }, { path: out }, () => undefined, signal(), { geometry: { sar: { num: 1, den: 1 }, displayWidth: 1280, displayHeight: 720 }, audioCopy: [] });
     const square = runner.specs.filter((spec) => spec.args.includes("-c:v")).at(-1)?.args ?? [];
-    expect(argAfter(square, "-vf")?.startsWith("ass=")).toBe(true);
+    expect(argAfter(square, "-vf")?.startsWith("subtitles=")).toBe(true);
     // An odd dimension does.
     await burner.burn({ video, subtitle }, { path: out }, () => undefined, signal(), { geometry: { sar: { num: 1, den: 1 }, displayWidth: 1280, displayHeight: 721 } });
     const odd = runner.specs.filter((spec) => spec.args.includes("-c:v")).at(-1)?.args ?? [];

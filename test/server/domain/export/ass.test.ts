@@ -595,3 +595,61 @@ describe("styled ASS speaker label lines", () => {
     );
   });
 });
+
+describe("styled ASS line breaking", () => {
+  /** Every character a full em: easy widths to reason about. */
+  const GLYPHS = { advanceEm: () => 1 };
+  const PORTRAIT: Omit<StyledAssOptions, "style"> = { mode: "bilingual", playRes: { width: 608, height: 1080 }, textOnly: false };
+  const LONG = "这是一句比较长的原文字幕，用来测试在画面宽度受限时正文和姓名行的整体排版效果是否仍然正常。";
+  const cue = { startMs: 0, endMs: 1000, original: LONG, translation: "短译文" };
+  const textOf = (dialogue: string) => dialogue.slice(dialogue.indexOf("}") + 1);
+
+  it("breaks a line wider than the wrap width with \\N, at the size of its own style", () => {
+    const document = styledAssDocument([cue], { ...PORTRAIT, style: style(), glyphs: GLYPHS });
+    const [original, translation] = textOf(dialogues(document)[0] as string).split("\\N{\\rTranslation}");
+    // Wrap width (608 - 2 × 61) × 0.98 = 476.3; at Fontsize 48 an em is 48 × 0.6906 = 33.1, so 14 characters fit.
+    const rows = (original as string).split("\\N");
+    expect(rows.length).toBe(4);
+    expect(rows.join("")).toBe(LONG);
+    expect(rows.every((row) => [...row].length <= 14 && !row.startsWith("，"))).toBe(true);
+    expect(translation).toBe("短译文");
+  });
+
+  it("leaves the header and every line that fits exactly as without glyphs", () => {
+    const short = [{ startMs: 0, endMs: 1000, original: "原文", translation: "译文" }];
+    expect(styledAssDocument(short, { ...PORTRAIT, style: style(), glyphs: GLYPHS })).toBe(styledAssDocument(short, { ...PORTRAIT, style: style() }));
+    const broken = styledAssDocument([cue], { ...PORTRAIT, style: style(), glyphs: GLYPHS });
+    expect(broken.slice(0, broken.indexOf("Dialogue:"))).toBe(styledAssDocument([cue], { ...PORTRAIT, style: style() }).slice(0, broken.indexOf("Dialogue:")));
+  });
+
+  it("breaks the background event exactly like the text event", () => {
+    for (const scope of ["both", "original", "translation"] as const) {
+      const background = { enabled: true, color: "#102030", opacityPct: 50, padding: 12, scope };
+      const document = styledAssDocument([cue], { ...PORTRAIT, style: style({ appearance: { background } }), glyphs: GLYPHS });
+      const [boxed, text] = dialogues(document).map((line) => textOf(line).replace(/\{\\r[A-Za-z]+\}/gu, ""));
+      expect(boxed).toBe(text);
+      expect(text?.split("\\N").length).toBeGreaterThan(2);
+    }
+  });
+
+  it("does not break a text-only track", () => {
+    expect(styledAssDocument([cue], { ...PORTRAIT, textOnly: true, style: style(), glyphs: GLYPHS })).toBe(styledAssDocument([cue], { ...PORTRAIT, textOnly: true, style: style() }));
+  });
+
+  it("breaks a speaker label at the label's size, not the size of the line it heads", () => {
+    // Wrap width (380 - 2 × 38) × 0.98 = 297.9: ten characters fit at the label size 34 (23.5 each), not at 48 (33.1 each).
+    const narrow = { width: 380, height: 1080 };
+    const name = "张三李四王五赵六钱七";
+    const document = styledAssDocument([{ startMs: 0, endMs: 1000, original: name }], {
+      mode: "original",
+      playRes: narrow,
+      textOnly: false,
+      style: style({ appearance: { speaker: "every" } }),
+      speakerLines: { ofCue: ["a"], labels: new Map([["a", name]]) },
+      glyphs: GLYPHS,
+    });
+    const [label, original] = textOf(dialogues(document)[0] as string).split("\\N{\\rDefault}");
+    expect(label).toBe(name);
+    expect(original?.split("\\N")).toHaveLength(2);
+  });
+});

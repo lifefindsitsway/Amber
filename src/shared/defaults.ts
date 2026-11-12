@@ -418,6 +418,8 @@ export const SUBTITLE_BACKGROUND_PADDING_MAX = 40;
 export const SUBTITLE_WRAP_RATIO = 0.8;
 /** CSS `font-size` per ASS `Fontsize` with the bundled font: libass sizes a font by ascender + descender. */
 export const SUBTITLE_ASS_EM_RATIO = 0.6906;
+/** Share of the ASS wrap width a pre-broken styled line may fill: the slack absorbs kerning and estimation error, so libass never wraps it again. */
+export const SUBTITLE_BREAK_SLACK = 0.98;
 /** A dragged block whose top / bottom edge lies within this many basis points of the picture edge anchors there. */
 export const SUBTITLE_EDGE_ZONE_BP = 3333;
 /** Arrow-key steps of the subtitle editor, in basis points: plain and with Shift. */

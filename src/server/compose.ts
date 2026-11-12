@@ -15,6 +15,7 @@ import { ElevenLabsAsrProviderFactory } from "./adapters/asr/elevenlabs/index.ts
 import { AnthropicMessagesProvider } from "./adapters/llm/anthropic-messages/index.ts";
 import { TavilyWebSearchProvider } from "./adapters/web-search/tavily/index.ts";
 import { OpenAiCompatibleProvider } from "./adapters/llm/openai-compatible/index.ts";
+import { BundledFontMetrics } from "./adapters/fonts/otf-advances.ts";
 import { FfmpegVideoBurner } from "./adapters/media-ingest/ffmpeg-burner.ts";
 import { FfmpegSubtitleMuxer } from "./adapters/media-ingest/ffmpeg-subtitle-muxer.ts";
 import { BundledSubtitleFont, bundledReaderFonts, SUBTITLE_FONT_FILE } from "./api/routes/fonts.ts";
@@ -396,7 +397,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const highlights = new HighlightService({ repository, speakerLineage });
   const translations = new TranslationService({ repository });
   const translationDrafts = new TranslationDraftService({ repository });
-  const exports = new ExportService({ repository, version: packageJson.version });
+  const exports = new ExportService({
+    repository,
+    version: packageJson.version,
+    fontMetrics: new BundledFontMetrics(join(fontsDir, SUBTITLE_FONT_FILE), lateLogger(() => appLogger?.child({ component: "export" }))),
+  });
   const clientMedia =
     config.mode === "local"
       ? new ClientMediaTaskService({

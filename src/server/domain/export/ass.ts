@@ -1,4 +1,4 @@
-import { SUBTITLE_WRAP_RATIO } from "../../../shared/defaults.ts";
+import { SUBTITLE_ASS_EM_RATIO, SUBTITLE_BREAK_SLACK, SUBTITLE_WRAP_RATIO } from "../../../shared/defaults.ts";
 import {
   assColor,
   labelSubtitleCues,
@@ -14,6 +14,7 @@ import type { BurnMode } from "../../../shared/enums.ts";
 import { BASIS_POINTS, boxedLines, lineBoxPadding, type SubtitleStyle } from "../../../shared/subtitle-style.ts";
 import type { TranscriptWord } from "../transcript.ts";
 import type { ExportCue } from "./cues.ts";
+import { breakSubtitleLine, type GlyphAdvances } from "./subtitle-breaks.ts";
 import { assTime } from "./time-format.ts";
 
 /**
@@ -142,6 +143,12 @@ export interface StyledAssOptions {
    * in `textOnly` output, whose `mov_text` target keeps no layout to stack them in.
    */
   speakerLines?: { ofCue: readonly (string | undefined)[]; labels: ReadonlyMap<string, string> };
+  /**
+   * Advances of the bundled font: with them every line wider than the wrap width is broken
+   * here with `\N`, so no renderer has to wrap it. Absent, or in `textOnly` output, lines are
+   * left to the renderer, as before.
+   */
+  glyphs?: GlyphAdvances;
 }
 
 const STYLE_FORMAT =
@@ -198,7 +205,7 @@ function styleLine(fields: {
 function styledAssHeader(options: StyledAssOptions, speakers: ReadonlySet<Line> = new Set()): string {
   const { appearance, placement } = options.style;
   const width = options.playRes.width;
-  const margin = Math.round(((1 - SUBTITLE_WRAP_RATIO) / 2) * width);
+  const margin = wrapMargin(width);
   const alignment = ALIGNMENT[placement.anchor];
   const outlineColour = assColor(appearance.outline.color);
   const outline = appearance.outline.enabled ? appearance.outline.width : 0;
@@ -328,6 +335,31 @@ function styledAssHeader(options: StyledAssOptions, speakers: ReadonlySet<Line> 
   ].join("\n");
 }
 
+/** `MarginL` and `MarginR`: what keeps wrapped lines within `SUBTITLE_WRAP_RATIO` of the canvas width. */
+function wrapMargin(width: number): number {
+  return Math.round(((1 - SUBTITLE_WRAP_RATIO) / 2) * width);
+}
+
+/** A line's text at a font size, as drawn: broken to the wrap width when the document breaks lines itself. */
+type Wrap = (text: string, fontSize: number) => string;
+
+/**
+ * The document's line breaker: the width libass wraps at (`PlayResX` less both margins) with
+ * `SUBTITLE_BREAK_SLACK` to spare, an em of `Fontsize × SUBTITLE_ASS_EM_RATIO` canvas pixels.
+ * Lines already split by a line break are broken each on its own.
+ */
+function wrapOf(options: StyledAssOptions): Wrap {
+  const { glyphs } = options;
+  if (glyphs === undefined || options.textOnly) return (text) => text;
+  const width = options.playRes.width;
+  const available = (width - 2 * wrapMargin(width)) * SUBTITLE_BREAK_SLACK;
+  return (text, fontSize) =>
+    text
+      .split(/\r\n|\r|\n/)
+      .flatMap((line) => breakSubtitleLine(line, available, fontSize * SUBTITLE_ASS_EM_RATIO, glyphs))
+      .join("\n");
+}
+
 /** The `{\anN\pos(x,y)}` tag every event starts with: the anchor's alignment at the placement on the canvas. */
 function positionTag(options: StyledAssOptions): string {
   const { placement } = options.style;
@@ -339,14 +371,19 @@ function positionTag(options: StyledAssOptions): string {
  * style and the second switched to with `{\r<style>}`. Every piece of subtitle text goes
  * through `assText`; tags come only from here.
  */
-function eventText(cue: TimedSubtitle, order: SubtitleStyle["appearance"]["bilingualOrder"], styles: Readonly<Record<Line, string>>): { style: string; text: string } | undefined {
+function eventText(
+  cue: TimedSubtitle,
+  order: SubtitleStyle["appearance"]["bilingualOrder"],
+  styles: Readonly<Record<Line, string>>,
+  wrap: (text: string, line: Line) => string,
+): { style: string; text: string } | undefined {
   const lines: Line[] = order === "translation_first" ? ["translation", "original"] : ["original", "translation"];
   const present = lines.filter((line) => cue[line] !== undefined);
   const first = present[0];
   if (first === undefined) {
     return undefined;
   }
-  const text = present.map((line, index) => (index === 0 ? "" : `\\N{\\r${styles[line]}}`) + assText(subtitleGlyphText(cue[line] as string))).join("");
+  const text = present.map((line, index) => (index === 0 ? "" : `\\N{\\r${styles[line]}}`) + assText(wrap(subtitleGlyphText(cue[line] as string), line))).join("");
   return { style: styles[first], text };
 }
 
@@ -371,17 +408,19 @@ export function styledAssDocument(cues: readonly TimedSubtitle[], options: Style
   const position = positionTag(options);
   const box = boxOf(options);
   const boxStyles = box === "block" ? BOX_STYLE : box === "none" ? undefined : { ...GHOST_STYLE, [box]: LINE_STYLE[box] };
+  const wrapDocument = wrapOf(options);
+  const wrap = (text: string, line: Line): string => wrapDocument(text, appearance[line].fontSize);
   const out = [styledAssHeader(options)];
   for (const [sliceIndex, slice] of slices.entries()) {
     const name = assName(names?.[sliceIndex]);
     const times = `${assTime(slice.startMs)},${assTime(slice.endMs)}`;
     if (boxStyles !== undefined && box !== "none" && (box === "block" || slice[box] !== undefined)) {
-      const background = eventText(slice, appearance.bilingualOrder, boxStyles);
+      const background = eventText(slice, appearance.bilingualOrder, boxStyles, wrap);
       if (background !== undefined) {
         out.push(`Dialogue: 0,${times},${background.style},${name},0,0,0,,${position}${background.text}\n`);
       }
     }
-    const text = eventText(slice, appearance.bilingualOrder, TEXT_STYLE);
+    const text = eventText(slice, appearance.bilingualOrder, TEXT_STYLE, wrap);
     if (text !== undefined) {
       out.push(`Dialogue: 1,${times},${text.style},${name},0,0,0,,${position}${text.text}\n`);
     }
@@ -433,10 +472,10 @@ function rowsOf(slice: SlicedUnitSubtitle, order: SubtitleStyle["appearance"]["b
 }
 
 /** An event's text from its rows: the first in the event's own style, each next one switched to with `{\r<style>}`; text only through `assText`. */
-function rowsText(rows: readonly Row[], styleOf: (row: Row) => string): { style: string; text: string } | undefined {
+function rowsText(rows: readonly Row[], styleOf: (row: Row) => string, wrap: (row: Row) => string): { style: string; text: string } | undefined {
   const first = rows[0];
   if (first === undefined) return undefined;
-  return { style: styleOf(first), text: rows.map((row, index) => (index === 0 ? "" : `\\N{\\r${styleOf(row)}}`) + assText(row.text)).join("") };
+  return { style: styleOf(first), text: rows.map((row, index) => (index === 0 ? "" : `\\N{\\r${styleOf(row)}}`) + assText(wrap(row))).join("") };
 }
 
 /**
@@ -462,6 +501,10 @@ function labeledAssDocument(options: StyledAssOptions, labeled: ReturnType<typeo
     return boxed ? LINE_STYLE[row.kind] : GHOST_STYLE[row.kind];
   };
   const sliceRows = slices.map((slice) => rowsOf(slice, appearance.bilingualOrder));
+  // A row breaks at its own size: a label at the label size of the line it heads.
+  const wrapDocument = wrapOf(options);
+  const wrap = (row: Row): string =>
+    wrapDocument(row.text, row.kind === "speaker" ? speakerLabelFontSize(appearance[row.heads].fontSize) : appearance[row.kind].fontSize);
   const speakers = new Set(sliceRows.flatMap((rows) => rows.flatMap((row) => (row.kind === "speaker" ? [row.heads] : []))));
   const out = [styledAssHeader(options, speakers)];
   slices.forEach((slice, index) => {
@@ -469,12 +512,12 @@ function labeledAssDocument(options: StyledAssOptions, labeled: ReturnType<typeo
     const name = assName(sliceName(slice, options.speakers));
     const times = `${assTime(slice.startMs)},${assTime(slice.endMs)}`;
     if (box === "block" || (box !== "none" && rows.some((row) => row.kind === box))) {
-      const background = rowsText(rows, backgroundStyle);
+      const background = rowsText(rows, backgroundStyle, wrap);
       if (background !== undefined) {
         out.push(`Dialogue: 0,${times},${background.style},${name},0,0,0,,${position}${background.text}\n`);
       }
     }
-    const text = rowsText(rows, textStyle);
+    const text = rowsText(rows, textStyle, wrap);
     if (text !== undefined) {
       out.push(`Dialogue: 1,${times},${text.style},${name},0,0,0,,${position}${text.text}\n`);
     }

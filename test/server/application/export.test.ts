@@ -461,6 +461,30 @@ describe("ExportService, styled ASS", () => {
   });
 });
 
+describe("ExportService, styled ASS line breaking", () => {
+  const style: SubtitleStyle = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+  /** A font whose every character is ten em wide: on a 608-wide canvas no line of two characters or more fits. */
+  const WIDE = { advances: () => ({ advanceEm: () => 10 }) };
+  const styled = async (exports: ExportService, contentId: string, revisionId: string, textOnly: boolean): Promise<string> => {
+    let out = "";
+    for await (const piece of exports.styledAssOf(LOCAL.userId, contentId, { mode: "original", revisionId, style, playRes: { width: 608, height: 1080 }, textOnly })) {
+      out += piece;
+    }
+    return out;
+  };
+
+  it("breaks styled lines by the bundled font's advances, and leaves text-only tracks and an unreadable font to the renderer", async () => {
+    const { h, exports: plain, fixture } = setup();
+    const withFont = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW, fontMetrics: WIDE });
+    const withoutFont = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW, fontMetrics: { advances: () => undefined } });
+    const revisionId = fixture.corrected.revision.id;
+    const broken = await styled(withFont, fixture.contentId, revisionId, false);
+    expect(dialogues(broken)[0]).toBe("Dialogue: 1,0:00:01.00,0:00:02.60,Default,,0,0,0,,{\\an2\\pos(304,994)}H\\Ni\\Nw\\No\\Nr\\Nl\\Nd\\N.");
+    expect(await styled(withoutFont, fixture.contentId, revisionId, false)).toBe(await styled(plain, fixture.contentId, revisionId, false));
+    expect(await styled(withFont, fixture.contentId, revisionId, true)).toBe(await styled(plain, fixture.contentId, revisionId, true));
+  });
+});
+
 describe("ExportService with speakers", () => {
   const A = "spk-a";
   const B = "spk-b";

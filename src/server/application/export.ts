@@ -21,6 +21,7 @@ import { withoutCitations } from "../domain/citations.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import { assDialogue, ASS_HEADER, STYLED_ASS_PLAY_RES_Y, styledAssDocument, type AssPlayRes } from "../domain/export/ass.ts";
+import type { GlyphAdvances } from "../domain/export/subtitle-breaks.ts";
 import type { ExportCue } from "../domain/export/cues.ts";
 import { contentDisposition, exportFilename } from "../domain/export/filename.ts";
 import {
@@ -44,6 +45,7 @@ import { DEFAULT_SUMMARY_TEMPLATE_ID } from "../domain/prompts.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
+import type { SubtitleFontMetrics } from "../ports/subtitle-font-metrics.ts";
 import { trashedMembersOf } from "./collections.ts";
 
 export interface ExportServiceOptions {
@@ -51,6 +53,8 @@ export interface ExportServiceOptions {
   /** Amber's version, for the Markdown header. */
   version: string;
   now?: () => number;
+  /** The bundled subtitle font's advances, which styled ASS breaks its lines by; absent, lines are left to the renderer. */
+  fontMetrics?: SubtitleFontMetrics;
 }
 
 /**
@@ -263,6 +267,7 @@ export class ExportService {
       playRes: options.playRes,
       textOnly: options.textOnly,
       mode,
+      ...(options.textOnly ? {} : glyphsOf(this.options.fontMetrics)),
       ...(speakerNames === undefined ? {} : { speakers: { ofCue, names: speakerNames } }),
       ...(labelLines === undefined ? {} : { speakerLines: { ofCue, labels: labelLines } }),
     });
@@ -606,4 +611,10 @@ function revisionLabelText(revision: TranscriptRevision): string {
   const { generation } = revision;
   const model = generation.kind === "llm" ? generation.modelRef.modelDisplaySnapshot || generation.modelRef.modelId : generation.kind === "asr" ? generation.modelId : undefined;
   return [contentView.revisionKind[revision.kind], ...(model === undefined ? [] : [model]), dateTimeText(revision.createdAt)].join(" · ");
+}
+
+/** The `glyphs` option of a styled document: present only when the font could be read. */
+function glyphsOf(metrics: SubtitleFontMetrics | undefined): { glyphs: GlyphAdvances } | Record<string, never> {
+  const glyphs = metrics?.advances();
+  return glyphs === undefined ? {} : { glyphs };
 }
