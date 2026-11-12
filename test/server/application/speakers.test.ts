@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SPEAKER_AVATAR_MAX_BYTES, SPEAKER_AVATAR_MAX_PX, SPEAKER_NAME_MAX_GRAPHEMES, SPEAKER_SUGGESTIONS_MAX, SPEAKERS_PER_CONTENT_MAX } from "../../../src/shared/defaults.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
+import { resolveSpeakerContext } from "../../../src/server/application/speaker-context.ts";
 import { SpeakerService } from "../../../src/server/application/speakers.ts";
+import { UNASSIGNED_SPEAKER_LABEL } from "../../../src/server/domain/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
@@ -256,5 +258,217 @@ describe("SpeakerService suggestions", () => {
     expect(speakers.suggestions(LOCAL, "").items).toHaveLength(1);
     h.trash.trash(LOCAL, contentId);
     expect(speakers.suggestions(LOCAL, "").items).toEqual([]);
+  });
+});
+
+describe("SpeakerService name confirmation", () => {
+  function confirmable() {
+    const h = createHarness();
+    open.push(h);
+    let now = 1_000;
+    const speakers = new SpeakerService({ repository: h.repository, newId: h.newId, now: () => now });
+    const contentId = createLocalContent(h);
+    const stored = (id: string) => h.repository.withTransaction((scope) => scope.speakers.get(LOCAL.userId, contentId, id));
+    return { h, speakers, contentId, stored, tick: () => (now += 1) };
+  }
+
+  it("confirms a name created or saved with nameConfirmed, and only then", () => {
+    const { speakers, contentId, stored, tick } = confirmable();
+    const confirmed = speakers.create(LOCAL, contentId, { name: "蒋炎岩", nameConfirmed: true });
+    const plain = speakers.create(LOCAL, contentId, { name: "张三" });
+    const unnamed = speakers.create(LOCAL, contentId, { nameConfirmed: true });
+    expect(confirmed.nameConfirmed).toBe(true);
+    expect(stored(confirmed.id)?.nameConfirmedAt).toBe(1_000);
+    expect(plain).not.toHaveProperty("nameConfirmed");
+    expect(stored(unnamed.id)).not.toHaveProperty("nameConfirmedAt");
+    tick();
+    expect(speakers.patch(LOCAL, contentId, plain.id, { name: "张三丰", nameConfirmed: true }).nameConfirmed).toBe(true);
+    expect(stored(plain.id)?.nameConfirmedAt).toBe(1_001);
+    expect(speakers.list(LOCAL, contentId).items.map((item) => item.nameConfirmed)).toEqual([true, true, undefined]);
+  });
+
+  it("drops the confirmation when the name changes without it or is cleared, and keeps it through colour and photo changes", () => {
+    const { speakers, contentId, stored } = confirmable();
+    const speaker = speakers.create(LOCAL, contentId, { name: "蒋炎岩", nameConfirmed: true });
+    expect(speakers.patch(LOCAL, contentId, speaker.id, { colorIndex: 4 }).nameConfirmed).toBe(true);
+    expect(speakers.patch(LOCAL, contentId, speaker.id, upload(png())).nameConfirmed).toBe(true);
+    // The same name sent again is no change of name.
+    expect(speakers.patch(LOCAL, contentId, speaker.id, { name: " 蒋炎岩 " }).nameConfirmed).toBe(true);
+    const renamed = speakers.patch(LOCAL, contentId, speaker.id, { name: "蒋老师" });
+    expect(renamed).not.toHaveProperty("nameConfirmed");
+    expect(stored(speaker.id)).not.toHaveProperty("nameConfirmedAt");
+    speakers.patch(LOCAL, contentId, speaker.id, { name: "蒋老师", nameConfirmed: true });
+    const cleared = speakers.patch(LOCAL, contentId, speaker.id, { name: null, nameConfirmed: true });
+    expect(cleared).not.toHaveProperty("nameConfirmed");
+    expect(stored(speaker.id)).not.toHaveProperty("nameConfirmedAt");
+  });
+
+  it("confirms an existing name only when the request writes it: the same name re-sent does, colour, photo or the flag alone do not", () => {
+    const { speakers, contentId, stored, tick } = confirmable();
+    const speaker = speakers.create(LOCAL, contentId, { name: "主持人" });
+    const colour = speakers.patch(LOCAL, contentId, speaker.id, { colorIndex: 3, nameConfirmed: true });
+    expect(colour).toMatchObject({ name: "主持人", colorIndex: 3 });
+    expect(colour).not.toHaveProperty("nameConfirmed");
+    expect(speakers.patch(LOCAL, contentId, speaker.id, { ...upload(png()), nameConfirmed: true })).not.toHaveProperty("nameConfirmed");
+    // The flag on its own is a valid request that writes nothing.
+    const alone = speakers.patch(LOCAL, contentId, speaker.id, { nameConfirmed: true });
+    expect(alone).toMatchObject({ name: "主持人" });
+    expect(alone).not.toHaveProperty("nameConfirmed");
+    expect(stored(speaker.id)).not.toHaveProperty("nameConfirmedAt");
+    tick();
+    expect(speakers.patch(LOCAL, contentId, speaker.id, { name: "主持人", nameConfirmed: true }).nameConfirmed).toBe(true);
+    expect(stored(speaker.id)?.nameConfirmedAt).toBe(1_001);
+    // A confirmed name keeps its time through a colour change that carries the flag.
+    tick();
+    expect(speakers.patch(LOCAL, contentId, speaker.id, { colorIndex: 5, nameConfirmed: true }).nameConfirmed).toBe(true);
+    expect(stored(speaker.id)?.nameConfirmedAt).toBe(1_001);
+  });
+
+  it("treats a copied name as a new name: confirmed with the flag, unconfirmed without", () => {
+    const { h, speakers, contentId, stored } = confirmable();
+    const other = createLocalContent(h);
+    const source = speakers.create(LOCAL, other, { name: "蒋炎岩", nameConfirmed: true });
+    const target = speakers.create(LOCAL, contentId, { name: "旧名", nameConfirmed: true });
+    const copied = speakers.patch(LOCAL, contentId, target.id, { copyFrom: { contentId: other, speakerId: source.id } });
+    expect(copied).toMatchObject({ name: "蒋炎岩" });
+    expect(copied).not.toHaveProperty("nameConfirmed");
+    const confirmedCopy = speakers.patch(LOCAL, contentId, target.id, { copyFrom: { contentId: other, speakerId: source.id }, nameConfirmed: true });
+    expect(confirmedCopy.nameConfirmed).toBe(true);
+    expect(stored(target.id)?.nameConfirmedAt).toBe(1_000);
+  });
+});
+
+describe("SpeakerService names that read like labels", () => {
+  it("saves names equal to a number label or the unassigned label, with a bracketed number, or shared, keeping every id, and labels them apart", () => {
+    const h = createHarness();
+    open.push(h);
+    const speakers = new SpeakerService({ repository: h.repository, newId: h.newId, now: () => 1_000 });
+    const contentId = createLocalContent(h);
+    const created = ["甲", "乙", "丙", "丁", "戊"].map((name) => speakers.create(LOCAL, contentId, { name }));
+    const ids = created.map((speaker) => speaker.id);
+    // One reviewed revision naming every speaker, so a submission now would read them all.
+    const revisionId = h.newId();
+    const segments: TranscriptSegment[] = ids.map((speakerId, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `第${ordinal + 1}句`, speakerId, sourceSegmentIds: [],
+    }));
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id: revisionId, contentId, kind: "asr", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe" }, segmentCount: ids.length, createdAt: 1 },
+        segments,
+      );
+      scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 1);
+      scope.speakerConfirmations.set(LOCAL.userId, contentId, revisionId, 1);
+    });
+
+    // The first speaker takes the second one's number label, the second the unassigned label.
+    const names = ["发言人 2", UNASSIGNED_SPEAKER_LABEL, "张伟（发言人 2）", "张伟", "张伟"];
+    names.forEach((name, index) => {
+      const saved = speakers.patch(LOCAL, contentId, ids[index] as string, { name, nameConfirmed: true });
+      expect(saved).toMatchObject({ id: ids[index], ordinal: index + 1, name, nameConfirmed: true });
+    });
+    // A new speaker may be created under such a name as well.
+    const extra = speakers.create(LOCAL, contentId, { name: "发言人 1", nameConfirmed: true });
+    expect(extra).toMatchObject({ ordinal: 6, name: "发言人 1", nameConfirmed: true });
+
+    expect(speakers.list(LOCAL, contentId).items.map((speaker) => [speaker.id, speaker.name])).toEqual([
+      ...ids.map((id, index) => [id, names[index]]),
+      [extra.id, "发言人 1"],
+    ]);
+    // Renaming touched no sentence: they still name the same ids.
+    expect(h.repository.withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, revisionId)).map((segment) => segment.speakerId)).toEqual(ids);
+
+    const snapshot = h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, contentId, revisionId, "transcript"));
+    const labels = snapshot?.speakers.map((speaker) => speaker.label) ?? [];
+    expect(snapshot?.speakers.map((speaker) => speaker.id)).toEqual(ids);
+    expect(labels).toHaveLength(ids.length);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).not.toContain(UNASSIGNED_SPEAKER_LABEL);
+    for (const label of labels) expect(label).not.toBe("");
+  });
+
+  it("keeps a speaker's id through every rename, with or without the confirmation", () => {
+    const { speakers, contentId } = setup();
+    const speaker = speakers.create(LOCAL, contentId, { name: "张伟" });
+    const other = speakers.create(LOCAL, contentId, { name: "李娜" });
+    for (const patch of [{ name: "张伟老师" }, { name: "李娜", nameConfirmed: true }, { name: null }, { name: "发言人 2" }, { name: "张伟（发言人 1）", nameConfirmed: true }]) {
+      expect(speakers.patch(LOCAL, contentId, speaker.id, patch)).toMatchObject({ id: speaker.id, ordinal: 1 });
+    }
+    expect(speakers.list(LOCAL, contentId).items.map((item) => [item.id, item.ordinal, item.name])).toEqual([
+      [speaker.id, 1, "张伟（发言人 1）"],
+      [other.id, 2, "李娜"],
+    ]);
+  });
+});
+
+describe("SpeakerService speakers of comparison transcriptions", () => {
+  /** A revision naming `speakerIds` one sentence each; `comparison` marks it as made only for comparison. */
+  function revisionWith(h: Harness, contentId: string, speakerIds: readonly string[], options: { comparison?: boolean; archived?: boolean } = {}): string {
+    const id = h.newId();
+    const revision: TranscriptRevision = {
+      id, contentId, kind: "asr", language: "zh-CN", timingFidelity: "segment_only",
+      generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe", ...(options.comparison === true ? { purpose: "comparison" as const } : {}) },
+      segmentCount: speakerIds.length, createdAt: 1,
+    };
+    const segments: TranscriptSegment[] = speakerIds.map((speakerId, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId: id, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `${ordinal}`, speakerId, sourceSegmentIds: [],
+    }));
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+      if (options.archived === true) scope.transcripts.setArchived(LOCAL.userId, id, 2);
+    });
+    return id;
+  }
+
+  const flagged = (speakers: SpeakerService, contentId: string) =>
+    speakers.list(LOCAL, contentId).items.filter((speaker) => speaker.comparisonOnly === true).map((speaker) => speaker.ordinal);
+
+  it("flags the speakers only comparison transcriptions name, and only those", () => {
+    const { h, speakers, contentId } = setup();
+    const [a, b, c, d] = [1, 2, 3, 4].map(() => speakers.create(LOCAL, contentId, {}).id) as [string, string, string, string];
+    const primary = revisionWith(h, contentId, [a, b]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, primary, 2));
+    // c only in a comparison; b in both; d in nothing at all.
+    revisionWith(h, contentId, [b, c], { comparison: true });
+    expect(flagged(speakers, contentId)).toEqual([3]);
+    const listed = speakers.list(LOCAL, contentId).items;
+    expect(listed.find((speaker) => speaker.id === c)).toMatchObject({ used: true, comparisonOnly: true });
+    expect(listed.find((speaker) => speaker.id === d)).toMatchObject({ used: false });
+    expect(listed.filter((speaker) => speaker.id !== c).every((speaker) => !("comparisonOnly" in speaker))).toBe(true);
+    // The patch answer carries the flag too.
+    expect(speakers.patch(LOCAL, contentId, c, { colorIndex: 4 })).toMatchObject({ comparisonOnly: true });
+  });
+
+  it("stops flagging a speaker once anything else names it: an archived revision, a draft, or the comparison made primary", () => {
+    const { h, speakers, contentId } = setup();
+    const [a, c, e] = [1, 2, 3].map(() => speakers.create(LOCAL, contentId, {}).id) as [string, string, string];
+    const primary = revisionWith(h, contentId, [a]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, primary, 2));
+    const comparison = revisionWith(h, contentId, [c, e], { comparison: true });
+    expect(flagged(speakers, contentId)).toEqual([2, 3]);
+
+    revisionWith(h, contentId, [e], { archived: true });
+    expect(flagged(speakers, contentId)).toEqual([2]);
+
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: primary, expectedVersion: null, segments: [{ startMs: 0, endMs: 900, text: "一句", sourceSegmentIds: [], speakerId: c }] });
+    expect(flagged(speakers, contentId)).toEqual([]);
+    h.transcripts.discardDraft(LOCAL, contentId);
+    expect(flagged(speakers, contentId)).toEqual([2]);
+
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, comparison, 3));
+    expect(flagged(speakers, contentId)).toEqual([]);
+  });
+
+  it("leaves speakers only comparison transcriptions name out of the suggestions for other Contents", () => {
+    const { h, speakers, contentId } = setup();
+    const other = createLocalContent(h);
+    const kept = speakers.create(LOCAL, contentId, { name: "王老师" }).id;
+    const compared = speakers.create(LOCAL, contentId, { name: "王同学" }).id;
+    revisionWith(h, contentId, [kept]);
+    revisionWith(h, contentId, [compared], { comparison: true });
+    expect(speakers.suggestions(LOCAL, "王", other).items.map((item) => item.name)).toEqual(["王老师"]);
+    // Once the user works with that speaker in a regular version it is suggested again.
+    revisionWith(h, contentId, [compared]);
+    expect(speakers.suggestions(LOCAL, "王", other).items.map((item) => item.name).sort()).toEqual(["王同学", "王老师"]);
   });
 });

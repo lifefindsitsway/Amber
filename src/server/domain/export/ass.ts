@@ -1,5 +1,15 @@
 import { SUBTITLE_WRAP_RATIO } from "../../../shared/defaults.ts";
-import { assColor, sliceCues, subtitleGlyphText, type TimedSubtitle } from "../../../shared/subtitle-geometry.ts";
+import {
+  assColor,
+  labelSubtitleCues,
+  sliceCues,
+  sliceSubtitleUnits,
+  speakerLabelFontSize,
+  subtitleGlyphText,
+  subtitleUnitLines,
+  type SlicedUnitSubtitle,
+  type TimedSubtitle,
+} from "../../../shared/subtitle-geometry.ts";
 import type { BurnMode } from "../../../shared/enums.ts";
 import { BASIS_POINTS, boxedLines, lineBoxPadding, type SubtitleStyle } from "../../../shared/subtitle-style.ts";
 import type { TranscriptWord } from "../transcript.ts";
@@ -125,6 +135,13 @@ export interface StyledAssOptions {
    * `names` gives each id its display name. Absent = no names, as before.
    */
   speakers?: { ofCue: readonly (string | undefined)[]; names: ReadonlyMap<string, string> };
+  /**
+   * Speaker label lines, drawn when the style's appearance asks for them: `ofCue[i]` is the
+   * speaker id of the i-th input cue and `labels` gives each id its label. Absent, or with
+   * the appearance not asking, the document is exactly what it was without them. Never drawn
+   * in `textOnly` output, whose `mov_text` target keeps no layout to stack them in.
+   */
+  speakerLines?: { ofCue: readonly (string | undefined)[]; labels: ReadonlyMap<string, string> };
 }
 
 const STYLE_FORMAT =
@@ -143,6 +160,12 @@ const TEXT_STYLE: Readonly<Record<Line, string>> = { original: "Default", transl
 const BOX_STYLE: Readonly<Record<Line, string>> = { original: "Box", translation: "BoxTranslation" };
 const LINE_STYLE: Readonly<Record<Line, string>> = { original: "Line", translation: "LineTranslation" };
 const GHOST_STYLE: Readonly<Record<Line, string>> = { original: "Ghost", translation: "GhostTranslation" };
+/** The speaker label's counterpart of each style family above, by the line whose look the label copies. */
+const SPEAKER_TEXT_STYLE: Readonly<Record<Line, string>> = { original: "Speaker", translation: "SpeakerTranslation" };
+const SPEAKER_BOX_STYLE: Readonly<Record<Line, string>> = { original: "BoxSpeaker", translation: "BoxSpeakerTranslation" };
+const SPEAKER_LINE_STYLE: Readonly<Record<Line, string>> = { original: "LineSpeaker", translation: "LineSpeakerTranslation" };
+const SPEAKER_GHOST_STYLE: Readonly<Record<Line, string>> = { original: "GhostSpeaker", translation: "GhostSpeakerTranslation" };
+const LINES: readonly Line[] = ["original", "translation"];
 
 /** The background box of a document: `textOnly` never has one. */
 function boxOf(options: StyledAssOptions): ReturnType<typeof boxedLines> {
@@ -168,9 +191,11 @@ function styleLine(fields: {
  * Script header of a styled ASS: text styles `Default`
  * (original) and `Translation`, plus `Box` / `BoxTranslation` for a block box, or
  * `Line*` / `Ghost*` for a one-line box. `MarginL/R` keep wrapped lines within
- * `SUBTITLE_WRAP_RATIO` of the picture width.
+ * `SUBTITLE_WRAP_RATIO` of the picture width. `speakers` are the lines whose look speaker
+ * labels copy somewhere in the document; each adds its `Speaker*` counterparts, so a document
+ * lists only the label styles it uses.
  */
-function styledAssHeader(options: StyledAssOptions): string {
+function styledAssHeader(options: StyledAssOptions, speakers: ReadonlySet<Line> = new Set()): string {
   const { appearance, placement } = options.style;
   const width = options.playRes.width;
   const margin = Math.round(((1 - SUBTITLE_WRAP_RATIO) / 2) * width);
@@ -190,6 +215,14 @@ function styledAssHeader(options: StyledAssOptions): string {
       margin,
     }),
   );
+  // A speaker label copies the size (scaled), colour and outline of the line it heads.
+  const labelLines = LINES.filter((line) => speakers.has(line));
+  const speakerSize = (line: Line): number => speakerLabelFontSize(appearance[line].fontSize);
+  for (const line of labelLines) {
+    styles.push(
+      styleLine({ name: SPEAKER_TEXT_STYLE[line], fontSize: speakerSize(line), primary: assColor(appearance[line].color), outlineColour, back: TRANSPARENT, borderStyle: 1, outline, alignment, margin }),
+    );
+  }
   const box = boxOf(options);
   const back = assColor(appearance.background.color, appearance.background.opacityPct);
   if (box === "block") {
@@ -198,6 +231,21 @@ function styledAssHeader(options: StyledAssOptions): string {
         styleLine({
           name: BOX_STYLE[line],
           fontSize: appearance[line].fontSize,
+          primary: TRANSPARENT,
+          outlineColour: TRANSPARENT,
+          back,
+          borderStyle: 4,
+          outline: appearance.background.padding,
+          alignment,
+          margin,
+        }),
+      );
+    }
+    for (const line of labelLines) {
+      styles.push(
+        styleLine({
+          name: SPEAKER_BOX_STYLE[line],
+          fontSize: speakerSize(line),
           primary: TRANSPARENT,
           outlineColour: TRANSPARENT,
           back,
@@ -226,6 +274,21 @@ function styledAssHeader(options: StyledAssOptions): string {
         }),
       );
     }
+    for (const line of labelLines) {
+      styles.push(
+        styleLine({
+          name: SPEAKER_LINE_STYLE[line],
+          fontSize: speakerSize(line),
+          primary: TRANSPARENT,
+          outlineColour: back,
+          back: TRANSPARENT,
+          borderStyle: 3,
+          outline: lineBoxPadding(appearance),
+          alignment,
+          margin,
+        }),
+      );
+    }
     for (const line of ["original", "translation"] as const) {
       styles.push(
         styleLine({
@@ -239,6 +302,11 @@ function styledAssHeader(options: StyledAssOptions): string {
           alignment,
           margin,
         }),
+      );
+    }
+    for (const line of labelLines) {
+      styles.push(
+        styleLine({ name: SPEAKER_GHOST_STYLE[line], fontSize: speakerSize(line), primary: TRANSPARENT, outlineColour: TRANSPARENT, back: TRANSPARENT, borderStyle: 1, outline: 0, alignment, margin }),
       );
     }
   }
@@ -258,6 +326,12 @@ function styledAssHeader(options: StyledAssOptions): string {
     EVENT_FORMAT,
     "",
   ].join("\n");
+}
+
+/** The `{\anN\pos(x,y)}` tag every event starts with: the anchor's alignment at the placement on the canvas. */
+function positionTag(options: StyledAssOptions): string {
+  const { placement } = options.style;
+  return `{\\an${ALIGNMENT[placement.anchor]}\\pos(${Math.round((placement.xBp / BASIS_POINTS) * options.playRes.width)},${Math.round((placement.yBp / BASIS_POINTS) * options.playRes.height)})}`;
 }
 
 /**
@@ -283,13 +357,18 @@ function eventText(cue: TimedSubtitle, order: SubtitleStyle["appearance"]["bilin
  * the box is on and not `textOnly`) and a layer-1 text event with the same position tag
  * `{\anN\pos(x,y)}`. A one-line box lays out both lines like the text event but draws
  * only the chosen one, and is skipped for a slice without that line. No `{\k}` karaoke:
- * the player overlay has none either.
+ * the player overlay has none either. Speaker label lines, when the appearance asks for
+ * them and labels are given, take `labeledAssDocument`; otherwise nothing of them shows.
  */
 export function styledAssDocument(cues: readonly TimedSubtitle[], options: StyledAssOptions): string {
+  const speakerMode = options.style.appearance.speaker;
+  if (speakerMode !== undefined && options.speakerLines !== undefined && !options.textOnly) {
+    return labeledAssDocument(options, labelSubtitleCues(cues, options.speakerLines.ofCue, options.speakerLines.labels, speakerMode));
+  }
   const slices = sliceCues(cues);
   const names = sliceSpeakerNames(cues, slices, options.speakers);
-  const { appearance, placement } = options.style;
-  const position = `{\\an${ALIGNMENT[placement.anchor]}\\pos(${Math.round((placement.xBp / BASIS_POINTS) * options.playRes.width)},${Math.round((placement.yBp / BASIS_POINTS) * options.playRes.height)})}`;
+  const { appearance } = options.style;
+  const position = positionTag(options);
   const box = boxOf(options);
   const boxStyles = box === "block" ? BOX_STYLE : box === "none" ? undefined : { ...GHOST_STYLE, [box]: LINE_STYLE[box] };
   const out = [styledAssHeader(options)];
@@ -338,4 +417,75 @@ function sliceSpeakerNames(
     const only = ids.size === 1 ? [...ids][0] : undefined;
     return only === undefined ? undefined : speakers.names.get(only);
   });
+}
+
+/** One line of a labelled event: a speaker label heads the line that follows it and copies its look. */
+type Row = { kind: Line; text: string } | { kind: "speaker"; text: string; heads: Line };
+
+/** The lines of a slice, cue by cue: each cue's label (when shown) and then its lines in the user's order. */
+function rowsOf(slice: SlicedUnitSubtitle, order: SubtitleStyle["appearance"]["bilingualOrder"]): Row[] {
+  return slice.units.flatMap((unit) => {
+    const lines = subtitleUnitLines(unit, order);
+    const present: Row[] = lines.map(({ line, text }) => ({ kind: line, text }));
+    const first = lines[0];
+    return first === undefined || unit.speakerLabel === undefined ? present : [{ kind: "speaker", text: unit.speakerLabel, heads: first.line }, ...present];
+  });
+}
+
+/** An event's text from its rows: the first in the event's own style, each next one switched to with `{\r<style>}`; text only through `assText`. */
+function rowsText(rows: readonly Row[], styleOf: (row: Row) => string): { style: string; text: string } | undefined {
+  const first = rows[0];
+  if (first === undefined) return undefined;
+  return { style: styleOf(first), text: rows.map((row, index) => (index === 0 ? "" : `\\N{\\r${styleOf(row)}}`) + assText(row.text)).join("") };
+}
+
+/**
+ * The styled document with speaker label lines: cues are sliced keeping each cue a unit of
+ * its own, and every slice's events stack the units — label (when shown), then the cue's
+ * lines. A label wears the look of the first line its own cue shows, so in a bilingual
+ * document a cue without a translation labels in the original's look even when the
+ * translation goes first. The background event lays out exactly the same rows as the text
+ * event: in a block box every row is boxed (the label inside the box); in a one-line box a
+ * label is boxed when the line it heads is and is only a placeholder otherwise. The `Name`
+ * field follows the same rule as without labels.
+ */
+function labeledAssDocument(options: StyledAssOptions, labeled: ReturnType<typeof labelSubtitleCues>): string {
+  const { appearance } = options.style;
+  const slices = sliceSubtitleUnits(labeled);
+  const position = positionTag(options);
+  const box = boxOf(options);
+  const textStyle = (row: Row): string => (row.kind === "speaker" ? SPEAKER_TEXT_STYLE[row.heads] : TEXT_STYLE[row.kind]);
+  const backgroundStyle = (row: Row): string => {
+    if (box === "block") return row.kind === "speaker" ? SPEAKER_BOX_STYLE[row.heads] : BOX_STYLE[row.kind];
+    const boxed = (row.kind === "speaker" ? row.heads : row.kind) === box;
+    if (row.kind === "speaker") return boxed ? SPEAKER_LINE_STYLE[row.heads] : SPEAKER_GHOST_STYLE[row.heads];
+    return boxed ? LINE_STYLE[row.kind] : GHOST_STYLE[row.kind];
+  };
+  const sliceRows = slices.map((slice) => rowsOf(slice, appearance.bilingualOrder));
+  const speakers = new Set(sliceRows.flatMap((rows) => rows.flatMap((row) => (row.kind === "speaker" ? [row.heads] : []))));
+  const out = [styledAssHeader(options, speakers)];
+  slices.forEach((slice, index) => {
+    const rows = sliceRows[index] as Row[];
+    const name = assName(sliceName(slice, options.speakers));
+    const times = `${assTime(slice.startMs)},${assTime(slice.endMs)}`;
+    if (box === "block" || (box !== "none" && rows.some((row) => row.kind === box))) {
+      const background = rowsText(rows, backgroundStyle);
+      if (background !== undefined) {
+        out.push(`Dialogue: 0,${times},${background.style},${name},0,0,0,,${position}${background.text}\n`);
+      }
+    }
+    const text = rowsText(rows, textStyle);
+    if (text !== undefined) {
+      out.push(`Dialogue: 1,${times},${text.style},${name},0,0,0,,${position}${text.text}\n`);
+    }
+  });
+  return out.join("");
+}
+
+/** The `Name` of a labelled slice, by the rule of `sliceSpeakerNames`: the one speaker of all its cues, else none. */
+function sliceName(slice: SlicedUnitSubtitle, speakers: StyledAssOptions["speakers"]): string | undefined {
+  if (speakers === undefined) return undefined;
+  const ids = new Set(slice.units.map((unit) => speakers.ofCue[unit.cue]));
+  const only = ids.size === 1 ? [...ids][0] : undefined;
+  return only === undefined ? undefined : speakers.names.get(only);
 }

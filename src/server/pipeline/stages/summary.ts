@@ -7,7 +7,8 @@ import type { Content } from "../../domain/content.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { PromptRef } from "../../domain/model-ref.ts";
 import { CITATION_RULES_FRAGMENT, DEFAULT_SUMMARY_TEMPLATE_ID, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
-import { carryAllowance, planSummary, type SentenceGroup } from "../../domain/rollup.ts";
+import { assertFits, carryAllowance, planSummary, type SentenceGroup } from "../../domain/rollup.ts";
+import { framingForRead, speakerContextDigest, type SpeakerContextSnapshot, type SpeakerFraming } from "../../domain/speaker-context.ts";
 import { processContentRequestSchema, regenerateSummaryRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import type { TranscriptRevision } from "../../domain/transcript.ts";
@@ -27,6 +28,8 @@ interface SummaryBase {
   templateRef: PromptRef;
   templateBody: string;
   outputLanguage: string;
+  /** Frozen at submission of a `regenerate_summary` whose transcript's speakers were reviewed. */
+  speakerContext?: SpeakerContextSnapshot;
 }
 
 /**
@@ -38,6 +41,13 @@ interface SummaryBase {
  * output over the limit, and each run of adjacent markers is cut to `CITATION_RUN_MAX`
  * before the revision and its partials are published. The new revision becomes its template's
  * current; partials are persisted with it, and usage is attributed in the same transaction.
+ *
+ * A request with a frozen speaker context reads the transcript with its speakers: the
+ * `speaker.rules` fragment opens the slot carrying the lines (`{{transcript_with_aliases}}`,
+ * a rolling group's `{{group_content}}`), header lines mark each block's first speaker and
+ * every change, and planning prices them by position. Every request is checked again as
+ * rendered; one over budget fails the stage, one that lost the fragment fails its unit.
+ * Without that context nothing of this applies and the requests are as they always were.
  */
 export class SummaryStageExecutor implements StageExecutor {
   private readonly deps: SummaryStageDeps;
@@ -77,34 +87,60 @@ export class SummaryStageExecutor implements StageExecutor {
       carry: context.prompt("rollup.carry"),
       final: context.prompt("rollup.final"),
     };
+    const framing = framingForRead(base.speakerContext, segments);
     const table = transcriptAliasTable(revision.id, segments);
     const lines = table.entries.map((entry) => table.line(entry.alias));
     const envelope = { output_language: outputLanguage, terms_section: terms, template_body: templateBody };
+    const emptyTranscript = framing === undefined ? "" : framing.slotValue("");
     const plan = planSummary({
       sentences: lines.map((line, index) => ({ line, startMs: (segments[index] as { startMs: number }).startMs })),
-      ...(chapters === undefined ? {} : { chapterStarts: chapters.chapters.map((chapter) => chapter.startMs) }),
-      singleFixed: renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: "" }),
+      // Chapter title lines are priced, and every group is checked before the first call, only
+      // when the task reads speakers: a request without speakers is planned and sent exactly as
+      // it always was.
+      ...(chapters === undefined
+        ? {}
+        : {
+            chapterStarts: chapters.chapters.map((chapter) => chapter.startMs),
+            ...(framing === undefined ? {} : { chapterHeadings: chapters.chapters.map((chapter) => chapterHeading(chapter.title)) }),
+          }),
+      singleFixed: renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: emptyTranscript }),
       partialFixed: renderPrompt(prompts.partial.text, {
         ...envelope,
         citation_rules: CITATION_RULES_FRAGMENT.text,
         carry: carryAllowance(),
-        group_content: "",
+        group_content: emptyTranscript,
       }),
       limits,
       modelRef,
+      ...(framing === undefined ? {} : { cost: framing.cost }),
     });
-    const digestBase = { baseRevisionId: revision.id, templateRef, modelRef, outputLanguage, terms };
+    const digestBase = {
+      baseRevisionId: revision.id,
+      templateRef,
+      modelRef,
+      outputLanguage,
+      terms,
+      ...(framing === undefined ? {} : { speakerContext: speakerContextDigest(framing.snapshot) }),
+    };
+    const speakerRefs = framing === undefined ? [] : [framing.rules.ref];
+    const speakerProvenance = framing === undefined ? {} : { speakerContext: framing.snapshot };
     const revisionId = this.newId();
     const artifactId = this.newId();
     const createdAt = this.now();
     const transcriptInput: ArtifactInputRef = { kind: "transcriptRevision", id: revision.id };
 
     if (plan.mode === "single") {
+      const transcriptValue = framing === undefined ? lines.join("\n") : framing.slotValue(framing.block(lines, 0).join("\n"));
+      const prompt = renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: transcriptValue });
+      if (framing !== undefined) {
+        assertFits(limits, prompt);
+      }
       const generated = await generateWithRepair(context, table, modelRef, {
         key: "summary:generate",
         inputDigest: digestOf(canonicalJson({ ...digestBase, promptRef: prompts.envelope.ref, aliases: digestOf(table.fingerprint()) })),
-        prompt: renderPrompt(prompts.envelope.text, { ...envelope, transcript_with_aliases: lines.join("\n") }),
+        prompt,
         feature: "summary",
+        ...(framing === undefined ? {} : { requires: { fragment: framing.rules, slot: "{{transcript_with_aliases}}" } }),
       });
       const { body, citations } = published(generated.text, table);
       return {
@@ -121,8 +157,9 @@ export class SummaryStageExecutor implements StageExecutor {
                 inputs: [transcriptInput],
                 modelRef: description.snapshot,
                 promptRef: templateRef,
-                promptRefs: [templateRef, prompts.envelope.ref],
+                promptRefs: [templateRef, prompts.envelope.ref, ...speakerRefs],
                 promptSnapshot: renderPrompt(prompts.envelope.text, envelope),
+                ...speakerProvenance,
                 createdAt,
               },
               quality: generated.degraded ? "degraded" : "normal",
@@ -142,7 +179,7 @@ export class SummaryStageExecutor implements StageExecutor {
       plan.byChapters && chapters !== undefined ? [transcriptInput, { kind: "chapterRevision", id: chapters.id }] : [transcriptInput];
     const groups: RollupGroup[] = plan.groups.map((group) => ({
       ids: segments.slice(group.first, group.first + group.count).map((segment) => segment.id),
-      content: groupContent(lines, group, chapters),
+      content: groupContent(lines, group, chapters, framing),
       inputs,
     }));
     const outcome = await runRollup(context, {
@@ -158,6 +195,7 @@ export class SummaryStageExecutor implements StageExecutor {
       carry: prompts.carry,
       final: { prompt: prompts.final, values: { template_body: templateBody } },
       digestBase,
+      ...(framing === undefined ? {} : { precheckCarry: carryAllowance(), partialRequires: { fragment: framing.rules, slot: "{{group_content}}" } }),
     });
     const { body, citations } = published(outcome.final.text, table);
     const partials: RollupPartial[] = outcome.partials.map((partial) => {
@@ -171,8 +209,9 @@ export class SummaryStageExecutor implements StageExecutor {
         citations: finalized.citations,
         modelRef: description.snapshot,
         promptRef: outcome.partialRef,
-        promptRefs: [outcome.partialRef],
+        promptRefs: [outcome.partialRef, ...speakerRefs],
         promptSnapshot: outcome.partialSnapshot,
+        ...speakerProvenance,
         createdAt,
       };
     });
@@ -190,8 +229,9 @@ export class SummaryStageExecutor implements StageExecutor {
               inputs,
               modelRef: description.snapshot,
               promptRef: templateRef,
-              promptRefs: [templateRef, prompts.partial.ref, prompts.carry.ref, prompts.final.ref],
+              promptRefs: [templateRef, prompts.partial.ref, prompts.carry.ref, prompts.final.ref, ...speakerRefs],
               promptSnapshot: outcome.finalSnapshot,
+              ...speakerProvenance,
               createdAt,
             },
             quality: outcome.degraded ? "degraded" : "normal",
@@ -220,11 +260,13 @@ export class SummaryStageExecutor implements StageExecutor {
     let revisionId: string | undefined;
     let templateRef: PromptRef | undefined;
     let language: string | undefined;
+    let speakerContext: SpeakerContextSnapshot | undefined;
     if (context.task.kind === "regenerate_summary") {
       const request = regenerateSummaryRequestSchema.parse(context.request);
       revisionId = request.baseRevisionId;
       templateRef = request.templateRef;
       language = request.outputLanguage;
+      speakerContext = request.speakerContext;
     } else {
       const request = processContentRequestSchema.parse(context.request);
       revisionId = content.primaryTranscriptRevisionId;
@@ -252,7 +294,13 @@ export class SummaryStageExecutor implements StageExecutor {
       if (version === undefined) {
         return storedDataError("the frozen summary template version is missing");
       }
-      return { revision, templateRef: ref, templateBody: version.prompt, outputLanguage: language ?? UI_LANGUAGE_DEFAULT };
+      return {
+        revision,
+        templateRef: ref,
+        templateBody: version.prompt,
+        outputLanguage: language ?? UI_LANGUAGE_DEFAULT,
+        ...(speakerContext === undefined ? {} : { speakerContext }),
+      };
     });
   }
 }
@@ -267,9 +315,20 @@ function published(text: string, table: AliasTable): ReturnType<typeof finalizeC
   return cappedCitations(body, citations);
 }
 
-/** A group's lines, headed by its chapter's title when it was cut by chapter. */
-function groupContent(lines: readonly string[], group: SentenceGroup, chapters: ChapterRevision | undefined): string {
-  const body = lines.slice(group.first, group.first + group.count).join("\n");
+/** The line a group cut by chapter opens with; planning prices it with the group's first sentence. */
+function chapterHeading(title: string): string {
+  return `【章节】${title}\n`;
+}
+
+/**
+ * A group's lines, headed by its chapter's title when it was cut by chapter. With speakers the
+ * group is one block of its own (its first sentence gets a header line) and the speaker rules
+ * open the value, ahead of the chapter title.
+ */
+function groupContent(lines: readonly string[], group: SentenceGroup, chapters: ChapterRevision | undefined, framing: SpeakerFraming | undefined): string {
+  const slice = lines.slice(group.first, group.first + group.count);
+  const body = (framing === undefined ? slice : framing.block(slice, group.first)).join("\n");
   const title = group.chapterIndex === undefined ? undefined : chapters?.chapters[group.chapterIndex]?.title;
-  return title === undefined ? body : `【章节】${title}\n${body}`;
+  const titled = title === undefined ? body : `${chapterHeading(title)}${body}`;
+  return framing === undefined ? titled : framing.slotValue(titled);
 }

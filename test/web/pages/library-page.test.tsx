@@ -690,3 +690,67 @@ function stubApi(options: { total: number; search?: () => object; held?: (url: U
     contentReads: () => calls.filter((call) => call.url.pathname === "/api/contents").map((call) => call.url.search),
   };
 }
+
+describe("LibraryPage search with speakers", () => {
+  const SPEAKER_HIT = { contentId: "c1", contentTitle: "第一讲 检索增强", speakerId: "sp7", ordinal: 2, name: "陈明", colorIndex: 1, sentences: 12 };
+
+  it("lists name matches as their own group, opening the reading view filtered to the speaker", async () => {
+    mockApi({
+      "GET /api/contents": { body: { items: [content], total: 1 } },
+      "GET /api/collections": { body: { items: [] } },
+      "GET /api/tasks/events": { body: {} },
+      "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [], speakers: [SPEAKER_HIT] } },
+    });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("第一讲 检索增强");
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "陈明" } });
+    const group = await screen.findByRole("region", { name: "发言人（姓名匹配）" });
+    const link = within(group).getByTestId("speaker-hit");
+    expect(link.getAttribute("href")).toBe("/contents/c1?tab=transcript&speaker=sp7");
+    expect(link.textContent).toContain("第一讲 检索增强 · 12 句");
+    // Only a name matched: no empty state, no Content rows.
+    expect(screen.queryByText("没有找到相关内容")).toBeNull();
+    expect(screen.queryAllByTestId("library-row")).toHaveLength(0);
+  });
+
+  it("names the speaker of a sentence hit, marks an unreviewed one, and flags a summary whose speaker basis changed", async () => {
+    const other = { ...content, id: "c2", title: "第二讲 操作系统", collections: [] };
+    mockApi({
+      "GET /api/contents": { body: { items: [content, other], total: 2 } },
+      "GET /api/collections": { body: { items: [] } },
+      "GET /api/tasks/events": { body: {} },
+      "GET /api/search": {
+        body: {
+          contents: [],
+          segments: [
+            {
+              contentId: "c2",
+              contentTitle: "第二讲 操作系统",
+              transcriptRevisionId: "r2",
+              segmentId: SEGMENT,
+              startMs: 75_000,
+              snippet: "进程调度靠时间片",
+              ranges: [{ start: 0, end: 4 }],
+              speaker: { id: "sp1", ordinal: 1, name: "李华", colorIndex: 0, confirmed: false },
+            },
+          ],
+          summaries: [
+            { contentId: "c1", contentTitle: "第一讲 检索增强", artifactId: "a1", templateId: "summary.core", summaryRevisionId: "sr1", snippet: "进程调度概述", ranges: [], speakerContextState: "names_changed" },
+          ],
+          collections: [],
+          speakers: [SPEAKER_HIT],
+        },
+      },
+    });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("第一讲 检索增强");
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "进程调度" } });
+    await waitFor(() => expect(screen.getAllByTestId("search-snippet")).toHaveLength(2));
+    const speaker = screen.getByTestId("hit-speaker");
+    expect(speaker.getAttribute("data-confirmed")).toBe("false");
+    expect(speaker.lastElementChild?.textContent).toBe("李华未核对");
+    expect(screen.getByTestId("hit-basis-changed").textContent).toBe("人物依据已变化");
+    expect(screen.getByTestId("speaker-hits")).toBeTruthy();
+    expect(screen.getAllByTestId("library-row")).toHaveLength(2);
+  });
+});

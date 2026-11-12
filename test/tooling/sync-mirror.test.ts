@@ -27,8 +27,12 @@ describe("buildInputs", () => {
     );
     expect(inputs.some((path) => path.startsWith("amber-runtime-assets/licenses/"))).toBe(false);
     expect(inputs.filter((path) => path.startsWith("amber-runtime-assets/")).every((path) => path.startsWith(`${DEFAULT_ASSETS_DIR}/`))).toBe(true);
-    // The sidecar packs the burn-in font and its licence.
-    expect(inputs).toEqual(expect.arrayContaining([expect.stringMatching(/\/18_NotoSansSC\.zip$/), expect.stringMatching(/\/OFL\.txt$/)]));
+    // The sidecar packs the burn-in font, the reading fonts and their licences.
+    expect(inputs).toEqual(
+      expect.arrayContaining(
+        ["18_NotoSansSC.zip", "OFL.txt", "NotoSerifSC-Regular.otf", "LXGWWenKaiLite-Regular.ttf", "LXGWWenKaiLite-OFL.txt"].map((file) => `${DEFAULT_ASSETS_DIR}/${file}`),
+      ),
+    );
     // The Windows build runs `vite build`, which needs the whole TypeScript configuration.
     expect(inputs).toEqual(expect.arrayContaining(["tsconfig.json", "tsconfig.base.json", "tsconfig.server.json", "tsconfig.web.json"]));
     // Of the root Markdown files, only the shipped ones. The changelog is copied only while git

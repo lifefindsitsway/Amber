@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImportContentService } from "../../../src/server/application/import-content.ts";
+import { resolveSpeakerContext } from "../../../src/server/application/speaker-context.ts";
 import { PlatformRegistry } from "../../../src/server/application/platforms.ts";
 import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
 import { IMPORT_BATCH_MAX } from "../../../src/shared/defaults.ts";
@@ -43,6 +44,31 @@ const request = (settings: Record<string, unknown> = {}, url = LINK) => ({ items
 
 function contentOf(h: Harness, contentId: string | undefined, userId = LOCAL.userId) {
   return h.repository.withTransaction((scope) => scope.contents.get(userId, contentId as string));
+}
+
+/**
+ * Gives the Content a primary read by speaker: two speakers in turn (the first with a
+ * confirmed name), reviewed, as a user would leave it after checking the attributions.
+ */
+function giveReviewedPrimary(h: Harness, contentId: string): string {
+  const speakers = [h.newId(), h.newId()];
+  const { revision, segments } = platformTranscript({
+    revisionId: h.newId(),
+    contentId,
+    language: "zh-CN",
+    cues: [0, 1, 2, 3].map((index) => ({ startMs: index * 1000, endMs: index * 1000 + 900, text: `第${index + 1}句` })),
+    acquisition: "guest",
+    newId: h.newId,
+    createdAt: 1,
+  });
+  const attributed = segments.map((segment, index) => ({ ...segment, speakerId: speakers[index % 2] as string }));
+  h.repository.withTransaction((scope) => {
+    scope.speakers.insert(LOCAL.userId, contentId, [{ id: speakers[0] as string, name: "蒋炎岩", nameConfirmedAt: 1 }, { id: speakers[1] as string }], 1);
+    scope.transcripts.insertRevision(LOCAL.userId, revision, attributed);
+    scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revision.id, 1);
+    scope.speakerConfirmations.set(LOCAL.userId, contentId, revision.id, 2);
+  });
+  return revision.id;
 }
 
 /** Three parts on one bilibili submission. */
@@ -612,6 +638,36 @@ describe("re-importing the same link", () => {
     const again = await h.importContent.import(LOCAL, request({ modelRef: otherModel, outputLanguage: "en" }));
     expect(again.body.taskIds).toEqual(changed.body.taskIds);
     expect(await codeOf(() => h.importContent.import(LOCAL, request({ modelRef: otherModel, outputLanguage: "ja" })))).toBe("conflict.mutation_lane");
+  });
+
+  it("freezes the speakers of a reviewed primary into the regenerate_summary of a summary-only change, as a direct submission does", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const otherModel = configureLlm(h);
+    const first = await h.importContent.import(LOCAL, request({ modelRef }));
+    await drain(h);
+    await h.scheduler.stop();
+    const contentId = first.body.contentIds[0] as string;
+    const primary = giveReviewedPrimary(h, contentId);
+    const expected = h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, contentId, primary, "transcript"));
+    expect(expected?.speakers.map((speaker) => speaker.label)).toEqual(["蒋炎岩", "发言人 2"]);
+
+    const changed = await h.importContent.import(LOCAL, request({ modelRef: otherModel, outputLanguage: "en" }));
+    const summary = taskOf(h, changed.body.taskIds[0] as string);
+    expect(summary.kind).toBe("regenerate_summary");
+    expect(JSON.parse(summary.requestJson)).toEqual({
+      requestSchemaVersion: 1,
+      kind: "regenerate_summary",
+      promptRefs: builtinPromptRefs("regenerate_summary"),
+      modelRef: otherModel,
+      outputLanguage: "en",
+      templateRef: { id: "summary.core", version: 1 },
+      baseRevisionId: primary,
+      speakerContext: expected,
+    });
+    // Submitted again while it is unfinished: the same summary Task, its snapshot included.
+    const again = await h.importContent.import(LOCAL, request({ modelRef: otherModel, outputLanguage: "en" }));
+    expect(again.body.taskIds).toEqual(changed.body.taskIds);
   });
 
   it("freezes the chosen template version and turns a template change alone into a regenerate_summary", async () => {

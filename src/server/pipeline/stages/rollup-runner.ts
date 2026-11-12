@@ -44,6 +44,30 @@ export interface GenerationCall {
   inputDigest: string;
   prompt: string;
   feature: TokenUsageFeature;
+  /**
+   * Text the prompt must contain to be sent, such as the speaker rules a recorded snapshot
+   * promises the model was given, and the slot it rides in; without it the unit fails before
+   * any call.
+   */
+  requires?: { fragment: BuiltinPrompt; slot: string };
+}
+
+/**
+ * Fails a unit whose rendered prompt lost a fragment it must carry (a frozen prompt without
+ * the slot the fragment rides in): a result must never record speakers its model was not shown.
+ *
+ * The details have the shape the submission check and the prompt settings answer with
+ * (`{ missing, unknown }`), and `missing` names the same thing they do: the slot the prompt
+ * text lacks, which is what the user restores. A caller that does not pass the slot gets the
+ * fragment's id there instead.
+ */
+export function assertCarries(prompt: string, fragment: BuiltinPrompt | undefined, slot?: string): void {
+  if (fragment !== undefined && !prompt.includes(fragment.text)) {
+    throw amberError("invalid_request", `the rendered prompt lacks the ${fragment.ref.id} fragment`, {
+      code: "invalid_request.prompt_protocol",
+      details: { missing: [slot ?? fragment.ref.id], unknown: [] },
+    });
+  }
 }
 
 /**
@@ -115,6 +139,7 @@ async function generateOnce(context: StageExecutionContext, modelRef: ModelRef, 
       inputDigest: call.inputDigest,
       billing: "llm",
       run: async (_signal: AbortSignal, unit: UnitIdentity) => {
+        assertCarries(call.prompt, call.requires?.fragment, call.requires?.slot);
         const completion = await context.llm.complete(userRequest(modelRef, call.prompt), { feature: call.feature, workUnitId: unit.id });
         return { text: completion.text, invocationId: completion.invocationId };
       },
@@ -154,6 +179,16 @@ export interface RollupSpec {
   final: { prompt: ResolvedPrompt; values: Readonly<Record<string, string>> };
   /** Digest material shared by every call (template identity, base revision, …). */
   digestBase: unknown;
+  /** The fragment every partial prompt must carry in its group content (the speaker rules), if any. */
+  partialRequires?: GenerationCall["requires"];
+  /**
+   * When given, every partial prompt is rendered and checked against the budget before the
+   * first call, with this text standing in for the carry of every group but the first (whose
+   * carry is always empty): a group planned against the largest carry then fails before
+   * anything is paid rather than after the groups ahead of it were. Each prompt is checked
+   * again as actually sent, since a model may write a longer carry than it was asked for.
+   */
+  precheckCarry?: string;
 }
 
 export interface RollupOutcome {
@@ -206,6 +241,12 @@ export async function runRollup(context: StageExecutionContext, spec: RollupSpec
   let degraded = false;
   let carry = "";
   let carryDigest = digestOf("");
+  const precheckCarry = spec.precheckCarry;
+  if (precheckCarry !== undefined) {
+    spec.groups.forEach((group, index) =>
+      assertFits(limits, renderPrompt(spec.partial.text, { ...shared, carry: index === 0 ? "" : precheckCarry, group_content: group.content })),
+    );
+  }
   for (const [index, group] of spec.groups.entries()) {
     const partialPrompt = renderPrompt(spec.partial.text, { ...shared, carry, group_content: group.content });
     assertFits(limits, partialPrompt);
@@ -214,6 +255,7 @@ export async function runRollup(context: StageExecutionContext, spec: RollupSpec
       inputDigest: digestOf(canonicalJson({ base, promptRef: spec.partial.ref, ids: group.ids, carry: carryDigest })),
       prompt: partialPrompt,
       feature: spec.feature,
+      ...(spec.partialRequires === undefined ? {} : { requires: spec.partialRequires }),
     });
     degraded ||= partial.degraded;
     const partialText = forward(partial.text);

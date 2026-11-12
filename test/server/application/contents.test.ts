@@ -5,6 +5,7 @@ import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import type { TranscriptRevision } from "../../../src/server/domain/transcript.ts";
 import type { ContentListQuery, Repository } from "../../../src/server/ports/repository.ts";
+import type { SegmentId } from "../../../src/shared/ids.ts";
 import { BOB, createHarness, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { countRows } from "../../tools/sqlite.ts";
 
@@ -372,6 +373,30 @@ describe("ContentService.importSubtitle", () => {
     expect(revision).toMatchObject({ id: response.transcriptRevisionId, kind: "imported", timingFidelity: "segment_only", language: "zh-CN", segmentCount: 2 });
     expect(contentOf(h, content.id)?.primaryTranscriptRevisionId).toBe(response.transcriptRevisionId);
     expect(countRows(h.db, "reference_text")).toBe(0);
+  });
+
+  it("stores the imported revision as not reviewed, even over a primary whose speakers were reviewed", () => {
+    const h = harness();
+    const content = insertContent(h, { createdAt: 1 });
+    const reviewed: TranscriptRevision = {
+      id: h.newId(), contentId: content.id, kind: "asr", language: "en", timingFidelity: "segment_only",
+      generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe" }, segmentCount: 1, createdAt: 1,
+    };
+    h.repository.withTransaction((scope) => {
+      scope.speakers.insert(LOCAL.userId, content.id, [{ id: "S1", name: "Ann", nameConfirmedAt: 1 }], 1);
+      scope.transcripts.insertRevision(LOCAL.userId, reviewed, [
+        { id: h.newId() as SegmentId, revisionId: reviewed.id, ordinal: 0, startMs: 0, endMs: 900, text: "hi", speakerId: "S1", sourceSegmentIds: [] },
+      ]);
+      scope.contents.setPrimaryTranscript(LOCAL.userId, content.id, reviewed.id, 1);
+      scope.speakerConfirmations.set(LOCAL.userId, content.id, reviewed.id, 5);
+    });
+    const { transcriptRevisionId } = h.contents.importSubtitle(LOCAL, content.id, { text: SRT, language: "en" });
+    expect(contentOf(h, content.id)?.primaryTranscriptRevisionId).toBe(transcriptRevisionId);
+    expect(revisionsOf(h, content.id).find((revision) => revision.id === transcriptRevisionId)).toMatchObject({ kind: "imported" });
+    const confirmedAt = (revisionId: string) => h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revisionId));
+    expect(confirmedAt(transcriptRevisionId as string)).toBeUndefined();
+    expect(confirmedAt(reviewed.id)).toBe(5);
+    expect(countRows(h.db, "transcript_revision_speaker_confirmation")).toBe(1);
   });
 
   it("recognizes VTT by content and rejects a declared format that does not match", async () => {

@@ -64,6 +64,15 @@ export function SummaryCard(props: {
   const foldable = current !== undefined && summary.hiddenReason === undefined;
   const bodyShown = expanded && foldable;
   const toggle = (): void => setExpandedValue(expanded ? undefined : "1");
+  // A live count over the members as they are now: it is about what a summary made now would
+  // read, so it sits by the button and is never presented as the shown revision's own state.
+  const changedMembers = summary.speakerContextChangedMembers;
+  const speakerHint =
+    changedMembers === undefined ? null : (
+      <p role="note" className="text-xs text-muted" data-testid="collection-summary-speaker-hint">
+        {t("speakerContext.collectionChanged", { count: changedMembers })}
+      </p>
+    );
   return (
     <section className="rounded-lg border border-line p-4" aria-label={t("library.summary.title")} data-testid="collection-summary">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -96,6 +105,7 @@ export function SummaryCard(props: {
           </div>
         ) : null}
       </div>
+      {exists && speakerHint !== null ? <div className="mb-2 flex justify-end">{speakerHint}</div> : null}
       {summary.activeTaskId === undefined ? null : (
         <div className="mb-3">
           <TaskFlow taskId={summary.activeTaskId} />
@@ -129,6 +139,7 @@ export function SummaryCard(props: {
             <Button variant="primary" disabled={props.generating === true} onClick={props.onGenerate}>
               {t("library.summary.generate")}
             </Button>
+            {speakerHint}
           </div>
         ) : null
       ) : bodyShown ? (

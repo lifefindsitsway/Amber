@@ -12,13 +12,18 @@ import { contentView } from "./ui-content.ts";
 import { editor } from "./ui-editor.ts";
 import { library } from "./ui-library.ts";
 import { notes } from "./ui-notes.ts";
+import { readerFont } from "./ui-reader-font.ts";
 import { search } from "./ui-search.ts";
 import { settings } from "./ui-settings.ts";
 import { shell } from "./ui-shell.ts";
 import { speakerEditor } from "./ui-speaker-editor.ts";
 import { speakerIdentity } from "./ui-speaker-identity.ts";
+import { speakerCompare } from "./ui-speaker-compare.ts";
+import { speakerContext } from "./ui-speaker-context.ts";
 import { speakerReader } from "./ui-speaker-reader.ts";
+import { speakerReview } from "./ui-speaker-review.ts";
 import { speakerTools } from "./ui-speaker-tools.ts";
+import { subtitleSpeaker } from "./ui-subtitle-speaker.ts";
 import { trash } from "./ui-trash.ts";
 import { usage } from "./ui-usage.ts";
 
@@ -49,4 +54,9 @@ export const zhCN = {
   speakerReader,
   speakerEditor,
   speakerTools,
+  speakerReview,
+  speakerCompare,
+  speakerContext,
+  readerFont,
+  subtitleSpeaker,
 } as const;

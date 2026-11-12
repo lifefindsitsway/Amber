@@ -17,6 +17,7 @@ import { Pagination, useListPosition, usePagination } from "../ui/pagination.tsx
 import { ErrorView } from "../components/error-view.tsx";
 import { actionTarget, useContentActions } from "../components/use-content-actions.tsx";
 import { HitSnippet } from "../search/hit-snippet.tsx";
+import { SpeakerHitsGroup } from "../search/hit-speaker.tsx";
 import { hitsByContent, normalizeQuery, useSearch, type ContentSideHit } from "../search/search.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { collectionChoiceOf, filtersFromSearch, UNCOLLECTED_CHOICE, withCollectionChoice, withFilter } from "./library/filters.ts";
@@ -101,6 +102,8 @@ export function LibraryPage() {
   const hitsCurrent = found.query === normalizeQuery(query) && !found.isPlaceholderData;
   const hits = found.data === undefined ? [] : hitsByContent(found.data).slice(0, CONTENT_LIST_IDS_MAX);
   const ids = hits.map((hit) => hit.contentId);
+  // Speakers found by name are their own group above the table; the filters do not apply to them.
+  const speakerHits = searching && hitsCurrent ? (found.data?.speakers ?? []) : [];
   const hitFilters = { ...filters, ids: ids.join(","), page: 1, limit: ids.length };
   const known = useQuery({
     queryKey: [...queryKeys.contentsAll, "library", "hits", hitFilters],
@@ -186,7 +189,11 @@ export function LibraryPage() {
           </div>
         ) : rows.length === 0 ? (
           searching ? (
-            <EmptyState title={t("search.empty")} hint={t("search.emptyHint")} />
+            speakerHits.length > 0 ? (
+              <SpeakerHitsGroup hits={speakerHits} className="px-6 py-3" />
+            ) : (
+              <EmptyState title={t("search.empty")} hint={t("search.emptyHint")} />
+            )
           ) : filtered ? (
             <EmptyState title={t("library.empty.filtered")} />
           ) : (
@@ -197,102 +204,105 @@ export function LibraryPage() {
             </EmptyState>
           )
         ) : (
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-panel text-left text-xs text-muted">
-              <tr>
-                {/* Percentages share the width out in proportion; a column's content width is its floor. */}
-                <th className={`${COMPACT_UP} ${NARROW} ${EDGE_START} pr-4`}>{t("library.column.cover")}</th>
-                <th className="w-full py-2 pr-4 pl-6 font-medium @3xl:w-[45%] @3xl:px-2 @5xl:w-[30%]">{t("library.column.title")}</th>
-                <th className={`${WIDE_ONLY} ${COLUMN} w-[9%]`}>{t("library.column.source")}</th>
-                <th className={`${WIDE_ONLY} ${COLUMN} w-[7%]`}>{t("library.column.duration")}</th>
-                <th className={`${COLUMN} w-px whitespace-nowrap @3xl:w-[13%] @5xl:w-[9%]`}>{t("library.column.status")}</th>
-                <th className={`${COMPACT_UP} ${COLUMN} min-w-40 @3xl:w-[30%] @5xl:w-[18%]`}>{t("library.column.collections")}</th>
-                <th className={`${WIDE_ONLY} ${COLUMN} w-[13%] whitespace-nowrap`}>{t("library.column.updatedAt")}</th>
-                <th className={`${NARROW} pl-4 ${EDGE_END} text-center`}>{t("library.column.actions")}</th>
-              </tr>
-            </thead>
-            <tbody ref={rowsMenuRef}>
-              {rows.map(({ item, hit }) => {
-                const duration = item.durationMs === undefined ? undefined : formatDuration(item.durationMs);
-                const updatedAt = formatDateTime(item.updatedAt, i18n.language);
-                const pinned = item.pinnedAt !== undefined;
-                return (
-                  <tr key={item.id} className="border-b border-line hover:bg-panel" data-testid="library-row" data-content-id={item.id}>
-                    <td className={`${COMPACT_UP} ${EDGE_START} py-2 pr-4`}>
-                      <Cover url={item.coverUrl} />
-                    </td>
-                    <td className="py-2 pr-4 pl-6 @3xl:px-2">
-                      <div className="flex items-start gap-1">
-                        {item.pinnedAt === undefined ? null : (
-                          <Pin size={14} className="mt-0.5 shrink-0 text-accent" aria-label={t("library.pinned")} data-testid="library-pinned" />
-                        )}
-                        <Link to={`/contents/${item.id}`} className="line-clamp-2 font-medium hover:underline">
-                          {item.title ?? t("library.untitled")}
-                        </Link>
-                      </div>
-                      {/* The folded columns, shown only while their own cells are hidden. */}
-                      <p className="mt-0.5 text-xs text-muted @5xl:hidden" data-testid="library-row-meta">
-                        {t(`common.source.${item.source.kind}`)}
-                        {duration === undefined ? null : ` · ${duration}`}
-                        {` · ${updatedAt}`}
-                      </p>
-                      {hit === undefined ? null : <HitSnippet entry={hit} query={found.query} />}
-                    </td>
-                    <td className={`${WIDE_ONLY} px-2 py-2 whitespace-nowrap text-muted`}>{t(`common.source.${item.source.kind}`)}</td>
-                    <td className={`${WIDE_ONLY} px-2 py-2 font-mono text-xs whitespace-nowrap text-muted`}>{duration ?? ""}</td>
-                    <td className="px-2 py-2 whitespace-nowrap">
-                      <StatusBadge status={item.processingStatus} />
-                    </td>
-                    <td className={`${COMPACT_UP} px-2 py-2`}>
-                      <div className="flex flex-wrap gap-1">
-                        {item.collections.map((collection) => (
-                          <Link key={collection.id} to={`/collections/${collection.id}`} className="rounded bg-sunken px-1.5 py-0.5 text-xs hover:underline">
-                            {collection.name}
+          <>
+            <SpeakerHitsGroup hits={speakerHits} className="border-b border-line px-6 py-3" />
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-panel text-left text-xs text-muted">
+                <tr>
+                  {/* Percentages share the width out in proportion; a column's content width is its floor. */}
+                  <th className={`${COMPACT_UP} ${NARROW} ${EDGE_START} pr-4`}>{t("library.column.cover")}</th>
+                  <th className="w-full py-2 pr-4 pl-6 font-medium @3xl:w-[45%] @3xl:px-2 @5xl:w-[30%]">{t("library.column.title")}</th>
+                  <th className={`${WIDE_ONLY} ${COLUMN} w-[9%]`}>{t("library.column.source")}</th>
+                  <th className={`${WIDE_ONLY} ${COLUMN} w-[7%]`}>{t("library.column.duration")}</th>
+                  <th className={`${COLUMN} w-px whitespace-nowrap @3xl:w-[13%] @5xl:w-[9%]`}>{t("library.column.status")}</th>
+                  <th className={`${COMPACT_UP} ${COLUMN} min-w-40 @3xl:w-[30%] @5xl:w-[18%]`}>{t("library.column.collections")}</th>
+                  <th className={`${WIDE_ONLY} ${COLUMN} w-[13%] whitespace-nowrap`}>{t("library.column.updatedAt")}</th>
+                  <th className={`${NARROW} pl-4 ${EDGE_END} text-center`}>{t("library.column.actions")}</th>
+                </tr>
+              </thead>
+              <tbody ref={rowsMenuRef}>
+                {rows.map(({ item, hit }) => {
+                  const duration = item.durationMs === undefined ? undefined : formatDuration(item.durationMs);
+                  const updatedAt = formatDateTime(item.updatedAt, i18n.language);
+                  const pinned = item.pinnedAt !== undefined;
+                  return (
+                    <tr key={item.id} className="border-b border-line hover:bg-panel" data-testid="library-row" data-content-id={item.id}>
+                      <td className={`${COMPACT_UP} ${EDGE_START} py-2 pr-4`}>
+                        <Cover url={item.coverUrl} />
+                      </td>
+                      <td className="py-2 pr-4 pl-6 @3xl:px-2">
+                        <div className="flex items-start gap-1">
+                          {item.pinnedAt === undefined ? null : (
+                            <Pin size={14} className="mt-0.5 shrink-0 text-accent" aria-label={t("library.pinned")} data-testid="library-pinned" />
+                          )}
+                          <Link to={`/contents/${item.id}`} className="line-clamp-2 font-medium hover:underline">
+                            {item.title ?? t("library.untitled")}
                           </Link>
-                        ))}
-                      </div>
-                    </td>
-                    <td className={`${WIDE_ONLY} px-2 py-2 text-xs whitespace-nowrap text-muted`}>{updatedAt}</td>
-                    <td className={`py-2 pl-4 ${EDGE_END} text-center whitespace-nowrap`}>
-                      <Button size="sm" variant="ghost" onClick={() => actions.rename(item.id)}>
-                        <Pencil size={14} aria-hidden="true" />
-                        {t("library.rename.action")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={patch.isPending && patch.variables?.contentId === item.id}
-                        onClick={() => patch.mutate({ contentId: item.id, patch: { pinned: !pinned } })}
-                      >
-                        {pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
-                        {/* Both labels share one grid cell, so the button is as wide as the wider one and the action buttons line up across rows; the label stays next to its icon. */}
-                        <span className="grid text-left">
-                          <span className={`${pinned ? "invisible " : ""}[grid-area:1/1]`} aria-hidden={pinned ? "true" : undefined}>
-                            {t("library.pin.action")}
+                        </div>
+                        {/* The folded columns, shown only while their own cells are hidden. */}
+                        <p className="mt-0.5 text-xs text-muted @5xl:hidden" data-testid="library-row-meta">
+                          {t(`common.source.${item.source.kind}`)}
+                          {duration === undefined ? null : ` · ${duration}`}
+                          {` · ${updatedAt}`}
+                        </p>
+                        {hit === undefined ? null : <HitSnippet entry={hit} query={found.query} />}
+                      </td>
+                      <td className={`${WIDE_ONLY} px-2 py-2 whitespace-nowrap text-muted`}>{t(`common.source.${item.source.kind}`)}</td>
+                      <td className={`${WIDE_ONLY} px-2 py-2 font-mono text-xs whitespace-nowrap text-muted`}>{duration ?? ""}</td>
+                      <td className="px-2 py-2 whitespace-nowrap">
+                        <StatusBadge status={item.processingStatus} />
+                      </td>
+                      <td className={`${COMPACT_UP} px-2 py-2`}>
+                        <div className="flex flex-wrap gap-1">
+                          {item.collections.map((collection) => (
+                            <Link key={collection.id} to={`/collections/${collection.id}`} className="rounded bg-sunken px-1.5 py-0.5 text-xs hover:underline">
+                              {collection.name}
+                            </Link>
+                          ))}
+                        </div>
+                      </td>
+                      <td className={`${WIDE_ONLY} px-2 py-2 text-xs whitespace-nowrap text-muted`}>{updatedAt}</td>
+                      <td className={`py-2 pl-4 ${EDGE_END} text-center whitespace-nowrap`}>
+                        <Button size="sm" variant="ghost" onClick={() => actions.rename(item.id)}>
+                          <Pencil size={14} aria-hidden="true" />
+                          {t("library.rename.action")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={patch.isPending && patch.variables?.contentId === item.id}
+                          onClick={() => patch.mutate({ contentId: item.id, patch: { pinned: !pinned } })}
+                        >
+                          {pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
+                          {/* Both labels share one grid cell, so the button is as wide as the wider one and the action buttons line up across rows; the label stays next to its icon. */}
+                          <span className="grid text-left">
+                            <span className={`${pinned ? "invisible " : ""}[grid-area:1/1]`} aria-hidden={pinned ? "true" : undefined}>
+                              {t("library.pin.action")}
+                            </span>
+                            <span className={`${pinned ? "" : "invisible "}[grid-area:1/1]`} aria-hidden={pinned ? undefined : "true"}>
+                              {t("library.unpin.action")}
+                            </span>
                           </span>
-                          <span className={`${pinned ? "" : "invisible "}[grid-area:1/1]`} aria-hidden={pinned ? undefined : "true"}>
-                            {t("library.unpin.action")}
-                          </span>
-                        </span>
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => actions.manageCollections(item.id)}>
-                        <FolderPlus size={14} aria-hidden="true" />
-                        {t("library.membership.action")}
-                      </Button>
-                      <Button size="sm" variant="ghost" className="text-danger" onClick={() => actions.remove(targetOf(item))}>
-                        <Trash2 size={14} aria-hidden="true" />
-                        {t("library.deleteContent.action")}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => void navigate(`/notes?contentId=${encodeURIComponent(item.id)}`)}>
-                        <NotebookPen size={14} aria-hidden="true" />
-                        {t("library.notes.action")}
-                      </Button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => actions.manageCollections(item.id)}>
+                          <FolderPlus size={14} aria-hidden="true" />
+                          {t("library.membership.action")}
+                        </Button>
+                        <Button size="sm" variant="ghost" className="text-danger" onClick={() => actions.remove(targetOf(item))}>
+                          <Trash2 size={14} aria-hidden="true" />
+                          {t("library.deleteContent.action")}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => void navigate(`/notes?contentId=${encodeURIComponent(item.id)}`)}>
+                          <NotebookPen size={14} aria-hidden="true" />
+                          {t("library.notes.action")}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
       {searching ? null : <Pagination pager={pager} className="border-t border-line px-6 py-3" />}

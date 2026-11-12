@@ -13,7 +13,9 @@ import {
   PROOFREAD_AUDIO_PROMPT,
   PROOFREAD_TEXT_PROMPT,
   renderPrompt,
+  SPEAKER_LINES_FRAGMENT,
 } from "../../../../src/server/domain/prompts.ts";
+import { resolveSpeakerContext } from "../../../../src/server/application/speaker-context.ts";
 import { termsSection } from "../../../../src/server/domain/terminology.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
@@ -45,6 +47,8 @@ import {
   workUnitsOf,
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
+import { pipelineAnswer } from "../../../fixtures/llm/pipeline-llm.ts";
+import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -1517,5 +1521,297 @@ describe("custom proofread prompts", () => {
     const generation = generationOf(s.h, second);
     expect(generation.promptRef).toEqual(PROOFREAD_TEXT_PROMPT.ref);
     expect(generation.promptRefs).toEqual([PROOFREAD_TEXT_PROMPT.ref]);
+  });
+});
+
+describe("speaker review on publication", () => {
+  it("a proofread revision keeps its base's review mark, read when it is published; an unreviewed base gives an unreviewed one", async () => {
+    for (const reviewed of [true, false]) {
+      const s = setup(fakeProvider());
+      const base = seedContent(s.h, 3);
+      if (reviewed) {
+        s.h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, base.contentId, base.revision.id, 5));
+      }
+      const taskId = reproofread(s, base.contentId, base.revision.id);
+      s.h.scheduler.start();
+      expect(await settled(s.h, taskId)).toBe("succeeded");
+      const { revisionId } = resultOf(s.h, taskId);
+      const confirmedAt = s.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revisionId));
+      expect(confirmedAt !== undefined).toBe(reviewed);
+    }
+  });
+
+  it("follows the base's mark as it is when the revision is published, not as it was when the Task was submitted", async () => {
+    for (const [atSubmit, atPublish] of [[true, false], [false, true]] as const) {
+      let flip: (() => void) | undefined;
+      let flipped = 0;
+      const s = setup(
+        fakeProvider((targets, request, opts) => {
+          // The user confirms or withdraws while the model is still answering.
+          flip?.();
+          flip = undefined;
+          return corrected(targets, request, opts);
+        }),
+      );
+      const base = seedContent(s.h, 3);
+      const mark = (confirmed: boolean) =>
+        s.h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, base.contentId, base.revision.id, confirmed ? 5 : undefined));
+      const markOf = (revisionId: string) => s.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revisionId));
+      mark(atSubmit);
+      const taskId = reproofread(s, base.contentId, base.revision.id);
+      flip = () => {
+        mark(atPublish);
+        flipped += 1;
+      };
+      s.h.scheduler.start();
+      expect(await settled(s.h, taskId)).toBe("succeeded");
+      expect(flipped).toBe(1);
+      expect(markOf(base.revision.id) !== undefined).toBe(atPublish);
+      expect(markOf(resultOf(s.h, taskId).revisionId) !== undefined).toBe(atPublish);
+    }
+  });
+});
+
+describe("speakers given to a reproofread", () => {
+  /** Two chunks, so both ranges carry read-only context. */
+  const TEXTS = Array.from({ length: PROOFREAD_CHUNK_SENTENCES + 20 }, (_, index) => `第${index + 1}句：校对用的原文，讲到第${index + 1}个要点。`);
+  /** Two speakers in runs of five, every seventh sentence unassigned; one confirmed name. */
+  const REVIEWED: sc.SeedOptions = {
+    texts: TEXTS,
+    speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }],
+    assign: (position) => (position % 7 === 6 ? undefined : Math.floor(position / 5) % 2),
+    reviewed: true,
+  };
+  const UNREVIEWED: sc.SeedOptions = { ...REVIEWED, reviewed: false };
+  const NONE: sc.SeedOptions = { texts: TEXTS };
+
+  /** A model answering every range with its own target lines; with `audio` it takes audio and an original is there. */
+  function prepared(seed: sc.SeedOptions, options: { audio?: boolean } = {}) {
+    const fake = new FakeLlmProvider(options.audio === true ? { audioMimeTypes: ["audio/wav"] } : {});
+    fake.script(...Array.from({ length: 40 }, () => (request: LlmRequest) => (async function* () { yield* reply(pipelineAnswer(request)); })()));
+    const { h, modelRef } = sc.speakerHarness(fake, undefined, { start: false });
+    open.push(h);
+    h.executors.proofread = new ProofreadStageExecutor({ repository: h.repository, files: new LocalFileStore(h.dir), ingest: new StubIngest(), newId: h.newId });
+    if (options.audio === true) setAudioInput(h, modelRef, "supported");
+    const { segments } = sc.seedContent(h, seed);
+    if (options.audio === true) seedOriginal(h, sc.FIXED_CONTENT_ID);
+    h.repository.withTransaction((scope) =>
+      scope.terminology.put({
+        id: h.newId(),
+        userId: LOCAL.userId,
+        scope: { kind: "global" },
+        entries: [{ id: h.newId(), ordinal: 0, term: "RAG", normalizedKey: "rag", translation: "检索增强生成" }],
+      }),
+    );
+    h.scheduler.start();
+    return { h, fake, modelRef, segments };
+  }
+
+  async function submit(s: { h: Harness; modelRef: ModelRef }, how: "service" | "legacy" = "service"): Promise<string> {
+    if (how === "legacy") {
+      const taskId = createTaskOfKind(s.h, "reproofread", { modelRef: s.modelRef, baseRevisionId: sc.FIXED_REVISION_ID }, { contentId: sc.FIXED_CONTENT_ID });
+      s.h.scheduler.kick();
+      return taskId;
+    }
+    return (await s.h.derivedTasks.proofread(LOCAL, sc.FIXED_CONTENT_ID, { modelRef: s.modelRef })).body.taskId;
+  }
+
+  /** The requests as the adapter received them (a clip's scratch path aside) and the range units' digests. */
+  function trafficHash(s: { h: Harness; fake: FakeLlmProvider }, taskId: string): string {
+    const requests = s.fake.calls.map((call) => JSON.stringify(call.request, (key, value: unknown) => (key === "dataRef" ? "<clip>" : value))).sort();
+    const units = workUnitsOf(s.h, taskId)
+      .filter((unit) => unit.key.startsWith("proofread:range:"))
+      .map((unit) => `${unit.key} ${unit.inputDigest}`)
+      .sort();
+    return sc.sha256(JSON.stringify({ requests, units }));
+  }
+
+  async function run(seed: sc.SeedOptions, options: { audio?: boolean; how?: "service" | "legacy" } = {}) {
+    const s = prepared(seed, options);
+    const taskId = await submit(s, options.how);
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    return { ...s, taskId, hash: trafficHash(s, taskId) };
+  }
+
+  /**
+   * The exact traffic without speakers, captured from the stage before it could read them:
+   * a request that reads none stays byte-identical to it, unit digests included.
+   */
+  const BASELINE = {
+    text: "32513c15f22d40f1e3416e30ff4ce28c71cb44cf133df248f16ae86b1a4cfa4c",
+    audio: "1047e90243b6712a6bf60fb1877ddc12716a16a2e1698fafcf797653eb0cb4fb",
+  };
+
+  for (const variant of ["text", "audio"] as const) {
+    it(`${variant}: byte-identical without speakers, unreviewed, and for a request queued without a snapshot`, async () => {
+      const audio = variant === "audio";
+      const none = await run(NONE, { audio });
+      expect(none.fake.calls).toHaveLength(2);
+      expect(none.fake.calls.every((call) => (call.request.messages[0]?.content.some((part) => part.type === "audio") ?? false) === audio)).toBe(true);
+      expect((await run(UNREVIEWED, { audio })).hash).toBe(none.hash);
+      expect((await run(REVIEWED, { audio, how: "legacy" })).hash).toBe(none.hash);
+      expect(none.hash).toBe(BASELINE[variant]);
+    });
+  }
+
+  it("a proofread inside process_content reads no speakers, even from a reviewed revision in speaker mode", async () => {
+    const s = prepared(REVIEWED);
+    // The stages around proofreading have nothing to do here; they only let the Task reach it and finish.
+    const done = { run: async () => ({}) };
+    Object.assign(s.h.executors, { media: done, chapter: done, summary: done });
+    const taskId = createTaskOfKind(s.h, "process_content", { modelRef: s.modelRef, autoProofread: true }, { contentId: sc.FIXED_CONTENT_ID });
+    s.h.scheduler.kick();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    expect(s.fake.calls).toHaveLength(2);
+    expect(s.fake.calls.some((call) => promptOf(call.request).includes(SPEAKER_LINES_FRAGMENT.text))).toBe(false);
+    const generation = revision(s.h, resultOf(s.h, taskId).revisionId).revision.generation as { promptRefs?: PromptRef[]; speakerContext?: unknown };
+    expect(generation.speakerContext).toBeUndefined();
+    expect(generation.promptRefs).not.toContainEqual(SPEAKER_LINES_FRAGMENT.ref);
+    expect(trafficHash(s, taskId)).toBe(BASELINE.text);
+  });
+
+  /** The value of `{{terms_section}}` as sent: between the prompt's rules and the context before. */
+  const termsValueOf = (request: LlmRequest): string => {
+    const text = promptOf(request);
+    const start = text.indexOf("不要添加说明、标题或空行\n\n") + "不要添加说明、标题或空行\n\n".length;
+    return text.slice(start, text.indexOf("\n\n【只读上下文（前）】"));
+  };
+  /** Every `[s<n>]` line the request shows, context included, in order. */
+  const shownAliases = (request: LlmRequest): number[] => {
+    const text = promptOf(request);
+    return [...text.slice(text.indexOf("【只读上下文（前）】")).matchAll(/^\[s(\d+)\] /gm)].map((match) => Number(match[1]));
+  };
+  const labelOf = (position: number): string | undefined => {
+    const speaker = REVIEWED.assign?.(position);
+    return speaker === undefined ? undefined : speaker === 0 ? "蒋炎岩" : "发言人 2";
+  };
+  /** The section the request should carry, written out independently of the stage. */
+  const expectedSection = (aliases: readonly number[]): string => {
+    const runs: string[] = [];
+    let start = 0;
+    while (start < aliases.length) {
+      let end = start;
+      const label = labelOf((aliases[start] as number) - 1);
+      while (end + 1 < aliases.length && labelOf((aliases[end + 1] as number) - 1) === label) end += 1;
+      if (label !== undefined) runs.push(start === end ? `s${aliases[start]} ${label}` : `s${aliases[start]}–s${aliases[end]} ${label}`);
+      start = end + 1;
+    }
+    return [SPEAKER_LINES_FRAGMENT.text, "蒋炎岩", "发言人 2", ...runs].join("\n");
+  };
+  const frozenOf = (h: Harness) =>
+    h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, sc.FIXED_CONTENT_ID, sc.FIXED_REVISION_ID, "lines"));
+  const errorOf = (h: Harness, taskId: string) => stageRunsOf(h, taskId).filter((run) => run.stage === "proofread").at(-1)?.error;
+
+  for (const variant of ["text", "audio"] as const) {
+    it(`${variant}: appends the speaker section after the terminology, leaves the lines alone, and records the snapshot`, async () => {
+      const audio = variant === "audio";
+      const none = await run(NONE, { audio });
+      const reviewed = await run(REVIEWED, { audio });
+      expect(reviewed.fake.calls).toHaveLength(none.fake.calls.length);
+      const byRange = new Map(none.fake.calls.map((call) => [rangeKeyOf(call.request), call.request]));
+      for (const call of reviewed.fake.calls) {
+        const aliases = shownAliases(call.request);
+        // Context lines are listed too: both ranges have some.
+        expect(aliases.length).toBeGreaterThan(targetsOf(call.request).length);
+        const value = termsValueOf(call.request);
+        expect(value).toBe(`【术语表】\nRAG = 检索增强生成\n\n${expectedSection(aliases)}`);
+        // Without the section the request is the one sent without speakers, clip and all.
+        const plain = byRange.get(rangeKeyOf(call.request)) as LlmRequest;
+        const stripped = JSON.stringify(call.request).replace(JSON.stringify(`\n\n${expectedSection(aliases)}`).slice(1, -1), "");
+        expect(JSON.parse(stripped, (key, v: unknown) => (key === "dataRef" ? "<clip>" : v))).toEqual(
+          JSON.parse(JSON.stringify(plain), (key, v: unknown) => (key === "dataRef" ? "<clip>" : v)),
+        );
+        expect(call.request.messages[0]?.content.some((part) => part.type === "audio") ?? false).toBe(audio);
+      }
+      // The snapshot's digest is part of every range unit's digest.
+      const digests = (r: { h: Harness; taskId: string }) =>
+        workUnitsOf(r.h, r.taskId)
+          .filter((unit) => unit.key.startsWith("proofread:range:"))
+          .map((unit) => unit.inputDigest);
+      expect(digests(reviewed).some((digest) => digests(none).includes(digest))).toBe(false);
+
+      const { revision: published } = revision(reviewed.h, resultOf(reviewed.h, reviewed.taskId).revisionId);
+      const generation = published.generation as { promptRef: PromptRef; promptRefs: PromptRef[]; promptSnapshot: string; speakerContext?: unknown };
+      expect(generation.speakerContext).toEqual(frozenOf(reviewed.h));
+      expect(generation.promptRefs).toEqual([...(audio ? [PROOFREAD_AUDIO_PROMPT.ref] : []), PROOFREAD_TEXT_PROMPT.ref, SPEAKER_LINES_FRAGMENT.ref]);
+      // The prompt snapshot is the effective prompt with the terminology, as without speakers.
+      const plainRevision = revision(none.h, resultOf(none.h, none.taskId).revisionId).revision.generation as { promptSnapshot: string };
+      expect(generation.promptSnapshot).toBe(plainRevision.promptSnapshot);
+      const plainGeneration = revision(none.h, resultOf(none.h, none.taskId).revisionId).revision.generation as { speakerContext?: unknown };
+      expect(plainGeneration.speakerContext).toBeUndefined();
+    });
+  }
+
+  /**
+   * Reviewed, yet not read by speaker: one unnamed speaker, or speakers registered but none
+   * given a sentence. Such a revision is treated as one without speakers.
+   */
+  const NOT_SPEAKER_MODE: ReadonlyArray<readonly [string, sc.SeedOptions]> = [
+    ["one unnamed speaker", { texts: TEXTS, speakers: [{}], assign: (position) => (position % 3 === 0 ? undefined : 0), reviewed: true }],
+    ["named speakers without sentences", { texts: TEXTS, speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }], reviewed: true }],
+  ];
+
+  for (const variant of ["text", "audio"] as const) {
+    it(`${variant}: byte-identical for a reviewed revision that is not in speaker mode`, async () => {
+      const audio = variant === "audio";
+      for (const [, seed] of NOT_SPEAKER_MODE) {
+        const r = await run(seed, { audio });
+        // The branch under test: the mark is there, and still no snapshot is taken.
+        expect(r.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, sc.FIXED_REVISION_ID))).toBeDefined();
+        expect(frozenOf(r.h)).toBeUndefined();
+        expect(r.fake.calls).toHaveLength(2);
+        expect(r.hash).toBe(BASELINE[variant]);
+        const generation = revision(r.h, resultOf(r.h, r.taskId).revisionId).revision.generation as { promptRefs?: PromptRef[]; speakerContext?: unknown };
+        expect(generation.speakerContext).toBeUndefined();
+        expect(generation.promptRefs).not.toContainEqual(SPEAKER_LINES_FRAGMENT.ref);
+      }
+    });
+  }
+
+  it("fails before any call when the read revision's attribution does not match the snapshot", async () => {
+    const s = prepared(REVIEWED);
+    const frozen = frozenOf(s.h);
+    const taskId = createTaskOfKind(
+      s.h,
+      "reproofread",
+      { modelRef: s.modelRef, baseRevisionId: sc.FIXED_REVISION_ID, speakerContext: { ...frozen, attributionDigest: `sha256:${"0".repeat(64)}` } },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    s.h.scheduler.kick();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    expect(errorOf(s.h, taskId)?.code).toBe("internal");
+    expect(s.fake.calls).toHaveLength(0);
+  });
+
+  it("fails each range with invalid_request.prompt_protocol naming the slot, sending nothing, when a frozen prompt lost it", async () => {
+    for (const lost of ["text", "audio"] as const) {
+      const s = prepared(REVIEWED, { audio: lost === "audio" });
+      const promptId = lost === "text" ? "proofread.text" : "proofread.audio";
+      s.h.repository.withTransaction((scope) =>
+        scope.promptOverrides.addVersion({
+          userId: LOCAL.userId,
+          promptId,
+          version: 1,
+          text: lost === "text" ? PROOFREAD_TEXT_PROMPT.text.replace("{{terms_section}}", "") : "请对照音频校对。",
+          createdAt: 1,
+        }),
+      );
+      const taskId = createTaskOfKind(
+        s.h,
+        "reproofread",
+        { modelRef: s.modelRef, baseRevisionId: sc.FIXED_REVISION_ID, promptRefs: { [promptId]: customPromptRef(promptId, 1) }, speakerContext: frozenOf(s.h) },
+        { contentId: sc.FIXED_CONTENT_ID },
+      );
+      s.h.scheduler.kick();
+      expect(await settled(s.h, taskId)).toBe("failed");
+      const error = errorOf(s.h, taskId);
+      expect(error?.code).toBe("invalid_request.prompt_protocol");
+      expect(error?.details).toEqual({ missing: [lost === "text" ? "{{terms_section}}" : "{{proofread_text}}"], unknown: [] });
+      // Audio extraction may have run; no range did.
+      const ranges = workUnitsOf(s.h, taskId).filter((unit) => unit.key.startsWith("proofread:range:"));
+      expect(ranges.length).toBeGreaterThan(0);
+      expect(new Set(ranges.map((unit) => unit.status))).toEqual(new Set(["failed"]));
+      expect(s.fake.calls).toHaveLength(0);
+    }
   });
 });

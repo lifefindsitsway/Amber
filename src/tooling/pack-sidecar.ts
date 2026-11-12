@@ -41,7 +41,8 @@ import { readZip } from "./zip-reader.ts";
  *   directory from the lockfile, never a copy of the development `node_modules`, and the
  *   uninstaller's data remover `uninstall-data.js`;
  * - `bin/`: yt-dlp, ffmpeg, ffprobe and Deno for Windows;
- * - `fonts/`: the burn-in font and its licence, beside `bin/` where the server looks for them;
+ * - `fonts/`: the burn-in font, the two reading fonts and their licences, beside `bin/` where
+ *   the server looks for them;
  * - `legal/`: Amber's `LICENSE`, `THIRD_PARTY_NOTICES.md` and `SOURCE.md`.
  * The Runtime Assets directory is used only when its `SHA256SUMS` is the pinned one and its
  * manifest names the pinned release; every upstream artifact is then checked against that

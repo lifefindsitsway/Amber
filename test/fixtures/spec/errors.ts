@@ -118,6 +118,8 @@ export const EXPECTED_REFINED_CODES = [
   { code: "conflict.primary_changed", detailsKeys: ["currentPrimaryRevisionId"], retryDisposition: null, action: null },
   { code: "conflict.translation_changed", detailsKeys: ["currentRevisionId"], retryDisposition: null, action: null },
   { code: "conflict.draft_changed", detailsKeys: ["currentVersion"], retryDisposition: null, action: null },
+  { code: "conflict.speakers_changed", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "conflict.speaker_capacity", detailsKeys: ["room", "required"], retryDisposition: null, action: null },
   { code: "conflict.cache_inspection_expired", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.last_admin", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.username_taken", detailsKeys: [], retryDisposition: null, action: null },

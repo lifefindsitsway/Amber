@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { PARAGRAPH_GAP_MS, PARAGRAPH_MAX_CHARS } from "../../../../src/shared/defaults.ts";
+import { API_PAGE_SIZE_MAX, PARAGRAPH_GAP_MS, PARAGRAPH_MAX_CHARS } from "../../../../src/shared/defaults.ts";
 import { ApiClient } from "../../../../src/web/api/client.ts";
 import { ApiProvider, createQueryClient } from "../../../../src/web/api/context.tsx";
 import {
@@ -207,10 +207,25 @@ describe("useLatestRedos", () => {
     expect(calls.map((call) => call.path).sort()).toEqual([
       "/api/tasks?contentId=c1&kind=regenerate_chapters&limit=1",
       "/api/tasks?contentId=c1&kind=reproofread&limit=1",
-      "/api/tasks?contentId=c1&kind=retranscribe&limit=1",
+      `/api/tasks?contentId=c1&kind=retranscribe&limit=${API_PAGE_SIZE_MAX}`,
     ]);
     // A Task event on the Content invalidates this prefix (useContentTaskRefresh), so a new redo is read.
     expect(contentKeys.latestRedos("c1", ["proofread"]).slice(0, 2)).toEqual(["content", "c1"]);
+  });
+
+  it("never takes a transcription made only to compare speakers with as the Content's re-transcription", async () => {
+    const comparison = task("cmp", { kind: "retranscribe", contentId: "c1", statusProjection: "failed", comparison: true });
+    const redo = task("asr1", { kind: "retranscribe", contentId: "c1", statusProjection: "succeeded" });
+    let items = [comparison, redo];
+    mockApi({ "GET /api/tasks": () => ({ body: { items, eventSeq: 0 } }) });
+    const client = new ApiClient({ baseUrl: "" }, "local");
+    const wrapper = (props: { children: ReactNode }) => createElement(ApiProvider, { client, queryClient: createQueryClient(), children: props.children });
+    const { result } = renderHook(() => useLatestRedos("c1", ["asr"]), { wrapper });
+    await waitFor(() => expect(result.current.data).toEqual({ asr: "asr1" }));
+
+    items = [comparison];
+    const only = renderHook(() => useLatestRedos("c2", ["asr"]), { wrapper });
+    await waitFor(() => expect(only.result.current.data).toEqual({}));
   });
 });
 
@@ -287,6 +302,14 @@ describe("version picker rules", () => {
     // Only a root counts: an ASR revision derived from another one is not a fresh original.
     expect(newerAsrRevision([...all, imported, revision("asr3", { kind: "asr", parentRevisionId: "asr", createdAt: 10 })], "imp")).toBeUndefined();
     expect(newerAsrRevision([...all, imported, { ...later, archived: true }], "imp")).toBeUndefined();
+  });
+
+  it("never suggests a transcription made only to compare speakers with", () => {
+    const comparison = revision("cmp", { kind: "asr", createdAt: 12, generation: { kind: "asr", purpose: "comparison" } });
+    expect(newerAsrRevision([...all, comparison], "m2")).toBeUndefined();
+    // An older real re-transcription is still suggested over the newer comparison one.
+    const later = revision("asr2", { kind: "asr", createdAt: 10, generation: { kind: "asr" } });
+    expect(newerAsrRevision([...all, later, comparison], "m2")?.id).toBe("asr2");
   });
 
   it("lists no manual revision and nothing behind the history toggle when the Content has none", () => {

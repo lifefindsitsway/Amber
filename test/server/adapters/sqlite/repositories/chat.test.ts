@@ -4,13 +4,30 @@ import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repo
 import type { ChatCompaction, ChatMessage } from "../../../../../src/server/domain/chat.ts";
 import type { ChatWebSearch } from "../../../../../src/server/domain/web-search.ts";
 import type { SegmentId } from "../../../../../src/shared/ids.ts";
-import { countRows, insertRow, openTempDatabase } from "../../../../tools/sqlite.ts";
+import { countRows, insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 
 const T0 = 1_790_000_000_000;
+const SPEAKER_CONTEXT = {
+  version: 1 as const,
+  rules: { id: "speaker.rules", version: 1 },
+  attributionDigest: "d".repeat(64),
+  speakers: [
+    { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+    { id: "s2", ordinal: 2, label: "发言人 2" },
+  ],
+};
 const SEG = "01J00000000000000000000001" as SegmentId;
 const snapshot = { providerProfileId: "p", modelId: "m", providerNameSnapshot: "P", modelDisplaySnapshot: "m", protocolSnapshot: "openai_compatible" as const };
+let opened: ReturnType<typeof openTempDatabase>;
 let db: SqliteConnection;
 let repository: SqliteRepository;
+
+/** Closes the database and opens its file again, so what is read next comes from disk. */
+function reopen(): void {
+  opened = reopenTempDatabase(opened);
+  db = opened.db;
+  repository = new SqliteRepository(db);
+}
 
 function message(id: string, overrides: Partial<ChatMessage> = {}): ChatMessage {
   return { id, threadId: "t", role: "user", text: `text ${id}`, status: "complete", citations: [], createdAt: T0, ...overrides };
@@ -25,7 +42,8 @@ function compaction(id: string, throughMessageId: string, overrides: Partial<Cha
 const foreignKeyViolations = () => db.prepare("PRAGMA foreign_key_check").all();
 
 beforeEach(() => {
-  db = openTempDatabase().db;
+  opened = openTempDatabase();
+  db = opened.db;
   repository = new SqliteRepository(db);
   for (const id of ["alice", "bob"]) insertRow(db, "user", { id, role: "user", status: "active", created_at: T0 });
   insertRow(db, "content", { id: "c", user_id: "alice", source_kind: "local", processing_status: "queued", created_at: T0, updated_at: T0 });
@@ -175,5 +193,82 @@ describe("chat repository", () => {
     expect(repository.withTransaction((scope) => scope.chat.interruptStreaming(T0 + 7))).toBe(1);
     expect(repository.withTransaction((scope) => scope.chat.getMessage("alice", "a1"))).toMatchObject({ status: "interrupted", finishedAt: T0 + 7 });
     expect(repository.withTransaction((scope) => scope.chat.getMessage("alice", "a2"))?.finishedAt).toBe(T0 + 2);
+  });
+});
+
+describe("chat repository: speaker context", () => {
+  it("keeps an answer's speakers from creation through its end and across a reopen, and reads none where none were stored or the value is of another shape", () => {
+    repository.withTransaction((scope) => {
+      scope.chat.insertMessage("alice", message("q", { createdAt: T0 }));
+      scope.chat.insertMessage("alice", message("a", { role: "assistant", status: "streaming", modelRef: snapshot, speakerContext: SPEAKER_CONTEXT, createdAt: T0 + 1 }));
+      scope.chat.insertMessage("alice", message("b", { role: "assistant", status: "complete", modelRef: snapshot, createdAt: T0 + 2 }));
+      scope.chat.finishMessage("alice", { id: "a", text: "done", status: "interrupted", citations: [], finishedAt: T0 + 3 });
+    });
+    insertRow(db, "chat_message", {
+      id: "c", thread_id: "t", role: "assistant", text: "x", status: "complete", citations_json: "[]", created_at: T0 + 4, speaker_context_json: '"text"',
+    });
+    const written = repository.withTransaction((scope) => scope.chat.listMessages("alice", "t"));
+    reopen();
+    const messages = repository.withTransaction((scope) => scope.chat.listMessages("alice", "t"));
+    expect(messages).toEqual(written);
+    expect(messages.find((m) => m.id === "a")).toEqual({
+      ...message("a", { role: "assistant", status: "interrupted", modelRef: snapshot, speakerContext: SPEAKER_CONTEXT, createdAt: T0 + 1 }),
+      text: "done",
+      finishedAt: T0 + 3,
+    });
+    for (const id of ["q", "b", "c"]) {
+      const read = messages.find((m) => m.id === id);
+      expect(read && "speakerContext" in read).toBe(false);
+    }
+  });
+
+  it("records the material an answer was planned with, keeps it through its end and across a reopen, and reads none where none was stored or the value is of another shape", () => {
+    repository.withTransaction((scope) => {
+      scope.chat.insertMessage("alice", message("q", { createdAt: T0 }));
+      scope.chat.insertMessage("alice", message("a", { role: "assistant", status: "streaming", modelRef: snapshot, createdAt: T0 + 1 }));
+      scope.chat.insertMessage("alice", message("b", { role: "assistant", status: "complete", modelRef: snapshot, contextUsed: { mode: "full", summaryOmitted: true }, createdAt: T0 + 2 }));
+    });
+    // Only an answer of the owner's own thread is written.
+    expect(repository.withTransaction((scope) => scope.chat.recordContextUsed("bob", "a", { mode: "full" }))).toBe(false);
+    expect(repository.withTransaction((scope) => scope.chat.recordContextUsed("alice", "q", { mode: "full" }))).toBe(false);
+    expect(repository.withTransaction((scope) => scope.chat.recordContextUsed("alice", "missing", { mode: "full" }))).toBe(false);
+    expect(repository.withTransaction((scope) => scope.chat.getMessage("alice", "a"))).not.toHaveProperty("contextUsed");
+    expect(repository.withTransaction((scope) => scope.chat.recordContextUsed("alice", "a", { mode: "retrieval", speakerClips: true }))).toBe(true);
+    repository.withTransaction((scope) => scope.chat.finishMessage("alice", { id: "a", text: "partial", status: "interrupted", citations: [], finishedAt: T0 + 3 }));
+    insertRow(db, "chat_message", {
+      id: "c", thread_id: "t", role: "assistant", text: "x", status: "complete", citations_json: "[]", created_at: T0 + 4, context_used_json: '{"mode":"sideways"}',
+    });
+    reopen();
+    const messages = repository.withTransaction((scope) => scope.chat.listMessages("alice", "t"));
+    expect(messages.find((m) => m.id === "a")?.contextUsed).toEqual({ mode: "retrieval", speakerClips: true });
+    expect(messages.find((m) => m.id === "a")?.status).toBe("interrupted");
+    expect(messages.find((m) => m.id === "b")?.contextUsed).toEqual({ mode: "full", summaryOmitted: true });
+    for (const id of ["q", "c"]) {
+      const read = messages.find((m) => m.id === id);
+      expect(read && "contextUsed" in read).toBe(false);
+    }
+  });
+
+  it("stores a compaction's speaker bases with it, keeps them across a reopen, never changes them, and reads none where none were stored", () => {
+    const bases = [{ transcriptRevisionId: "r1", speakerContext: SPEAKER_CONTEXT, citedSegmentIds: [SEG as string] }];
+    repository.withTransaction((scope) => {
+      scope.chat.insertMessage("alice", message("m1"));
+      scope.chat.insertCompaction("alice", compaction("k1", "m1", { speakerBases: bases }));
+      scope.chat.insertCompaction("alice", compaction("k2", "m1"));
+    });
+    const written = repository.withTransaction((scope) => scope.chat.getCompaction("alice", "k1"));
+    reopen();
+    const read = repository.withTransaction((scope) => scope.chat.getCompaction("alice", "k1"));
+    expect(read).toEqual(written);
+    expect(read).toEqual(compaction("k1", "m1", { speakerBases: bases }));
+    const older = repository.withTransaction((scope) => scope.chat.getCompaction("alice", "k2"));
+    expect(older && "speakerBases" in older).toBe(false);
+    expect(() => db.prepare("UPDATE chat_compaction SET speaker_bases_json = '[]' WHERE id = 'k1'").run()).toThrow(/immutable/);
+    insertRow(db, "chat_compaction", {
+      id: "k3", thread_id: "t", through_message_id: "m1", body: "b", model_ref_json: JSON.stringify(snapshot), prompt_ref_json: '{"id":"chat.compaction","version":1}',
+      prompt_snapshot: "p", created_at: T0, speaker_bases_json: '["d"]',
+    });
+    const odd = repository.withTransaction((scope) => scope.chat.getCompaction("alice", "k3"));
+    expect(odd && "speakerBases" in odd).toBe(false);
   });
 });

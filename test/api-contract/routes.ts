@@ -58,6 +58,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/contents/:id/transcript/proofread", modes: BOTH },
   { method: "POST", path: "/contents/:id/transcript/retranscribe", modes: BOTH },
   { method: "GET", path: "/transcript/segments/:sid/map", modes: BOTH },
+  { method: "GET", path: "/transcript/revisions/:rid/speaker-review", modes: BOTH },
+  { method: "PUT", path: "/transcript/revisions/:rid/speakers-confirmed", modes: BOTH },
   // speakers
   { method: "GET", path: "/contents/:id/speakers", modes: BOTH },
   { method: "POST", path: "/contents/:id/speakers", modes: BOTH },
@@ -129,6 +131,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/collections/:id/export", modes: BOTH },
   { method: "POST", path: "/contents/:id/burn", modes: ["local"] },
   { method: "GET", path: "/fonts/subtitle", modes: BOTH },
+  { method: "GET", path: "/fonts/reader/:face", modes: BOTH },
   // media
   { method: "GET", path: "/media/:assetId", modes: ["server"] },
   { method: "HEAD", path: "/media/:assetId", modes: ["server"] },

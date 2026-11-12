@@ -24,6 +24,7 @@ import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
 import { freezePromptRefs } from "./prompts.ts";
+import { freezeSpeakerContext } from "./speaker-context.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import { outputLanguageFor } from "./settings.ts";
 import type { TaskControl } from "./tasks.ts";
@@ -47,8 +48,9 @@ export interface DerivedTaskServiceOptions {
  * The explicit "proofread again", "regenerate chapters", "recompute highlights" and
  * "translate" actions: each creates a single-stage Task whose request freezes its base
  * transcript at submission as `baseRevisionId`, so a later switch of the primary does not
- * change what the Task works on. A model may be left out; the stage then waits for one to
- * be chosen through retry-stage.
+ * change what the Task works on — with its speakers, when they were reviewed and are read
+ * by speaker, so a later rename or review change does not either. A model may be left out;
+ * the stage then waits for one to be chosen through retry-stage.
  */
 export class DerivedTaskService {
   private readonly options: DerivedTaskServiceOptions;
@@ -62,17 +64,20 @@ export class DerivedTaskService {
   }
 
   proofread(principal: RequestPrincipal, contentId: string, body: DerivedTaskRequest, idempotencyKey?: string): Promise<IdempotentResult<TaskAcceptedDto>> {
-    return this.create(principal, contentId, body, idempotencyKey, PROOFREAD_ROUTE, "reproofread", (content, scope) =>
-      canonicalJson(
+    return this.create(principal, contentId, body, idempotencyKey, PROOFREAD_ROUTE, "reproofread", (content, scope) => {
+      const promptRefs = freezePromptRefs(scope, principal.userId, "reproofread");
+      const baseRevisionId = primaryOf(content);
+      return canonicalJson(
         reproofreadRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "reproofread",
-          promptRefs: freezePromptRefs(scope, principal.userId, "reproofread"),
+          promptRefs,
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
-          baseRevisionId: primaryOf(content),
+          baseRevisionId,
+          ...freezeSpeakerContext(scope, principal.userId, { kind: "reproofread", contentId: content.id, revisionId: baseRevisionId, promptRefs }, "lines"),
         }),
-      ),
-    );
+      );
+    });
   }
 
   /**
@@ -80,34 +85,40 @@ export class DerivedTaskService {
    * output-language default chain.
    */
   regenerateChapters(principal: RequestPrincipal, contentId: string, body: DerivedTaskRequest, idempotencyKey?: string): Promise<IdempotentResult<TaskAcceptedDto>> {
-    return this.create(principal, contentId, body, idempotencyKey, REGENERATE_CHAPTERS_ROUTE, "regenerate_chapters", (content, scope) =>
-      canonicalJson(
+    return this.create(principal, contentId, body, idempotencyKey, REGENERATE_CHAPTERS_ROUTE, "regenerate_chapters", (content, scope) => {
+      const promptRefs = freezePromptRefs(scope, principal.userId, "regenerate_chapters");
+      const baseRevisionId = primaryOf(content);
+      return canonicalJson(
         regenerateChaptersRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "regenerate_chapters",
-          promptRefs: freezePromptRefs(scope, principal.userId, "regenerate_chapters"),
+          promptRefs,
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
-          baseRevisionId: primaryOf(content),
+          baseRevisionId,
           outputLanguage: outputLanguageFor(scope, principal.userId, undefined),
+          ...freezeSpeakerContext(scope, principal.userId, { kind: "regenerate_chapters", contentId: content.id, revisionId: baseRevisionId, promptRefs }, "transcript"),
         }),
-      ),
-    );
+      );
+    });
   }
 
   /** Like chapters, the language of the highlight reasons is frozen from the user's output-language default chain. */
   recomputeHighlights(principal: RequestPrincipal, contentId: string, body: DerivedTaskRequest, idempotencyKey?: string): Promise<IdempotentResult<TaskAcceptedDto>> {
-    return this.create(principal, contentId, body, idempotencyKey, RECOMPUTE_HIGHLIGHTS_ROUTE, "recompute_highlights", (content, scope) =>
-      canonicalJson(
+    return this.create(principal, contentId, body, idempotencyKey, RECOMPUTE_HIGHLIGHTS_ROUTE, "recompute_highlights", (content, scope) => {
+      const promptRefs = freezePromptRefs(scope, principal.userId, "recompute_highlights");
+      const baseRevisionId = primaryOf(content);
+      return canonicalJson(
         recomputeHighlightsRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "recompute_highlights",
-          promptRefs: freezePromptRefs(scope, principal.userId, "recompute_highlights"),
+          promptRefs,
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
-          baseRevisionId: primaryOf(content),
+          baseRevisionId,
           outputLanguage: outputLanguageFor(scope, principal.userId, undefined),
+          ...freezeSpeakerContext(scope, principal.userId, { kind: "recompute_highlights", contentId: content.id, revisionId: baseRevisionId, promptRefs }, "transcript"),
         }),
-      ),
-    );
+      );
+    });
   }
 
   /**
@@ -131,14 +142,16 @@ export class DerivedTaskService {
           params: { detail: "targetLanguages" },
         });
       }
+      const promptRefs = freezePromptRefs(scope, principal.userId, "translate");
       return canonicalJson(
         translateRequestSchema.parse({
           requestSchemaVersion: 1,
           kind: "translate",
-          promptRefs: freezePromptRefs(scope, principal.userId, "translate"),
+          promptRefs,
           targetLanguages: normalized.languages,
           ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
           baseRevisionId: source.id,
+          ...freezeSpeakerContext(scope, principal.userId, { kind: "translate", contentId: content.id, revisionId: source.id, promptRefs }, "lines"),
         }),
       );
     });

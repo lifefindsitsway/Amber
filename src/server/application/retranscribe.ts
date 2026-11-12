@@ -2,12 +2,13 @@ import { monotonicFactory } from "ulid";
 import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
+import { comparisonSpeakerRoom } from "../domain/comparison-revision.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { isPlatform } from "../domain/platform.ts";
 import type { RetranscribeRequest } from "../domain/task-request.ts";
 import type { AsrModelRef } from "../domain/model-ref.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
-import type { Repository } from "../ports/repository.ts";
+import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { diskLowError, type DiskUsageProbe } from "../pipeline/disk-watermark.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
 import { laneConflict, laneKeys, mutationLaneError } from "../pipeline/lane.ts";
@@ -40,6 +41,11 @@ export interface RetranscribeServiceOptions {
  * needs media to take audio from — the original or a cached file of a local Content; a
  * platform Content can always download its audio — and is refused up front otherwise, so
  * nothing is queued that could only fail. The ASR profile is frozen into the request.
+ *
+ * With `comparison` the transcription is made only to compare speakers with: speaker
+ * identification is then required, and the Content must have room for the new speakers.
+ * Both are checked here, before anything is queued and so before any paid call; publishing
+ * such a revision changes nothing else about the Content.
  */
 export class RetranscribeService {
   private readonly options: RetranscribeServiceOptions;
@@ -58,14 +64,24 @@ export class RetranscribeService {
     idempotencyKey?: string,
     asrModelRef?: AsrModelRef,
     diarization?: DiarizationRequest,
+    comparison = false,
   ): Promise<IdempotentResult<TaskAcceptedDto>> {
     const owner = principal.userId;
     const context = {
       userId: owner,
       route: RETRANSCRIBE_ROUTE,
       key: idempotencyKey,
-      requestDigest: jsonRequestDigest({ contentId, ...(asrModelRef === undefined ? {} : { asrModelRef }), ...(diarization === undefined ? {} : { diarization }) }),
+      requestDigest: jsonRequestDigest({
+        contentId,
+        ...(asrModelRef === undefined ? {} : { asrModelRef }),
+        ...(diarization === undefined ? {} : { diarization }),
+        ...(comparison ? { comparison: true } : {}),
+      }),
     };
+    // A comparison is pointless without speakers: identification is required, whatever was asked.
+    const wanted: DiarizationRequest | undefined = comparison
+      ? { mode: "required", ...(diarization?.speakerCount === undefined ? {} : { speakerCount: diarization.speakerCount }) }
+      : diarization;
     const replay = this.options.repository.withTransaction((scope) =>
       idempotencyKey === undefined ? undefined : scope.idempotency.get(owner, RETRANSCRIBE_ROUTE, idempotencyKey),
     );
@@ -87,16 +103,20 @@ export class RetranscribeService {
         // Speaker identification is frozen the same way: the request's own, else by the user's
         // setting now. A model already chosen is checked here so that a request that cannot be
         // honored is refused before it is queued.
-        const identification = diarizationForSubmission(scope, owner, diarization, {
+        const identification = diarizationForSubmission(scope, owner, wanted, {
           asrModelRef: frozen,
           ...(this.options.asrDescriptors === undefined ? {} : { descriptorOf: this.options.asrDescriptors }),
           ...(content.durationMs === undefined ? {} : { durationMs: content.durationMs }),
         });
+        if (comparison) {
+          checkComparisonRoom(scope, owner, contentId, content.primaryTranscriptRevisionId);
+        }
         const request: RetranscribeRequest = {
           requestSchemaVersion: 1,
           kind: "retranscribe",
           ...(frozen === undefined ? {} : { asrModelRef: frozen }),
           diarization: identification,
+          ...(comparison ? { comparison: true as const } : {}),
         };
         const requestJson = canonicalJson(request);
         if (!isPlatform(content.source.kind) && availableMediaSource(scope, owner, contentId) === undefined) {
@@ -123,5 +143,20 @@ export class RetranscribeService {
       this.options.control.kick();
     }
     return result;
+  }
+}
+
+/**
+ * Refuses a comparison transcription the Content has no room for: its speakers are registered
+ * when it is published, and a model may split each speaker of the primary into several labels.
+ */
+function checkComparisonRoom(scope: RepositoryScope, owner: string, contentId: string, primaryRevisionId: string | undefined): void {
+  const named = new Set<string>();
+  for (const segment of primaryRevisionId === undefined ? [] : scope.transcripts.listSegments(owner, primaryRevisionId)) {
+    if (segment.speakerId !== undefined) named.add(segment.speakerId);
+  }
+  const { room, required, enough } = comparisonSpeakerRoom(scope.speakers.count(owner, contentId), named.size);
+  if (!enough) {
+    throw amberError("conflict", "not enough room for the speakers of a comparison transcription", { code: "conflict.speaker_capacity", details: { room, required } });
   }
 }

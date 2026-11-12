@@ -90,6 +90,8 @@ export const transcriptRevisionDtoSchema = z.object({
   generation: z.record(z.string(), z.unknown()),
   segmentCount: z.number().int().nonnegative(),
   createdAt: epochMsSchema,
+  /** When the user marked this revision's speakers as reviewed; absent = not reviewed. */
+  speakersConfirmedAt: epochMsSchema.exactOptional(),
 });
 export type TranscriptRevisionDto = z.infer<typeof transcriptRevisionDtoSchema>;
 

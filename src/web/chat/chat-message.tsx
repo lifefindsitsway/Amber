@@ -2,13 +2,16 @@ import { Copy, CornerDownRight, Quote } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatQuote, WebSourceDto } from "../../shared/dto/chat.ts";
+import type { SpeakerContextDto } from "../../shared/dto/speaker-context.ts";
 import type { ChatMessageStatus } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { answerPlainText } from "../components/plain-text.ts";
 import { RichText } from "../components/rich-text.tsx";
+import { CitationCard, useCitedSentences } from "../pages/content/citation-card.tsx";
 import { useContentPage } from "../pages/content/content-context.tsx";
 import { useSegments } from "../pages/content/content-data.ts";
+import { useSentencePlayback } from "../pages/content/sentence-playback.ts";
 import { copyText } from "../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
 import { Spinner } from "../ui/feedback.tsx";
@@ -61,6 +64,8 @@ export function AssistantMessage(props: {
   failedAttempt?: { reason: string; time: string } | undefined;
   /** Answered before the Content had a transcript (metadata mode): always labelled as such. */
   ungrounded: boolean;
+  /** Present only when the speakers this answer was given no longer match now. */
+  speakerContext?: SpeakerContextDto | undefined;
   footer?: AnswerFooter | undefined;
   onSuggestion: (text: string) => void;
 }) {
@@ -73,6 +78,8 @@ export function AssistantMessage(props: {
     return map;
   }, [segments.data, props.knownTimes]);
   const sources = useMemo(() => new Map(props.webSources.map((source) => [source.id, source])), [props.webSources]);
+  const citedSentence = useCitedSentences(page.content.id, props.revisionId);
+  const playback = useSentencePlayback();
   // A citation opens exactly the revision the answer relied on.
   const onCitation = (segmentId: string): void => {
     const revisionId = props.citations.find((citation) => citation.segmentId === segmentId)?.transcriptRevisionId ?? props.revisionId;
@@ -111,7 +118,22 @@ export function AssistantMessage(props: {
           </span>
         )
       ) : (
-        <RichText source={props.text} timeOf={(segmentId) => times.get(segmentId)} onCitation={onCitation} webSourceOf={(sourceId) => sources.get(sourceId)} />
+        <RichText
+          source={props.text}
+          timeOf={(segmentId) => times.get(segmentId)}
+          onCitation={onCitation}
+          webSourceOf={(sourceId) => sources.get(sourceId)}
+          wrapCitation={(segmentId, badge) => (
+            <CitationCard contentId={page.content.id} cited={citedSentence(segmentId)} playback={playback}>
+              {badge}
+            </CitationCard>
+          )}
+        />
+      )}
+      {props.speakerContext === undefined ? null : (
+        <p role="note" className="mt-1 text-xs text-muted" data-testid="chat-speaker-mismatch" data-state={props.speakerContext.state}>
+          {t("chat.speakerMismatch", { names: props.speakerContext.speakers.map((speaker) => speaker.label).join(t("chat.speakerSeparator")) })}
+        </p>
       )}
       {props.status === "interrupted" || props.status === "failed" ? (
         <p className="mt-1 text-xs text-danger" data-testid="chat-message-status">

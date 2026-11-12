@@ -1,8 +1,12 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup as cleanupRender, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PLAYER_SKIP_SECONDS,
+  SUBTITLE_ORIGINAL_COLOR,
+  SUBTITLE_SPEAKER_MAX_PARTS,
+  SUBTITLE_TRANSLATION_COLOR,
+  SUBTITLE_TRANSLATION_FONT_SIZE,
   SUBTITLE_ASS_EM_RATIO,
   SUBTITLE_NUDGE_BP,
   SUBTITLE_NUDGE_FAST_BP,
@@ -11,7 +15,14 @@ import {
   SUBTITLE_PLACEMENT_Y_BP,
   SUBTITLE_WRAP_RATIO,
 } from "../../../src/shared/defaults.ts";
-import { sliceCues, type TimedSubtitle } from "../../../src/shared/subtitle-geometry.ts";
+import {
+  labelSubtitleCues,
+  sliceCues,
+  sliceSubtitleUnits,
+  speakerLabelFontSize,
+  type SlicedUnitSubtitle,
+  type TimedSubtitle,
+} from "../../../src/shared/subtitle-geometry.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../src/shared/subtitle-style.ts";
 import { LocalPlayer } from "../../../src/web/player/local-player.tsx";
 import { PlayerController, PlayerControllerProvider } from "../../../src/web/player/player-controller.tsx";
@@ -25,7 +36,15 @@ const SLICES: TimedSubtitle[] = [
 ];
 
 /** A page-assembled model over the real preferences, with the mode and editor state held here. */
-function Harness(props: { slices: readonly TimedSubtitle[]; mode?: SubtitleDisplayMode; editing?: boolean; status?: SubtitleStatus; retry?: () => void; audioOnly?: boolean }) {
+function Harness(props: {
+  slices: readonly TimedSubtitle[];
+  units?: readonly SlicedUnitSubtitle[];
+  mode?: SubtitleDisplayMode;
+  editing?: boolean;
+  status?: SubtitleStatus;
+  retry?: () => void;
+  audioOnly?: boolean;
+}) {
   const prefs = useSubtitlePrefs("u1", "c1");
   const [mode, setMode] = useState<SubtitleDisplayMode>(props.mode ?? "original");
   const [editing, setEditing] = useState(props.editing === true);
@@ -44,6 +63,7 @@ function Harness(props: { slices: readonly TimedSubtitle[]; mode?: SubtitleDispl
     status: props.status ?? "ready",
     retry: props.retry ?? (() => undefined),
     slices: props.slices,
+    ...(props.units === undefined ? {} : { units: props.units }),
     fontFallback: false,
     appearance: prefs.appearance,
     setAppearance: prefs.setAppearance,
@@ -65,9 +85,9 @@ function Harness(props: { slices: readonly TimedSubtitle[]; mode?: SubtitleDispl
 }
 
 function show(props: Parameters<typeof Harness>[0]) {
-  render(<Harness {...props} />);
+  const view = render(<Harness {...props} />);
   const root = screen.getByTestId("player-local");
-  return { root, video: root.querySelector("video") as HTMLVideoElement };
+  return { root, video: root.querySelector("video") as HTMLVideoElement, rerender: (next: Parameters<typeof Harness>[0]) => view.rerender(<Harness {...next} />) };
 }
 
 /** Gives the `<video>` a box and an intrinsic size, as layout and metadata would. */
@@ -310,6 +330,435 @@ describe("subtitle overlay", () => {
     show({ slices: SLICES, mode: "off" });
     expect(screen.queryByTestId("subtitle-overlay")).toBeNull();
     expect(screen.getByTestId("player-subtitles")).toBeTruthy();
+  });
+});
+
+describe("subtitle overlay with speaker labels", () => {
+  const LABELS = new Map([
+    ["a", "张三"],
+    ["b", "李四"],
+    ["c", "王五"],
+  ]);
+  /** Units as the content page builds them: cues labelled by the mode's rule, then sliced keeping each cue a unit. */
+  const unitsOf = (cues: TimedSubtitle[], speakers: (string | undefined)[], mode: "change" | "every" = "change") => sliceSubtitleUnits(labelSubtitleCues(cues, speakers, LABELS, mode));
+  const MONOLOGUE: TimedSubtitle[] = [
+    { startMs: 0, endMs: 1_000, original: "一", translation: "one" },
+    { startMs: 1_000, endMs: 2_000, original: "二", translation: "two" },
+    { startMs: 3_000, endMs: 4_000, original: "三", translation: "three" },
+  ];
+  const FILL = "rgba(16, 32, 48, 0.4)";
+  /** The drawn rows only, without the hidden line-box layer that repeats them. */
+  const rows = (): string[] => [...screen.getByTestId("subtitle-text").querySelectorAll(":scope > [data-line]")].map((row) => `${row.getAttribute("data-line")}:${row.textContent}`);
+
+  function labelled(props: { units: readonly SlicedUnitSubtitle[]; mode?: SubtitleDisplayMode; scope?: "both" | "original" | "translation"; order?: "original_first" | "translation_first" }) {
+    const defaults = defaultSubtitleAppearance();
+    writeAppearance("u1", {
+      ...defaults,
+      speaker: "change",
+      bilingualOrder: props.order ?? defaults.bilingualOrder,
+      ...(props.scope === undefined ? {} : { background: { ...defaults.background, enabled: true, color: "#102030", opacityPct: 40, scope: props.scope } }),
+    });
+    const mode = props.mode ?? "original";
+    const shown = show({ slices: [], units: props.units, mode });
+    layout(shown.video, { width: 1280, height: 720 }, { width: 1920, height: 1080 });
+    return { video: shown.video, rerender: (units: readonly SlicedUnitSubtitle[]) => shown.rerender({ slices: [], units, mode }) };
+  }
+  const seek = (video: HTMLVideoElement, seconds: number) => {
+    video.currentTime = seconds;
+    fireEvent.seeking(video);
+    fireEvent.seeked(video);
+  };
+  const playTo = (video: HTMLVideoElement, seconds: number) => {
+    video.currentTime = seconds;
+    fireEvent.timeUpdate(video);
+  };
+
+  it("draws the label above the cue's lines in the subtitle font, the first line's colour and the outline, scaled from its size", () => {
+    labelled({ units: unitsOf(MONOLOGUE, ["a", "a", "a"]), mode: "bilingual", order: "translation_first" });
+    expect(lines()).toEqual(["speaker:张三", "translation:one", "original:一"]);
+    const text = screen.getByTestId("subtitle-text");
+    const label = text.querySelector("[data-line='speaker']") as HTMLElement;
+    const size = speakerLabelFontSize(SUBTITLE_TRANSLATION_FONT_SIZE);
+    expect(parseFloat(label.style.fontSize)).toBeCloseTo((size * SUBTITLE_ASS_EM_RATIO * 720) / 1080);
+    expect(parseFloat(label.style.lineHeight)).toBeCloseTo((size * 720) / 1080);
+    expect(label.style.color).toBe((text.querySelector("[data-line='translation']") as HTMLElement).style.color);
+    expect(label.style.getPropertyValue("-webkit-text-stroke")).toBe((text.querySelector("[data-line='original']") as HTMLElement).style.getPropertyValue("-webkit-text-stroke"));
+    expect(label.style.getPropertyValue("-webkit-text-stroke")).not.toBe("");
+    expect(SUBTITLE_TRANSLATION_COLOR).not.toBe(SUBTITLE_ORIGINAL_COLOR);
+  });
+
+  it("shows each mode's lines under the label with no box, a block box or a one-line box", () => {
+    const shapes = {
+      original: { cue: { startMs: 0, endMs: 1_000, original: "Hello" }, rows: ["speaker:张三", "original:Hello"] },
+      translation: { cue: { startMs: 0, endMs: 1_000, translation: "你好" }, rows: ["speaker:张三", "translation:你好"] },
+      bilingual: { cue: { startMs: 0, endMs: 1_000, original: "Hello", translation: "你好" }, rows: ["speaker:张三", "original:Hello", "translation:你好"] },
+    } as const;
+    for (const [mode, shape] of Object.entries(shapes) as Array<[keyof typeof shapes, (typeof shapes)[keyof typeof shapes]]>) {
+      for (const scope of [undefined, "both", "translation"] as const) {
+        cleanupRender();
+        localStorage.clear();
+        resetSubtitlePrefsMemory();
+        labelled({ units: unitsOf([shape.cue], ["a"]), mode, ...(scope === undefined ? {} : { scope }) });
+        expect(rows(), `${mode} ${scope}`).toEqual(shape.rows);
+        // One language always takes the block box; two take the one-line box the scope asks for.
+        const block = scope !== undefined && (scope === "both" || mode !== "bilingual");
+        expect(screen.queryByTestId("subtitle-background") !== null, `${mode} ${scope}`).toBe(block);
+        const lineBoxes = screen.queryAllByTestId("subtitle-line-background").map((box) => `${box.getAttribute("data-line")}:${box.textContent}`);
+        // The label heads the original line here, which the translation box leaves bare.
+        expect(lineBoxes, `${mode} ${scope}`).toEqual(scope === "translation" && mode === "bilingual" ? ["translation:你好"] : []);
+      }
+    }
+  });
+
+  it("boxes a label in a one-line box when the line it heads is boxed, and repeats it in the hidden layer", () => {
+    labelled({ units: unitsOf([{ startMs: 0, endMs: 1_000, original: "Hello", translation: "你好" }], ["a"]), mode: "bilingual", scope: "translation", order: "translation_first" });
+    const boxes = screen.getAllByTestId("subtitle-line-background");
+    expect(boxes.map((box) => `${box.getAttribute("data-line")}:${box.textContent}`)).toEqual(["speaker:张三", "translation:你好"]);
+    for (const box of boxes) expect(box.style.background).toBe(FILL);
+    const layer = boxes[0]?.parentElement?.parentElement as HTMLElement;
+    expect([...layer.children].map((row) => row.textContent)).toEqual(["张三", "你好", "Hello"]);
+    // The block box, when on, holds the label: it spans the whole text box the label is in.
+    cleanupRender();
+    localStorage.clear();
+    resetSubtitlePrefsMemory();
+    labelled({ units: unitsOf([{ startMs: 0, endMs: 1_000, original: "Hello", translation: "你好" }], ["a"]), mode: "bilingual", scope: "both" });
+    const background = screen.getByTestId("subtitle-background");
+    expect(background.parentElement).toBe(screen.getByTestId("subtitle-text"));
+    expect(background.parentElement?.querySelector("[data-line='speaker']")?.textContent).toBe("张三");
+  });
+
+  it("stacks two overlapping cues as two units, each under its own label, and names none in a crowd", () => {
+    const pair = unitsOf(
+      [
+        { startMs: 0, endMs: 2_000, original: "A" },
+        { startMs: 1_000, endMs: 3_000, original: "B" },
+      ],
+      ["a", "b"],
+    );
+    const { video } = labelled({ units: pair });
+    seek(video, 1.5);
+    expect(lines()).toEqual(["speaker:张三", "original:A", "speaker:李四", "original:B"]);
+    cleanupRender();
+    const crowd = Array.from({ length: SUBTITLE_SPEAKER_MAX_PARTS + 1 }, (_, index) => ({ startMs: index * 100, endMs: 2_000, original: `L${index}` }));
+    const second = labelled({ units: unitsOf(crowd, ["a", "b", "c"]) });
+    seek(second.video, 1.5);
+    expect(lines()).toEqual(crowd.map((cue) => `original:${cue.original}`));
+  });
+
+  it("gives a name the crowd held back to the turn's next cue that is not crowded, from its start", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 3_000, original: "B" },
+      { startMs: 0, endMs: 3_000, original: "C" },
+      { startMs: 1_000, endMs: 2_000, original: "A1" },
+      { startMs: 3_000, endMs: 4_000, original: "A2" },
+      { startMs: 4_000, endMs: 5_000, original: "A3" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["b", "c", "a", "a", "a"]) });
+    expect(lines()).toEqual(["original:B", "original:C"]);
+    playTo(video, 1.5);
+    expect(lines()).toEqual(["original:B", "original:C", "original:A1"]);
+    playTo(video, 3.2);
+    expect(lines()).toEqual(["speaker:张三", "original:A2"]);
+    playTo(video, 4.2);
+    expect(lines()).toEqual(["original:A3"]);
+  });
+
+  it("on change, names the first cue of a turn, and the first cue shown after a seek for as long as it is shown", () => {
+    const originals = MONOLOGUE.map(({ translation: _translation, ...cue }) => cue);
+    const { video } = labelled({ units: unitsOf(originals, ["a", "a", "a"]) });
+    expect(lines()).toEqual(["speaker:张三", "original:一"]);
+    seek(video, 1.4);
+    expect(lines()).toEqual(["speaker:张三", "original:二"]);
+    playTo(video, 1.9);
+    expect(lines()).toEqual(["speaker:张三", "original:二"]);
+    // A seek into a gap names the next cue shown.
+    seek(video, 2.5);
+    expect(screen.queryByTestId("subtitle-block")).toBeNull();
+    playTo(video, 3.2);
+    expect(lines()).toEqual(["speaker:张三", "original:三"]);
+  });
+
+  it("keeps a name earned by a seek on its cue when another cue joins it, and leaves the next cue to the rule", () => {
+    // One speaker throughout, so on change only the first cue is named by the rule itself.
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "W" },
+      { startMs: 1_000, endMs: 3_000, original: "X" },
+      { startMs: 2_000, endMs: 4_000, original: "Y" },
+      { startMs: 4_000, endMs: 5_000, original: "Z" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a", "a"]) });
+    seek(video, 1.5);
+    expect(lines()).toEqual(["speaker:张三", "original:X"]);
+    // Y joins: the slice changes, X is still the cue the seek landed on.
+    playTo(video, 2.5);
+    expect(lines()).toEqual(["speaker:张三", "original:X", "original:Y"]);
+    // X has ended; Y was never the first cue after the seek, so the rule decides and leaves it bare.
+    playTo(video, 3.5);
+    expect(lines()).toEqual(["original:Y"]);
+    playTo(video, 4.5);
+    expect(lines()).toEqual(["original:Z"]);
+  });
+
+  it("names the next cue to appear after a seek into a gap, and only that cue", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 2_000, endMs: 3_000, original: "B" },
+      { startMs: 3_000, endMs: 4_000, original: "C" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a"]) });
+    playTo(video, 0.5);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    seek(video, 1.5);
+    expect(screen.queryByTestId("subtitle-block")).toBeNull();
+    playTo(video, 1.8);
+    expect(screen.queryByTestId("subtitle-block")).toBeNull();
+    playTo(video, 2.2);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    playTo(video, 2.9);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    playTo(video, 3.2);
+    expect(lines()).toEqual(["original:C"]);
+  });
+
+  it("never adds or removes a label while dragging within one cue", () => {
+    const originals = MONOLOGUE.map(({ translation: _translation, ...cue }) => cue);
+    const { video } = labelled({ units: unitsOf(originals, ["a", "a", "a"]) });
+    // 二 is bare by the rule; seeks that stay within it change nothing.
+    playTo(video, 1.2);
+    expect(lines()).toEqual(["original:二"]);
+    for (const at of [1.4, 1.1, 1.8]) {
+      seek(video, at);
+      expect(lines(), String(at)).toEqual(["original:二"]);
+    }
+    // 一 is named by the rule; dragging within it keeps the name.
+    seek(video, 0.2);
+    expect(lines()).toEqual(["speaker:张三", "original:一"]);
+    seek(video, 0.8);
+    expect(lines()).toEqual(["speaker:张三", "original:一"]);
+    // A seek into 三 names it, and dragging within 三 keeps that name.
+    seek(video, 3.1);
+    expect(lines()).toEqual(["speaker:张三", "original:三"]);
+    seek(video, 3.7);
+    expect(lines()).toEqual(["speaker:张三", "original:三"]);
+  });
+
+  it("names only the cue a seek brings on screen; cues on screen before and after keep what they had", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 500, original: "W" },
+      { startMs: 500, endMs: 4_000, original: "A" },
+      { startMs: 1_000, endMs: 2_000, original: "B" },
+      { startMs: 3_000, endMs: 4_000, original: "C" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a", "a"]) });
+    playTo(video, 1.5);
+    expect(lines()).toEqual(["original:A", "original:B"]);
+    // A stays on screen and stays bare; C is new and is named.
+    seek(video, 3.5);
+    expect(lines()).toEqual(["original:A", "speaker:张三", "original:C"]);
+    seek(video, 3.8);
+    expect(lines()).toEqual(["original:A", "speaker:张三", "original:C"]);
+    // Seeking back: A keeps its state, B is new again and takes the name; C has left.
+    seek(video, 1.5);
+    expect(lines()).toEqual(["original:A", "speaker:张三", "original:B"]);
+    // From W, A is the first new cue: it is named, and keeps the name as B joins after a further seek.
+    seek(video, 0.2);
+    seek(video, 0.7);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    seek(video, 1.2);
+    expect(lines()).toEqual(["speaker:张三", "original:A", "speaker:张三", "original:B"]);
+    // A name leaves with its cue: back from W, A and C are both new, and only A, the first, is named.
+    seek(video, 0.2);
+    seek(video, 3.5);
+    expect(lines()).toEqual(["speaker:张三", "original:A", "original:C"]);
+  });
+
+  it("judges a seek by what was on screen before it, even when a frame sees the new time before the seeking event", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 1_000, endMs: 2_000, original: "B" },
+      { startMs: 2_000, endMs: 3_000, original: "C" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a"]) });
+    let seeking = false;
+    Object.defineProperty(video, "seeking", { configurable: true, get: () => seeking });
+    playTo(video, 0.5);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    // The time moves and the element is seeking; an update runs before the `seeking` event.
+    seeking = true;
+    playTo(video, 1.5);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    fireEvent.seeking(video);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    seeking = false;
+    fireEvent.seeked(video);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    // The seeking event belonged to the seek the frame took, so it starts no second one and C is left to the rule.
+    playTo(video, 2.5);
+    expect(lines()).toEqual(["original:C"]);
+  });
+
+  it("follows the last of several seeks made while the element keeps seeking", () => {
+    const cues: TimedSubtitle[] = [0, 1, 2, 3].map((at) => ({ startMs: at * 1_000, endMs: (at + 1) * 1_000, original: `C${at}` }));
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a", "a"]) });
+    let seeking = false;
+    Object.defineProperty(video, "seeking", { configurable: true, get: () => seeking });
+    playTo(video, 0.5);
+    expect(lines()).toEqual(["speaker:张三", "original:C0"]);
+    seeking = true;
+    playTo(video, 1.5);
+    expect(lines()).toEqual(["speaker:张三", "original:C1"]);
+    fireEvent.seeking(video);
+    // A second seek before the first one settles: a frame sees its time, then its own seeking event.
+    playTo(video, 3.5);
+    fireEvent.seeking(video);
+    seeking = false;
+    fireEvent.seeked(video);
+    expect(lines()).toEqual(["speaker:张三", "original:C3"]);
+  });
+
+  it("names a cue on screen at a seek that left the screen and came back", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 2_000, endMs: 3_000, original: "B" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a"]) });
+    playTo(video, 0.5);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    playTo(video, 2.5);
+    expect(lines()).toEqual(["original:B"]);
+    // Back into the gap before B: B leaves the screen, so it is new when it shows again.
+    seek(video, 1.5);
+    expect(screen.queryByTestId("subtitle-block")).toBeNull();
+    playTo(video, 2.2);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+  });
+
+  it("names the next cue to appear after a drag within a cue", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 1_000, endMs: 2_000, original: "B" },
+      { startMs: 2_000, endMs: 3_000, original: "C" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "a", "a"]) });
+    playTo(video, 0.2);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    seek(video, 0.6);
+    expect(lines()).toEqual(["speaker:张三", "original:A"]);
+    playTo(video, 1.5);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    playTo(video, 2.5);
+    expect(lines()).toEqual(["original:C"]);
+  });
+
+  it("names the first new cue that can carry a name, passing over unassigned and crowded ones", () => {
+    // Hand-made: U is unassigned, so it has no label to show; X and Y may be named but the rule names neither.
+    const handMade = sliceSubtitleUnits([
+      { startMs: 0, endMs: 1_000, original: "W", label: "张三", labeled: true, crowded: false },
+      { startMs: 2_000, endMs: 3_000, original: "U", labeled: false, crowded: false },
+      { startMs: 2_000, endMs: 3_000, original: "X", label: "张三", labeled: false, crowded: false },
+      { startMs: 2_000, endMs: 3_000, original: "Y", label: "张三", labeled: false, crowded: false },
+    ]);
+    const first = labelled({ units: handMade });
+    seek(first.video, 2.5);
+    expect(lines()).toEqual(["original:U", "speaker:张三", "original:X", "original:Y"]);
+    cleanupRender();
+
+    // K0 shares the screen with a crowd for a while, so it never carries a name; Z joins it later, uncrowded.
+    const crowd = Array.from({ length: SUBTITLE_SPEAKER_MAX_PARTS }, (_, index) => ({ startMs: 2_000, endMs: 3_000, original: `K${index + 1}` }));
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "W" },
+      { startMs: 2_000, endMs: 5_000, original: "K0" },
+      ...crowd,
+      { startMs: 3_500, endMs: 4_500, original: "Z" },
+      { startMs: 5_000, endMs: 6_000, original: "Q" },
+    ];
+    const units = unitsOf(cues, cues.map(() => "a"));
+    const second = labelled({ units });
+    // Landing on K0 and Z together: K0 comes first but is crowded, so Z is named.
+    seek(second.video, 3.8);
+    expect(lines()).toEqual(["original:K0", "speaker:张三", "original:Z"]);
+    cleanupRender();
+    // Landing in the crowd names nobody there, and the seek waits for Z.
+    const third = labelled({ units });
+    playTo(third.video, 0.5);
+    seek(third.video, 2.5);
+    expect(lines()).toEqual(["original:K0", ...crowd.map((cue) => `original:${cue.original}`)]);
+    playTo(third.video, 3.8);
+    expect(lines()).toEqual(["original:K0", "speaker:张三", "original:Z"]);
+    playTo(third.video, 5.5);
+    expect(lines()).toEqual(["original:Q"]);
+  });
+
+  it("keeps a seek's name on its cue through a re-read of the subtitles, a renamed speaker included", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 2_000, endMs: 3_000, original: "B" },
+      { startMs: 5_000, endMs: 6_000, original: "D" },
+    ];
+    const speakers = ["a", "a", "b"];
+    const { video, rerender } = labelled({ units: unitsOf(cues, speakers) });
+    playTo(video, 0.5);
+    seek(video, 2.2);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    // The same subtitles read again: new objects, equal content.
+    rerender(sliceSubtitleUnits(labelSubtitleCues(cues.map((cue) => ({ ...cue })), [...speakers], new Map(LABELS), "change")));
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    // Another speaker renamed: B keeps its name line.
+    rerender(sliceSubtitleUnits(labelSubtitleCues(cues, speakers, new Map([...LABELS, ["b", "赵六"]]), "change")));
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    playTo(video, 2.9);
+    expect(lines()).toEqual(["speaker:张三", "original:B"]);
+    // B's own speaker renamed: the line stays and reads the new name.
+    rerender(sliceSubtitleUnits(labelSubtitleCues(cues, speakers, new Map([...LABELS, ["a", "钱七"]]), "change")));
+    expect(lines()).toEqual(["speaker:钱七", "original:B"]);
+  });
+
+  it("never adds a name to a cue on screen when the subtitles are read again", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 1_000, original: "A" },
+      { startMs: 2_000, endMs: 3_000, original: "B" },
+    ];
+    const { video, rerender } = labelled({ units: unitsOf(cues, ["a", "a"]) });
+    playTo(video, 0.5);
+    playTo(video, 2.2);
+    expect(lines()).toEqual(["original:B"]);
+    // A drag within B leaves a seek waiting; a re-read is no new appearance of B.
+    seek(video, 2.6);
+    rerender(sliceSubtitleUnits(labelSubtitleCues(cues, ["a", "a"], new Map([...LABELS, ["b", "赵六"]]), "change")));
+    expect(lines()).toEqual(["original:B"]);
+    playTo(video, 2.9);
+    expect(lines()).toEqual(["original:B"]);
+  });
+
+  it("labels each unit in the look of the first line it shows itself", () => {
+    const cues: TimedSubtitle[] = [
+      { startMs: 0, endMs: 2_000, original: "Alone" },
+      { startMs: 1_000, endMs: 3_000, original: "Hello", translation: "你好" },
+    ];
+    const { video } = labelled({ units: unitsOf(cues, ["a", "b"]), mode: "bilingual", order: "translation_first" });
+    seek(video, 1.5);
+    expect(rows()).toEqual(["speaker:张三", "original:Alone", "speaker:李四", "translation:你好", "original:Hello"]);
+    const text = screen.getByTestId("subtitle-text");
+    const look = (selector: string) => {
+      const element = text.querySelector(selector) as HTMLElement;
+      return { fontSize: element.style.fontSize, lineHeight: element.style.lineHeight, color: element.style.color, stroke: element.style.getPropertyValue("-webkit-text-stroke") };
+    };
+    // Computed as the overlay does: 1080p pixels times the picture's scale.
+    const scale = 720 / 1080;
+    const px = (size: number) => ({ fontSize: `${size * SUBTITLE_ASS_EM_RATIO * scale}px`, lineHeight: `${size * scale}px` });
+    const originalLook = look("[data-unit='0'][data-line='original']");
+    const translationLook = look("[data-unit='1'][data-line='translation']");
+    // A cue without a translation: its label copies the original line even with the translation first.
+    expect(look("[data-unit='0'][data-line='speaker']")).toEqual({ ...px(speakerLabelFontSize(SUBTITLE_ORIGINAL_FONT_SIZE)), color: originalLook.color, stroke: originalLook.stroke });
+    expect(look("[data-unit='1'][data-line='speaker']")).toEqual({ ...px(speakerLabelFontSize(SUBTITLE_TRANSLATION_FONT_SIZE)), color: translationLook.color, stroke: translationLook.stroke });
+    expect(originalLook.color).not.toBe(translationLook.color);
+  });
+
+  it("names the sample in the editor so the label's look can be set before anyone speaks", () => {
+    writeAppearance("u1", { ...defaultSubtitleAppearance(), speaker: "every" });
+    const { video } = show({ slices: [], units: [], editing: true, mode: "original" });
+    layout(video, { width: 1280, height: 720 }, { width: 1920, height: 1080 });
+    expect(lines()).toEqual(["speaker:发言人 1", "original:This is a sample subtitle"]);
   });
 });
 

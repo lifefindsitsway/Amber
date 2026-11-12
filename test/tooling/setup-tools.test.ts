@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,13 @@ import { setupTools, TOOL_ARCHIVES, TOOLS_BIN_DIR, TOOLS_FONTS_DIR } from "../..
 import { makeZip } from "../tools/zip.ts";
 
 const hex = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** The reading fonts and their licence, loose files of the release beside the burn-in font archive. */
+const READER_FILES: Record<string, Buffer> = {
+  "NotoSerifSC-Regular.otf": Buffer.from("serif"),
+  "LXGWWenKaiLite-Regular.ttf": Buffer.from("wenkai"),
+  "LXGWWenKaiLite-OFL.txt": Buffer.from("SIL Open Font License 1.1 (LXGW)\n"),
+};
 
 /** A fake release directory holding a tar.xz with the linux ffmpeg layout. */
 function fakeRelease(content: { ffmpeg: string; ffprobe: string }) {
@@ -33,6 +40,9 @@ function fakeRelease(content: { ffmpeg: string; ffprobe: string }) {
   writeFileSync(join(assets, "18_NotoSansSC.zip"), fonts);
   const licence = Buffer.from("SIL Open Font License 1.1\n");
   writeFileSync(join(assets, "OFL.txt"), licence);
+  for (const [file, data] of Object.entries(READER_FILES)) {
+    writeFileSync(join(assets, file), data);
+  }
   const sums = Buffer.from(
     [
       `${hex(readFileSync(archive))}  ${spec.archive}`,
@@ -40,6 +50,7 @@ function fakeRelease(content: { ffmpeg: string; ffprobe: string }) {
       `${hex(deno)}  deno-x86_64-unknown-linux-gnu.zip`,
       `${hex(fonts)}  18_NotoSansSC.zip`,
       `${hex(licence)}  OFL.txt`,
+      ...Object.entries(READER_FILES).map(([file, data]) => `${hex(data)}  ${file}`),
       "",
     ].join("\n"),
   );
@@ -58,9 +69,39 @@ describe("setupTools", () => {
       expect(readFileSync(path, "utf8")).toContain(`echo ${tool}`);
       expect(statSync(path).mode & 0o111).not.toBe(0);
     }
-    expect(readdirSync(join(root, TOOLS_FONTS_DIR)).sort()).toEqual(["NotoSansSC-Regular.otf", "OFL.txt"]);
+    expect(readdirSync(join(root, TOOLS_FONTS_DIR)).sort()).toEqual(
+      ["LXGWWenKaiLite-OFL.txt", "LXGWWenKaiLite-Regular.ttf", "NotoSansSC-Regular.otf", "NotoSerifSC-Regular.otf", "OFL.txt"].sort(),
+    );
     expect(readFileSync(join(root, TOOLS_FONTS_DIR, "NotoSansSC-Regular.otf"), "utf8")).toBe("regular");
+    for (const [file, data] of Object.entries(READER_FILES)) {
+      expect(readFileSync(join(root, TOOLS_FONTS_DIR, file))).toEqual(data);
+    }
     expect(setupTools(root, assets, "linux", pin)).toEqual(tools);
+  });
+
+  it("re-places the fonts when a reading font is missing from an otherwise installed tree", () => {
+    const { root, assets, pin } = fakeRelease({ ffmpeg: "#!/bin/sh\necho ffmpeg\n", ffprobe: "#!/bin/sh\necho ffprobe\n" });
+    mkdirSync(root);
+    setupTools(root, assets, "linux", pin);
+    rmSync(join(root, TOOLS_FONTS_DIR, "LXGWWenKaiLite-Regular.ttf"));
+    setupTools(root, assets, "linux", pin);
+    expect(readFileSync(join(root, TOOLS_FONTS_DIR, "LXGWWenKaiLite-Regular.ttf"), "utf8")).toBe("wenkai");
+  });
+
+  it("refuses a tampered reading font", () => {
+    const { root, assets, pin } = fakeRelease({ ffmpeg: "a", ffprobe: "b" });
+    mkdirSync(root);
+    writeFileSync(join(assets, "NotoSerifSC-Regular.otf"), "tampered");
+    expect(() => setupTools(root, assets, "linux", pin)).toThrow("SHA256 mismatch for NotoSerifSC-Regular.otf:");
+    expect(existsSync(join(root, TOOLS_FONTS_DIR))).toBe(false);
+  });
+
+  it("refuses a release that lists a reading font but lacks it", () => {
+    const { root, assets, pin } = fakeRelease({ ffmpeg: "a", ffprobe: "b" });
+    mkdirSync(root);
+    rmSync(join(assets, "LXGWWenKaiLite-Regular.ttf"));
+    expect(() => setupTools(root, assets, "linux", pin)).toThrow("LXGWWenKaiLite-Regular.ttf is listed in SHA256SUMS but missing from");
+    expect(existsSync(join(root, TOOLS_FONTS_DIR))).toBe(false);
   });
 
   it("refuses an archive whose digest does not match SHA256SUMS", () => {

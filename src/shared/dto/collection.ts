@@ -125,5 +125,10 @@ export const collectionSummaryDtoSchema = z.object({
   /** Set, with `current` withheld, while a member the current revision summarised is in the trash. */
   hiddenReason: z.literal("member_trashed").exactOptional(),
   activeTaskId: idSchema.exactOptional(),
+  /**
+   * How many current members' summaries were generated with speakers that no longer hold, as
+   * they are now — the members a summary submitted now would caution. Absent when there are none.
+   */
+  speakerContextChangedMembers: z.number().int().positive().exactOptional(),
 });
 export type CollectionSummaryDto = z.infer<typeof collectionSummaryDtoSchema>;

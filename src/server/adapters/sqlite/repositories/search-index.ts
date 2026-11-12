@@ -27,6 +27,11 @@ interface HitRow {
   text: string;
   artifact_id: string | null;
   template_id: string | null;
+  speaker_id: string | null;
+  speaker_ordinal: number | null;
+  speaker_name: string | null;
+  speaker_color_index: number | null;
+  speakers_confirmed: number | null;
 }
 
 function toHit(row: HitRow): SearchIndexHit {
@@ -39,6 +44,17 @@ function toHit(row: HitRow): SearchIndexHit {
         segmentId: row.segment_id as string,
         startMs: row.start_ms as number,
         text: row.text,
+        ...(row.speaker_id === null
+          ? {}
+          : {
+              speaker: {
+                id: row.speaker_id,
+                ordinal: row.speaker_ordinal as number,
+                ...(row.speaker_name === null ? {} : { name: row.speaker_name }),
+                colorIndex: row.speaker_color_index as number,
+                confirmed: row.speakers_confirmed === 1,
+              },
+            }),
       };
     case "summary":
       return {
@@ -108,6 +124,15 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
      WHERE search_index MATCH @match AND user_id = @owner AND kind = 'segment' AND revision_id = @revisionId
      ORDER BY bm25(search_index) LIMIT @limit`,
   );
+  // The same ranking within the sentences of some speakers: filtered here, before the
+  // limit, so a speaker's hits are not crowded out by everyone else's.
+  const matchSpeakerSegments = db.prepare(
+    `SELECT segment_id FROM search_index
+     WHERE search_index MATCH @match AND user_id = @owner AND kind = 'segment' AND revision_id = @revisionId
+       AND segment_id IN (SELECT s.id FROM transcript_segment s
+         WHERE s.revision_id = @revisionId AND s.speaker_id IN (SELECT value FROM json_each(@speakers)))
+     ORDER BY bm25(search_index) LIMIT @limit`,
+  );
 
   const projectContent = (params: { all: number; owner: string | null; contentId: string | null }): void => {
     insertTitles.run(params);
@@ -137,11 +162,18 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
     return prepared;
   };
 
+  // A sentence's speaker is joined as it is now, never indexed: a rename or a review shows at once.
   const SELECT_HIT = `SELECT si.kind, si.content_id, si.collection_id, si.revision_id, si.segment_id, si.start_ms, si.text,
-      a.id AS artifact_id, a.template_id
+      a.id AS artifact_id, a.template_id,
+      sp.id AS speaker_id, sp.ordinal AS speaker_ordinal, sp.name AS speaker_name, sp.color_index AS speaker_color_index,
+      CASE WHEN sc.revision_id IS NULL THEN 0 ELSE 1 END AS speakers_confirmed
     FROM search_index si
     LEFT JOIN summary_revision sr ON si.kind = 'summary' AND sr.id = si.revision_id
-    LEFT JOIN summary_artifact a ON a.id = sr.artifact_id`;
+    LEFT JOIN summary_artifact a ON a.id = sr.artifact_id
+    LEFT JOIN transcript_segment ts ON si.kind = 'segment' AND ts.id = si.segment_id
+    LEFT JOIN content_speaker sp ON sp.content_id = si.content_id AND sp.id = ts.speaker_id
+    LEFT JOIN transcript_revision_speaker_confirmation sc ON si.kind = 'segment' AND sc.revision_id = si.revision_id`;
+  const speakerNameFilter = (terms: number): string => Array.from({ length: terms }, () => " AND sp.name LIKE ? ESCAPE '\\'").join("");
 
   /** Scope condition and its parameters; content scopes never return collection rows. */
   const scopeOf = (query: SearchIndexQuery): { sql: string; params: unknown[]; kinds: readonly string[] } => {
@@ -209,15 +241,48 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
       }
       return hits;
     },
-    matchSegments(ownerUserId, transcriptRevisionId, question, limit) {
+    matchSegments(ownerUserId, transcriptRevisionId, question, limit, options) {
       const grams = questionTrigrams(question);
-      if (grams.length === 0 || limit <= 0) {
+      const speakerIds = options?.speakerIds;
+      if (grams.length === 0 || limit <= 0 || speakerIds?.length === 0) {
         return [];
       }
-      const rows = matchSegments.all({ match: grams.map(ftsString).join(" OR "), owner: ownerUserId, revisionId: transcriptRevisionId, limit }) as Array<{
+      const params = { match: grams.map(ftsString).join(" OR "), owner: ownerUserId, revisionId: transcriptRevisionId, limit };
+      const rows = (
+        speakerIds === undefined ? matchSegments.all(params) : matchSpeakerSegments.all({ ...params, speakers: JSON.stringify(speakerIds) })
+      ) as Array<{
         segment_id: string;
       }>;
       return rows.map((row) => row.segment_id);
+    },
+    matchSpeakers(ownerUserId, terms, limit) {
+      if (terms.length === 0 || limit <= 0) {
+        return [];
+      }
+      const rows = statement(
+        `SELECT * FROM (
+           SELECT sp.content_id, sp.id, sp.ordinal, sp.name, sp.color_index,
+             (SELECT count(*) FROM transcript_segment s WHERE s.revision_id = c.primary_transcript_revision_id AND s.speaker_id = sp.id) AS sentences
+           FROM content_speaker sp JOIN content c ON c.id = sp.content_id AND c.user_id = sp.user_id
+           WHERE sp.user_id = ? AND c.trashed_at IS NULL AND c.primary_transcript_revision_id IS NOT NULL AND sp.name IS NOT NULL${speakerNameFilter(terms.length)}
+         ) WHERE sentences > 0
+         ORDER BY sentences DESC, content_id, ordinal LIMIT ?`,
+      ).all(ownerUserId, ...terms.map(likePattern), limit) as Array<{
+        content_id: string;
+        id: string;
+        ordinal: number;
+        name: string;
+        color_index: number;
+        sentences: number;
+      }>;
+      return rows.map((row) => ({
+        contentId: row.content_id,
+        speakerId: row.id,
+        ordinal: row.ordinal,
+        name: row.name,
+        colorIndex: row.color_index,
+        sentences: row.sentences,
+      }));
     },
     rebuild() {
       deleteAll.run();

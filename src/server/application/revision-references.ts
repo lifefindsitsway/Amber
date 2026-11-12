@@ -1,10 +1,10 @@
 import type { TranscriptRevisionListItemDto } from "../../shared/dto/content.ts";
+import { isPermanentRevision } from "../domain/comparison-revision.ts";
 import type { Content } from "../domain/content.ts";
 import {
   descendantsOf,
   hasRevisionBlockers,
   historyArtifactsOf,
-  PROTECTED_REVISION_KINDS,
   revisionBlockers,
   type RevisionBlockerCategory,
   type RevisionReference,
@@ -30,18 +30,21 @@ export function revisionListItems(
   references: readonly RevisionReference[] = scope.revisionReferences.listReferences(owner, content.id),
 ): TranscriptRevisionListItemDto[] {
   const archived = new Map(scope.transcripts.listArchived(owner, content.id).map((entry) => [entry.revisionId, entry.archivedAt]));
+  const confirmed = scope.speakerConfirmations.confirmedAmong(owner, revisions.map((revision) => revision.id));
   return revisions.map((revision) => {
     const ids = new Set([revision.id]);
     const blockers = revisionBlockers(references, ids);
     const archivedAt = archived.get(revision.id);
+    const speakersConfirmedAt = confirmed.get(revision.id);
     const deletable =
-      !PROTECTED_REVISION_KINDS.has(revision.kind) &&
+      !isPermanentRevision(revision) &&
       revision.id !== content.primaryTranscriptRevisionId &&
       !hasRevisionBlockers(blockers, HISTORY_ONLY);
     return {
       ...transcriptRevisionDto(revision),
       archived: archivedAt !== undefined,
       ...(archivedAt === undefined ? {} : { archivedAt }),
+      ...(speakersConfirmedAt === undefined ? {} : { speakersConfirmedAt }),
       deletable,
       blockers,
       historyArtifacts: historyArtifactsOf(references, ids),

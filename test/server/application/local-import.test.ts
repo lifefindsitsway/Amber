@@ -104,6 +104,9 @@ describe("upload", () => {
     const content = s.h.repository.withTransaction((scope) => scope.contents.get(LOCAL.userId, contentId));
     const revision = s.h.repository.withTransaction((scope) => scope.transcripts.getRevision(LOCAL.userId, content?.primaryTranscriptRevisionId as string));
     expect(revision).toMatchObject({ kind: "imported", language: "zh-CN", segmentCount: 2 });
+    // A root revision starts out with its speakers not reviewed.
+    expect(s.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revision?.id as string))).toBeUndefined();
+    expect(countRows(s.h.db, "transcript_revision_speaker_confirmation")).toBe(0);
     const task = taskOf(s.h, result.body.taskIds[0] as string);
     expect(JSON.parse(task.requestJson)).toEqual({
       requestSchemaVersion: 1,

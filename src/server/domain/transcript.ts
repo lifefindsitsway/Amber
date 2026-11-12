@@ -2,25 +2,41 @@ import type { TimingFidelity, TranscriptKind } from "../../shared/enums.ts";
 import { isUlid, type SegmentId } from "../../shared/ids.ts";
 import type { DiarizationStatus, SpeakerReviewState } from "../../shared/speakers.ts";
 import type { ModelRefSnapshot, PromptRef } from "./model-ref.ts";
+import type { SpeakerContextSnapshot } from "./speaker-context.ts";
 
 /** Who produced a revision. */
 export type TranscriptGeneration =
   | { kind: "platform"; acquisition: "guest" | "authenticated" }
   | { kind: "imported"; format: "srt" | "vtt" }
-  /** `diarization` is absent on revisions made before speaker identification was recorded. */
-  | { kind: "asr"; asrProfileId: string; modelId: string; diarization?: AsrDiarizationRecord }
+  /**
+   * `diarization` is absent on revisions made before speaker identification was recorded.
+   * `purpose: "comparison"` marks a transcription made only to compare speakers with: it
+   * never becomes the primary by itself and, unlike other transcriptions, may be deleted.
+   * Recorded here, on the immutable revision, so it is known without the Task that made it.
+   */
+  | { kind: "asr"; asrProfileId: string; modelId: string; diarization?: AsrDiarizationRecord; purpose?: "comparison" }
   /**
    * A snapshot, so a proofread or translated revision stays explainable after its Profile is
    * gone. `promptRefs` lists every prompt version that produced the accepted text; absent on
    * revisions stored before it was recorded.
    */
-  | { kind: "llm"; modelRef: ModelRefSnapshot; promptRef: PromptRef; promptRefs?: PromptRef[]; promptSnapshot: string }
+  | {
+      kind: "llm";
+      modelRef: ModelRefSnapshot;
+      promptRef: PromptRef;
+      promptRefs?: PromptRef[];
+      promptSnapshot: string;
+      /** The speakers the proofreading or translation was given; absent when it was given none. */
+      speakerContext?: SpeakerContextSnapshot;
+    }
   /**
-   * `origin` only on a hand-edited translation. `speakerReview` only on a transcript commit
-   * whose user chose to keep the suggested speakers of sentences still waiting for review:
-   * how many there were.
+   * `origin` only on a hand-edited translation. `speakerReview` only on a transcript commit:
+   * `acceptedSuggestions` counts the sentences whose suggested speaker the user kept in bulk
+   * while they were still waiting for review; `changedFromParent` counts the sentences whose
+   * speaker differs from the parent revision's. Both are a record for display, nothing
+   * decides by them; commits stored before the second was recorded lack it.
    */
-  | { kind: "manual"; origin?: ManualTranslationOrigin; speakerReview?: { acceptedSuggestions: number } };
+  | { kind: "manual"; origin?: ManualTranslationOrigin; speakerReview?: { acceptedSuggestions: number; changedFromParent?: number } };
 
 /** What one transcription recorded about speaker identification; fixed when the revision is inserted. */
 export interface AsrDiarizationRecord {
@@ -38,6 +54,20 @@ export interface ManualTranslationOrigin {
   revisionId: string;
   modelRef: ModelRefSnapshot;
   promptRef?: PromptRef;
+  /** The speakers that machine translation was given, carried over with the rest. */
+  speakerContext?: SpeakerContextSnapshot;
+}
+
+/**
+ * The user has reviewed who says each sentence of a revision. Kept beside the revision, which
+ * stays immutable; no record = not reviewed. Only a reviewed revision's speakers are given to
+ * a model.
+ */
+export interface TranscriptRevisionSpeakerConfirmation {
+  revisionId: string;
+  contentId: string;
+  userId: string;
+  confirmedAt: number;
 }
 
 /**

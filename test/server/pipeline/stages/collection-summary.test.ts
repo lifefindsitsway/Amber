@@ -15,7 +15,10 @@ import {
   ROLLUP_FINAL_COLLECTION_PROMPT,
   ROLLUP_GOAL_COLLECTION_PROMPT,
   ROLLUP_PARTIAL_PROMPT,
+  SPEAKER_CAUTION_FRAGMENT,
 } from "../../../../src/server/domain/prompts.ts";
+import { attributionDigest, speakerLabels, type SpeakerContextSnapshot } from "../../../../src/server/domain/speaker-context.ts";
+import { summarizeCollectionRequestSchema } from "../../../../src/server/domain/task-request.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
 import { CollectionSummaryStageExecutor } from "../../../../src/server/pipeline/stages/collection-summary.ts";
@@ -34,6 +37,7 @@ import {
   workUnitsOf,
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
+import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -407,5 +411,260 @@ describe("collection summary stage: custom prompts", () => {
     expect(await settled(s.h, accepted.body.taskId)).toBe("succeeded");
     expect(s.fake.calls.every((call) => promptOf(call.request).includes(`【任务】\n${GOAL}\n`))).toBe(true);
     expect(currentRevision(s).provenance.promptRefs?.[0]).toEqual(customPromptRef("rollup.goal.collection", 1));
+  });
+});
+
+describe("collection summary stage: members whose speakers changed", () => {
+  const COLLECTION_ID = "01JC0LLECT10N0000000000000";
+  const fixed = (prefix: string, k: number, i = 0) => `${prefix}${String(k * 10 + i).padStart(26 - prefix.length, "0")}`;
+
+  /**
+   * A member's summary: `none` generated without speakers; `held` with speakers that still
+   * hold (its transcript is reviewed); `changed` with speakers whose review was never given,
+   * so its speaker state is `unconfirmed`.
+   */
+  type Member = "none" | "held" | "changed";
+
+  /** A collection whose every id is fixed, so its requests and digests compare across runs and builds. */
+  function fixedSetup(members: readonly Member[]): { h: Harness; fake: FakeLlmProvider; modelRef: ModelRef; contentIds: string[]; revisionIds: string[] } {
+    const fake = provider();
+    const { h, modelRef } = sc.speakerHarness(fake, undefined, { start: false });
+    open.push(h);
+    h.executors.collection_summary = new CollectionSummaryStageExecutor({ repository: h.repository, newId: h.newId });
+    const contentIds: string[] = [];
+    const revisionIds: string[] = [];
+    h.repository.withTransaction((scope) => {
+      scope.summaryTemplates.syncBuiltin(
+        BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, name: template.nameKey, versions: [{ version: template.version, prompt: template.prompt }] })),
+        1,
+      );
+      scope.collections.insert({ id: COLLECTION_ID, userId: LOCAL.userId, name: "生成式软件工程", createdAt: 1, updatedAt: 1 });
+    });
+    members.forEach((member, k) => {
+      const contentId = fixed("01JC0NTENT", k);
+      const revisionId = fixed("01JREV", k);
+      const speakerIds = member === "none" ? [] : [fixed("01JSPK", k, 1), fixed("01JSPK", k, 2)];
+      const segments: TranscriptSegment[] = [0, 1, 2].map((ordinal) => ({
+        id: fixed("01JSEG", k, ordinal) as SegmentId,
+        revisionId,
+        ordinal,
+        startMs: ordinal * 1000,
+        endMs: ordinal * 1000 + 900,
+        text: `第 ${k + 1} 讲第 ${ordinal + 1} 句`,
+        ...(speakerIds.length === 0 ? {} : { speakerId: speakerIds[ordinal % 2] as string }),
+        sourceSegmentIds: [],
+      }));
+      const revision: TranscriptRevision = {
+        id: revisionId,
+        contentId,
+        kind: "imported",
+        language: "zh-CN",
+        timingFidelity: "segment_only",
+        generation: { kind: "imported", format: "srt" },
+        segmentCount: 3,
+        createdAt: 1,
+      };
+      h.repository.withTransaction((scope) => {
+        scope.contents.insert({ id: contentId, userId: LOCAL.userId, source: { kind: "local" }, processingStatus: "succeeded", createdAt: 1, updatedAt: 1 });
+        if (speakerIds.length > 0) {
+          scope.speakers.insert(LOCAL.userId, contentId, [{ id: speakerIds[0] as string, name: "蒋炎岩", nameConfirmedAt: 3 }, { id: speakerIds[1] as string }], 1);
+        }
+        scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+        scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 2);
+        if (member === "held") scope.speakerConfirmations.set(LOCAL.userId, contentId, revisionId, 4);
+        const speakerContext: SpeakerContextSnapshot | undefined =
+          speakerIds.length === 0
+            ? undefined
+            : {
+                version: 1,
+                rules: { id: "speaker.rules", version: 1 },
+                attributionDigest: attributionDigest(segments),
+                speakers: speakerLabels(scope.speakers.list(LOCAL.userId, contentId)),
+              };
+        const { artifactId } = scope.summaries.insertRevision(LOCAL.userId, {
+          contentId,
+          templateId: CORE.id,
+          artifactId: fixed("01JART", k),
+          revision: {
+            id: fixed("01JSUM", k),
+            provenance: {
+              inputs: [{ kind: "transcriptRevision", id: revisionId }],
+              promptRef: { id: CORE.id, version: CORE.version },
+              ...(speakerContext === undefined ? {} : { speakerContext }),
+              createdAt: 1,
+            },
+            quality: "normal",
+            body: `## 摘要\n第 ${k + 1} 讲的要点 [[seg:${segments[0]?.id}]]`,
+            citations: [{ transcriptRevisionId: revisionId, segmentId: segments[0]?.id as SegmentId }],
+          },
+        });
+        scope.summaries.setCurrent(LOCAL.userId, artifactId, fixed("01JSUM", k));
+        scope.collections.addItem(LOCAL.userId, { id: fixed("01JITEM", k), collectionId: COLLECTION_ID, contentId, position: k, addedAt: 1 });
+      });
+      contentIds.push(contentId);
+      revisionIds.push(revisionId);
+    });
+    h.scheduler.start();
+    return { h, fake, modelRef, contentIds, revisionIds };
+  }
+
+  async function submitted(members: readonly Member[]) {
+    const s = fixedSetup(members);
+    const taskId = (await s.h.collections.createSummary(LOCAL, COLLECTION_ID, { modelRef: s.modelRef, outputLanguage: "zh-CN" })).body.taskId;
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    const request = summarizeCollectionRequestSchema.parse(JSON.parse(s.h.repository.withTransaction((scope) => scope.tasks.get(LOCAL.userId, taskId))?.requestJson ?? "{}"));
+    return { ...s, taskId, request, hash: sc.sha256(JSON.stringify(sc.traffic(s.h, s.fake, taskId))) };
+  }
+
+  const current = (h: Harness) => h.repository.withTransaction((scope) => scope.collectionSummaries.getCurrent(LOCAL.userId, COLLECTION_ID)) as CollectionSummaryRevision;
+
+  /**
+   * The exact traffic of a collection summary whose members were generated without speakers,
+   * captured from the stage before speakers existed: it stays byte-identical, unit digests
+   * included, and so does one whose members' speakers all still hold.
+   */
+  const BASELINE = "0d79d50615735aced35f38ead784df08f5cbeea9ee6f8475fcd0e231e3e08e1a";
+
+  it("sends members without a caution exactly as before, whether or not their summaries read speakers", async () => {
+    const none = await submitted(["none", "none", "none"]);
+    expect(none.request.inputItems.some((item) => item.speakerCaution !== undefined)).toBe(false);
+    expect(none.hash).toBe(BASELINE);
+    const held = await submitted(["held", "none", "held"]);
+    expect(held.request.inputItems.some((item) => item.speakerCaution !== undefined)).toBe(false);
+    expect(held.hash).toBe(BASELINE);
+    expect(current(held.h).provenance.promptRefs).not.toContainEqual(SPEAKER_CAUTION_FRAGMENT.ref);
+    expect(held.h.collections.getSummary(LOCAL, COLLECTION_ID).speakerContextChangedMembers).toBeUndefined();
+  });
+
+  it("freezes a caution for a member whose speakers changed, puts the caution before its summary only, and keeps every member", async () => {
+    const s = await submitted(["none", "changed", "held"]);
+    expect(s.request.inputItems.map((item) => item.speakerCaution)).toEqual([undefined, true, undefined]);
+    const partials = s.fake.calls.filter((call) => kindOf(call.request) === "partial");
+    expect(partials).toHaveLength(1);
+    const content = sectionAfter(partials[0]?.request as LlmRequest, "【本组内容】");
+    // All three members are summarised; only the second goes with the caution, right before its text.
+    expect(content.split(SPEAKER_CAUTION_FRAGMENT.text)).toHaveLength(2);
+    expect(content).toContain(`【第 2 项】\n${SPEAKER_CAUTION_FRAGMENT.text}\n## 摘要\n第 2 讲的要点`);
+    expect(content).toContain("【第 1 项】\n## 摘要\n第 1 讲的要点");
+    expect(content).toContain("【第 3 项】\n## 摘要\n第 3 讲的要点");
+
+    const revision = current(s.h);
+    expect(revision.provenance.promptRefs).toEqual([
+      ROLLUP_GOAL_COLLECTION_PROMPT.ref,
+      ROLLUP_PARTIAL_PROMPT.ref,
+      ROLLUP_CARRY_PROMPT.ref,
+      ROLLUP_FINAL_COLLECTION_PROMPT.ref,
+      SPEAKER_CAUTION_FRAGMENT.ref,
+    ]);
+    const stored = s.h.repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision(LOCAL.userId, revision.id));
+    expect(stored.map((partial) => partial.promptRefs)).toEqual([[ROLLUP_PARTIAL_PROMPT.ref, SPEAKER_CAUTION_FRAGMENT.ref]]);
+    // The revision records the members it read; the caution stays with the request.
+    expect(revision.inputItems.map((item) => Object.keys(item).sort())).toEqual(
+      Array.from({ length: 3 }, () => ["collectionItemId", "contentId", "position", "summaryRevisionId", "transcriptRevisionId"]),
+    );
+    expect(s.hash).not.toBe(BASELINE);
+
+    // The collection shows how many members' speakers changed, as they are now.
+    expect(s.h.collections.getSummary(LOCAL, COLLECTION_ID).speakerContextChangedMembers).toBe(1);
+    s.h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, s.contentIds[1] as string, s.revisionIds[1] as string, 9));
+    expect(s.h.collections.getSummary(LOCAL, COLLECTION_ID).speakerContextChangedMembers).toBeUndefined();
+  });
+
+  /** Regenerates member `k`'s core summary the way it is now: without speakers, current at once. */
+  function regenerate(h: Harness, k: number, revisionId: string): void {
+    h.repository.withTransaction((scope) => {
+      const contentId = fixed("01JC0NTENT", k);
+      const artifactId = fixed("01JART", k);
+      scope.summaries.insertRevision(LOCAL.userId, {
+        contentId,
+        templateId: CORE.id,
+        artifactId,
+        revision: {
+          id: revisionId,
+          provenance: { inputs: [{ kind: "transcriptRevision", id: fixed("01JREV", k) }], promptRef: { id: CORE.id, version: CORE.version }, createdAt: 5 },
+          quality: "normal",
+          body: `## 摘要\n第 ${k + 1} 讲重新生成的要点`,
+          citations: [],
+        },
+      });
+      scope.summaries.setCurrent(LOCAL.userId, artifactId, revisionId);
+    });
+  }
+
+  it("counts the members a submission now would caution, before any summary exists and as members are regenerated", async () => {
+    const s = fixedSetup(["changed", "none", "changed", "held"]);
+    // Nothing was summarised yet: the hint is about the submission to come.
+    const before = s.h.collections.getSummary(LOCAL, COLLECTION_ID);
+    expect(before.current).toBeUndefined();
+    expect(before.speakerContextChangedMembers).toBe(2);
+
+    // Submitted right away, it freezes the caution on exactly as many members as were counted.
+    const taskId = (await s.h.collections.createSummary(LOCAL, COLLECTION_ID, { modelRef: s.modelRef, outputLanguage: "zh-CN" })).body.taskId;
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    const request = summarizeCollectionRequestSchema.parse(JSON.parse(s.h.repository.withTransaction((scope) => scope.tasks.get(LOCAL.userId, taskId))?.requestJson ?? "{}"));
+    expect(request.inputItems.filter((item) => item.speakerCaution === true)).toHaveLength(2);
+    const after = s.h.collections.getSummary(LOCAL, COLLECTION_ID);
+    expect(after.current).toBeDefined();
+    expect(after.speakerContextChangedMembers).toBe(2);
+    expect(after.current).not.toHaveProperty("speakerContextChangedMembers");
+
+    // A member regenerated since is counted no more, though the shown revision still read its old summary.
+    regenerate(s.h, 0, fixed("01JSUMRE", 0));
+    const one = s.h.collections.getSummary(LOCAL, COLLECTION_ID);
+    expect(one.stale).toBe(true);
+    expect(one.speakerContextChangedMembers).toBe(1);
+    regenerate(s.h, 2, fixed("01JSUMRE", 2));
+    expect(s.h.collections.getSummary(LOCAL, COLLECTION_ID)).not.toHaveProperty("speakerContextChangedMembers");
+  });
+
+  it("counts members as they are now while the current revision is withheld for a trashed member", () => {
+    const s = fixedSetup(["changed", "changed"]);
+    s.h.repository.withTransaction((scope) => {
+      scope.collectionSummaries.insertRevision(LOCAL.userId, {
+        collectionId: COLLECTION_ID,
+        artifactId: fixed("01JCART", 0),
+        revision: {
+          id: fixed("01JCSUM", 0),
+          provenance: { inputs: [], createdAt: 5 },
+          quality: "normal",
+          body: "归纳",
+          citations: [],
+          inputItems: [0, 1].map((k) => ({
+            collectionItemId: fixed("01JITEM", k),
+            contentId: s.contentIds[k] as string,
+            summaryRevisionId: fixed("01JSUM", k),
+            transcriptRevisionId: s.revisionIds[k] as string,
+            position: k,
+          })),
+          partialIds: [],
+        },
+      });
+      scope.collectionSummaries.setCurrent(LOCAL.userId, COLLECTION_ID, fixed("01JCSUM", 0));
+      scope.contents.trash(LOCAL.userId, s.contentIds[1] as string, 6);
+    });
+    const dto = s.h.collections.getSummary(LOCAL, COLLECTION_ID);
+    expect(dto.hiddenReason).toBe("member_trashed");
+    // The trashed member is not a member a submission would read.
+    expect(dto.speakerContextChangedMembers).toBe(1);
+  });
+
+  it("a caution goes with the partial of its own group only", async () => {
+    const members: Member[] = Array.from({ length: COLLECTION_PARTIAL_SIZE + 1 }, (_, k) => (k === COLLECTION_PARTIAL_SIZE ? "changed" : "none"));
+    const s = await submitted(members);
+    const partials = s.fake.calls.filter((call) => kindOf(call.request) === "partial");
+    expect(partials).toHaveLength(2);
+    expect(partials.map((call) => promptOf(call.request).includes(SPEAKER_CAUTION_FRAGMENT.text)).sort()).toEqual([false, true]);
+    const stored = s.h.repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision(LOCAL.userId, current(s.h).id));
+    expect(stored.map((partial) => partial.promptRefs)).toEqual([[ROLLUP_PARTIAL_PROMPT.ref], [ROLLUP_PARTIAL_PROMPT.ref, SPEAKER_CAUTION_FRAGMENT.ref]]);
+  });
+
+  it("a request stored before the caution existed still parses, with no member cautioned", () => {
+    const parsed = summarizeCollectionRequestSchema.parse({
+      requestSchemaVersion: 1,
+      kind: "summarize_collection",
+      outputLanguage: "zh-CN",
+      inputItems: [{ collectionItemId: "i", contentId: "c", summaryRevisionId: "s", transcriptRevisionId: "t", position: 0 }],
+    });
+    expect(parsed.inputItems[0]?.speakerCaution).toBeUndefined();
   });
 });

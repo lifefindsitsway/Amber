@@ -9,12 +9,14 @@ import {
   speakerPatchRequestSchema,
   speakerSuggestionListDtoSchema,
 } from "../../../shared/dto/speaker.ts";
+import { speakerReviewDtoSchema, speakersConfirmedRequestSchema } from "../../../shared/dto/transcript.ts";
 import type { SpeakerService } from "../../application/speakers.ts";
 import { principalOf } from "../auth.ts";
 import { parseInput, sendValidated } from "../validation.ts";
 
 const contentParamsSchema = z.object({ id: z.string().min(1) });
 const speakerParamsSchema = z.object({ id: z.string().min(1), sid: z.string().min(1) });
+const revisionParamsSchema = z.object({ rid: z.string().min(1) });
 /** `contentId` only leaves that Content's own speakers out of the suggestions; it is no scope, so an unknown or foreign id changes nothing. */
 const suggestionsQuerySchema = z.object({ q: z.string().default(""), contentId: z.string().min(1).exactOptional() }).strict();
 
@@ -44,7 +46,10 @@ function matches(header: string | undefined, etag: string): boolean {
   });
 }
 
-/** Speaker identities of a Content, their photos, and suggestions from the user's other Contents. */
+/**
+ * Speaker identities of a Content, their photos, suggestions from the user's other
+ * Contents, and the review of who says each sentence of a transcript revision.
+ */
 export function registerSpeakerRoutes(app: FastifyInstance, deps: { speakers: SpeakerService }): void {
   const { speakers } = deps;
 
@@ -76,6 +81,17 @@ export function registerSpeakerRoutes(app: FastifyInstance, deps: { speakers: Sp
       return reply.code(304).send();
     }
     return reply.code(200).header("content-type", avatar.mime).header("content-length", String(avatar.bytes.length)).send(Buffer.from(avatar.bytes));
+  });
+
+  app.get("/api/transcript/revisions/:rid/speaker-review", async (request, reply) => {
+    const { rid } = parseInput(revisionParamsSchema, request.params, "params");
+    return sendValidated(reply, 200, speakerReviewDtoSchema, speakers.review(principalOf(request), rid));
+  });
+
+  app.put("/api/transcript/revisions/:rid/speakers-confirmed", async (request, reply) => {
+    const { rid } = parseInput(revisionParamsSchema, request.params, "params");
+    const body = parseInput(speakersConfirmedRequestSchema, request.body, "body");
+    return sendValidated(reply, 200, speakerReviewDtoSchema, speakers.setRevisionConfirmed(principalOf(request), rid, body));
   });
 
   app.get("/api/speakers/suggestions", async (request, reply) => {

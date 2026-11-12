@@ -822,6 +822,59 @@ describe("LocalPlayer remembered position", () => {
     expect(events).toEqual(["play", "pause", "ended"]);
   });
 
+  describe("playing a range", () => {
+    function playingRange() {
+      const controller = new PlayerController();
+      const shown = show({ src: "/fixture.mp4" }, controller);
+      const { play, pause } = playable(shown.video);
+      act(() => {
+        controller.playRange(10_000, 14_000);
+      });
+      const at = (seconds: number): void => {
+        shown.video.currentTime = seconds;
+        fireEvent.timeUpdate(shown.video);
+      };
+      return { ...shown, play, pause, at };
+    }
+
+    it("jumps, plays and pauses the video at the end of the range", () => {
+      const { controller, video, play, pause, at } = playingRange();
+      expect(video.currentTime).toBe(10);
+      expect(play).toHaveBeenCalledOnce();
+      at(10.2);
+      expect(pause).not.toHaveBeenCalled();
+      vi.useFakeTimers();
+      try {
+        vi.advanceTimersByTime(4_000);
+        at(14.05);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(pause).toHaveBeenCalledOnce();
+      expect(controller.playingRange()).toBeUndefined();
+    });
+
+    it.each([
+      ["the arrow keys", (root: HTMLElement) => fireEvent.keyDown(root, { key: "ArrowRight" })],
+      ["the play / pause button", () => fireEvent.click(screen.getByRole("button", { name: "暂停" }))],
+      ["a click on the picture", (_root: HTMLElement, video: HTMLVideoElement) => fireEvent.click(video)],
+    ])("lets the user take over with %s", (_name, act) => {
+      const { controller, root, video, at } = playingRange();
+      at(10.2);
+      act(root, video);
+      expect(controller.playingRange()).toBeUndefined();
+    });
+
+    it("lets the user take over by dragging the seek bar", () => {
+      const { controller, video, at } = playingRange();
+      Object.defineProperty(video, "duration", { configurable: true, value: 600 });
+      fireEvent.loadedMetadata(video);
+      at(10.2);
+      fireEvent.change(screen.getByTestId("player-seek"), { target: { value: "120000" } });
+      expect(controller.playingRange()).toBeUndefined();
+    });
+  });
+
   it("starts at 0 and plays on the restart button", () => {
     const controller = new PlayerController();
     controller.offerResume(754_000);

@@ -3,15 +3,33 @@ import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import type { SegmentId } from "../../../../../src/shared/ids.ts";
 import { lectureTranscripts } from "../../../../fixtures/transcripts/lecture.ts";
-import { insertRow, openTempDatabase } from "../../../../tools/sqlite.ts";
+import { insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 
 const T0 = 1_790_000_000_000;
+const SPEAKER_CONTEXT = {
+  version: 1 as const,
+  rules: { id: "speaker.rules", version: 1 },
+  attributionDigest: "d".repeat(64),
+  speakers: [
+    { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+    { id: "s2", ordinal: 2, label: "发言人 2" },
+  ],
+};
+let opened: ReturnType<typeof openTempDatabase>;
 let db: SqliteConnection;
 let repository: SqliteRepository;
 let fixtures: Record<string, ReturnType<typeof lectureTranscripts>>;
 
+/** Closes the database and opens its file again, so what is read next comes from disk. */
+function reopen(): void {
+  opened = reopenTempDatabase(opened);
+  db = opened.db;
+  repository = new SqliteRepository(db);
+}
+
 beforeEach(() => {
-  db = openTempDatabase().db;
+  opened = openTempDatabase();
+  db = opened.db;
   repository = new SqliteRepository(db);
   for (const id of ["alice", "bob"]) insertRow(db, "user", { id, role: "user", status: "active", created_at: T0 });
   fixtures = {};
@@ -106,5 +124,28 @@ describe("highlight repository", () => {
     db.prepare("DELETE FROM content WHERE id = 'c'").run();
     expect(db.prepare("SELECT COUNT(*) AS n FROM highlight_revision").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM highlight_artifact").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("highlight repository: speaker context", () => {
+  it("stores the speakers the highlights were picked with, also across a reopen, and reads none where none were stored or the value is of another shape", () => {
+    repository.withTransaction((scope) => {
+      scope.highlights.insertRevision("alice", "c", { ...revision("r1"), speakerContext: SPEAKER_CONTEXT });
+      scope.highlights.insertRevision("alice", "c", revision("r2", "c", T0 + 1));
+    });
+    insertRow(db, "highlight_revision", {
+      id: "r3", artifact_id: "a-r1", inputs_json: "[]", quality: "normal", transcript_revision_id: fixtures["c"]?.asr.revision.id, items_json: "[]",
+      created_at: T0 + 2, speaker_context_json: '{"speakers":[]}',
+    });
+    const written = repository.withTransaction((scope) => scope.highlights.getRevision("alice", "r1"));
+    expect(written?.provenance.speakerContext).toEqual(SPEAKER_CONTEXT);
+    reopen();
+    const read = repository.withTransaction((scope) => scope.highlights.getRevision("alice", "r1"));
+    expect(read).toEqual(written);
+    expect(read?.provenance.speakerContext).toEqual(SPEAKER_CONTEXT);
+    for (const id of ["r2", "r3"]) {
+      const other = repository.withTransaction((scope) => scope.highlights.getRevision("alice", id));
+      expect(other && "speakerContext" in other.provenance).toBe(false);
+    }
   });
 });

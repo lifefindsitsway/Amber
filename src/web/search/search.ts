@@ -8,6 +8,7 @@ import {
   type SearchRange,
   type SearchResultDto,
   type SegmentHitDto,
+  type SpeakerHitDto,
   type SummaryHitDto,
 } from "../../shared/dto/search.ts";
 import { useApi } from "../api/context.tsx";
@@ -79,6 +80,20 @@ export function hitLink(entry: ContentSideHit | { kind: "collection"; hit: Colle
   }
   search.set("search", query);
   return `/contents/${encodeURIComponent(entry.hit.contentId)}?${search.toString()}`;
+}
+
+/**
+ * Where a speaker found by name opens: the Content's reading view showing only that
+ * speaker. The query is a name, not words of the text, so it does not travel along.
+ */
+export function speakerHitLink(hit: Pick<SpeakerHitDto, "contentId" | "speakerId">): string {
+  const search = new URLSearchParams({ tab: "transcript", speaker: hit.speakerId });
+  return `/contents/${encodeURIComponent(hit.contentId)}?${search.toString()}`;
+}
+
+/** Whether a summary hit was generated with speakers that no longer hold as they did. */
+export function summaryBasisChanged(hit: Pick<SummaryHitDto, "speakerContextState">): boolean {
+  return hit.speakerContextState !== undefined && hit.speakerContextState !== "consistent";
 }
 
 /**

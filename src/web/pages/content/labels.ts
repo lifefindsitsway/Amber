@@ -2,6 +2,7 @@ import type { i18n as I18n, TFunction } from "i18next";
 import type { TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import type { SummaryTemplateDto } from "../../../shared/dto/summary.ts";
 import type { zhCN } from "../../../shared/i18n/zh-CN/index.ts";
+import { isComparisonGeneration } from "../../../shared/speaker-comparison.ts";
 
 type TemplateNameKey = `summaryTemplate.${keyof typeof zhCN.summaryTemplate}`;
 
@@ -74,7 +75,8 @@ function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18
     const language = i18n === undefined ? revision.language : languageLabel(revision.language, t, i18n);
     return [kind, language, revisionTime(revision.createdAt, seconds)].join(" · ");
   }
-  const parts: string[] = [t(`contentView.revisionKind.${revision.kind}`)];
+  // A transcription made only for comparison is named as such, apart from ordinary recognitions.
+  const parts: string[] = [isComparisonGeneration(revision.generation) ? t("speakerCompare.revisionKind") : t(`contentView.revisionKind.${revision.kind}`)];
   // Every other kind is in the Content's own language; a translation is named by its target.
   if (revision.kind === "translated") {
     parts.push(i18n === undefined ? revision.language : languageLabel(revision.language, t, i18n));

@@ -15,6 +15,12 @@ export interface ContentSpeaker {
   ordinal: number;
   /** Normalized; absent = unnamed. */
   name?: string;
+  /**
+   * When the name was confirmed as this person's name. Only a confirmed name is given to a
+   * model; a name written without the confirmation (by any caller) leaves this absent, and
+   * the speaker is then presented by its ordinal.
+   */
+  nameConfirmedAt?: number;
   colorIndex: number;
   /** Present when the speaker has a photo; `version` changes with every new photo. */
   avatar?: { mime: SpeakerAvatarMime; version: number };

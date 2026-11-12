@@ -30,6 +30,12 @@ export const hexColorSchema = z
 const fontSizeSchema = z.number().int().min(SUBTITLE_FONT_SIZE_MIN).max(SUBTITLE_FONT_SIZE_MAX);
 const basisPointSchema = z.number().int().min(0).max(BASIS_POINTS);
 
+/**
+ * When a subtitle shows who is speaking: `change` on the first subtitle of a turn (and again
+ * after the same person has kept talking for a while), `every` on each subtitle.
+ */
+export const SUBTITLE_SPEAKER_MODES = ["change", "every"] as const;
+export type SubtitleSpeakerMode = (typeof SUBTITLE_SPEAKER_MODES)[number];
 const lineAppearanceSchema = z.object({ fontSize: fontSizeSchema, color: hexColorSchema }).strict();
 
 /**
@@ -55,6 +61,9 @@ export const subtitleAppearanceSchema = z
       })
       .strict(),
     bilingualOrder: z.enum(SUBTITLE_BILINGUAL_ORDERS),
+    // Absent = no speaker labels. Deliberately optional rather than defaulted: a default would be
+    // written back into saved preferences and frozen burn requests and change their digests.
+    speaker: z.enum(SUBTITLE_SPEAKER_MODES).exactOptional(),
   })
   .strict();
 export type SubtitleAppearance = z.output<typeof subtitleAppearanceSchema>;

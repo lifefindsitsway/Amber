@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DiarizationRequest } from "../../../../src/shared/dto/speaker.ts";
 import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
 import { RetranscribeService } from "../../../../src/server/application/retranscribe.ts";
+import { SpeakerService } from "../../../../src/server/application/speakers.ts";
 import { LocalFileStore } from "../../../../src/server/adapters/file-store/local-file-store.ts";
 import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../../src/server/domain/media-asset.ts";
@@ -33,7 +34,7 @@ import {
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
 import { createMediaStack, type MediaStack } from "../../../fixtures/pipeline/media-stack.ts";
-import { insertRow, tempDataDir } from "../../../tools/sqlite.ts";
+import { countRows, insertRow, tempDataDir } from "../../../tools/sqlite.ts";
 
 const open: MediaStack[] = [];
 const harnesses: Harness[] = [];
@@ -1187,6 +1188,24 @@ describe("asr stage speaker identification", () => {
     expect(JSON.stringify(segments)).not.toContain('"speakerId":"1"');
   });
 
+  it("publishes a revision with speakers as not reviewed, nothing confirmed for it or its names", async () => {
+    const { stack, fake } = offering();
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    const [revision] = revisionsOf(stack, contentId);
+    expect(revision).toMatchObject({ kind: "asr" });
+    expect(revision?.parentRevisionId).toBeUndefined();
+    expect(segmentsOf(stack, contentId).every((segment) => segment.speakerId !== undefined)).toBe(true);
+    expect(stack.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revision?.id as string))).toBeUndefined();
+    expect(countRows(stack.h.db, "transcript_revision_speaker_confirmation")).toBe(0);
+    const review = new SpeakerService({ repository: stack.h.repository, newId: stack.h.newId }).review(LOCAL, revision?.id as string);
+    expect(review).not.toHaveProperty("confirmedAt");
+    expect(review.speakers).toHaveLength(2);
+    expect(speakersOf(stack, contentId).every((speaker) => speaker.nameConfirmedAt === undefined)).toBe(true);
+  });
+
   it("records no_speakers when identification took place but the result names nobody", async () => {
     const { stack, fake } = offering();
     const { taskId, contentId } = await importFixture(stack);
@@ -1509,5 +1528,112 @@ describe("asr stage speaker identification", () => {
       expect(fake.submits).toHaveLength(0);
       expect(usageOf(stack, taskId)).toEqual([]);
     });
+  });
+});
+
+describe("asr stage comparison transcription", () => {
+  const SUPPORT = { speakerCount: { min: 2, max: 8, semantics: "reference" as const }, recommendedMaxDurationSec: 60 };
+  const TURNS = fakeAsrResult({
+    segments: [
+      { startMs: 0, endMs: 1200, text: "欢迎来到生成式软件工程。", speakerId: "1" },
+      { startMs: 1500, endMs: 2600, text: "今天讲提示词。", speakerId: "0" },
+    ],
+  });
+
+  function service(stack: MediaStack): RetranscribeService {
+    return new RetranscribeService({ repository: stack.h.repository, bus: stack.h.bus, control: stack.h.scheduler, disk: stack.h.disk, settings: stack.h.settings, newId: stack.h.newId });
+  }
+
+  /** A Content whose primary is an ASR transcription naming two speakers; its own Task is out of the way. */
+  async function transcribed(stack: MediaStack, fake: FakeAsrFactory): Promise<string> {
+    fake.capabilities = { ...fake.capabilities, diarization: SUPPORT };
+    fake.outcomes = [TURNS];
+    const { taskId, contentId } = await importFixture(stack);
+    stack.h.scheduler.start();
+    expect(await asrSettled(stack, taskId)).toBe("succeeded");
+    stack.h.tasks.cancel(LOCAL, taskId);
+    await stack.h.scheduler.whenIdle();
+    return contentId;
+  }
+
+  const searchRows = (stack: MediaStack, contentId: string) => stack.h.db.prepare("SELECT revision_id FROM search_index WHERE content_id = ?").all(contentId);
+
+  it("stores the transcription marked for comparison with its speakers, and leaves the primary, the language and the search alone", async () => {
+    const { stack, fake } = setup();
+    const contentId = await transcribed(stack, fake);
+    const primaryId = contentOf(stack, contentId)?.primaryTranscriptRevisionId;
+    // A Content that had no original language yet, and whose projection was emptied: a sync or
+    // a language write would show.
+    stack.h.db.prepare("UPDATE content SET raw_language = NULL WHERE id = ?").run(contentId);
+    stack.h.db.prepare("DELETE FROM search_index WHERE content_id = ?").run(contentId);
+    fake.outcomes = [TURNS];
+    const chosen = stack.h.repository.withTransaction((scope) => scope.userSettings.get(LOCAL.userId)?.defaultAsrModelRef);
+    const accepted = await service(stack).retranscribe(LOCAL, contentId, undefined, chosen, undefined, true);
+    expect(JSON.parse(taskOf(stack.h, accepted.body.taskId).requestJson)).toMatchObject({ comparison: true, diarization: { mode: "required" } });
+    await waitFor(() => taskOf(stack.h, accepted.body.taskId).statusProjection === "succeeded");
+
+    const revisions = revisionsOf(stack, contentId);
+    expect(revisions.map((revision) => revision.kind)).toEqual(["asr", "asr"]);
+    const comparison = revisions[1] as TranscriptRevision;
+    expect(comparison.generation).toMatchObject({ kind: "asr", purpose: "comparison", diarization: { status: "applied" } });
+    expect(revisions[0]?.generation).not.toHaveProperty("purpose");
+    expect(fake.calls[1]?.input.diarization).toEqual({});
+    const content = contentOf(stack, contentId);
+    expect(content?.primaryTranscriptRevisionId).toBe(primaryId);
+    expect(content?.rawLanguage).toBeUndefined();
+    expect(searchRows(stack, contentId)).toEqual([]);
+
+    // Its speakers are new rows, and flagged as named only by the comparison.
+    const { speakers, comparisonOnly, named } = stack.h.repository.withTransaction((scope) => ({
+      speakers: scope.speakers.list(LOCAL.userId, contentId),
+      comparisonOnly: scope.speakers.comparisonOnlyIds(LOCAL.userId, contentId),
+      named: new Set(scope.transcripts.listSegments(LOCAL.userId, comparison.id).map((segment) => segment.speakerId)),
+    }));
+    expect(speakers.map((speaker) => speaker.ordinal)).toEqual([1, 2, 3, 4]);
+    expect([...comparisonOnly].sort()).toEqual([...named].sort());
+    expect(comparisonOnly.size).toBe(2);
+  });
+
+  it("refuses a comparison the Content has no room for, before any ASR call or queued Task", async () => {
+    const { stack, fake } = setup();
+    const contentId = await transcribed(stack, fake);
+    const calls = fake.calls.length;
+    // The primary names 2 speakers, so 4 places are needed; leave 3.
+    stack.h.repository.withTransaction((scope) => {
+      const free = SPEAKERS_PER_CONTENT_MAX - scope.speakers.count(LOCAL.userId, contentId) - 3;
+      scope.speakers.insert(LOCAL.userId, contentId, Array.from({ length: free }, () => ({ id: stack.h.newId() })), 5);
+    });
+    const tasks = () => stack.h.repository.withTransaction((scope) => scope.tasks.listByContent(LOCAL.userId, contentId)).length;
+    const before = tasks();
+    const chosen = stack.h.repository.withTransaction((scope) => scope.userSettings.get(LOCAL.userId)?.defaultAsrModelRef);
+    await expect(service(stack).retranscribe(LOCAL, contentId, undefined, chosen, undefined, true)).rejects.toMatchObject({
+      appError: { code: "conflict.speaker_capacity", details: { room: 3, required: 4 } },
+    });
+    expect(tasks()).toBe(before);
+    await stack.h.scheduler.whenIdle();
+    expect(fake.calls).toHaveLength(calls);
+
+    // One more place is enough; an ordinary re-transcription never needed any.
+    stack.h.repository.withTransaction((scope) => scope.speakers.delete(LOCAL.userId, contentId, [scope.speakers.list(LOCAL.userId, contentId).at(-1)?.id as string]));
+    const accepted = await service(stack).retranscribe(LOCAL, contentId, undefined, chosen, undefined, true);
+    expect(accepted.status).toBe(202);
+  });
+
+  it("refuses at the stage, before anything is sent, when the bound model cannot identify speakers", async () => {
+    const { stack, fake } = setup();
+    const contentId = await transcribed(stack, fake);
+    const calls = fake.calls.length;
+    const { diarization: _offered, ...without } = fake.capabilities;
+    fake.capabilities = without;
+    // No model chosen at submission: nothing could be checked there, the stage checks.
+    const accepted = await service(stack).retranscribe(LOCAL, contentId, undefined, undefined, { mode: "off" }, true);
+    expect(JSON.parse(taskOf(stack.h, accepted.body.taskId).requestJson)).toMatchObject({ comparison: true, diarization: { mode: "required" } });
+    const chosen = stack.h.repository.withTransaction((scope) => scope.userSettings.get(LOCAL.userId)?.defaultAsrModelRef) as AsrModelRef;
+    await waitFor(() => stageStatuses(stack.h, accepted.body.taskId)["asr"] === "waiting_configuration");
+    stack.h.tasks.retryStage(LOCAL, accepted.body.taskId, { stage: "asr", asrModelRef: chosen });
+    await waitFor(() => stageStatuses(stack.h, accepted.body.taskId)["asr"] === "failed");
+    expect(stageRunsOf(stack.h, accepted.body.taskId)[0]?.error?.code).toBe("asr_failed.diarization_unavailable");
+    expect(fake.calls).toHaveLength(calls);
+    expect(revisionsOf(stack, contentId)).toHaveLength(1);
   });
 });

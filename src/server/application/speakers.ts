@@ -7,12 +7,14 @@ import type {
   SpeakerPatchRequest,
   SpeakerSuggestionListDto,
 } from "../../shared/dto/speaker.ts";
+import type { SpeakerReviewDto, SpeakersConfirmedRequest } from "../../shared/dto/transcript.ts";
 import { normalizeSpeakerName } from "../../shared/speakers.ts";
 import { amberError } from "../domain/errors.ts";
 import type { ContentSpeaker, SpeakerAvatar } from "../domain/speaker.ts";
 import { inspectSpeakerAvatar } from "../domain/speaker-avatar.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope, SpeakerPatch } from "../ports/repository.ts";
+import { nameIsConfirmed, setSpeakersConfirmed, speakerReviewOf } from "./speaker-review.ts";
 import { ownedContent } from "./transcripts.ts";
 
 export interface SpeakerServiceOptions {
@@ -26,7 +28,7 @@ export interface SpeakerAvatarFile extends SpeakerAvatar {
   version: number;
 }
 
-function speakerDto(speaker: ContentSpeaker, used: boolean): SpeakerDto {
+function speakerDto(speaker: ContentSpeaker, used: boolean, comparisonOnly: boolean): SpeakerDto {
   return {
     id: speaker.id,
     ordinal: speaker.ordinal,
@@ -34,7 +36,30 @@ function speakerDto(speaker: ContentSpeaker, used: boolean): SpeakerDto {
     colorIndex: speaker.colorIndex,
     ...(speaker.avatar === undefined ? {} : { avatarVersion: speaker.avatar.version }),
     used,
+    ...(nameIsConfirmed(speaker) ? { nameConfirmed: true } : {}),
+    ...(comparisonOnly ? { comparisonOnly: true } : {}),
   };
+}
+
+/**
+ * How a change of name affects its confirmation. A request confirms a name only while it
+ * writes one (`name` present, the current name re-sent included, or a copied name) and says
+ * so (`nameConfirmed: true`): the confirmation is the caller vouching for the name it is
+ * saving, so a request that only changes colour or photo, or sends the flag alone, leaves
+ * the existing name's confirmation as it is. A name that changes without the flag becomes
+ * unconfirmed whoever the caller is, and an unnamed speaker has nothing confirmed.
+ * Re-sending the current name without the flag changes nothing. `undefined` = leave the
+ * confirmation as it is.
+ */
+function nameConfirmationAfter(current: ContentSpeaker, name: string | null | undefined, confirm: boolean, now: number): number | null | undefined {
+  const next = name === undefined ? current.name : (name ?? undefined);
+  if (next === undefined) {
+    return current.nameConfirmedAt === undefined ? undefined : null;
+  }
+  if (confirm && name !== undefined) {
+    return now;
+  }
+  return next === current.name ? undefined : null;
 }
 
 /** `undefined` = unnamed; a name over the limit is refused, never cut. */
@@ -70,13 +95,17 @@ export class SpeakerService {
     this.newId = options.newId ?? monotonicFactory();
   }
 
-  /** In `ordinal` order; `used` marks the ones some unarchived revision or the draft names. */
+  /**
+   * In `ordinal` order; `used` marks the ones some unarchived revision or the draft names,
+   * `comparisonOnly` the ones only comparison transcriptions name.
+   */
   list(principal: RequestPrincipal, contentId: string): SpeakerListDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
       ownedContent(scope, owner, contentId);
       const used = scope.speakers.usedIds(owner, contentId);
-      return { items: scope.speakers.list(owner, contentId).map((speaker) => speakerDto(speaker, used.has(speaker.id))) };
+      const comparisonOnly = scope.speakers.comparisonOnlyIds(owner, contentId);
+      return { items: scope.speakers.list(owner, contentId).map((speaker) => speakerDto(speaker, used.has(speaker.id), comparisonOnly.has(speaker.id))) };
     });
   }
 
@@ -88,20 +117,29 @@ export class SpeakerService {
       if (scope.speakers.count(owner, contentId) >= SPEAKERS_PER_CONTENT_MAX) {
         throw amberError("invalid_request", "the content already has the most speakers it may have", { params: { detail: "speakers" } });
       }
+      const now = this.now();
       const [created] = scope.speakers.insert(
         owner,
         contentId,
-        [{ id: this.newId(), ...(name === undefined ? {} : { name }), ...(body.colorIndex === undefined ? {} : { colorIndex: body.colorIndex }) }],
-        this.now(),
+        [
+          {
+            id: this.newId(),
+            ...(name === undefined ? {} : { name }),
+            ...(name !== undefined && body.nameConfirmed === true ? { nameConfirmedAt: now } : {}),
+            ...(body.colorIndex === undefined ? {} : { colorIndex: body.colorIndex }),
+          },
+        ],
+        now,
       );
-      return speakerDto(created as ContentSpeaker, false);
+      return speakerDto(created as ContentSpeaker, false, false);
     });
   }
 
   /**
    * Changes a speaker's name, color or photo, or copies another speaker of the user's:
    * name, color and photo as they are now, with no link kept. A photo is judged by its bytes
-   * (the type the client declares is not used) before anything is written.
+   * (the type the client declares is not used) before anything is written. The name's
+   * confirmation follows `nameConfirmationAfter`; a copied name counts as a new name.
    */
   patch(principal: RequestPrincipal, contentId: string, speakerId: string, body: SpeakerPatchRequest): SpeakerDto {
     const owner = principal.userId;
@@ -109,9 +147,30 @@ export class SpeakerService {
       ownedContent(scope, owner, contentId);
       const current = ownedSpeaker(scope, owner, contentId, speakerId);
       const change = "copyFrom" in body ? this.copyOf(scope, owner, body.copyFrom) : this.changeOf(body);
-      const updated = scope.speakers.update(owner, contentId, speakerId, change, this.now()) ?? current;
-      return speakerDto(updated, scope.speakers.usedIds(owner, contentId).has(updated.id));
+      const now = this.now();
+      const confirmedAt = nameConfirmationAfter(current, change.name, body.nameConfirmed === true, now);
+      if (confirmedAt !== undefined) {
+        change.nameConfirmedAt = confirmedAt;
+      }
+      const updated = scope.speakers.update(owner, contentId, speakerId, change, now) ?? current;
+      return speakerDto(updated, scope.speakers.usedIds(owner, contentId).has(updated.id), scope.speakers.comparisonOnlyIds(owner, contentId).has(updated.id));
     });
+  }
+
+  /**
+   * What the review of one revision's speakers shows: who speaks how much, what is still
+   * unassigned or unconfirmed, and the roster digest a confirmation must send back. A
+   * translation, or a revision whose sentences name nobody, has nothing to review.
+   */
+  review(principal: RequestPrincipal, revisionId: string): SpeakerReviewDto {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => speakerReviewOf(scope, owner, revisionId));
+  }
+
+  /** Marks a revision's speakers as reviewed (confirming the names it shows), or takes the mark back; see `setSpeakersConfirmed`. */
+  setRevisionConfirmed(principal: RequestPrincipal, revisionId: string, body: SpeakersConfirmedRequest): SpeakerReviewDto {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => setSpeakersConfirmed(scope, owner, revisionId, body, this.now()));
   }
 
   /** The photo bytes and type with the version that identifies them; `not_found` when there is none. */

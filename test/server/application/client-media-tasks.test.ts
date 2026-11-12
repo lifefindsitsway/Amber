@@ -9,14 +9,14 @@ import { BYTES_PER_GB } from "../../../src/shared/units.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import { cacheFileNameOf } from "../../../src/shared/cache-file-name.ts";
-import { CACHE_INSPECTION_MAX_ENTRIES, CACHE_INSPECTION_TTL_MS, CACHE_MEDIA_MAX_HEIGHT } from "../../../src/shared/defaults.ts";
+import { CACHE_INSPECTION_MAX_ENTRIES, CACHE_INSPECTION_TTL_MS, CACHE_MEDIA_MAX_HEIGHT, SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES } from "../../../src/shared/defaults.ts";
 import { cacheMediaInspectDtoSchema, cacheMediaQualitiesDtoSchema } from "../../../src/shared/dto/media.ts";
 import { cacheFile } from "../../../src/shared/i18n/zh-CN/cache-file.ts";
 import { CacheDownloadLedger } from "../../../src/server/pipeline/cache-download-ledger.ts";
 import { CacheHoldRegistry } from "../../../src/server/pipeline/cache-holds.ts";
 import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
 import type { PlatformSourceAdapter } from "../../../src/server/ports/platform-source.ts";
-import { addLocalFile, seedExportContent } from "../../fixtures/export/export-data.ts";
+import { addLocalFile, ASR_LINES, seedExportContent } from "../../fixtures/export/export-data.ts";
 import {
   BOB,
   createHarness,
@@ -619,6 +619,44 @@ describe("ClientMediaTaskService.burn, styled exports", () => {
     // Revisions are checked before anything is inspected.
     expect(await codeOf(service.burn(LOCAL, fixture.contentId, { ...body, revisionId: "nope" }))).toBe("not_found");
     expect(inspected).toHaveLength(1);
+  });
+
+  it("freezes the label of each speaker the exported sentences name, cut to the drawn length, only when the style shows labels", async () => {
+    const { h, service } = setup();
+    const speakerIds = ["s-a", "s-b", "s-a", undefined, "s-b", "s-a"];
+    const lines = ASR_LINES.map((line, index) => ({ ...line, ...(speakerIds[index] === undefined ? {} : { speakerId: speakerIds[index] }) }));
+    const longName = "很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES + 4);
+    const fixture = seedExportContent(h, LOCAL.userId, "local", { lines, speakerNames: { "s-a": longName } });
+    h.repository.withTransaction((scope) => {
+      // A speaker no exported sentence names is left out.
+      scope.speakers.insert(LOCAL.userId, fixture.contentId, [{ id: "s-c", name: "王五" }], 1);
+      scope.mediaAssets.insert({
+        id: h.newId(), userId: LOCAL.userId, contentId: fixture.contentId, kind: "external_local", storageRef: "/media/lecture.mkv", displayName: "lecture.mkv",
+        mimeType: "video/x-matroska", sizeBytes: 10, fingerprint: "sha256:abc", availability: "available", retentionPolicy: "keep", createdAt: 1,
+      });
+    });
+    const labelled = { ...style, appearance: { ...style.appearance, speaker: "change" as const } };
+    const body = {
+      mode: "bilingual" as const,
+      revisionId: fixture.corrected.revision.id,
+      translationRevisionId: fixture.translated.revision.id,
+      delivery: "soft" as const,
+      container: "mkv" as const,
+      style: labelled,
+    };
+    const accepted = await service.burn(LOCAL, fixture.contentId, body, "labels-1");
+    const request = JSON.parse(taskOf(h, accepted.body.taskId).requestJson) as Record<string, unknown>;
+    expect(request.speakerLabels).toEqual({ "s-a": `${"很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…`, "s-b": "发言人 2" });
+    expect((request.style as typeof labelled).appearance.speaker).toBe("change");
+    // Renaming afterwards changes nothing already frozen.
+    h.repository.withTransaction((scope) => scope.speakers.update(LOCAL.userId, fixture.contentId, "s-b", { name: "李四" }, 2));
+    expect(JSON.parse(taskOf(h, accepted.body.taskId).requestJson)).toEqual(request);
+
+    finishTasks(h, fixture.contentId);
+    const plain = await service.burn(LOCAL, fixture.contentId, { ...body, style }, "labels-2");
+    const unlabelled = JSON.parse(taskOf(h, plain.body.taskId).requestJson) as Record<string, unknown>;
+    expect("speakerLabels" in unlabelled).toBe(false);
+    expect("speaker" in (unlabelled.style as typeof style).appearance).toBe(false);
   });
 });
 

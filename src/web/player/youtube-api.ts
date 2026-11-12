@@ -4,6 +4,7 @@ export interface YoutubePlayer {
   getCurrentTime(): number;
   getDuration(): number;
   playVideo(): void;
+  pauseVideo(): void;
   destroy(): void;
 }
 

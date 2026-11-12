@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX } from "../../../../src/shared/defaults.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
-import { CITED_SEGMENT_ID, contentRoutes, highlightsBody } from "../../../fixtures/web/content-data.ts";
+import { CITED_SEGMENT_ID, contentRoutes, highlightsBody, revision, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
 const PROVIDERS = { body: { items: [{ id: "p1", name: "P", protocol: "openai_compatible", baseURL: "https://x", credentialStatus: "configured", hasCredential: true, models: [], createdAt: 1 }] } };
@@ -118,5 +118,62 @@ describe("HighlightsTab context menu", () => {
       { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" },
     );
     expect(rightClick(await screen.findByTestId("highlight-items"))).toBe(false);
+  });
+});
+
+describe("HighlightsTab speakers", () => {
+  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
+  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true };
+
+  function routes(options: { confirmed?: boolean; speakerContext?: Record<string, unknown>; stale?: boolean } = {}) {
+    const primary = revision("r1", options.confirmed === true ? { speakersConfirmedAt: 5 } : {});
+    const body = highlightsBody({
+      ...(options.speakerContext === undefined ? {} : { speakerContext: options.speakerContext as never }),
+      ...(options.stale === true ? { stale: true, staleReason: "transcript_changed" as const } : {}),
+    });
+    const items = body.current?.items.map((item, index) => ({ ...item, speakerId: index === 2 ? "sp2" : "sp1" })) ?? [];
+    return {
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/speakers": { body: { items: [CHEN, LI] } },
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [primary] } },
+      "GET /api/transcript/revisions/r1/segments": { body: { revision: primary, items: SEGMENTS.map((item, index) => ({ ...item, speakerId: index === 2 ? "sp2" : "sp1" })) } },
+      "GET /api/contents/c1/highlights": { body: { ...body, current: { ...body.current, items } } },
+    };
+  }
+
+  it("names each highlighted sentence's speaker on its card", async () => {
+    mockApi(routes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" });
+    const list = await screen.findByTestId("highlight-items");
+    await waitFor(() => expect(within(list).getAllByTestId("highlight-speaker").map((item) => item.lastElementChild?.textContent)).toEqual(["陈明", "李华"]));
+    expect((list.querySelector(`[data-segment-id='${CITED_SEGMENT_ID}']`) as HTMLElement).textContent).toContain("李华再看重排序。");
+  });
+
+  it("shows the speaker basis notice, and tells beside the entry when unreviewed speakers are not read", async () => {
+    mockApi(routes({ speakerContext: { state: "unconfirmed", speakers: [{ id: "sp1", label: "陈明" }] } }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" });
+    expect((await screen.findByTestId("highlights-speaker-basis")).textContent).toBe("当前字幕稿的发言人未核对");
+    expect((await screen.findByTestId("highlights-speakers-not-read")).textContent).toBe("发言人未核对，本次不读取");
+  });
+
+  it("marks the speaker basis notice as a note, read with the highlights rather than announced", async () => {
+    mockApi(routes({ confirmed: true, speakerContext: { state: "attribution_changed", speakers: [{ id: "sp1", label: "陈明" }], changedSentences: 2 } }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" });
+    const line = await screen.findByTestId("highlights-speaker-basis");
+    expect(line.getAttribute("data-state")).toBe("attribution_changed");
+    // The same reading as the summary's and chapters' notices.
+    expect(line.getAttribute("role")).toBe("note");
+    expect(line.hasAttribute("aria-live")).toBe(false);
+    expect(screen.getByRole("note").textContent).toBe(line.textContent);
+  });
+
+  it("says nothing about speakers on stale highlights, and nothing beside the entry once reviewed", async () => {
+    mockApi(routes({ confirmed: true, stale: true, speakerContext: { state: "attribution_changed", speakers: [], changedSentences: 2 } }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" });
+    expect(await screen.findByTestId("highlights-stale")).toBeTruthy();
+    await screen.findAllByTestId("highlight-speaker");
+    expect(screen.queryByTestId("highlights-speaker-basis")).toBeNull();
+    expect(screen.queryByTestId("highlights-speakers-not-read")).toBeNull();
   });
 });

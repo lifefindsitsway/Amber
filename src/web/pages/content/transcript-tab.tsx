@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
@@ -12,6 +12,7 @@ import { speakerModeFor, speakerShares } from "../../../shared/speaker-turns.ts"
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { queryKeys, useProviders, useSettings } from "../../api/queries.ts";
+import { loadBundledFont } from "../../bundled-fonts.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { formatDuration } from "../../format.ts";
 import { usePlayerCapabilities, usePlayerTime } from "../../player/player-controller.tsx";
@@ -39,19 +40,25 @@ import {
 } from "./content-data.ts";
 import { DraftEditor } from "./draft-editor.tsx";
 import { revisionLabel } from "./labels.ts";
+import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
 import { PARAGRAPH_GAP_EM, READER_MEASURE_EM, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
 import { useStickyTurn } from "./reader-sticky.ts";
 import { StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
-import { ReaderTypographyPopover, type ReaderTypographyChange } from "./reader-typography-popover.tsx";
-import { READER_TYPOGRAPHY_DEFAULTS, useReaderTypography, type ReaderTypography } from "./reader-typography.ts";
+import { ReaderTypographyPopover } from "./reader-typography-popover.tsx";
+import { READER_TYPOGRAPHY_DEFAULTS, useReaderTypography, type ReaderTypography, type ReaderTypographyChange } from "./reader-typography.ts";
 import { RevisionActions } from "./revision-actions-dialog.tsx";
 import { revisionInfo } from "./revision-info.ts";
 import { useLocatedSegment } from "./same-sentence.ts";
 import type { ScrollAnchor } from "./scroll-anchor.ts";
 import { isChineseLanguage } from "./sentence-editor.tsx";
 import { useSentenceMenu } from "./sentence-menu.tsx";
+import { SpeakersNotReadHint } from "./speaker-basis-notice.tsx";
+import { filteredRowKey, filteredViewRows, rowIndexOfSegment, sentenceCounts, type FilteredRow } from "./speaker-filter.ts";
+import { SpeakerFilterBar, SpeakerFilterButton, SpeakerFilterEmpty, SpeakerGap, useScrollToSegment, useSpeakerFilter } from "./speaker-filter-ui.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
+import { SpeakerReviewControl } from "./speakers/review/speaker-review-panel.tsx";
+import { ComparisonSummary } from "./speakers/compare/comparison-summary.tsx";
 import { VirtualRows, type VirtualRowsHandle } from "./virtual-rows.tsx";
 
 /**
@@ -91,6 +98,8 @@ export function TranscriptTab() {
   const [showArchived, setShowArchived] = useState(false);
   // The ASR revision whose speakers the editor is to bring into the current text.
   const [applyFrom, setApplyFrom] = useState<string | undefined>(undefined);
+  // The review panel's 「去编辑器查看」 opens the editor on the cross-recognition comparison.
+  const [compareOnOpen, setCompareOnOpen] = useState(false);
   const applyParam = params.get("applySpeakers");
   // A link asking to apply speakers opens the editor on it, and is spent: the address does not keep asking.
   useEffect(() => {
@@ -141,9 +150,11 @@ export function TranscriptTab() {
         base={base}
         primaryRevisionId={primaryId}
         {...(applyFrom === undefined ? {} : { applySpeakersFrom: applyFrom })}
+        {...(compareOnOpen ? { openComparison: true } : {})}
         onClose={() => {
           setEditing(false);
           setApplyFrom(undefined);
+          setCompareOnOpen(false);
         }}
       />
     );
@@ -178,6 +189,11 @@ export function TranscriptTab() {
       onDeleted={unpick}
       onEdit={() => {
         setApplyFrom(undefined);
+        setEditing(true);
+      }}
+      onCompare={() => {
+        setApplyFrom(undefined);
+        setCompareOnOpen(true);
         setEditing(true);
       }}
       onApplySpeakers={(sourceRevisionId) => {
@@ -246,6 +262,8 @@ function TranscriptReader(props: {
   search: string;
   onPick: (id: string) => void;
   onEdit: () => void;
+  /** Opens the editor on the cross-recognition comparison of the shown revision. */
+  onCompare: () => void;
   /** Opens the editor on the apply-speakers flow for the given ASR revision. */
   onApplySpeakers: (sourceRevisionId: string) => void;
 }) {
@@ -268,6 +286,21 @@ function TranscriptReader(props: {
   const notes = useContentNotes(page.content.id, revision.id);
   const pinned = useDragPin();
   const [typography, setTypography, resetTypography] = useReaderTypography();
+  // A font size, line height, font or layout change resizes every row: keep the first visible row where it was.
+  // The anchor is taken just before the change and used by the very next commit; a change that
+  // never lands (nothing differs, or the preference cannot be stored yet) must not leave it
+  // behind to pull the view back later, so it is dropped once the change has had its turn.
+  const anchorBeforeChange = useRef<ScrollAnchor | undefined>(undefined);
+  const rememberAnchor = (): void => {
+    anchorBeforeChange.current = reader.current?.anchor();
+    setTimeout(() => {
+      anchorBeforeChange.current = undefined;
+    }, 0);
+  };
+  // The default font reads no font file; a bundled one is drawn only once it is registered. A
+  // stored face read in the background (a restored page, a retry) resizes the rows when it is
+  // drawn, just like a change made in the popover.
+  const readerFont = useAppliedReaderFont(typography, client, { onBeforeApply: rememberAnchor });
   // The element the rows scroll in, as state: it only exists once the sentences have loaded.
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const narrow = useIsNarrow(host);
@@ -290,9 +323,11 @@ function TranscriptReader(props: {
   const currentChapters = chapters.data?.current;
   const noteItems = notes.data?.items;
   const placed = useMemo(() => notesBySegment(noteItems ?? [], list), [noteItems, list]);
-  // Speakers are only asked for when a sentence names one, so a text without speakers costs no request.
+  // Speakers are only asked for when a sentence names one, so a text without speakers costs no
+  // request — unless the address filters by speaker, whose ids are checked against the list.
   const hasSpeakerSentences = useMemo(() => list.some((segment) => segment.speakerId !== undefined), [list]);
-  const speakers = useSpeakers(page.content.id, hasSpeakerSentences);
+  const [urlParams] = useSearchParams();
+  const speakers = useSpeakers(page.content.id, hasSpeakerSentences || urlParams.has("speaker"));
   const speakerList = speakers.data?.items;
   // Whether the revision is read by speakers is decided by its data; the user's switch only hides the turns.
   // Memoised: the player's time re-renders this view several times a second.
@@ -301,17 +336,40 @@ function TranscriptReader(props: {
   const speakerById = useMemo(() => new Map((speakerList ?? []).map((speaker) => [speaker.id, speaker])), [speakerList]);
   const shares = useMemo(() => new Map(speakerShares(showTurns ? list : []).map((share) => [share.speakerId, share])), [showTurns, list]);
   const sections = useMemo(() => readerSections(list, currentChapters?.chapters ?? []), [list, currentChapters]);
-  const rows = useMemo(
-    () =>
-      viewRows(sections, {
-        turns: showTurns,
-        // A sentence with a note or a search hit needs room, which a compact turn does not give it.
-        hasMarks: (segment) => (placed.get(segment.id)?.length ?? 0) > 0 || (props.search !== "" && termRanges(segment.text, props.search).length > 0),
-      }),
-    [sections, showTurns, placed, props.search],
+  const rowOptions = useMemo(
+    () => ({
+      turns: showTurns,
+      // A sentence with a note or a search hit needs room, which a compact turn does not give it.
+      hasMarks: (segment: TranscriptSegmentDto) => (placed.get(segment.id)?.length ?? 0) > 0 || (props.search !== "" && termRanges(segment.text, props.search).length > 0),
+    }),
+    [showTurns, placed, props.search],
   );
+  const rows = useMemo(() => viewRows(sections, rowOptions), [sections, rowOptions]);
+  // 「只看」: the rows shown are the selected speakers' sentences with gap bars between them;
+  // copying still takes the whole text.
+  const filter = useSpeakerFilter(speakerList);
+  const counts = useMemo(() => sentenceCounts(list), [list]);
+  const filtered = useMemo(
+    () => (filter.active ? filteredViewRows(list, currentChapters?.chapters ?? [], filter.selectedSet, rowOptions) : undefined),
+    [filter.active, filter.selectedSet, list, currentChapters, rowOptions],
+  );
+  const shownRows: FilteredRow[] = filtered?.rows ?? rows;
+  const scrollToRow = useCallback((index: number) => reader.current?.scrollToIndex(index, "start"), []);
+  const returnTo = useScrollToSegment(shownRows, scrollToRow);
+  // Scrolls to a sentence; one the filter hides brings the whole text back first.
+  const locate = (segmentId: string): boolean => {
+    const index = rowIndexOfSegment(shownRows, segmentId);
+    if (index >= 0) {
+      reader.current?.scrollToIndex(index);
+      return true;
+    }
+    if (!filter.active || rowIndexOfSegment(rows, segmentId) < 0) return false;
+    filter.clear();
+    returnTo(segmentId);
+    return true;
+  };
   // The outline lists the headings the reader actually shows, so every entry has a row to scroll to.
-  const outline = useMemo(() => rows.flatMap((row, index) => (row.kind === "chapter" ? [{ index, startMs: row.startMs, title: row.title }] : [])), [rows]);
+  const outline = useMemo(() => shownRows.flatMap((row, index) => (row.kind === "chapter" ? [{ index, startMs: row.startMs, title: row.title }] : [])), [shownRows]);
   const changes = useMemo(
     () => (showChanges && parent.data !== undefined ? changedSegments(revision, list, parent.data) : new Map<string, "ai" | "user">()),
     [showChanges, parent.data, revision, list],
@@ -322,7 +380,7 @@ function TranscriptReader(props: {
   const { primary: current, others: overlapping } = segmentsAt(list, tracking ? time : undefined, pinnedId);
   const overlapKey = overlapping.map((segment) => segment.id).join(",");
   const overlapIds = useMemo(() => new Set(overlapKey === "" ? [] : overlapKey.split(",")), [overlapKey]);
-  const turnMarker = useStickyTurn(host, showTurns && !narrow, rows);
+  const turnMarker = useStickyTurn(host, showTurns && !narrow, shownRows);
 
   // The pin ends when playback has been inside the sentence and then left it.
   useEffect(() => {
@@ -336,20 +394,17 @@ function TranscriptReader(props: {
     }
   }, [pinnedId, time, list]);
 
-  // A font size, line height or layout change resizes every row: keep the first visible row where it was.
-  // The anchor is taken just before the change and used by the very next commit; a change that
-  // never lands (nothing differs, or the preference cannot be stored yet) must not leave it
-  // behind to pull the view back later, so it is dropped once the change has had its turn.
-  const anchorBeforeChange = useRef<ScrollAnchor | undefined>(undefined);
-  const rememberAnchor = (): void => {
-    anchorBeforeChange.current = reader.current?.anchor();
-    setTimeout(() => {
-      anchorBeforeChange.current = undefined;
-    }, 0);
-  };
   const changeTypography = (change: ReaderTypographyChange): void => {
     const next = { ...typography, ...change };
-    if (next.fontSize === typography.fontSize && next.lineHeight === typography.lineHeight && next.showSpeakers === typography.showSpeakers) return;
+    if (
+      next.fontSize === typography.fontSize &&
+      next.lineHeight === typography.lineHeight &&
+      next.showSpeakers === typography.showSpeakers &&
+      next.font === typography.font &&
+      next.customFont === typography.customFont
+    ) {
+      return;
+    }
     rememberAnchor();
     setTypography(change);
   };
@@ -357,13 +412,16 @@ function TranscriptReader(props: {
     const unchanged =
       typography.fontSize === READER_TYPOGRAPHY_DEFAULTS.fontSize &&
       typography.lineHeight === READER_TYPOGRAPHY_DEFAULTS.lineHeight &&
-      typography.showSpeakers === READER_TYPOGRAPHY_DEFAULTS.showSpeakers;
+      typography.showSpeakers === READER_TYPOGRAPHY_DEFAULTS.showSpeakers &&
+      typography.font === undefined &&
+      typography.customFont === undefined;
     if (!unchanged) rememberAnchor();
     resetTypography();
   };
   // Every commit consumes the anchor, but only one that really resized the rows puts it back: re-measuring
   // a windowed list for a commit that changed nothing would only make it jump.
-  const layoutKey = `${typography.fontSize} ${typography.lineHeight} ${showTurns}`;
+  // The font drawn, not the one stored: a bundled face only resizes the rows once it is registered.
+  const layoutKey = `${typography.fontSize} ${typography.lineHeight} ${showTurns} ${readerFont.key}`;
   const committedLayout = useRef(layoutKey);
   useLayoutEffect(() => {
     const anchor = anchorBeforeChange.current;
@@ -385,8 +443,7 @@ function TranscriptReader(props: {
   };
   const copyBody = (): void => void copyText(readingText(rows));
   const copyWithSpeakers = (): void => void copyText(readingTextWithSpeakers(sections, speakerPrefix));
-  const targetIndex =
-    located.segmentId === undefined ? undefined : rows.findIndex((row) => row.kind === "paragraph" && row.paragraph.segments.some((s) => s.id === located.segmentId));
+  const targetIndex = located.segmentId === undefined ? undefined : rowIndexOfSegment(shownRows, located.segmentId);
   const configured = (providers.data?.items.length ?? 0) > 0;
   const proofreadLabel = revision.kind === "corrected" ? t("contentView.transcript.reproofread") : t("contentView.transcript.proofread");
   // Only a reproofread whose parent is the current version becomes current by itself; any other version needs the user.
@@ -400,20 +457,17 @@ function TranscriptReader(props: {
       await queryClient.invalidateQueries({ queryKey: searchKeys.all });
     },
   });
+  // Editing starts from loaded sentences of a revision that is not archived (the server refuses an archived base).
+  const canEdit = segments.data !== undefined && !revision.archived;
   // An archived revision has to be restored before it can be current.
   const canSetPrimary = revision.id !== props.primaryId && revision.kind !== "translated" && !revision.archived;
 
   // 定位原文 from a detached note popover: scroll this reader to the sentence when it shows that revision.
   useEffect(
     () =>
-      notesUi?.registerLocator((revisionId, segmentId) => {
-        if (revisionId !== revision.id) return false;
-        const index = rows.findIndex((row) => row.kind === "paragraph" && row.paragraph.segments.some((s) => s.id === segmentId));
-        if (index < 0) return false;
-        reader.current?.scrollToIndex(index);
-        return true;
-      }),
-    [notesUi, revision.id, rows],
+      notesUi?.registerLocator((revisionId, segmentId) => revisionId === revision.id && locate(segmentId)),
+    // `locate` is rebuilt every render; what it reads is listed instead.
+    [notesUi, revision.id, rows, shownRows, filter.active],
   );
   const onOpenNotes = (segmentId: string, noteIds: string[]): void => {
     notesUi?.openView({ noteIds, segmentId, revisionId: revision.id });
@@ -426,7 +480,7 @@ function TranscriptReader(props: {
   };
   // A heading seeks to the first sentence under it, so the selection lands on a real sentence.
   const onSeekHeading = (index: number): void => {
-    const next = rows[index + 1];
+    const next = shownRows[index + 1];
     const first = next?.kind === "paragraph" ? next.paragraph.segments[0] : undefined;
     if (first !== undefined) onSentence(first);
   };
@@ -458,6 +512,15 @@ function TranscriptReader(props: {
             </option>
           ))}
         </select>
+        <SpeakerReviewControl
+          contentId={page.content.id}
+          revisionId={revision.id}
+          speakerMode={speakerMode}
+          speakersConfirmedAt={revision.speakersConfirmedAt}
+          sentences={segments.data}
+          onLocate={(segmentId) => void locate(segmentId)}
+          crossCheck={<ComparisonSummary revisionId={revision.id} revisions={props.readable} onOpenEditor={canEdit ? props.onCompare : undefined} />}
+        />
         <RevisionActions contentId={page.content.id} revision={revision} revisions={props.readable} primaryId={props.primaryId} onDeleted={props.onDeleted} />
         <RevisionToggleBar toggles={props.toggles} />
         <label className="flex items-center gap-1 text-xs">
@@ -480,8 +543,9 @@ function TranscriptReader(props: {
             {proofreadLabel}
           </Button>
         )}
+        {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={props.primaryId} testId="proofread-speakers-not-read" /> : null}
         <ChapterOutline entries={outline} onPick={(index) => reader.current?.scrollToIndex(index, "start")} />
-        <Button size="sm" variant="ghost" onClick={props.onEdit} disabled={segments.data === undefined || revision.archived}>
+        <Button size="sm" variant="ghost" onClick={props.onEdit} disabled={!canEdit}>
           <Pencil size={14} />
           {t("common.action.edit")}
         </Button>
@@ -511,7 +575,19 @@ function TranscriptReader(props: {
             {t("common.action.copy")}
           </Button>
         )}
-        <ReaderTypographyPopover value={typography} speakerMode={speakerMode} onChange={changeTypography} onReset={resetReaderTypography} />
+        {speakerMode ? (
+          <SpeakerFilterButton contentId={page.content.id} speakers={speakerList ?? []} counts={counts} selected={filter.selected} onChange={filter.set} />
+        ) : null}
+        <ReaderTypographyPopover
+          value={typography}
+          speakerMode={speakerMode}
+          fontUnavailable={readerFont.failed}
+          fontLoading={readerFont.loading}
+          onRetryFont={readerFont.retry}
+          loadFont={(face) => loadBundledFont(client, face)}
+          onChange={changeTypography}
+          onReset={resetReaderTypography}
+        />
         <Link
           to={notesLink}
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium whitespace-nowrap hover:bg-sunken"
@@ -521,6 +597,7 @@ function TranscriptReader(props: {
           {t("notes.transcript.link", { count: noteItems?.length ?? 0 })}
         </Link>
       </div>
+      {filtered === undefined ? null : <SpeakerFilterBar speakers={speakerList ?? []} selected={filter.selected} turns={filtered.turns} onClear={filter.clear} />}
       {notes.isError ? (
         <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-notes-failed">
           {t("notes.transcript.loadFailed")}
@@ -556,19 +633,31 @@ function TranscriptReader(props: {
       {setPrimary.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={setPrimary.error.error} /></div> : null}
       {segments.isPending || (hasSpeakerSentences && speakers.isPending) ? (
         <Loading />
+      ) : filtered !== undefined && filtered.sentences === 0 ? (
+        <SpeakerFilterEmpty onClear={filter.clear} />
       ) : (
-        <div ref={setHost} className="relative min-h-0 flex-1" onMouseDown={pinned.start}>
+        <div ref={setHost} className="relative min-h-0 flex-1" onMouseDown={pinned.start} {...readerFont.hostProps}>
           <VirtualRows
             ref={reader}
             // The right padding keeps the text clear of the floating jump buttons at any font size.
             className="absolute inset-0 py-2 pr-14 pl-4"
             testId="transcript-reader"
-            items={rows}
-            keyOf={viewRowKey}
+            items={shownRows}
+            keyOf={(row) => filteredRowKey(row, viewRowKey)}
             estimateSize={96}
             scrollToIndex={targetIndex}
             pinnedIndex={pinned.index}
             render={(row, index) => {
+              if (row.kind === "gap")
+                return (
+                  <SpeakerGap
+                    gap={row}
+                    onReturn={(segmentId) => {
+                      filter.clear();
+                      returnTo(segmentId);
+                    }}
+                  />
+                );
               if (row.kind === "chapter") return <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />;
               const sentences: SentenceViewProps = {
                 selectedId: located.segmentId,
@@ -592,7 +681,7 @@ function TranscriptReader(props: {
             }}
           />
           {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
-          {rows.length > 0 ? (
+          {shownRows.length > 0 ? (
             <div className="absolute right-6 bottom-4 flex flex-col gap-2">
               <ReaderJump label={t("contentView.transcript.toTop")} onClick={() => reader.current?.scrollToTop()} testId="reader-to-top">
                 <ChevronsUp size={16} />
@@ -639,7 +728,11 @@ function ChapterHeading(props: { startMs: number; title: string; onSeek: () => v
 /** A paragraph of the plain reading view (no speaker turns): its time, then its sentences run on. */
 function ParagraphView(props: SentenceViewProps & { paragraph: Paragraph; typography: Pick<ReaderTypography, "fontSize" | "lineHeight">; onSeekParagraph: () => void }) {
   return (
-    <p className="break-words" style={{ ...readerBodyStyle(props.typography), maxWidth: `${READER_MEASURE_EM}em`, paddingBottom: `${PARAGRAPH_GAP_EM}em` }}>
+    <p
+      className="break-words"
+      {...{ [READER_TEXT_ATTRIBUTE]: "" }}
+      style={{ ...readerBodyStyle(props.typography), maxWidth: `${READER_MEASURE_EM}em`, paddingBottom: `${PARAGRAPH_GAP_EM}em` }}
+    >
       <button type="button" className="mr-2 font-mono text-xs text-accent hover:underline" data-reading-time onClick={props.onSeekParagraph}>
         {formatDuration(props.paragraph.startMs)}
       </button>

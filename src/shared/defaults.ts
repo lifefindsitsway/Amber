@@ -174,6 +174,9 @@ export const CHAT_COMPACTION_BUDGET_CHARS = 1500;
 /** FTS hits taken in retrieval mode, and neighbouring segments attached to each hit. */
 export const CHAT_RETRIEVAL_HITS_MAX = 20;
 export const CHAT_RETRIEVAL_NEIGHBOR_SEGMENTS = 2;
+/** A question about a speaker whose turns do not all fit: time buckets sampled (one turn each) and sentences kept per turn. */
+export const CHAT_SPEAKER_SAMPLE_TURNS = 6;
+export const CHAT_SPEAKER_SAMPLE_SENTENCES = 8;
 /** Conservative token estimate: characters per token for non-CJK text, tokens per CJK character. */
 export const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
 export const TOKEN_ESTIMATE_TOKENS_PER_CJK_CHAR = 1.5;
@@ -310,6 +313,14 @@ export const SPEAKER_ALIGN_MIN_COVERAGE = 0.6;
 export const SPEAKER_SPLIT_MIN_MS = 300;
 /** Longest single-sentence turn, in characters, the reading view shows compactly. */
 export const SPEAKER_SHORT_TURN_CHARS = 12;
+/** Fewest grapheme clusters of a question's text that may be taken for a speaker's name. */
+export const SPEAKER_MENTION_MIN_GRAPHEMES = 2;
+/** Clips per speaker the review panel offers for listening. */
+export const SPEAKER_REVIEW_SAMPLES_PER_SPEAKER = 5;
+/** A comparison transcription needs this many times the primary's speaker count left of the per-Content speaker cap. */
+export const SPEAKER_COMPARISON_ROOM_FACTOR = 2;
+/** Largest gap between the ends of two transcripts that are still compared speaker by speaker. */
+export const SPEAKER_COMPARE_DURATION_TOLERANCE_MS = 10000;
 /** Smallest body font size of the reading view, in px. */
 export const READER_FONT_SIZE_MIN = 12;
 /** Largest body font size of the reading view, in px. */
@@ -320,6 +331,8 @@ export const READER_FONT_SIZE_DEFAULT = 16;
 export const READER_LINE_HEIGHTS = "1.5 1.6 1.7 1.8 2.0";
 /** Line height the reading view starts with; one of `READER_LINE_HEIGHTS`. */
 export const READER_LINE_HEIGHT_DEFAULT = 1.7;
+/** Longest name of a reading font the user types in, in characters. */
+export const READER_FONT_NAME_MAX_CHARS = 64;
 
 /** Default shortcut of the shortcut help sheet. */
 export const SHORTCUT_HELP_DEFAULT = "Ctrl+/";
@@ -412,8 +425,16 @@ export const SUBTITLE_NUDGE_BP = 10;
 export const SUBTITLE_NUDGE_FAST_BP = 100;
 /** AAC bitrate for audio tracks a hard-subtitle export must re-encode, in kbit/s. */
 export const SUBTITLE_VIDEO_AUDIO_KBPS = 192;
-/** Size cap when the web client reads the bundled subtitle font. */
+/** Size cap when the web client reads a bundled font (the subtitle font and the reading fonts). */
 export const SUBTITLE_FONT_MAX_BYTES = 33554432;
+/** Font size of a subtitle's speaker label, relative to the first line shown under it. */
+export const SUBTITLE_SPEAKER_LABEL_SCALE = 0.7;
+/** In "on change" mode, how long one speaker keeps talking before the label is shown again. */
+export const SUBTITLE_SPEAKER_REPEAT_MS = 30000;
+/** Longest speaker label on a subtitle, in grapheme clusters; longer ones are cut with an ellipsis. */
+export const SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES = 16;
+/** Speaker labels are drawn only while at most this many subtitles are on screen together. */
+export const SUBTITLE_SPEAKER_MAX_PARTS = 2;
 /** How long a "saved to …" notice stays before it dismisses itself. */
 export const SAVE_NOTICE_DISMISS_MS = 30000;
 /** Timeout of one update check against the release feed. */

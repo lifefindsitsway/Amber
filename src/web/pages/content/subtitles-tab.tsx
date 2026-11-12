@@ -46,6 +46,8 @@ import { useSentenceMenu } from "./sentence-menu.tsx";
 import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
 import { speakerModeFor } from "../../../shared/speaker-turns.ts";
 import { speakerColorVars } from "./speakers/speaker-colors.ts";
+import { matchesSpeakers, sentenceCounts } from "./speaker-filter.ts";
+import { SpeakerFilterButton } from "./speaker-filter-ui.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { VirtualRows } from "./virtual-rows.tsx";
 
@@ -165,17 +167,21 @@ export function SubtitlesTab() {
   });
 
   const list = segments.data ?? [];
-  const visible = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    return needle === "" ? list : list.filter((segment) => segment.text.toLowerCase().includes(needle));
-  }, [list, filter]);
-  // Overlapping sentences (one speaker cutting in) cover the same moment; the list follows the primary one.
-  const current = tracking ? segmentsAt(list, time).primary : undefined;
   const hasSpeakers = list.some((segment) => segment.speakerId !== undefined);
   const speakers = useSpeakers(page.content.id, hasSpeakers);
   const speakerById = useMemo(() => new Map((speakers.data?.items ?? []).map((speaker) => [speaker.id, speaker])), [speakers.data]);
   // The same rule as the reading view: with one anonymous speaker there are no turns worth marking.
   const speakerMode = useMemo(() => speakerModeFor(list, speakers.data?.items ?? []), [list, speakers.data]);
+  // The speakers picked beside the keyword box; both narrow the list together.
+  const [speakerPick, setSpeakerPick] = useState<string[]>([]);
+  const pickedSpeakers = useMemo(() => new Set(speakerMode ? speakerPick : []), [speakerMode, speakerPick]);
+  const counts = useMemo(() => sentenceCounts(list), [list]);
+  const visible = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    return needle === "" && pickedSpeakers.size === 0 ? list : list.filter((segment) => segment.text.toLowerCase().includes(needle) && matchesSpeakers(segment, pickedSpeakers));
+  }, [list, filter, pickedSpeakers]);
+  // Overlapping sentences (one speaker cutting in) cover the same moment; the list follows the primary one.
+  const current = tracking ? segmentsAt(list, time).primary : undefined;
   const followId = tracking && follow ? current?.id : undefined;
   const targetId = located.segmentId ?? followId;
   const targetIndex = targetId === undefined ? undefined : visible.findIndex((segment) => segment.id === targetId);
@@ -234,6 +240,9 @@ export function SubtitlesTab() {
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
+          {speakerMode ? (
+            <SpeakerFilterButton contentId={page.content.id} speakers={speakers.data?.items ?? []} counts={counts} selected={speakerPick} onChange={setSpeakerPick} />
+          ) : null}
           {revision === undefined ? null : (
             <RevisionActions contentId={page.content.id} revision={revision} revisions={all} primaryId={primaryId} onDeleted={() => setPicked(primaryId)} />
           )}

@@ -5,6 +5,7 @@ import { appErrorSchema } from "../errors.ts";
 import { segmentIdSchema } from "../ids.ts";
 import { citationDtoSchema } from "./citation.ts";
 import { modelRefSchema } from "./model-ref.ts";
+import { speakerContextDtoSchema } from "./speaker-context.ts";
 import { modelRefSnapshotDtoSchema } from "./usage.ts";
 
 const idSchema = z.string().min(1);
@@ -85,8 +86,28 @@ export const chatContextDtoSchema = z.object({
   /** A planning estimate for the label's hover, never a precise count. */
   estimatedTokens: z.number().int().nonnegative().optional(),
   reason: z.enum(CHAT_CONTEXT_REASONS).optional(),
+  /**
+   * The default summary is left out of the material: it was written with speakers whose
+   * attributions no longer hold (changed, cited sentences gone, or not comparable). The same
+   * flag as on an answer's `contextUsed`.
+   */
+  summaryOmitted: z.literal(true).exactOptional(),
 });
 export type ChatContextDto = z.infer<typeof chatContextDtoSchema>;
+
+/**
+ * The material an answer was finally planned with, known only once its web search and any
+ * compaction are done: the mode, `speakerClips` when retrieval took a selection of someone's
+ * speech rather than all of it, `summaryOmitted` when the default summary was left out
+ * because its speakers no longer hold. Sent (SSE `context`) and kept on the answer only when
+ * the answer reads speakers or the summary was left out.
+ */
+export const chatContextUsedDtoSchema = z.object({
+  mode: z.enum(["full", "retrieval", "metadata"]),
+  speakerClips: z.literal(true).optional(),
+  summaryOmitted: z.literal(true).optional(),
+});
+export type ChatContextUsedDto = z.infer<typeof chatContextUsedDtoSchema>;
 
 /** One web page an answer was given, with the excerpt the model actually saw. */
 export const webSourceDtoSchema = z.object({
@@ -135,6 +156,10 @@ export const chatMessageDtoSchema = z.object({
   status: z.enum(CHAT_MESSAGE_STATUSES),
   modelRef: modelRefSnapshotDtoSchema.optional(),
   contextTranscriptRevisionId: idSchema.optional(),
+  /** On an answer that was given speakers and whose speaker basis no longer matches now: who they were and how it differs; absent when it still matches or no speakers were given. */
+  speakerContext: speakerContextDtoSchema.optional(),
+  /** On an answer: the material it was finally planned with, when it read speakers or left the summary out. */
+  contextUsed: chatContextUsedDtoSchema.optional(),
   citations: z.array(citationDtoSchema),
   suggestions: z.array(z.string()).optional(),
   quote: chatQuoteSchema.optional(),
@@ -215,6 +240,11 @@ export const chatStreamEventSchemas = {
   "answer.delta": z.object({ delta: z.string() }),
   citation: citationDtoSchema.extend({ startMs: msSchema }),
   suggestions: z.object({ items: z.array(z.string()) }),
+  /**
+   * Sent once planning is done and before the first `answer.delta`, only by an answer that
+   * reads speakers or left the default summary out; the answer keeps the same as `contextUsed`.
+   */
+  context: chatContextUsedDtoSchema,
   usage: z.object({ inputTokens: z.number().int().nonnegative().optional(), outputTokens: z.number().int().nonnegative().optional() }),
   done: z.object({
     threadId: idSchema,

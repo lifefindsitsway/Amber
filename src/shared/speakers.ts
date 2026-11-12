@@ -28,9 +28,14 @@ export type SpeakerReviewResolution = (typeof SPEAKER_REVIEW_RESOLUTIONS)[number
 export const SPEAKER_LABEL_MODES = ["turn", "every"] as const;
 export type SpeakerLabelMode = (typeof SPEAKER_LABEL_MODES)[number];
 
-// C0 and C1 controls, and the bidirectional embeddings, overrides, isolates and marks: a
-// name with them could reorder the text around it wherever it is shown or exported.
-const CONTROLS = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+/**
+ * The characters a speaker name loses, as the body of a regular-expression character class:
+ * C0 and C1 controls, and the bidirectional embeddings, overrides, isolates and marks. A name
+ * with them could reorder the text around it wherever it is shown, exported or sent.
+ */
+export const SPEAKER_NAME_CONTROL_CLASS = "\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069";
+
+const CONTROLS = new RegExp(`[${SPEAKER_NAME_CONTROL_CLASS}]`, "gu");
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 

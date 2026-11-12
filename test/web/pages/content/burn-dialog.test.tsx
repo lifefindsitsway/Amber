@@ -5,6 +5,7 @@ import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../..
 import { ApiError } from "../../../../src/web/api/client.ts";
 import {
   BurnDialog,
+  burnContainer,
   burnDefaults,
   burnRequest,
   burnSources,
@@ -273,6 +274,40 @@ describe("BurnDialog", () => {
     fireEvent.click(await startEnabled(dialog));
     await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t8"));
     expect(calls.filter((call) => call.method === "POST").map((call) => (call.body as { container: string }).container)).toEqual(["mp4", "mkv"]);
+  });
+
+  it("keeps speaker labels off MP4 soft subtitles: the option is greyed with the reason and the export goes to MKV", async () => {
+    expect([burnContainer("mp4", true), burnContainer("mp4", false), burnContainer("mkv", true)]).toEqual(["mkv", "mp4", "mkv"]);
+    const appearance = { ...defaultSubtitleAppearance(), speaker: "change" as const };
+    writeAppearance("u1", appearance);
+    const { dialog, calls, onStarted } = renderDialog();
+    await waitFor(() => expect(within(dialog).getByTestId("burn-style-speaker").textContent).toBe("发言人：换人时"));
+    // The original's speakers are not reviewed: one line says so, nothing is blocked.
+    expect(within(dialog).getByTestId("burn-speakers-unreviewed").textContent).toBe("所选字幕稿的发言人尚未核对，视频中的姓名按当前归属写入");
+    fireEvent.click(within(dialog).getByLabelText("软字幕轨", { exact: false }));
+    const container = within(dialog).getByTestId("burn-container");
+    const mp4 = within(container).getByLabelText("MP4", { exact: false }) as HTMLInputElement;
+    expect(mp4.disabled).toBe(true);
+    expect(within(container).getByTestId("burn-mp4-speaker-unsupported").textContent).toContain("无法显示发言人姓名");
+    expect((within(container).getByLabelText("MKV（推荐）", { exact: false }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(await startEnabled(dialog));
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith("t7"));
+    expect(calls.find((call) => call.method === "POST")?.body).toMatchObject({ delivery: "soft", container: "mkv", style: { appearance, placement: defaultSubtitlePlacement() } });
+  });
+
+  it("says nothing of speakers with labels off or the original's speakers reviewed", async () => {
+    const first = renderDialog();
+    fireEvent.click(within(first.dialog).getByLabelText("软字幕轨", { exact: false }));
+    expect((within(within(first.dialog).getByTestId("burn-container")).getByLabelText("MP4", { exact: false }) as HTMLInputElement).disabled).toBe(false);
+    expect(within(first.dialog).queryByTestId("burn-style-speaker")).toBeNull();
+    expect(within(first.dialog).queryByTestId("burn-speakers-unreviewed")).toBeNull();
+    first.unmount();
+
+    writeAppearance("u1", { ...defaultSubtitleAppearance(), speaker: "every" });
+    const reviewed = { ...original, speakersConfirmedAt: 5 };
+    const second = renderDialog({ revisions: [reviewed, english, japanese] });
+    await waitFor(() => expect(within(second.dialog).getByTestId("burn-style-speaker").textContent).toBe("发言人：每条"));
+    expect(within(second.dialog).queryByTestId("burn-speakers-unreviewed")).toBeNull();
   });
 
   it("hands style editing to the player and closes", async () => {

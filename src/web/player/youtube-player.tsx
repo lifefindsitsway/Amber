@@ -11,7 +11,7 @@ const STATE_PLAYING = 1;
 const STATE_PAUSED = 2;
 
 /**
- * YouTube iframe driven through the IFrame API: direct seeking and polled
+ * YouTube iframe driven through the IFrame API: direct seeking, play and pause, and polled
  * current time. The iframe is ours so its Referer policy is set before the first request.
  * The position remembered from an earlier visit is not applied here: only the local player takes it.
  */
@@ -44,6 +44,7 @@ export function YoutubePlayer(props: { videoId: string; onFailure: () => void })
         }
       },
       play: () => player?.playVideo(),
+      pause: () => player?.pauseVideo(),
     });
     loadYoutubeApi()
       .then((YT) => {

@@ -62,3 +62,11 @@ describe("revisionInfo", () => {
     expect(revisionInfo(revision("p"), [revision("p")], t)).toBeUndefined();
   });
 });
+
+describe("revisionInfo of a comparison transcription", () => {
+  it("says first that it was made only for comparison", () => {
+    const comparison = revision("c", { kind: "asr", generation: { kind: "asr", modelId: "scribe_v2", purpose: "comparison", diarization: { status: "applied" } } });
+    expect(revisionInfo(comparison, [comparison], t)?.split("\n")).toEqual(["对比稿：只为交叉识别对比而转录，不会自动成为当前字幕稿", "发言人识别：已识别发言人"]);
+    expect(revisionInfo(asr({ status: "applied" }), [], t)).toBe("发言人识别：已识别发言人");
+  });
+});

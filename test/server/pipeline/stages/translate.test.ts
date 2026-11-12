@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
-import { customPromptRef, renderPrompt, TRANSLATE_SUBTITLES_PROMPT } from "../../../../src/server/domain/prompts.ts";
+import { customPromptRef, renderPrompt, SPEAKER_LINES_FRAGMENT, TRANSLATE_SUBTITLES_PROMPT } from "../../../../src/server/domain/prompts.ts";
+import { resolveSpeakerContext } from "../../../../src/server/application/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { TranslateStageExecutor } from "../../../../src/server/pipeline/stages/translate.ts";
 import type { LlmLanes } from "../../../../src/server/application/llm-lanes.ts";
@@ -23,6 +24,7 @@ import {
   workUnitsOf,
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
+import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -336,5 +338,220 @@ describe("translate stage", () => {
       expect(sent).toContain("自定义标记：译文口语化。");
       expect(translatedSegments(s.h, current?.id as string).map((segment) => segment.text)).toEqual(["first", "second"]);
     });
+  });
+});
+
+describe("speakers given to a translation", () => {
+  /** Two speakers in runs of five, every seventh sentence unassigned; one confirmed name. */
+  const REVIEWED: sc.SeedOptions = {
+    speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }],
+    assign: (position) => (position % 7 === 6 ? undefined : Math.floor(position / 5) % 2),
+    reviewed: true,
+  };
+  const UNREVIEWED: sc.SeedOptions = { ...REVIEWED, reviewed: false };
+  const NONE: sc.SeedOptions = {};
+
+  function prepared(seed: sc.SeedOptions) {
+    const fake = new FakeLlmProvider();
+    answerAll(fake, 40);
+    const { h, modelRef } = sc.speakerHarness(fake, undefined, { start: false });
+    open.push(h);
+    h.executors.translate = new TranslateStageExecutor({ repository: h.repository, newId: h.newId });
+    const { segments } = sc.seedContent(h, seed);
+    h.repository.withTransaction((scope) =>
+      scope.terminology.put({
+        id: h.newId(),
+        userId: LOCAL.userId,
+        scope: { kind: "global" },
+        entries: [{ id: h.newId(), ordinal: 0, term: "RAG", normalizedKey: "rag", translation: "Retrieval-Augmented Generation" }],
+      }),
+    );
+    h.scheduler.start();
+    return { h, fake, modelRef, segments };
+  }
+
+  async function submit(s: { h: Harness; modelRef: ModelRef }, how: "service" | "legacy" = "service"): Promise<string> {
+    if (how === "legacy") {
+      const taskId = createTaskOfKind(s.h, "translate", { targetLanguages: ["en"], modelRef: s.modelRef, baseRevisionId: sc.FIXED_REVISION_ID }, { contentId: sc.FIXED_CONTENT_ID });
+      s.h.scheduler.kick();
+      return taskId;
+    }
+    return (await s.h.derivedTasks.translate(LOCAL, sc.FIXED_CONTENT_ID, { targetLanguages: ["en"], modelRef: s.modelRef })).body.taskId;
+  }
+
+  async function run(seed: sc.SeedOptions, how: "service" | "legacy" = "service") {
+    const s = prepared(seed);
+    const taskId = await submit(s, how);
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    return { ...s, taskId, hash: sc.sha256(JSON.stringify(sc.traffic(s.h, s.fake, taskId))) };
+  }
+
+  /**
+   * The exact traffic without speakers, captured from the stage before it could read them:
+   * a request that reads none stays byte-identical to it, unit digests included.
+   */
+  const BASELINE = "e88143fc0a68a9e28a333e2b3ec703d3e00bffc33dd0ddb60eca4443fdeae92b";
+
+  it("byte-identical without speakers, unreviewed, and for a request queued without a snapshot", async () => {
+    const none = await run(NONE);
+    expect(none.fake.calls).toHaveLength(Math.ceil(sc.LECTURE.length / TRANSLATE_BATCH_LINES));
+    expect((await run(UNREVIEWED)).hash).toBe(none.hash);
+    expect((await run(REVIEWED, "legacy")).hash).toBe(none.hash);
+    expect(none.hash).toBe(BASELINE);
+  });
+
+  const RULES_END = "纯粹的编号列表\n\n";
+  /** The value of `{{terms_section}}` as sent: between the numbered rules and the subtitles. */
+  const termsValueOf = (request: LlmRequest): string => {
+    const text = promptText(request);
+    return text.slice(text.indexOf(RULES_END) + RULES_END.length, text.indexOf("\n\n原始字幕（每行一条，序号已标注）："));
+  };
+  /** Sentence position of each numbered line of the batch (the lecture's lines say which they are). */
+  const positionsOf = (request: LlmRequest): number[] => {
+    const text = promptText(request);
+    return [...text.slice(text.lastIndexOf("：\n")).matchAll(/^\d+\. 第(\d+)句/gm)].map((match) => Number(match[1]) - 1);
+  };
+  const labelOf = (position: number): string | undefined => {
+    const speaker = REVIEWED.assign?.(position);
+    return speaker === undefined ? undefined : speaker === 0 ? "蒋炎岩" : "发言人 2";
+  };
+  const expectedSection = (positions: readonly number[]): string => {
+    const runs: string[] = [];
+    let start = 0;
+    while (start < positions.length) {
+      let end = start;
+      const label = labelOf(positions[start] as number);
+      while (end + 1 < positions.length && labelOf(positions[end + 1] as number) === label) end += 1;
+      if (label !== undefined) runs.push(start === end ? `${start + 1} ${label}` : `${start + 1}–${end + 1} ${label}`);
+      start = end + 1;
+    }
+    return [SPEAKER_LINES_FRAGMENT.text, "蒋炎岩", "发言人 2", ...runs].join("\n");
+  };
+  const frozenOf = (h: Harness) =>
+    h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, sc.FIXED_CONTENT_ID, sc.FIXED_REVISION_ID, "lines"));
+  const errorOf = (h: Harness, taskId: string) => stageRunsOf(h, taskId).filter((run) => run.stage === "translate").at(-1)?.error;
+
+  it("appends the speaker section after the terminology with each batch's own line numbers, and records the snapshot", async () => {
+    const none = await run(NONE);
+    const reviewed = await run(REVIEWED);
+    expect(reviewed.fake.calls).toHaveLength(none.fake.calls.length);
+    const plain = new Map(none.fake.calls.map((call) => [positionsOf(call.request)[0], call.request]));
+    for (const call of reviewed.fake.calls) {
+      const positions = positionsOf(call.request);
+      expect(positions.length).toBeGreaterThan(0);
+      const section = expectedSection(positions);
+      expect(termsValueOf(call.request)).toBe(`【术语表】\nRAG = Retrieval-Augmented Generation\n\n${section}`);
+      // Without the section the request is exactly the one sent without speakers.
+      expect(JSON.parse(JSON.stringify(call.request).replace(JSON.stringify(`\n\n${section}`).slice(1, -1), ""))).toEqual(
+        JSON.parse(JSON.stringify(plain.get(positions[0]))),
+      );
+    }
+    const digests = (r: { h: Harness; taskId: string }) => workUnitsOf(r.h, r.taskId).map((unit) => unit.inputDigest);
+    expect(digests(reviewed).some((digest) => digests(none).includes(digest))).toBe(false);
+
+    const translation = (r: { h: Harness }) =>
+      r.h.repository.withTransaction((scope) => scope.transcripts.listRevisions(LOCAL.userId, sc.FIXED_CONTENT_ID).find((rev) => rev.kind === "translated"));
+    const generation = translation(reviewed)?.generation as { promptRefs: unknown; promptSnapshot: string; speakerContext?: unknown };
+    expect(generation.speakerContext).toEqual(frozenOf(reviewed.h));
+    expect(generation.promptRefs).toEqual([TRANSLATE_SUBTITLES_PROMPT.ref, SPEAKER_LINES_FRAGMENT.ref]);
+    const plainGeneration = translation(none)?.generation as { promptRefs: unknown; promptSnapshot: string; speakerContext?: unknown };
+    expect(plainGeneration.speakerContext).toBeUndefined();
+    expect(plainGeneration.promptRefs).toEqual([TRANSLATE_SUBTITLES_PROMPT.ref]);
+    expect(generation.promptSnapshot).toBe(plainGeneration.promptSnapshot);
+  });
+
+  it("byte-identical for a reviewed revision that is not in speaker mode", async () => {
+    // Reviewed, yet not read by speaker: one unnamed speaker, or speakers registered but none given a sentence.
+    const seeds: sc.SeedOptions[] = [
+      { speakers: [{}], assign: (position) => (position % 3 === 0 ? undefined : 0), reviewed: true },
+      { speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }], reviewed: true },
+    ];
+    for (const seed of seeds) {
+      const r = await run(seed);
+      // The branch under test: the mark is there, and still no snapshot is taken.
+      expect(r.h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, sc.FIXED_REVISION_ID))).toBeDefined();
+      expect(frozenOf(r.h)).toBeUndefined();
+      expect(r.fake.calls).toHaveLength(Math.ceil(sc.LECTURE.length / TRANSLATE_BATCH_LINES));
+      expect(r.hash).toBe(BASELINE);
+      const translated = r.h.repository.withTransaction((scope) => scope.transcripts.listRevisions(LOCAL.userId, sc.FIXED_CONTENT_ID).find((rev) => rev.kind === "translated"));
+      const generation = translated?.generation as { promptRefs?: unknown; speakerContext?: unknown };
+      expect(generation.speakerContext).toBeUndefined();
+      expect(generation.promptRefs).toEqual([TRANSLATE_SUBTITLES_PROMPT.ref]);
+    }
+  });
+
+  it("keeps the translation's speaker snapshot field for field across a reopen of the database", async () => {
+    const reviewed = await run(REVIEWED);
+    const frozen = frozenOf(reviewed.h);
+    expect(frozen).toBeDefined();
+    const read = (h: Harness) =>
+      h.repository.withTransaction((scope) => {
+        const found = scope.transcripts.listRevisions(LOCAL.userId, sc.FIXED_CONTENT_ID).find((rev) => rev.kind === "translated");
+        return found === undefined ? undefined : scope.transcripts.getRevision(LOCAL.userId, found.id);
+      });
+    const before = read(reviewed.h);
+    expect((before?.generation as { speakerContext?: unknown }).speakerContext).toEqual(frozen);
+
+    await reviewed.h.scheduler.stop();
+    const file = reviewed.h.file;
+    await reviewed.h.close();
+    open.splice(open.indexOf(reviewed.h), 1);
+    const reopened = createHarness({ file, executors: {} });
+    open.push(reopened);
+
+    const after = read(reopened);
+    expect(after).toEqual(before);
+    expect((after?.generation as { speakerContext?: unknown }).speakerContext).toEqual(frozen);
+  });
+
+  it("fails before any call when the read revision's attribution does not match the snapshot", async () => {
+    const s = prepared(REVIEWED);
+    const taskId = createTaskOfKind(
+      s.h,
+      "translate",
+      {
+        targetLanguages: ["en"],
+        modelRef: s.modelRef,
+        baseRevisionId: sc.FIXED_REVISION_ID,
+        speakerContext: { ...frozenOf(s.h), attributionDigest: `sha256:${"0".repeat(64)}` },
+      },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    s.h.scheduler.kick();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    expect(errorOf(s.h, taskId)?.code).toBe("internal");
+    expect(s.fake.calls).toHaveLength(0);
+  });
+
+  it("fails each batch with invalid_request.prompt_protocol naming {{terms_section}}, sending nothing, when the frozen prompt lost it", async () => {
+    const s = prepared(REVIEWED);
+    s.h.repository.withTransaction((scope) =>
+      scope.promptOverrides.addVersion({
+        userId: LOCAL.userId,
+        promptId: "translate.subtitles",
+        version: 1,
+        text: TRANSLATE_SUBTITLES_PROMPT.text.replace("{{terms_section}}", ""),
+        createdAt: 1,
+      }),
+    );
+    const taskId = createTaskOfKind(
+      s.h,
+      "translate",
+      {
+        targetLanguages: ["en"],
+        modelRef: s.modelRef,
+        baseRevisionId: sc.FIXED_REVISION_ID,
+        promptRefs: { "translate.subtitles": customPromptRef("translate.subtitles", 1) },
+        speakerContext: frozenOf(s.h),
+      },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    s.h.scheduler.kick();
+    expect(await settled(s.h, taskId)).toBe("failed");
+    const error = errorOf(s.h, taskId);
+    expect(error?.code).toBe("invalid_request.prompt_protocol");
+    expect(error?.details).toEqual({ missing: ["{{terms_section}}"], unknown: [] });
+    expect(new Set(workUnitsOf(s.h, taskId).map((unit) => unit.status))).toEqual(new Set(["failed"]));
+    expect(s.fake.calls).toHaveLength(0);
   });
 });

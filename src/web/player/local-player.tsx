@@ -149,7 +149,9 @@ export function LocalPlayer(props: {
   };
   // A seek while a quality switch is under way is where the user wants the new file to be,
   // so it replaces the position taken at the switch instead of being overwritten by it.
+  // Every caller is the user's own seek (bar, keys, clock), so a range playing no longer pauses at its end.
   const seekTo = (ms: number): void => {
+    controller.cancelRange();
     const element = video.current;
     if (element !== null) element.currentTime = ms / 1000;
     setSwap((current) => (current === undefined ? current : { ...current, timeMs: ms }));
@@ -171,6 +173,9 @@ export function LocalPlayer(props: {
         },
         play: () => {
           video.current?.play().catch(() => undefined);
+        },
+        pause: () => {
+          video.current?.pause();
         },
       }),
     [controller],
@@ -252,6 +257,8 @@ export function LocalPlayer(props: {
   };
   const selectSource = (assetId: string): void => {
     if (assetId === props.activeSourceId || props.onSelectSource === undefined) return;
+    // Another file is the user's call too; the new element would not be the one to pause anyway.
+    controller.cancelRange();
     if (swap === undefined) {
       // Taken at the click: the old file may play on until the new one is ready.
       setSwap({ fromId: props.activeSourceId, toId: assetId, ...snapshotOf(video.current), fallback: false });

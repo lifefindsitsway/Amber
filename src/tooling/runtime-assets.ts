@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readZip } from "./zip-reader.ts";
 
@@ -10,8 +10,8 @@ import { readZip } from "./zip-reader.ts";
  * passed with `--assets`, wherever it came from, is used only when its `SHA256SUMS` is
  * byte-for-byte the pinned one.
  */
-export const RUNTIME_ASSETS_VERSION = "runtime-assets-2026.10.21";
-export const RUNTIME_ASSETS_SUMS_SHA256 = "44de90ff887b9be736a0111a6a7f7c996939e3801dd383264855ce89cbf01214";
+export const RUNTIME_ASSETS_VERSION = "runtime-assets-2026.11.11";
+export const RUNTIME_ASSETS_SUMS_SHA256 = "abef5352d1b02f44f1ac493702d573d96db2e74c1c26ac087548c16409fc73b4";
 
 /** Local working copy of the pinned Amber Runtime Assets release. */
 export const DEFAULT_ASSETS_DIR = `amber-runtime-assets/release/${RUNTIME_ASSETS_VERSION}`;
@@ -55,7 +55,12 @@ export function readVerifiedAsset(assetsDir: string, sums: Map<string, string>, 
   if (expected === undefined) {
     throw new Error(`${file} is not listed in SHA256SUMS`);
   }
-  const data = readFileSync(join(assetsDir, file));
+  // A listed asset the download left out names itself, rather than surfacing as a bare ENOENT.
+  const path = join(assetsDir, file);
+  if (!existsSync(path)) {
+    throw new Error(`${file} is listed in SHA256SUMS but missing from ${assetsDir}`);
+  }
+  const data = readFileSync(path);
   const actual = sha256(data);
   if (actual !== expected) {
     throw new Error(`SHA256 mismatch for ${file}: expected ${expected}, got ${actual}`);
@@ -64,19 +69,30 @@ export function readVerifiedAsset(assetsDir: string, sums: Map<string, string>, 
 }
 
 /**
- * Burn-in fonts: the regular weight of Noto Sans SC, which the
- * ASS styles name, with its SIL OFL 1.1 text. They go to `fonts/` beside `bin/`, where the
- * server looks for them (`AMBER_BIN_DIR/../fonts`).
+ * Bundled fonts, each a single regular weight of the upstream file, unmodified and under the
+ * SIL OFL 1.1:
+ * - Noto Sans SC, the font the ASS styles name for burn-in and the player preview. The release
+ *   carries it only inside the upstream family archive, so the regular weight is extracted.
+ * - Noto Serif SC and LXGW WenKai Lite, the reading fonts. The release carries them as loose
+ *   files, each listed in `SHA256SUMS` and checked on its own.
+ * The two Noto fonts carry byte-identical license texts, so they share `OFL.txt`; LXGW WenKai
+ * Lite ships its own. Everything goes to `fonts/` beside `bin/`, where the server looks for
+ * them (`AMBER_BIN_DIR/../fonts`).
  */
 export const FONTS_DIR = "fonts";
 export const FONT_ARCHIVE = "18_NotoSansSC.zip";
 export const FONT_LICENSE = "OFL.txt";
-export const FONT_ASSETS = [FONT_ARCHIVE, FONT_LICENSE] as const;
+export const READER_FONT_FILES = ["NotoSerifSC-Regular.otf", "LXGWWenKaiLite-Regular.ttf"] as const;
+export const READER_FONT_LICENSES = ["LXGWWenKaiLite-OFL.txt"] as const;
+/** Runtime Assets files the fonts are taken from; each is verified against `SHA256SUMS`. */
+export const FONT_ASSETS = [FONT_ARCHIVE, FONT_LICENSE, ...READER_FONT_FILES, ...READER_FONT_LICENSES] as const;
 const FONT_MEMBERS = ["NotoSansSC-Regular.otf"] as const;
+/** Loose release files copied to `fonts/` under their own names. */
+const LOOSE_FONT_FILES = [FONT_LICENSE, ...READER_FONT_FILES, ...READER_FONT_LICENSES] as const;
 /** File names `placeFonts` writes. */
-export const FONT_OUTPUTS = [...FONT_MEMBERS, FONT_LICENSE] as const;
+export const FONT_OUTPUTS = [...FONT_MEMBERS, ...LOOSE_FONT_FILES] as const;
 
-/** Writes the verified fonts and licence into `outDir`; returns what was placed with its SHA256. */
+/** Writes the verified fonts and licences into `outDir`; returns what was placed with its SHA256. */
 export function placeFonts(assetsDir: string, sums: Map<string, string>, outDir: string): Array<{ file: string; sha256: string }> {
   const zip = readZip(readVerifiedAsset(assetsDir, sums, FONT_ARCHIVE));
   const files: Array<{ file: string; data: Buffer }> = FONT_MEMBERS.map((member) => {
@@ -86,7 +102,10 @@ export function placeFonts(assetsDir: string, sums: Map<string, string>, outDir:
     }
     return { file: member, data: entry.read() };
   });
-  files.push({ file: FONT_LICENSE, data: readVerifiedAsset(assetsDir, sums, FONT_LICENSE) });
+  for (const file of LOOSE_FONT_FILES) {
+    files.push({ file, data: readVerifiedAsset(assetsDir, sums, file) });
+  }
+  // Everything is verified before the first write, so a bad asset leaves `outDir` untouched.
   mkdirSync(outDir, { recursive: true });
   return files.map(({ file, data }) => {
     writeFileSync(join(outDir, file), data);

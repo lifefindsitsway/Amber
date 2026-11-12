@@ -255,6 +255,63 @@ body {
   }
 }
 
+/*
+ * Reading fonts (pages/content/reader-font.ts). The default sets nothing: without
+ * `data-reader-font` the reading body inherits the UI font as it always did. The bundled faces
+ * are registered at run time under the family names below; each stack starts with the quote
+ * alias (CJK fonts, Noto Sans SC among them, draw curly quotes full-width, which spoils English
+ * text) and ends with the UI stack, so a character the face lacks falls back one by one. A
+ * custom name arrives quoted in `--reader-custom-font`, set on the element through the CSSOM.
+ */
+:root {
+  --reader-font-sans: "Amber Latin Quotes", "Noto Sans SC", var(--font-sans);
+  --reader-font-serif: "Amber Latin Quotes", "Noto Serif SC", var(--font-sans);
+  --reader-font-kai: "Amber Latin Quotes", "LXGW WenKai Lite", var(--font-sans);
+}
+
+@layer components {
+  [data-reader-font="sans"] {
+    --reader-font: var(--reader-font-sans);
+  }
+
+  [data-reader-font="serif"] {
+    --reader-font: var(--reader-font-serif);
+  }
+
+  [data-reader-font="kai"] {
+    --reader-font: var(--reader-font-kai);
+  }
+
+  [data-reader-font="custom"] {
+    --reader-font: var(--reader-custom-font), var(--font-sans);
+  }
+
+  /* Only the sentences take the reading font. */
+  [data-reader-font] [data-reader-text] {
+    font-family: var(--reader-font);
+  }
+
+  /*
+   * A compact speaker row puts the name inside the paragraph; it keeps the UI font. Buttons
+   * (times, a named speaker's card trigger) have their own font rule and are left to it.
+   */
+  [data-reader-font] [data-reader-text] [data-reading-time]:not(button) {
+    font-family: var(--font-sans);
+  }
+}
+
+/*
+ * That name box is bottom-aligned, which puts its baseline on the text's only while both share
+ * a font. Under a reading font the two fonts place their baselines differently within the line
+ * height, so the name is aligned by its baseline instead. A utility, to override the
+ * bottom-alignment utility on the element; the default font keeps the bottom alignment.
+ */
+@layer utilities {
+  [data-reader-font] [data-reader-text] [data-reading-time]:not(button) {
+    vertical-align: baseline;
+  }
+}
+
 /* Local player control bar (player/local-player.tsx): white icon buttons over the dark picture. */
 @layer components {
   .player-button {

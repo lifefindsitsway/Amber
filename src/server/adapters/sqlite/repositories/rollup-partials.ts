@@ -2,6 +2,7 @@ import type { RollupPartial } from "../../../domain/artifact.ts";
 import type { RollupPartialRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { jsonOrNull, notFound, parseJson, parseJsonOrNull } from "./rows.ts";
+import { speakerContextColumn } from "./speaker-context-columns.ts";
 
 interface PartialRow {
   id: string;
@@ -15,11 +16,13 @@ interface PartialRow {
   prompt_ref_json: string;
   prompt_refs_json: string | null;
   prompt_snapshot: string;
+  speaker_context_json: string | null;
   created_at: number;
 }
 
 function toPartial(row: PartialRow): RollupPartial {
   const promptRefs = parseJsonOrNull<RollupPartial["promptRefs"]>(row.prompt_refs_json);
+  const speakerContext = speakerContextColumn(row.speaker_context_json);
   return {
     id: row.id,
     ownerRevisionId: (row.summary_revision_id ?? row.collection_summary_revision_id) as string,
@@ -31,6 +34,7 @@ function toPartial(row: PartialRow): RollupPartial {
     promptRef: parseJson(row.prompt_ref_json),
     ...(promptRefs === null || promptRefs === undefined ? {} : { promptRefs }),
     promptSnapshot: row.prompt_snapshot,
+    ...(speakerContext === null ? {} : { speakerContext }),
     createdAt: row.created_at,
   };
 }
@@ -52,10 +56,10 @@ export function sqliteRollupPartialRepository(db: SqliteConnection): RollupParti
   const insert = db.prepare(
     `INSERT INTO rollup_partial (
        id, summary_revision_id, collection_summary_revision_id, partial_index, inputs_json, body, citations_json,
-       model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, created_at
+       model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, speaker_context_json, created_at
      ) VALUES (
        @id, @summaryRevisionId, @collectionSummaryRevisionId, @index, @inputsJson, @body, @citationsJson,
-       @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @createdAt
+       @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @speakerContextJson, @createdAt
      )`,
   );
   const byOwner = db.prepare(
@@ -94,6 +98,7 @@ export function sqliteRollupPartialRepository(db: SqliteConnection): RollupParti
           promptRefJson: JSON.stringify(partial.promptRef),
           promptRefsJson: jsonOrNull(partial.promptRefs),
           promptSnapshot: partial.promptSnapshot,
+          speakerContextJson: jsonOrNull(partial.speakerContext),
           createdAt: partial.createdAt,
         });
       }

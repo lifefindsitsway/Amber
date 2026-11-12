@@ -14,7 +14,7 @@ import type { MediaInspection, SubtitleMuxer, SubtitleTrack } from "../../../../
 import type { BurnOptions, VideoBurner } from "../../../../src/server/ports/video-burner.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle } from "../../../../src/shared/subtitle-style.ts";
 import { childProcessEnv } from "../../../../src/server/ports/process-runner.ts";
-import { seedExportContent, type ExportFixture } from "../../../fixtures/export/export-data.ts";
+import { ASR_LINES, seedExportContent, type ExportFixture } from "../../../fixtures/export/export-data.ts";
 import { mediaFixtures } from "../../../fixtures/media/index.ts";
 import { createTaskOfKind, LOCAL, stageRunsOf, taskOf, waitFor } from "../../../fixtures/pipeline/harness.ts";
 import { createMediaStack, type MediaStack } from "../../../fixtures/pipeline/media-stack.ts";
@@ -384,6 +384,35 @@ describe("BurnStageExecutor, styled exports", () => {
     expect(latestAttempts(stageRunsOf(stack.h, third))[0]?.error?.class).toBe("media_missing");
     expect(stack.h.repository.withTransaction((scope) => scope.mediaAssets.get(LOCAL.userId, vanished))?.availability).toBe("missing");
     expect(muxed).toEqual([]);
+  });
+
+  it("draws label lines from the labels frozen with the request on every track, never the names as they are now", async () => {
+    const { muxer, muxed } = fakeMuxer(H264_AAC);
+    const { stack } = setup(undefined, { muxer });
+    const lines = ASR_LINES.map((line, index) => ({ ...line, speakerId: index < 3 ? "s-a" : "s-b" }));
+    const fixture = seedExportContent(stack.h, LOCAL.userId, "local", { lines, speakerNames: { "s-a": "新名", "s-b": "乙" } });
+    const assetId = addOriginal(stack, fixture, "/nonexistent/clip.mkv");
+    const appearance = defaultSubtitleAppearance();
+    const style: SubtitleStyle = { appearance: { ...appearance, speaker: "every" }, placement: defaultSubtitlePlacement() };
+    const run = async (speakerLabels: Record<string, string>): Promise<{ texts: string[]; digest: string }> => {
+      const taskId = createTaskOfKind(stack.h, "burn", { ...styledRequest(fixture, { assetId }, { style }), speakerLabels }, { contentId: fixture.contentId });
+      stack.h.scheduler.kick();
+      await waitFor(() => taskOf(stack.h, taskId).statusProjection === "succeeded");
+      return { texts: (muxed.at(-1)?.tracks ?? []).map((track) => track.text), digest: inputDigests(stack, taskId)[0] as string };
+    };
+    stack.h.scheduler.start();
+    const first = await run({ "s-a": "旧名", "s-b": "乙" });
+    expect(first.texts).toHaveLength(3);
+    for (const text of first.texts) {
+      // A label copies the first line its cue shows: the original's look, or the translation's on a translation-only track.
+      expect(text).toMatch(/\nStyle: Speaker(Translation)?,/u);
+      expect(text).toContain("}旧名\\N{\\r");
+      expect(text).not.toContain("新名");
+    }
+    // Other frozen labels draw another text, so the earlier output is never reused.
+    const second = await run({ "s-a": "甲", "s-b": "乙" });
+    expect(second.texts[0]).toContain("}甲\\N{\\r");
+    expect(second.digest).not.toBe(first.digest);
   });
 
   it("digests the font and the tool: the same inputs give the same digest, another font another", async () => {

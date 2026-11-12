@@ -236,3 +236,45 @@ describe("SummaryCard", () => {
     expect(screen.queryByTestId("collection-summary-failed")).toBeNull();
   });
 });
+
+describe("SummaryCard speaker hint", () => {
+  it("tells by the button how many members' summaries have a changed speaker basis, without asking anything", () => {
+    routes();
+    const onGenerate = vi.fn();
+    renderApp(
+      <SummaryCard collectionId="k1" summary={{ ...PUBLISHED, speakerContextChangedMembers: 2 }} latestTask={null} onGenerate={onGenerate} onDelete={async () => undefined} />,
+    );
+    expect(screen.getByTestId("collection-summary-speaker-hint").textContent).toBe("2 个成员的总结发言人依据已变化，建议先重新生成");
+    fireEvent.click(screen.getByRole("button", { name: "重新归纳" }));
+    expect(onGenerate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("marks the hint as a note, like the speaker notices on a content's results", () => {
+    routes();
+    renderApp(card({ summary: { stale: false, speakerContextChangedMembers: 2 } }));
+    const hint = screen.getByTestId("collection-summary-speaker-hint");
+    expect(hint.textContent).toBe("2 个成员的总结发言人依据已变化，建议先重新生成");
+    // Read with the summary card, not announced: a note without a live region.
+    expect(hint.getAttribute("role")).toBe("note");
+    expect(hint.hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("shows the hint beside the first generation too, and nothing when no member changed", () => {
+    routes();
+    const first = renderApp(card({ summary: { stale: false, speakerContextChangedMembers: 1 } }));
+    expect(screen.getByTestId("collection-summary-speaker-hint").textContent).toBe("1 个成员的总结发言人依据已变化，建议先重新生成");
+    first.unmount();
+    renderApp(card());
+    expect(screen.queryByTestId("collection-summary-speaker-hint")).toBeNull();
+  });
+
+  it("keeps the hint by the button over a fresh revision too, said once", () => {
+    routes();
+    const { staleReason: _revisionReason, ...currentFields } = PUBLISHED.current!;
+    const { staleReason: _reason, ...fields } = PUBLISHED;
+    renderApp(card({ summary: { ...fields, current: { ...currentFields, stale: false }, stale: false, speakerContextChangedMembers: 3 } }));
+    expect(screen.getAllByText("3 个成员的总结发言人依据已变化，建议先重新生成")).toHaveLength(1);
+    expect(screen.getByTestId("collection-summary-actions").parentElement?.nextElementSibling?.contains(screen.getByTestId("collection-summary-speaker-hint"))).toBe(true);
+  });
+});

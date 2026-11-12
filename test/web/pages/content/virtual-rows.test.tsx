@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { createRef } from "react";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { createRef, useLayoutEffect, useRef, useState } from "react";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { VirtualRows, type VirtualRowsHandle } from "../../../../src/web/pages/content/virtual-rows.tsx";
 
 function renderRows(count: number) {
@@ -48,6 +48,89 @@ describe("VirtualRows handle", () => {
         handle.current?.scrollToTop();
       }),
     ).not.toThrow();
+  });
+});
+
+describe("VirtualRows scrollToIndex", () => {
+  /**
+   * A list following a selected row, as a reader does: `rows` may change (a filter), which
+   * moves the selected row to another index; `goTo` asks the caller to put a row at the top
+   * from its own layout effect once the change has rendered.
+   */
+  function Harness(props: { selected: string; log: string[]; api: { current?: { setRows: (rows: string[]) => void; goTo: (rows: string[], key: string) => void } } }) {
+    const [state, setState] = useState<{ rows: string[]; goTo?: string }>({ rows: ["a", "c", "e"] });
+    const handle = useRef<VirtualRowsHandle>(null);
+    props.api.current = { setRows: (rows) => setState({ rows }), goTo: (rows, key) => setState({ rows, goTo: key }) };
+    const { goTo, rows } = state;
+    useLayoutEffect(() => {
+      if (goTo === undefined) return;
+      props.log.push(`top ${goTo}`);
+      handle.current?.scrollToIndex(rows.indexOf(goTo), "start");
+    }, [goTo, rows, props.log]);
+    const target = rows.indexOf(props.selected);
+    return (
+      <VirtualRows
+        ref={handle}
+        items={rows}
+        keyOf={(item) => item}
+        render={(item) => <p>{item}</p>}
+        estimateSize={40}
+        scrollToIndex={target < 0 ? undefined : target}
+        testId="rows"
+      />
+    );
+  }
+
+  function setup(selected: string) {
+    const log: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      log.push(`centre ${this.textContent ?? ""}`);
+    };
+    onTestFinished(() => {
+      Element.prototype.scrollIntoView = original;
+    });
+    const api: { current?: { setRows: (rows: string[]) => void; goTo: (rows: string[], key: string) => void } } = {};
+    render(<Harness selected={selected} log={log} api={api} />);
+    const control = api.current;
+    if (control === undefined) throw new Error("not mounted");
+    return { log, control };
+  }
+
+  it("centres the target row when it first shows, and again when a change of rows moves it", () => {
+    const { log, control } = setup("c");
+    expect(log).toEqual(["centre c"]);
+    act(() => control.setRows(["a", "b", "c", "d", "e"]));
+    expect(log).toEqual(["centre c", "centre c"]);
+  });
+
+  it("leaves the view where the caller scrolled it during the commit that moved the target row", () => {
+    const { log, control } = setup("e");
+    log.length = 0;
+    // The whole text comes back and the caller puts d at the top in the same commit: e, now
+    // at another index, is not centred over it.
+    act(() => control.goTo(["a", "b", "c", "d", "e"], "d"));
+    expect(log).toEqual(["top d"]);
+    // Later changes are followed again.
+    act(() => control.setRows(["e"]));
+    expect(log).toEqual(["top d", "centre e"]);
+  });
+
+  it("does not let a scroll made outside a commit hold back the next target change", () => {
+    const handle = createRef<VirtualRowsHandle>();
+    const centred = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = centred;
+    onTestFinished(() => {
+      Element.prototype.scrollIntoView = original;
+    });
+    const items = ["a", "b", "c"];
+    const view = (target: number) => <VirtualRows ref={handle} items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} scrollToIndex={target} />;
+    const { rerender } = render(view(0));
+    centred.mockClear();
+    act(() => handle.current?.scrollToTop());
+    rerender(view(2));
+    expect(centred).toHaveBeenCalledOnce();
   });
 });
 

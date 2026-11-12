@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SearchResultDto } from "../../../src/shared/dto/search.ts";
-import { hitLink, hitsByContent, normalizeQuery, normalizeRanges, termRanges } from "../../../src/web/search/search.ts";
+import { hitLink, hitsByContent, normalizeQuery, normalizeRanges, speakerHitLink, summaryBasisChanged, termRanges } from "../../../src/web/search/search.ts";
 
 const SEGMENT = "01JABCDEFGHJKMNPQRSTVWXYZ3";
 
@@ -53,5 +53,19 @@ describe("search helpers", () => {
   it("trims and bounds the query", () => {
     expect(normalizeQuery("  检索  ")).toBe("检索");
     expect(normalizeQuery("x".repeat(500))).toHaveLength(200);
+  });
+});
+
+describe("speakers in search", () => {
+  it("opens a name match in the reading view filtered to that speaker, without the query", () => {
+    expect(speakerHitLink({ contentId: "c 1", speakerId: "sp1" })).toBe("/contents/c%201?tab=transcript&speaker=sp1");
+  });
+
+  it("flags a summary hit only when it has a speaker basis state other than consistent", () => {
+    expect(summaryBasisChanged({})).toBe(false);
+    expect(summaryBasisChanged({ speakerContextState: "consistent" })).toBe(false);
+    for (const state of ["attribution_changed", "evidence_removed", "unknown", "names_changed", "unconfirmed"] as const) {
+      expect(summaryBasisChanged({ speakerContextState: state })).toBe(true);
+    }
   });
 });

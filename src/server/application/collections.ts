@@ -36,6 +36,8 @@ import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idemp
 import type { ImportContentService } from "./import-content.ts";
 import { freezePromptRefs } from "./prompts.ts";
 import { outputLanguageFor } from "./settings.ts";
+import { summarySpeakerContext } from "./artifact-speakers.ts";
+import { SpeakerLineageReader } from "./speaker-lineage.ts";
 import { qualityReasonsOf } from "./summaries.ts";
 import type { TaskControl } from "./tasks.ts";
 import { displayTitle } from "../domain/content.ts";
@@ -50,6 +52,8 @@ export interface CollectionServiceOptions {
   settings: InstanceSettingsSource;
   /** Adding a member by URL imports it into the collection; absent, only `contentId` is accepted. */
   importContent?: Pick<ImportContentService, "import">;
+  /** Shared with the other readers of speaker states, so a revision pair is compared once. */
+  speakerLineage?: SpeakerLineageReader;
   now?: () => number;
   newId?: () => string;
 }
@@ -68,11 +72,13 @@ export class CollectionService {
   private readonly options: CollectionServiceOptions;
   private readonly now: () => number;
   private readonly newId: () => string;
+  private readonly lineage: SpeakerLineageReader;
 
   constructor(options: CollectionServiceOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
+    this.lineage = options.speakerLineage ?? new SpeakerLineageReader();
   }
 
   list(principal: RequestPrincipal): CollectionListDto {
@@ -214,6 +220,12 @@ export class CollectionService {
       const artifact = scope.collectionSummaries.getArtifact(owner, collectionId);
       const current = scope.collectionSummaries.getCurrent(owner, collectionId);
       const active = scope.tasks.listByCollection(owner, collectionId).find((task) => !isTerminalProjection(task.statusProjection));
+      const members = memberStates(scope, owner, collectionId);
+      // Counted over the members as they are now, with the very test a submission made now
+      // would freeze as `speakerCaution`: the hint is about the next submission, so it is
+      // there before any summary exists and drops as soon as a member is regenerated.
+      const changedMembers = members.filter((member) => speakerCaution(scope, owner, this.lineage, member)).length;
+      const changed = changedMembers > 0 ? { speakerContextChangedMembers: changedMembers } : {};
       if (current !== undefined && trashedMembersOf(scope, owner, current).length > 0) {
         return {
           ...(artifact === undefined ? {} : { artifactId: artifact.id }),
@@ -221,20 +233,19 @@ export class CollectionService {
           staleReason: "member_changed",
           hiddenReason: "member_trashed",
           ...(active === undefined ? {} : { activeTaskId: active.id }),
+          ...changed,
         };
       }
       const freshness: Freshness =
         current === undefined
           ? { stale: false }
-          : deriveCollectionFreshness(
-              [...current.inputItems].sort((a, b) => a.position - b.position).map(snapshotState),
-              memberStates(scope, owner, collectionId),
-            );
+          : deriveCollectionFreshness([...current.inputItems].sort((a, b) => a.position - b.position).map(snapshotState), members);
       return {
         ...(artifact === undefined ? {} : { artifactId: artifact.id }),
         ...(current === undefined ? {} : { current: collectionSummaryRevisionDto(scope, owner, current, freshness) }),
         ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
         ...(active === undefined ? {} : { activeTaskId: active.id }),
+        ...changed,
       };
     });
   }
@@ -310,6 +321,7 @@ export class CollectionService {
             summaryRevisionId: state.summaryRevisionId,
             transcriptRevisionId: state.transcriptRevisionId,
             position: item.position,
+            ...(speakerCaution(scope, owner, this.lineage, state) ? { speakerCaution: true as const } : {}),
           });
         }
         if (missing.length > 0) {
@@ -429,6 +441,22 @@ function snapshotState(item: CollectionSummaryRevision["inputItems"][number]): C
 }
 
 /**
+ * Whether a member's current core summary was generated with speakers that no longer hold as
+ * they are now (any speaker state but `consistent`). Such a member is still summarised —
+ * dropping it would silently shorten the collection summary — but its text goes with a
+ * caution. The single test behind both the frozen `speakerCaution` and the count shown
+ * before submitting, so the two cannot disagree.
+ */
+function speakerCaution(scope: RepositoryScope, owner: string, lineage: SpeakerLineageReader, member: CollectionMemberState): boolean {
+  const summary = member.summaryRevisionId === undefined ? undefined : scope.summaries.getRevision(owner, member.summaryRevisionId);
+  if (summary === undefined) {
+    return false;
+  }
+  const state = summarySpeakerContext(scope, owner, lineage, member.contentId, summary)?.state;
+  return state !== undefined && state !== "consistent";
+}
+
+/**
  * A collection summary revision as shown, without citations: a revision stored while
  * collection summaries still cited has its markers stripped on the way out, its partials
  * too; storage is untouched.
@@ -445,7 +473,13 @@ function collectionSummaryRevisionDto(
     artifactId: revision.artifactId,
     body: withoutCitations(revision.body),
     citations: [],
-    inputItems: revision.inputItems.map((item) => ({ ...item })),
+    inputItems: revision.inputItems.map((item) => ({
+      collectionItemId: item.collectionItemId,
+      contentId: item.contentId,
+      ...(item.summaryRevisionId === undefined ? {} : { summaryRevisionId: item.summaryRevisionId }),
+      ...(item.transcriptRevisionId === undefined ? {} : { transcriptRevisionId: item.transcriptRevisionId }),
+      position: item.position,
+    })),
     partials: scope.rollupPartials.listByOwnerRevision(owner, revision.id).map((partial) => {
       const itemRange = partialItemRange(revision.inputItems, partial.inputs);
       return {

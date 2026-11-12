@@ -6,7 +6,7 @@ import { speakerDtoSchema, speakerListDtoSchema, speakerPatchRequestSchema, type
 import { errorResponseSchema } from "../../src/shared/errors.ts";
 import type { DiarizationUnavailableReason } from "../../src/shared/speakers.ts";
 import { taskAcceptedDtoSchema } from "../../src/shared/dto/task.ts";
-import { transcriptSegmentPageDtoSchema, type TranscriptSegmentDto } from "../../src/shared/dto/transcript.ts";
+import { speakerReviewDtoSchema, speakersConfirmedRequestSchema, transcriptSegmentPageDtoSchema, type TranscriptSegmentDto } from "../../src/shared/dto/transcript.ts";
 import { VTT_HEADER, vttCue } from "../../src/server/domain/export/vtt.ts";
 import { speakerLabels } from "../../src/server/domain/export/speaker-labels.ts";
 import { revisionListItem, segmentId, summaries } from "./mock-backend.ts";
@@ -22,7 +22,16 @@ export const SPEAKERS_REVISION = "01J0000000000000000000SPR1";
 export const SPEAKERS_TITLE = "第四讲：发言人模拟课程";
 export const SPEAKER_TEACHER = "01J0000000000000000000SPK1";
 export const SPEAKER_STUDENT = "01J0000000000000000000SPK2";
-const SEGMENT_MS = 10_000;
+/**
+ * An earlier recognition of the lecture, listed only when a spec asks for it
+ * (`SpeakersRequests.earlierRevision`): the teacher alone, then a sentence nobody was
+ * assigned to. Its id differs from the primary's in the part segment ids are built from.
+ */
+export const SPEAKERS_EARLIER_REVISION = "01J0000000000000000002SPR2";
+const EARLIER_SEQUENCE = [SPEAKER_TEACHER, SPEAKER_TEACHER, SPEAKER_TEACHER, undefined] as const;
+export const SEGMENT_MS = 10_000;
+/** How much of its slot a sentence lasts: each one ends this long before the next starts. */
+export const SEGMENT_GAP_MS = 500;
 const now = 1_790_000_000_000;
 
 /** The speakers: a named teacher and an unnamed second speaker, shown as 「发言人 2」. */
@@ -34,32 +43,41 @@ export const SPEAKERS: SpeakerDto[] = [
 /** Who says each sentence: two turns of the teacher around one of the student, and a last sentence nobody was assigned to. */
 export const SPEAKER_SEQUENCE = [SPEAKER_TEACHER, SPEAKER_TEACHER, SPEAKER_STUDENT, SPEAKER_TEACHER, SPEAKER_TEACHER, undefined] as const;
 
+/** Who says each sentence of a revision, in reading order; `undefined` = nobody was assigned. */
+export type SpeakerSequence = ReadonlyArray<string | undefined>;
+
 export const speakerSentence = (index: number): string => `第 ${index + 1} 句发言人模拟字幕。`;
 
-function revision() {
+function revision(id: string = SPEAKERS_REVISION, segmentCount: number = SPEAKER_SEQUENCE.length) {
+  const earlier = id === SPEAKERS_EARLIER_REVISION;
   return {
-    id: SPEAKERS_REVISION,
+    id,
     contentId: SPEAKERS_CONTENT,
     kind: "asr",
     language: "zh-CN",
     timingFidelity: "segment_only",
-    generation: { kind: "asr", modelId: "fun-asr", diarization: { status: "applied" } },
-    segmentCount: SPEAKER_SEQUENCE.length,
-    createdAt: now,
+    generation: { kind: "asr", modelId: earlier ? "qwen-audio-3.1-asr-flash-filetrans" : "fun-asr", diarization: { status: "applied" } },
+    segmentCount,
+    createdAt: earlier ? now - 86_400_000 : now,
   } as const;
 }
 
-function segments(): TranscriptSegmentDto[] {
-  return SPEAKER_SEQUENCE.map((speakerId, index) => ({
-    id: segmentId(SPEAKERS_REVISION, index),
-    revisionId: SPEAKERS_REVISION,
+function segments(sequence: SpeakerSequence = SPEAKER_SEQUENCE, texts: Readonly<Record<number, string>> = {}, revisionId: string = SPEAKERS_REVISION): TranscriptSegmentDto[] {
+  return sequence.map((speakerId, index) => ({
+    id: segmentId(revisionId, index),
+    revisionId,
     ordinal: index,
     startMs: index * SEGMENT_MS,
-    endMs: (index + 1) * SEGMENT_MS - 500,
-    text: speakerSentence(index),
+    endMs: (index + 1) * SEGMENT_MS - SEGMENT_GAP_MS,
+    text: texts[index] ?? speakerSentence(index),
     ...(speakerId === undefined ? {} : { speakerId }),
     sourceSegmentIds: [],
   }));
+}
+
+/** The lecture's segment page with some sentences' text replaced, for a spec that needs other text in the same turns. */
+export function speakerSegmentPage(texts: Readonly<Record<number, string>> = {}) {
+  return transcriptSegmentPageDtoSchema.parse({ revision: revision(), items: segments().map((item) => ({ ...item, text: texts[item.ordinal] ?? item.text })) });
 }
 
 function content() {
@@ -98,6 +116,18 @@ export interface SpeakersRequests {
   exports: unknown[];
   /** The speakers as the server now holds them. */
   speakers: SpeakerDto[];
+  /** Who says each sentence of the primary revision; set before the page loads for a lecture of another shape. */
+  sequence: SpeakerSequence;
+  /** Sentence texts replacing the numbered ones of the primary revision, by ordinal. */
+  texts: Record<number, string>;
+  /** Lists the earlier recognition (`SPEAKERS_EARLIER_REVISION`) beside the primary. */
+  earlierRevision: boolean;
+  /** When each revision's speakers were marked as reviewed. */
+  confirmedAt: Map<string, number>;
+  /** Sentences of the lecture's transcript draft still marked for review; 0 = no such sentence. */
+  draftNeedsReview: number;
+  /** Bodies of the review confirmations and withdrawals, refused ones included. */
+  confirmations: unknown[];
   /** Headers of every request for a speaker's photo. */
   avatarHeaders: Array<Record<string, string>>;
   /** Refuses the next re-transcribe with `invalid_request.diarization_unavailable` and this reason. */
@@ -111,10 +141,67 @@ export function speakersRequests(page: Page): SpeakersRequests {
   const context = page.context();
   let state = states.get(context);
   if (state === undefined) {
-    state = { exports: [], speakers: SPEAKERS.map((speaker) => ({ ...speaker })), avatarHeaders: [] };
+    state = {
+      exports: [],
+      speakers: SPEAKERS.map((speaker) => ({ ...speaker })),
+      sequence: SPEAKER_SEQUENCE,
+      texts: {},
+      earlierRevision: false,
+      confirmedAt: new Map(),
+      draftNeedsReview: 0,
+      confirmations: [],
+      avatarHeaders: [],
+    };
     states.set(context, state);
   }
   return state;
+}
+
+/** The sentences a revision of the lecture has in this browser context. */
+function revisionSegments(state: SpeakersRequests, revisionId: string): TranscriptSegmentDto[] {
+  return revisionId === SPEAKERS_EARLIER_REVISION ? segments(EARLIER_SEQUENCE, {}, revisionId) : segments(state.sequence, state.texts);
+}
+
+function revisionDto(state: SpeakersRequests, revisionId: string) {
+  const confirmedAt = state.confirmedAt.get(revisionId);
+  return { ...revision(revisionId, revisionSegments(state, revisionId).length), ...(confirmedAt === undefined ? {} : { speakersConfirmedAt: confirmedAt }) };
+}
+
+/** The speakers a revision's sentences name, in ordinal order. */
+function namedSpeakers(state: SpeakersRequests, revisionId: string): SpeakerDto[] {
+  const named = new Set(revisionSegments(state, revisionId).flatMap((segment) => (segment.speakerId === undefined ? [] : [segment.speakerId])));
+  return state.speakers.filter((speaker) => named.has(speaker.id)).sort((a, b) => a.ordinal - b.ordinal);
+}
+
+/** Changes whenever a named speaker's id, ordinal, name or name confirmation does, as the server's digest does. */
+function rosterDigest(state: SpeakersRequests, revisionId: string): string {
+  return JSON.stringify(namedSpeakers(state, revisionId).map((speaker) => [speaker.id, speaker.ordinal, speaker.name ?? null, speaker.name !== undefined && speaker.nameConfirmed === true]));
+}
+
+/** The review panel's figures, counted from the context's sentences and speakers the way the server counts them. */
+function speakerReview(state: SpeakersRequests, revisionId: string) {
+  const tally = new Map<string, { sentences: number; assignedMs: number }>();
+  let unassigned = 0;
+  for (const segment of revisionSegments(state, revisionId)) {
+    if (segment.speakerId === undefined) {
+      unassigned += 1;
+      continue;
+    }
+    const entry = tally.get(segment.speakerId) ?? { sentences: 0, assignedMs: 0 };
+    entry.sentences += 1;
+    entry.assignedMs += segment.endMs - segment.startMs;
+    tally.set(segment.speakerId, entry);
+  }
+  const confirmedAt = state.confirmedAt.get(revisionId);
+  return speakerReviewDtoSchema.parse({
+    revisionId,
+    ...(confirmedAt === undefined ? {} : { confirmedAt }),
+    rosterDigest: rosterDigest(state, revisionId),
+    speakers: [...tally].map(([id, entry]) => ({ id, ...entry })),
+    unassigned,
+    pendingNames: namedSpeakers(state, revisionId).filter((speaker) => speaker.name !== undefined && speaker.nameConfirmed !== true).length,
+    ...(state.draftNeedsReview > 0 ? { draftNeedsReview: state.draftNeedsReview } : {}),
+  });
 }
 
 /** `/api/**` of the speakers lecture; false for anything else. */
@@ -130,7 +217,9 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
     if (method === "GET" && resource === "chapters") return json(chaptersDtoSchema.parse({ revisions: [] }));
     if (method === "GET" && resource === "notes") return json({ items: [] });
     if (method === "GET" && resource === "transcript/revisions") {
-      return json(transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: SPEAKERS_REVISION, revisions: [revisionListItem(revision())] }));
+      const state = speakersRequests(request.frame().page());
+      const ids = state.earlierRevision ? [SPEAKERS_EARLIER_REVISION, SPEAKERS_REVISION] : [SPEAKERS_REVISION];
+      return json(transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: SPEAKERS_REVISION, revisions: ids.map((id) => revisionListItem(revisionDto(state, id))) }));
     }
     const state = speakersRequests(request.frame().page());
     if (method === "GET" && resource === "speakers") return json(speakerListDtoSchema.parse({ items: state.speakers }));
@@ -145,9 +234,16 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
       const index = state.speakers.findIndex((speaker) => speaker.id === speakerMatch[1]);
       const current = state.speakers[index];
       if (current === undefined || "copyFrom" in patch) return json({ error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } }, 404);
-      const { name: _old, ...rest } = current;
+      const { name: _old, nameConfirmed: wasConfirmed, ...rest } = current;
       const name = patch.name === undefined ? current.name : (patch.name ?? undefined);
-      const updated = speakerDtoSchema.parse({ ...rest, ...(name === undefined ? {} : { name }), ...(patch.colorIndex === undefined ? {} : { colorIndex: patch.colorIndex }) });
+      // A name is confirmed only by a request that writes it and says so; a changed name without that is not.
+      const confirmed = name !== undefined && (patch.name !== undefined && patch.nameConfirmed === true ? true : name === current.name && wasConfirmed === true);
+      const updated = speakerDtoSchema.parse({
+        ...rest,
+        ...(name === undefined ? {} : { name }),
+        ...(confirmed ? { nameConfirmed: true } : {}),
+        ...(patch.colorIndex === undefined ? {} : { colorIndex: patch.colorIndex }),
+      });
       state.speakers[index] = updated;
       return json(updated);
     }
@@ -176,8 +272,30 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
     return false;
   }
   if (method === "GET" && path === "/api/speakers/suggestions") return json({ items: [] });
-  if (method === "GET" && path === `/api/transcript/revisions/${SPEAKERS_REVISION}/segments`) {
-    return json(transcriptSegmentPageDtoSchema.parse({ revision: revision(), items: segments() }));
+  const revisionMatch = /^\/api\/transcript\/revisions\/([^/]+)\/([a-z-]+)$/.exec(path);
+  const revisionId = revisionMatch?.[1];
+  if (revisionMatch === null || (revisionId !== SPEAKERS_REVISION && revisionId !== SPEAKERS_EARLIER_REVISION)) return false;
+  const state = speakersRequests(request.frame().page());
+  const resource = `${method} ${revisionMatch[2]}`;
+  if (resource === "GET segments") {
+    return json(transcriptSegmentPageDtoSchema.parse({ revision: revisionDto(state, revisionId), items: revisionSegments(state, revisionId) }));
+  }
+  if (resource === "GET speaker-review") return json(speakerReview(state, revisionId));
+  if (resource === "PUT speakers-confirmed") {
+    const body = speakersConfirmedRequestSchema.parse(request.postDataJSON());
+    state.confirmations.push(body);
+    if (!body.confirmed) {
+      state.confirmedAt.delete(revisionId);
+      return json(speakerReview(state, revisionId));
+    }
+    if (body.expectedRosterDigest !== rosterDigest(state, revisionId)) {
+      return json(errorResponseSchema.parse({ error: { class: "conflict", code: "conflict.speakers_changed", retryDisposition: "never", userMessage: "" } }), 409);
+    }
+    // Confirming vouches for the names shown, and a second confirmation keeps the first time.
+    const at = Date.now();
+    state.speakers = state.speakers.map((speaker) => (namedSpeakers(state, revisionId).some((named) => named.id === speaker.id) && speaker.name !== undefined ? { ...speaker, nameConfirmed: true } : speaker));
+    if (!state.confirmedAt.has(revisionId)) state.confirmedAt.set(revisionId, at);
+    return json(speakerReview(state, revisionId));
   }
   return false;
 }

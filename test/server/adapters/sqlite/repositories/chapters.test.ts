@@ -2,14 +2,32 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import type { ChapterRevision } from "../../../../../src/server/domain/artifact.ts";
-import { insertRow, openTempDatabase } from "../../../../tools/sqlite.ts";
+import { insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 
 const T0 = 1_790_000_000_000;
+const SPEAKER_CONTEXT = {
+  version: 1 as const,
+  rules: { id: "speaker.rules", version: 1 },
+  attributionDigest: "d".repeat(64),
+  speakers: [
+    { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+    { id: "s2", ordinal: 2, label: "发言人 2" },
+  ],
+};
+let opened: ReturnType<typeof openTempDatabase>;
 let db: SqliteConnection;
 let repository: SqliteRepository;
 
+/** Closes the database and opens its file again, so what is read next comes from disk. */
+function reopen(): void {
+  opened = reopenTempDatabase(opened);
+  db = opened.db;
+  repository = new SqliteRepository(db);
+}
+
 beforeEach(() => {
-  db = openTempDatabase().db;
+  opened = openTempDatabase();
+  db = opened.db;
   repository = new SqliteRepository(db);
   for (const id of ["alice", "bob"]) insertRow(db, "user", { id, role: "user", status: "active", created_at: T0 });
 });
@@ -156,5 +174,27 @@ describe("AI chapter revisions", () => {
     });
     expect(() => repository.withTransaction((scope) => scope.chapters.setCurrent("alice", "other", "r1"))).toThrow();
     expect(() => repository.withTransaction((scope) => scope.chapters.setCurrent("alice", "c", "p1"))).toThrow();
+  });
+
+  it("stores the speakers the chapters were generated with, also across a reopen, and reads none where none were stored or the value is of another shape", () => {
+    repository.withTransaction((scope) => {
+      scope.chapters.insertAiRevision("alice", "c", { ...ai("r1", "a1", T0), speakerContext: SPEAKER_CONTEXT });
+      scope.chapters.insertAiRevision("alice", "c", ai("r2", "a1", T0 + 1));
+      scope.chapters.insertPlatformRevision("alice", "c", { id: "p1", artifactId: "a1", chapters: [{ startMs: 0, endMs: 1000, title: "T" }], createdAt: T0 + 2 });
+    });
+    insertRow(db, "chapter_revision", {
+      id: "r3", artifact_id: "a1", inputs_json: "[]", quality: "normal", origin_json: '{"kind":"ai","transcriptRevisionId":"t1"}', chapters_json: "[]",
+      created_at: T0 + 3, speaker_context_json: '{"version":1}',
+    });
+    const written = repository.withTransaction((scope) => scope.chapters.getRevision("alice", "r1"));
+    expect(written?.provenance.speakerContext).toEqual(SPEAKER_CONTEXT);
+    reopen();
+    const read = repository.withTransaction((scope) => scope.chapters.getRevision("alice", "r1"));
+    expect(read).toEqual(written);
+    expect(read?.provenance.speakerContext).toEqual(SPEAKER_CONTEXT);
+    for (const id of ["r2", "p1", "r3"]) {
+      const other = repository.withTransaction((scope) => scope.chapters.getRevision("alice", id));
+      expect(other && "speakerContext" in other.provenance).toBe(false);
+    }
   });
 });

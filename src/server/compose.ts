@@ -17,7 +17,7 @@ import { TavilyWebSearchProvider } from "./adapters/web-search/tavily/index.ts";
 import { OpenAiCompatibleProvider } from "./adapters/llm/openai-compatible/index.ts";
 import { FfmpegVideoBurner } from "./adapters/media-ingest/ffmpeg-burner.ts";
 import { FfmpegSubtitleMuxer } from "./adapters/media-ingest/ffmpeg-subtitle-muxer.ts";
-import { BundledSubtitleFont, SUBTITLE_FONT_FILE } from "./api/routes/fonts.ts";
+import { BundledSubtitleFont, bundledReaderFonts, SUBTITLE_FONT_FILE } from "./api/routes/fonts.ts";
 import { FfmpegMediaIngest } from "./adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { PolicyOutboundHttpClient } from "./adapters/outbound-http/policy-client.ts";
 import { BilibiliAdapter } from "./adapters/platform/bilibili/index.ts";
@@ -52,6 +52,7 @@ import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
 import { SpeakerService } from "./application/speakers.ts";
+import { SpeakerLineageReader } from "./application/speaker-lineage.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
 import { CacheHoldService } from "./application/cache-holds.ts";
 import { ClientMediaTaskService } from "./application/client-media-tasks.ts";
@@ -292,6 +293,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   // The bundled fonts directory sits beside AMBER_BIN_DIR in the runtime assets.
   const fontsDir = join(dirname(config.binDir), "fonts");
   const subtitleFont = new BundledSubtitleFont(join(fontsDir, SUBTITLE_FONT_FILE));
+  const readerFonts = bundledReaderFonts(fontsDir);
   const muxer = new FfmpegSubtitleMuxer({ runner, binDir: config.binDir, fontPath: subtitleFont.path, env: childProcessEnv(config.env) });
   // Server mode only: uploads count against `storageLimitGB`; local files are only referenced, never copied.
   const quota = config.mode === "server" ? new StorageQuota({ repository, files }) : undefined;
@@ -388,8 +390,10 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const retranscribe = new RetranscribeService({ repository, bus, control, disk: files, settings: instanceSettings });
   const derivedTasks = new DerivedTaskService({ repository, bus, control, disk: files, settings: instanceSettings });
   const transcripts = new TranscriptService({ repository });
-  const chapters = new ChapterService({ repository });
-  const highlights = new HighlightService({ repository });
+  // One cache of revision-pair comparisons for every reader of speaker states.
+  const speakerLineage = new SpeakerLineageReader();
+  const chapters = new ChapterService({ repository, speakerLineage });
+  const highlights = new HighlightService({ repository, speakerLineage });
   const translations = new TranslationService({ repository });
   const translationDrafts = new TranslationDraftService({ repository });
   const exports = new ExportService({ repository, version: packageJson.version });
@@ -416,8 +420,8 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const relink = grants === undefined ? undefined : new RelinkService({ repository, ingest, grants, heavy });
   const summaryTemplates = new SummaryTemplateService({ repository });
   const prompts = new PromptService({ repository });
-  const summaries = new SummaryService({ repository, bus, control, disk: files, settings: instanceSettings });
-  const collections = new CollectionService({ repository, bus, control, disk: files, settings: instanceSettings, importContent });
+  const summaries = new SummaryService({ repository, bus, control, disk: files, settings: instanceSettings, speakerLineage });
+  const collections = new CollectionService({ repository, bus, control, disk: files, settings: instanceSettings, importContent, speakerLineage });
   // Searches go to each service's fixed official origin, through the same outbound policy as everything else.
   const webSearch = new WebSearchService({
     repository,
@@ -426,7 +430,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     llm: llmGateway,
     logger: lateLogger(() => appLogger?.child({ component: "web_search" })),
   });
-  const chat = new ChatService({ repository, llm: llmGateway, webSearch, logger: lateLogger(() => appLogger?.child({ component: "chat" })) });
+  const chat = new ChatService({ repository, llm: llmGateway, webSearch, speakerLineage, logger: lateLogger(() => appLogger?.child({ component: "chat" })) });
   // Before any request can start a new answer.
   chat.recoverInterrupted();
   const deleteContent = new DeleteContentService({ repository, gate, fileDeleter, chat });
@@ -460,7 +464,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
           ...(cacheHolds === undefined ? {} : { holds: () => cacheHolds.list() }),
           logger: lateLogger(() => appLogger?.child({ component: "cache_root" })),
         });
-  const search = new SearchService({ repository });
+  const search = new SearchService({ repository, speakerLineage });
   const notes = new NoteService({ repository, logger: lateLogger(() => appLogger?.child({ component: "notes" })) });
   const speakers = new SpeakerService({ repository });
   // Local mode only: the client backup and the maintenance state before an update install.
@@ -566,6 +570,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     translationDrafts,
     exports,
     subtitleFont,
+    readerFonts,
     summaryTemplates,
     prompts,
     summaries,

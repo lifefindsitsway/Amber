@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { BUILTIN_SUMMARY_TEMPLATES } from "../../../../src/server/domain/prompts.ts";
+import { attributionDigest, speakerLabels } from "../../../../src/server/domain/speaker-context.ts";
+import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
+import type { SegmentId } from "../../../../src/shared/ids.ts";
+import { BOB, BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
@@ -117,5 +121,164 @@ describe("/api/collections", () => {
     expect(removed.body).toBe("");
     expect((await app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers: auth })).json()).toEqual({ stale: false });
     expect((await remove(auth)).statusCode).toBe(404);
+  });
+});
+
+describe("GET /api/collections/:id/summary: members whose speakers changed", () => {
+  const CORE = BUILTIN_SUMMARY_TEMPLATES[0] as (typeof BUILTIN_SUMMARY_TEMPLATES)[number];
+
+  /**
+   * A member's current core summary: `none` generated without speakers; `held` with speakers
+   * whose review was given; `changed` with speakers whose review never was, so its speaker
+   * state is not `consistent`.
+   */
+  type Member = "none" | "held" | "changed";
+
+  interface Seeded {
+    contentId: string;
+    revisionId: string;
+  }
+
+  /** One member owned by `userId`: a 3-sentence primary transcript and its current core summary. */
+  function seedMember(h: Harness, userId: string, member: Member): Seeded {
+    const contentId = h.newId();
+    const revisionId = h.newId();
+    const speakerIds = member === "none" ? [] : [h.newId(), h.newId()];
+    const segments: TranscriptSegment[] = [0, 1, 2].map((ordinal) => ({
+      id: h.newId() as SegmentId,
+      revisionId,
+      ordinal,
+      startMs: ordinal * 1000,
+      endMs: ordinal * 1000 + 900,
+      text: `第 ${ordinal + 1} 句`,
+      ...(speakerIds.length === 0 ? {} : { speakerId: speakerIds[ordinal % 2] as string }),
+      sourceSegmentIds: [],
+    }));
+    const revision: TranscriptRevision = {
+      id: revisionId,
+      contentId,
+      kind: "imported",
+      language: "zh-CN",
+      timingFidelity: "segment_only",
+      generation: { kind: "imported", format: "srt" },
+      segmentCount: 3,
+      createdAt: 1,
+    };
+    h.repository.withTransaction((scope) => {
+      scope.contents.insert({ id: contentId, userId, source: { kind: "local" }, processingStatus: "succeeded", createdAt: 1, updatedAt: 1 });
+      if (speakerIds.length > 0) {
+        scope.speakers.insert(userId, contentId, [{ id: speakerIds[0] as string, name: "蒋炎岩", nameConfirmedAt: 3 }, { id: speakerIds[1] as string }], 1);
+      }
+      scope.transcripts.insertRevision(userId, revision, segments);
+      scope.contents.setPrimaryTranscript(userId, contentId, revisionId, 2);
+      if (member === "held") scope.speakerConfirmations.set(userId, contentId, revisionId, 4);
+      const summaryRevisionId = h.newId();
+      const { artifactId } = scope.summaries.insertRevision(userId, {
+        contentId,
+        templateId: CORE.id,
+        artifactId: h.newId(),
+        revision: {
+          id: summaryRevisionId,
+          provenance: {
+            inputs: [{ kind: "transcriptRevision", id: revisionId }],
+            promptRef: { id: CORE.id, version: CORE.version },
+            ...(speakerIds.length === 0
+              ? {}
+              : {
+                  speakerContext: {
+                    version: 1,
+                    rules: { id: "speaker.rules", version: 1 },
+                    attributionDigest: attributionDigest(segments),
+                    speakers: speakerLabels(scope.speakers.list(userId, contentId)),
+                  },
+                }),
+            createdAt: 1,
+          },
+          quality: "normal",
+          body: `## 摘要\n要点 [[seg:${segments[0]?.id}]]`,
+          citations: [{ transcriptRevisionId: revisionId, segmentId: segments[0]?.id as SegmentId }],
+        },
+      });
+      scope.summaries.setCurrent(userId, artifactId, summaryRevisionId);
+    });
+    return { contentId, revisionId };
+  }
+
+  function syncTemplates(h: Harness): void {
+    h.repository.withTransaction((scope) =>
+      scope.summaryTemplates.syncBuiltin(
+        BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, name: template.nameKey, versions: [{ version: template.version, prompt: template.prompt }] })),
+        1,
+      ),
+    );
+  }
+
+  /** A collection created through the API by the holder of `headers`, its members added through the API too. */
+  async function seedCollection(
+    h: Harness,
+    app: Awaited<ReturnType<Harness["app"]>>["app"],
+    headers: typeof auth,
+    userId: string,
+    members: readonly Member[],
+  ): Promise<{ id: string; members: Seeded[] }> {
+    const { id } = (await app.inject({ method: "POST", url: "/api/collections", headers, payload: { name: "生成式软件工程" } })).json();
+    const seeded: Seeded[] = [];
+    for (const member of members) {
+      const one = seedMember(h, userId, member);
+      const added = await app.inject({ method: "POST", url: `/api/collections/${id}/items`, headers, payload: { contentId: one.contentId } });
+      expect(added.statusCode).toBe(200);
+      seeded.push(one);
+    }
+    return { id, members: seeded };
+  }
+
+  const read = async (app: Awaited<ReturnType<Harness["app"]>>["app"], id: string, headers: typeof auth) =>
+    app.inject({ method: "GET", url: `/api/collections/${id}/summary`, headers });
+
+  it("counts only the caller's own members, live, and another owner's collection is not found", async () => {
+    const { h, app } = await setup();
+    syncTemplates(h);
+    // The same shape for both owners: two members whose speakers changed, one held, one without speakers.
+    const shape: Member[] = ["changed", "held", "changed", "none"];
+    const mine = await seedCollection(h, app, auth, LOCAL.userId, shape);
+    const theirs = await seedCollection(h, app, bob, BOB.userId, shape);
+
+    const own = await read(app, mine.id, auth);
+    expect(own.statusCode).toBe(200);
+    expect(own.json()).toEqual({ stale: false, speakerContextChangedMembers: 2 });
+    expect((await read(app, theirs.id, bob)).json()).toEqual({ stale: false, speakerContextChangedMembers: 2 });
+
+    // Each owner's count moves with their own members only.
+    const bobFirst = theirs.members[0] as Seeded;
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(BOB.userId, bobFirst.contentId, bobFirst.revisionId, 9));
+    expect((await read(app, theirs.id, bob)).json()).toEqual({ stale: false, speakerContextChangedMembers: 1 });
+    expect((await read(app, mine.id, auth)).json()).toEqual({ stale: false, speakerContextChangedMembers: 2 });
+
+    // Neither may read the other's collection, its count included.
+    for (const [id, headers] of [[theirs.id, auth], [mine.id, bob]] as const) {
+      const foreign = await read(app, id, headers);
+      expect(foreign.statusCode).toBe(404);
+      expect(foreign.json().error).toMatchObject({ code: "not_found" });
+      expect(foreign.body).not.toContain("speakerContextChangedMembers");
+    }
+  });
+
+  it("leaves the count out when no member's speakers changed", async () => {
+    const { h, app } = await setup();
+    syncTemplates(h);
+    const quiet = await seedCollection(h, app, auth, LOCAL.userId, ["held", "none"]);
+    const response = await read(app, quiet.id, auth);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ stale: false });
+    expect(response.json()).not.toHaveProperty("speakerContextChangedMembers");
+
+    // Once the last changed member's review is given, the count goes away rather than reading 0.
+    const changing = await seedCollection(h, app, auth, LOCAL.userId, ["changed", "none"]);
+    expect((await read(app, changing.id, auth)).json()).toEqual({ stale: false, speakerContextChangedMembers: 1 });
+    const member = changing.members[0] as Seeded;
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, member.contentId, member.revisionId, 9));
+    const after = await read(app, changing.id, auth);
+    expect(after.json()).toEqual({ stale: false });
+    expect(after.body).not.toContain("speakerContextChangedMembers");
   });
 });

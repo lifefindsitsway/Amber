@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
   events: undefined as Events | undefined,
   seekTo: vi.fn(),
   playVideo: vi.fn(),
+  pauseVideo: vi.fn(),
   duration: 3_600,
   time: 0,
 }));
@@ -26,6 +27,7 @@ vi.mock("../../../src/web/player/youtube-api.ts", () => ({
         }
         seekTo = api.seekTo;
         playVideo = api.playVideo;
+        pauseVideo = api.pauseVideo;
         getDuration = () => api.duration;
         getCurrentTime = () => api.time;
         destroy = () => undefined;
@@ -37,6 +39,7 @@ beforeEach(() => {
   api.events = undefined;
   api.seekTo.mockReset();
   api.playVideo.mockReset();
+  api.pauseVideo.mockReset();
   api.duration = 3_600;
   api.time = 0;
 });
@@ -135,5 +138,44 @@ describe("YoutubePlayer reports", () => {
     act(() => controller.restart());
     expect(api.seekTo).toHaveBeenCalledWith(0, true);
     expect(api.playVideo).toHaveBeenCalledOnce();
+  });
+
+  it("plays a range through the IFrame API and pauses at its end; a seek in the embed hands playback back", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const controller = new PlayerController();
+      show(controller);
+      await vi.waitFor(() => expect(api.events).toBeDefined());
+      act(() => api.events?.onReady?.());
+      expect(controller.rangePlayback).toBe("play");
+      act(() => {
+        controller.playRange(10_000, 14_000);
+      });
+      expect(api.seekTo).toHaveBeenCalledWith(10, true);
+      expect(api.playVideo).toHaveBeenCalledOnce();
+      act(() => api.events?.onStateChange?.({ data: 1 }));
+      api.time = 10;
+      act(() => vi.advanceTimersByTime(250));
+      // Played on, polled every 250 ms.
+      for (let step = 1; step <= 17; step += 1) {
+        api.time = 10 + step * 0.25;
+        act(() => vi.advanceTimersByTime(250));
+        if (step === 15) expect(api.pauseVideo).not.toHaveBeenCalled();
+      }
+      expect(api.pauseVideo).toHaveBeenCalledOnce();
+
+      act(() => {
+        controller.playRange(20_000, 24_000);
+      });
+      api.time = 20;
+      act(() => vi.advanceTimersByTime(250));
+      // The user drags the embed's own bar far ahead: no pause at the range's end any more.
+      api.time = 300;
+      act(() => vi.advanceTimersByTime(250));
+      expect(controller.playingRange()).toBeUndefined();
+      expect(api.pauseVideo).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

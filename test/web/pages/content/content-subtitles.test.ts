@@ -4,9 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../../../src/web/api/client.ts";
 import { ApiProvider, createQueryClient } from "../../../../src/web/api/context.tsx";
 import { ContentPageProvider, type ContentPageState } from "../../../../src/web/pages/content/content-context.tsx";
+import { contentKeys } from "../../../../src/web/pages/content/content-data.ts";
 import { useContentSubtitles } from "../../../../src/web/pages/content/content-subtitles.ts";
 import { resetSubtitleFont } from "../../../../src/web/player/subtitle-font.ts";
-import { readTrack, resetSubtitlePrefsMemory, subtitlePrefKeys, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
+import { SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES } from "../../../../src/shared/defaults.ts";
+import { defaultSubtitleAppearance } from "../../../../src/shared/subtitle-style.ts";
+import { readTrack, resetSubtitlePrefsMemory, subtitlePrefKeys, writeAppearance, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
 import { contentDetail, revision, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi } from "../../../fixtures/web/render.tsx";
 
@@ -60,7 +63,7 @@ function setup(openTab = vi.fn()) {
   const queryClient = createQueryClient();
   const wrapper = (props: { children: ReactNode }) =>
     createElement(ApiProvider, { client, queryClient, children: createElement(ContentPageProvider, { value: state, children: props.children }) });
-  return renderHook((props: { request: number }) => useContentSubtitles(state.content, props.request), { wrapper, initialProps: { request: 0 } });
+  return { ...renderHook((props: { request: number }) => useContentSubtitles(state.content, props.request), { wrapper, initialProps: { request: 0 } }), queryClient };
 }
 
 const segmentReads = (calls: Array<{ path: string }>) => calls.filter((call) => call.path.includes("/segments")).map((call) => call.path.split("/")[4]);
@@ -249,5 +252,67 @@ describe("useContentSubtitles", () => {
     expect(result.current?.translations).toEqual([]);
     result.current?.goTranslate();
     expect(openTab).toHaveBeenCalledWith("translation");
+  });
+
+  it("keeps each cue a unit with its speaker's cut label when the appearance shows speakers, and slices as before without", async () => {
+    const long = "很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES + 2);
+    const { calls } = routes({
+      "GET /api/transcript/revisions/r1/segments": page("r1", [segment("a", 0, 0, 1_000, "一", { speakerId: "s1" }), segment("b", 1, 1_000, 2_000, "二", { speakerId: "s2" })]),
+      "GET /api/contents/c1/speakers": {
+        body: {
+          items: [
+            { id: "s1", ordinal: 1, name: long, colorIndex: 0, used: true },
+            { id: "s2", ordinal: 2, colorIndex: 1, used: true },
+          ],
+        },
+      },
+    });
+    writeTrack("u1", "c1", { version: 2, mode: "bilingual", revisionId: "r1", translation: { language: "ja" } });
+    writeAppearance("u1", { ...defaultSubtitleAppearance(), speaker: "change" });
+    const { result } = setup();
+    await waitFor(() => expect(result.current?.status).toBe("ready"));
+    expect(result.current?.slices).toEqual([]);
+    expect(result.current?.units).toEqual([
+      { startMs: 0, endMs: 1_000, units: [{ cue: 0, original: "一", translation: "ichi", label: `${"很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…`, speakerLabel: `${"很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…` }] },
+      { startMs: 1_000, endMs: 2_000, units: [{ cue: 1, original: "二", label: "发言人 2", speakerLabel: "发言人 2" }] },
+    ]);
+    expect(calls.filter((call) => call.path.endsWith("/speakers"))).toHaveLength(1);
+
+    act(() => writeAppearance("u1", defaultSubtitleAppearance()));
+    await waitFor(() => expect(result.current?.units).toBeUndefined());
+    expect(result.current?.slices).toEqual([
+      { startMs: 0, endMs: 1_000, original: "一", translation: "ichi" },
+      { startMs: 1_000, endMs: 2_000, original: "二" },
+    ]);
+  });
+
+  it("keeps the same units when the speakers are read again with the same labels", async () => {
+    let reads = 0;
+    const { calls } = routes({
+      "GET /api/transcript/revisions/r1/segments": page("r1", [segment("a", 0, 0, 1_000, "一", { speakerId: "s1" }), segment("b", 1, 1_000, 2_000, "二", { speakerId: "s1" })]),
+      "GET /api/contents/c1/speakers": () => {
+        reads += 1;
+        // A new avatar changes the speaker, not the label subtitles show.
+        return { body: { items: [{ id: "s1", ordinal: 1, name: "张三", colorIndex: 0, used: true, ...(reads > 1 ? { avatarVersion: reads } : {}) }] } };
+      },
+    });
+    writeTrack("u1", "c1", { version: 2, mode: "original", revisionId: "r1" });
+    writeAppearance("u1", { ...defaultSubtitleAppearance(), speaker: "change" });
+    const { result, queryClient } = setup();
+    await waitFor(() => expect(result.current?.status).toBe("ready"));
+    const units = result.current?.units;
+    expect(units?.[0]?.units[0]?.speakerLabel).toBe("张三");
+    await act(() => queryClient.invalidateQueries({ queryKey: contentKeys.speakers("c1") }));
+    await waitFor(() => expect(calls.filter((call) => call.path.endsWith("/speakers"))).toHaveLength(2));
+    expect(result.current?.units).toBe(units);
+  });
+
+  it("reads no speakers while the appearance shows none", async () => {
+    const { calls } = routes();
+    writeTrack("u1", "c1", { version: 2, mode: "original", revisionId: "r1" });
+    const { result } = setup();
+    await waitFor(() => expect(result.current?.status).toBe("ready"));
+    expect(result.current?.units).toBeUndefined();
+    expect(calls.some((call) => call.path.endsWith("/speakers"))).toBe(false);
   });
 });

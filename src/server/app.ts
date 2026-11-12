@@ -60,7 +60,7 @@ import { registerAdminRoutes } from "./api/routes/admin.ts";
 import { registerAsrProfileRoutes } from "./api/routes/asr-profiles.ts";
 import { registerChapterRoutes } from "./api/routes/chapters.ts";
 import { registerExportRoutes } from "./api/routes/export.ts";
-import { registerFontRoutes, type BundledSubtitleFont } from "./api/routes/fonts.ts";
+import { registerFontRoutes, type BundledReaderFonts, type BundledSubtitleFont } from "./api/routes/fonts.ts";
 import { registerHighlightRoutes } from "./api/routes/highlights.ts";
 import { registerTranslationRoutes } from "./api/routes/translations.ts";
 import { registerChatRoutes } from "./api/routes/chat.ts";
@@ -153,6 +153,8 @@ export interface AppDeps {
   exports?: ExportService;
   /** The bundled subtitle font, `GET /api/fonts/subtitle` (both modes). */
   subtitleFont?: BundledSubtitleFont;
+  /** The other bundled reading fonts, `GET /api/fonts/reader/:face` (both modes, beside the subtitle font). */
+  readerFonts?: BundledReaderFonts;
   summaryTemplates?: SummaryTemplateService;
   /** The customizable system prompts (both modes). */
   prompts?: PromptService;
@@ -321,7 +323,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     registerExportRoutes(app, { exports: deps.exports });
   }
   if (deps.subtitleFont !== undefined) {
-    registerFontRoutes(app, { font: deps.subtitleFont });
+    registerFontRoutes(app, { font: deps.subtitleFont, ...(deps.readerFonts === undefined ? {} : { readerFonts: deps.readerFonts }) });
   }
   if (deps.summaryTemplates !== undefined) {
     registerSummaryTemplateRoutes(app, { summaryTemplates: deps.summaryTemplates });

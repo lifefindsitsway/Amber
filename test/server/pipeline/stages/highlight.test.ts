@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { LlmRequest, LlmStreamEvent } from "../../../../src/server/domain/llm.ts";
 import type { ModelRef } from "../../../../src/server/domain/model-ref.ts";
-import { chapterWindowNote, customPromptRef, HIGHLIGHT_DEFAULT_PROMPT, renderPrompt } from "../../../../src/server/domain/prompts.ts";
+import { chapterWindowNote, customPromptRef, HIGHLIGHT_DEFAULT_PROMPT, renderPrompt, SPEAKER_RULES_FRAGMENT } from "../../../../src/server/domain/prompts.ts";
 import { estimateTokens } from "../../../../src/server/domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { HighlightStageExecutor } from "../../../../src/server/pipeline/stages/highlight.ts";
@@ -9,6 +9,8 @@ import { highlightsDtoSchema } from "../../../../src/shared/dto/highlight.ts";
 import { CITATION_INVALID_RATIO_MAX, CONTEXT_SAFETY_RATIO } from "../../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../../src/shared/ids.ts";
 import { FakeLlmProvider, reply } from "../../../fixtures/llm/fake-llm.ts";
+import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
+import { resolveSpeakerContext } from "../../../../src/server/application/speaker-context.ts";
 import { PipelineLlmProvider } from "../../../fixtures/llm/pipeline-llm.ts";
 import {
   configureLlm,
@@ -360,5 +362,71 @@ describe("highlight stage", () => {
       expect(currentOf(s.h, frozenJob.contentId)?.provenance.promptRefs).toEqual([customPromptRef("highlight.default", 1)]);
       expect(currentOf(s.h, legacyJob.contentId)?.provenance.promptRefs).toEqual([customPromptRef("highlight.default", 2)]);
     });
+  });
+});
+
+describe("highlight stage: reviewed speakers", () => {
+  const SPEAKERS: sc.SeedOptions = {
+    speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }],
+    assign: (position) => (position % 7 === 6 ? undefined : Math.floor(position / 5) % 2),
+    reviewed: true,
+  };
+  const frozenOf = (h: Harness) =>
+    h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, sc.FIXED_CONTENT_ID, sc.FIXED_REVISION_ID, "transcript"));
+  const errorOf = (h: Harness, taskId: string) => stageRunsOf(h, taskId).filter((run) => run.stage === "highlight").at(-1)?.error;
+
+  it("sends every window with the rules and header lines and records the snapshot with the rules ref", async () => {
+    const fake = sc.scriptedProvider();
+    const { h, modelRef } = sc.speakerHarness(fake, 2_500);
+    open.push(h);
+    sc.seedContent(h, SPEAKERS);
+    const taskId = (await h.derivedTasks.recomputeHighlights(LOCAL, sc.FIXED_CONTENT_ID, { modelRef })).body.taskId;
+    expect(await sc.settle(h, taskId, "highlight")).toBe("succeeded");
+    expect(fake.calls.length).toBeGreaterThan(1);
+    for (const call of fake.calls) {
+      const value = sc.promptOf(call.request).split("【逐字稿】\n")[1] ?? "";
+      expect(value.startsWith(`${SPEAKER_RULES_FRAGMENT.text}\n【发言人】`)).toBe(true);
+    }
+    const current = h.repository.withTransaction((scope) => scope.highlights.getCurrent(LOCAL.userId, sc.FIXED_CONTENT_ID));
+    expect(current?.provenance.speakerContext).toEqual(frozenOf(h));
+    expect(current?.provenance.promptRefs).toEqual([HIGHLIGHT_DEFAULT_PROMPT.ref, SPEAKER_RULES_FRAGMENT.ref]);
+  });
+
+  it("keeps the rules in a custom prompt that keeps its slot, and records both refs", async () => {
+    const fake = sc.scriptedProvider();
+    const { h, modelRef } = sc.speakerHarness(fake, 2_500);
+    open.push(h);
+    sc.seedContent(h, SPEAKERS);
+    h.prompts.update(LOCAL, "highlight.default", { text: `自定义高光说明。\n${HIGHLIGHT_DEFAULT_PROMPT.text}` });
+    const taskId = (await h.derivedTasks.recomputeHighlights(LOCAL, sc.FIXED_CONTENT_ID, { modelRef })).body.taskId;
+    expect(await sc.settle(h, taskId, "highlight")).toBe("succeeded");
+    expect(fake.calls.length).toBeGreaterThan(0);
+    for (const call of fake.calls) {
+      const prompt = sc.promptOf(call.request);
+      expect(prompt.startsWith("自定义高光说明。")).toBe(true);
+      expect((prompt.split("【逐字稿】\n")[1] ?? "").startsWith(`${SPEAKER_RULES_FRAGMENT.text}\n【发言人】`)).toBe(true);
+    }
+    const current = h.repository.withTransaction((scope) => scope.highlights.getCurrent(LOCAL.userId, sc.FIXED_CONTENT_ID));
+    expect(current?.provenance.speakerContext).toEqual(frozenOf(h));
+    expect(current?.provenance.promptRefs).toEqual([customPromptRef("highlight.default", 1), SPEAKER_RULES_FRAGMENT.ref]);
+  });
+
+  it("fails before any call when the frozen attributions do not match the read revision", async () => {
+    const fake = sc.scriptedProvider();
+    const { h, modelRef } = sc.speakerHarness(fake, 2_500);
+    open.push(h);
+    sc.seedContent(h, SPEAKERS);
+    const snapshot = frozenOf(h);
+    const taskId = createTaskOfKind(
+      h,
+      "recompute_highlights",
+      { modelRef, baseRevisionId: sc.FIXED_REVISION_ID, outputLanguage: "zh-CN", speakerContext: { ...snapshot, attributionDigest: "sha256:0" } },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    h.scheduler.kick();
+    expect(await sc.settle(h, taskId, "highlight")).toBe("failed");
+    expect(errorOf(h, taskId)?.code).toBe("internal");
+    expect(fake.calls).toHaveLength(0);
+    expect(workUnitsOf(h, taskId)).toHaveLength(0);
   });
 });

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { registerContentRoutes } from "../../../src/server/api/routes/contents.ts";
 import type { AsrModelRef } from "../../../src/server/domain/model-ref.ts";
 import { RetranscribeService } from "../../../src/server/application/retranscribe.ts";
+import { SPEAKERS_PER_CONTENT_MAX } from "../../../src/shared/defaults.ts";
+import type { SegmentId } from "../../../src/shared/ids.ts";
 import { mediaFixtures } from "../../fixtures/media/index.ts";
 import { BOB_TOKEN, LOCAL, LOCAL_TOKEN, taskOf } from "../../fixtures/pipeline/harness.ts";
 import { createMediaStack, type MediaStack } from "../../fixtures/pipeline/media-stack.ts";
@@ -190,6 +192,99 @@ describe("POST /api/contents/:id/transcript/retranscribe", () => {
       for (const diarization of [{ mode: "always" }, { mode: "required", speakerCount: 0 }, { mode: "required", speakerCount: 2.5 }, { mode: "required", extra: 1 }, {}]) {
         expect((await post(app, url, { diarization })).statusCode).toBe(400);
       }
+    });
+  });
+
+  describe("comparison", () => {
+    const post = (app: Awaited<ReturnType<typeof setup>>["app"], url: string, payload: object, headers: Record<string, string> = auth) => app.inject({ method: "POST", url, headers, payload });
+    const requestOf = (stack: MediaStack, response: { json(): unknown }) => JSON.parse(taskOf(stack.h, (response.json() as { taskId: string }).taskId).requestJson) as Record<string, unknown>;
+    const retranscribes = (stack: MediaStack, contentId: string) =>
+      stack.h.repository.withTransaction((scope) => scope.tasks.listByContent(LOCAL.userId, contentId)).filter((task) => task.kind === "retranscribe");
+
+    function profile(stack: MediaStack, id: string, modelId: string): AsrModelRef {
+      stack.h.repository.withTransaction((scope) => scope.asrProfiles.insert({ id, userId: LOCAL.userId, name: id, provider: "dashscope", models: [{ modelId }], createdAt: 1 }));
+      return { asrProfileId: id, modelId };
+    }
+
+    /** Gives the Content a primary naming `named` speakers, out of `registered` speakers in all. */
+    function primaryWithSpeakers(stack: MediaStack, contentId: string, named: number, registered: number): void {
+      const { h } = stack;
+      h.repository.withTransaction((scope) => {
+        const ids = Array.from({ length: registered }, () => h.newId());
+        scope.speakers.insert(LOCAL.userId, contentId, ids.map((id) => ({ id })), 2);
+        const revisionId = h.newId();
+        const segments = Array.from({ length: Math.max(named, 1) }, (_, ordinal) => ({
+          id: h.newId() as SegmentId,
+          revisionId,
+          ordinal,
+          startMs: ordinal * 1000,
+          endMs: ordinal * 1000 + 900,
+          text: `${ordinal}`,
+          sourceSegmentIds: [],
+          ...(ordinal < named ? { speakerId: ids[ordinal] as string } : {}),
+        }));
+        scope.transcripts.insertRevision(
+          LOCAL.userId,
+          { id: revisionId, contentId, kind: "manual", language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "manual" }, segmentCount: segments.length, createdAt: 2 },
+          segments,
+        );
+        scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 2);
+      });
+    }
+
+    it("freezes the comparison mark with identification required, and keeps it apart from an ordinary request under one key", async () => {
+      const { stack, app, contentId, url } = await setup();
+      const fun = profile(stack, "fun", "fun-asr");
+      const headers = { ...auth, "idempotency-key": "k-c" };
+      const accepted = await post(app, url, { asrModelRef: fun, diarization: { mode: "off" }, comparison: true }, headers);
+      expect(accepted.statusCode).toBe(202);
+      expect(requestOf(stack, accepted)).toEqual({ kind: "retranscribe", requestSchemaVersion: 1, asrModelRef: fun, diarization: { mode: "required" }, comparison: true });
+      expect((await post(app, url, { asrModelRef: fun, diarization: { mode: "off" }, comparison: true }, headers)).json()).toEqual(accepted.json());
+      // The same key with the mark left out is another request.
+      expect((await post(app, url, { asrModelRef: fun, diarization: { mode: "off" } }, headers)).statusCode).toBeGreaterThanOrEqual(400);
+      expect(retranscribes(stack, contentId)).toHaveLength(1);
+    });
+
+    it("keeps the speaker count asked for", async () => {
+      const { stack, app, url } = await setup();
+      const fun = profile(stack, "fun", "fun-asr");
+      const counted = await post(app, url, { asrModelRef: fun, diarization: { mode: "preferred", speakerCount: 3 }, comparison: true });
+      expect(requestOf(stack, counted)["diarization"]).toEqual({ mode: "required", speakerCount: 3 });
+    });
+
+    it("refuses a model that cannot identify speakers before queueing anything, whatever mode the body asks", async () => {
+      const { stack, app, contentId, url } = await setup();
+      const typed = profile(stack, "typed", "fun-asr-2026");
+      for (const diarization of [undefined, { mode: "off" }, { mode: "preferred" }]) {
+        const refused = await post(app, url, { asrModelRef: typed, comparison: true, ...(diarization === undefined ? {} : { diarization }) });
+        expect(refused.statusCode).toBe(400);
+        expect(refused.json().error).toMatchObject({ code: "invalid_request.diarization_unavailable", details: { reason: "unsupported" } });
+      }
+      expect(retranscribes(stack, contentId)).toEqual([]);
+    });
+
+    it("refuses with the room and the requirement when the Content cannot hold twice the primary's speakers", async () => {
+      const { stack, app, contentId, url } = await setup();
+      const fun = profile(stack, "fun", "fun-asr");
+      primaryWithSpeakers(stack, contentId, 3, SPEAKERS_PER_CONTENT_MAX - 5);
+      const refused = await post(app, url, { asrModelRef: fun, comparison: true });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatchObject({ code: "conflict.speaker_capacity", details: { room: 5, required: 6 } });
+      expect(retranscribes(stack, contentId)).toEqual([]);
+      // An ordinary re-transcription is not held to it.
+      expect((await post(app, url, { asrModelRef: fun })).statusCode).toBe(202);
+    });
+
+    it("lets a comparison through when exactly the required room is left", async () => {
+      const { stack, app, url, contentId } = await setup();
+      const fun = profile(stack, "fun", "fun-asr");
+      primaryWithSpeakers(stack, contentId, 3, SPEAKERS_PER_CONTENT_MAX - 6);
+      expect((await post(app, url, { asrModelRef: fun, comparison: true })).statusCode).toBe(202);
+    });
+
+    it("refuses a comparison mark other than true", async () => {
+      const { app, url } = await setup();
+      for (const comparison of [false, "yes", 1]) expect((await post(app, url, { comparison })).statusCode).toBe(400);
     });
   });
 

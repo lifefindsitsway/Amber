@@ -2,6 +2,7 @@ import type { ChatMessageStatus } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import type { Citation } from "./artifact.ts";
 import type { ModelRefSnapshot, PromptRef } from "./model-ref.ts";
+import type { SpeakerContextSnapshot } from "./speaker-context.ts";
 import type { ChatWebSearch } from "./web-search.ts";
 
 /**
@@ -32,7 +33,38 @@ export interface ChatCompaction {
   modelRef: ModelRefSnapshot;
   promptRef: PromptRef;
   promptSnapshot: string;
+  /**
+   * What the absorbed answers that read speakers (and those of the compaction it replaced)
+   * were based on, one entry per transcript revision and speaker snapshot. Written with the
+   * row and never changed, so whether its text still holds can be judged sentence by
+   * sentence after those answers are deleted. Absent: no absorbed answer read speakers.
+   */
+  speakerBases?: ChatSpeakerBasis[];
   createdAt: number;
+}
+
+/**
+ * The speaker basis of an answer a compaction absorbed: enough to compare who said each
+ * sentence it read with the current primary again, not just a digest.
+ */
+export interface ChatSpeakerBasis {
+  transcriptRevisionId: string;
+  speakerContext: SpeakerContextSnapshot;
+  /** The sentences the absorbed answers on this basis cited. */
+  citedSegmentIds: string[];
+}
+
+/**
+ * The material an answer was finally planned with, written once planning (web material,
+ * compaction) is done and before the answer streams. Recorded only when it says something
+ * the estimate shown before asking cannot: the answer read speakers (`speakerClips` = some
+ * person's material is a selection), or the default summary was left out because its
+ * speakers no longer hold (`summaryOmitted`).
+ */
+export interface ChatContextUsed {
+  mode: "full" | "retrieval" | "metadata";
+  speakerClips?: true;
+  summaryOmitted?: true;
 }
 
 export interface ChatMessage {
@@ -46,6 +78,13 @@ export interface ChatMessage {
   modelRef?: ModelRefSnapshot;
   /** Fixed to the primary revision at the time the message was answered. */
   contextTranscriptRevisionId?: string;
+  /**
+   * On an answer: the speakers it was given, written when the attempt is created and kept
+   * whether it completes, fails or is interrupted. Absent when it was given none.
+   */
+  speakerContext?: SpeakerContextSnapshot;
+  /** On an answer: the material it was finally planned with; kept whether it completes, fails or is interrupted. */
+  contextUsed?: ChatContextUsed;
   citations: Citation[];
   suggestions?: string[];
   /** The web search of an answer; absent when none was asked for. */

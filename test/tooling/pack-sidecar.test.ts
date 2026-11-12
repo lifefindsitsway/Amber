@@ -82,6 +82,9 @@ describe("SHIPPED_ASSETS", () => {
   it("names exactly the Runtime Assets files the Windows sidecar carries", () => {
     expect([...SHIPPED_ASSETS].sort()).toEqual([
       "18_NotoSansSC.zip",
+      "LXGWWenKaiLite-OFL.txt",
+      "LXGWWenKaiLite-Regular.ttf",
+      "NotoSerifSC-Regular.otf",
       "OFL.txt",
       "deno-x86_64-pc-windows-msvc.zip",
       "ffmpeg-n9.0.2-3-ga5923073bf-win64-gpl-9.0.zip",

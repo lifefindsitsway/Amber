@@ -102,7 +102,7 @@ describe("buildReport", () => {
   it("refuses a release built from Runtime Assets other than the pinned ones; a candidate records it", () => {
     const fx = mirror();
     expect(() => buildReport({ ...fx, variant: "release", pinned: { ...PINNED, sumsSha256: "1".repeat(64) }, now: new Date(0) })).toThrow(
-      /pinned Runtime Assets .*found runtime-assets-2026\.10\.21 \(SHA256SUMS [0-9a-f]{64}\)/u,
+      new RegExp(`pinned Runtime Assets .*found ${RUNTIME_ASSETS_VERSION.replaceAll(".", "\\.")} \\(SHA256SUMS [0-9a-f]{64}\\)`, "u"),
     );
     expect(() => buildReport({ ...fx, variant: "release", pinned: { ...PINNED, version: "runtime-assets-other" }, now: new Date(0) })).toThrow(/pinned Runtime Assets runtime-assets-other/u);
     // The compiled-in pin applies when none is injected.

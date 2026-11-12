@@ -1,17 +1,28 @@
+import { monotonicFactory } from "ulid";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
-import type { TranscriptDraft } from "../../../../../src/server/domain/transcript.ts";
-import { insertRow, openTempDatabase } from "../../../../tools/sqlite.ts";
+import type { TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../../../../../src/server/domain/transcript.ts";
+import type { SegmentId } from "../../../../../src/shared/ids.ts";
+import { insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 import { lectureTranscripts, type TranscriptFixture } from "../../../../fixtures/transcripts/lecture.ts";
 
 const T0 = 1_790_000_000_000;
+let opened: ReturnType<typeof openTempDatabase>;
 let db: SqliteConnection;
 let repository: SqliteRepository;
 let lecture: TranscriptFixture;
 
+/** Closes the database and opens its file again, so what is read next comes from disk. */
+function reopen(): void {
+  opened = reopenTempDatabase(opened);
+  db = opened.db;
+  repository = new SqliteRepository(db);
+}
+
 beforeEach(() => {
-  db = openTempDatabase().db;
+  opened = openTempDatabase();
+  db = opened.db;
   repository = new SqliteRepository(db);
   for (const id of ["alice", "bob"]) insertRow(db, "user", { id, role: "user", status: "active", created_at: T0 });
   for (const [id, userId] of [["c", "alice"], ["other", "alice"]] as const) {
@@ -136,5 +147,65 @@ describe("transcript drafts", () => {
     expect(get("alice")).toBeUndefined();
     expect(put("alice", draft("d3", lecture.asr.revision.id, T0, "en", "en"), 4)).toEqual({ currentVersion: null });
     expect(get("alice", "en")).toBeUndefined();
+  });
+});
+
+describe("transcript revisions: speaker records in the generation", () => {
+  const SPEAKER_CONTEXT = {
+    version: 1 as const,
+    rules: { id: "speaker.rules", version: 1 },
+    attributionDigest: "d".repeat(64),
+    speakers: [
+      { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+      { id: "s2", ordinal: 2, label: "发言人 2" },
+    ],
+  };
+  const modelRef = { providerProfileId: "p", modelId: "m", providerNameSnapshot: "relay", modelDisplaySnapshot: "m" };
+  const nextId = monotonicFactory();
+
+  /** A revision copying its parent's sentences one for one. */
+  function child(id: string, parent: { revision: TranscriptRevision; segments: TranscriptSegment[] }, revision: Omit<TranscriptRevision, "id" | "contentId" | "parentRevisionId" | "segmentCount">) {
+    const segments = parent.segments.map((segment, ordinal) => ({
+      id: nextId() as SegmentId,
+      revisionId: id,
+      ordinal,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      text: segment.text,
+      sourceSegmentIds: [segment.id],
+    }));
+    return { revision: { ...revision, id, contentId: "c", parentRevisionId: parent.revision.id, segmentCount: segments.length }, segments };
+  }
+
+  it("keeps the speakers a proofread, a commit and a hand-edited translation recorded, field for field, across a reopen", () => {
+    const proofread = child(nextId(), lecture.asr, {
+      kind: "corrected", language: "zh-CN", timingFidelity: "inherited_segment", createdAt: T0 + 10,
+      generation: { kind: "llm", modelRef, promptRef: { id: "proofread", version: 1 }, promptRefs: [{ id: "proofread", version: 1 }], promptSnapshot: "p", speakerContext: SPEAKER_CONTEXT },
+    });
+    const committed = child(nextId(), proofread, {
+      kind: "manual", language: "zh-CN", timingFidelity: "inherited_segment", createdAt: T0 + 11,
+      generation: { kind: "manual", speakerReview: { acceptedSuggestions: 2, changedFromParent: 3 } },
+    });
+    const translated = child(nextId(), committed, {
+      kind: "translated", language: "en", timingFidelity: "segment_only", createdAt: T0 + 12,
+      generation: { kind: "manual", origin: { revisionId: nextId(), modelRef, promptRef: { id: "translate", version: 1 }, speakerContext: SPEAKER_CONTEXT } },
+    });
+    const written = [proofread, committed, translated];
+    repository.withTransaction((scope) => {
+      for (const { revision, segments } of written) scope.transcripts.insertRevision("alice", revision, segments);
+    });
+    reopen();
+    for (const { revision } of written) {
+      expect(repository.withTransaction((scope) => scope.transcripts.getRevision("alice", revision.id))).toEqual(revision);
+    }
+    const listed = repository.withTransaction((scope) => scope.transcripts.listRevisions("alice", "c"));
+    const generations = written.map(({ revision }) => listed.find((item) => item.id === revision.id)?.generation);
+    expect(generations[0]).toMatchObject({ kind: "llm", speakerContext: SPEAKER_CONTEXT });
+    expect(generations[1]).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2, changedFromParent: 3 } });
+    expect(generations[2]).toMatchObject({ kind: "manual", origin: { speakerContext: SPEAKER_CONTEXT } });
+    // A revision recorded without any of them reads back without the keys.
+    const plain = repository.withTransaction((scope) => scope.transcripts.getRevision("alice", lecture.corrected.revision.id));
+    expect(plain?.generation).toEqual(lecture.corrected.revision.generation);
+    expect(plain?.generation !== undefined && "speakerContext" in plain.generation).toBe(false);
   });
 });

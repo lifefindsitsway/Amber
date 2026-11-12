@@ -172,6 +172,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   const firstSegment = transcripts.corrected.segments[0]?.id;
   row("transcript_draft", { id: nextId(), content_id: content, base_revision_id: primary, segments_json: json([]), updated_at: T0 });
   row("transcript_revision_archive", { revision_id: transcripts.asr.revision.id, content_id: content, archived_at: T0 });
+  row("transcript_revision_speaker_confirmation", { revision_id: primary, content_id: content, user_id: userId, confirmed_at: T0 });
   row("content_speaker", { content_id: content, id: nextId(), user_id: userId, ordinal: 1, color_index: 0, created_at: T0, updated_at: T0 });
   row("reference_text", { id: nextId(), content_id: content, origin: "md_import", text: "# notes", created_at: T0 });
   row("note", {
@@ -356,7 +357,8 @@ describe("every persistent table traces to a userId", () => {
 describe("deletion cascades of Content, Collection, Profile, PlatformAccount and User", () => {
   const contentScoped = [
     "transcript_revision", "transcript_draft", "reference_text", "summary_artifact", "chapter_artifact",
-    "highlight_artifact", "translation_artifact", "chat_thread", "media_asset", "note",
+    "highlight_artifact", "translation_artifact", "chat_thread", "media_asset", "note", "transcript_revision_archive",
+    "transcript_revision_speaker_confirmation",
   ];
 
   it("deleting a Content removes its tasks, transcripts, artifacts, chat and every MediaAsset row, keeps usage unlinked and leaves external_local files alone", () => {

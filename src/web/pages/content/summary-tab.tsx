@@ -27,8 +27,11 @@ import { ApiError } from "../../api/client.ts";
 import { useContentPage } from "./content-context.tsx";
 import { ExportDialog } from "./export-dialog.tsx";
 import { contentKeys, useChapters, useLatestRedos, useLatestTask, useSegments, useSummaries } from "./content-data.ts";
+import { CitationCard, useCitedSentences } from "./citation-card.tsx";
 import { templateName } from "./labels.ts";
 import { explainSelectionEntries } from "./sentence-menu.tsx";
+import { useSentencePlayback } from "./sentence-playback.ts";
+import { SpeakerBasisLine, SpeakersNotReadHint } from "./speaker-basis-notice.tsx";
 
 type TemplateEntry = ContentSummariesDto["templates"][number];
 
@@ -139,6 +142,8 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
 
   const times = useMemo(() => new Map((segments.data ?? []).map((segment) => [segment.id, segment.startMs])), [segments.data]);
   const timeOf = (segmentId: string): number | undefined => times.get(segmentId);
+  const citedSentence = useCitedSentences(page.content.id, current?.transcriptRevisionId);
+  const playback = useSentencePlayback();
   const generate = useMutation({
     mutationFn: () =>
       client.post(`/api/contents/${encodeURIComponent(page.content.id)}/summaries`, taskAcceptedDtoSchema, {
@@ -210,6 +215,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
           <History size={14} />
           {t("contentView.summary.history")}
         </Button>
+        {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={page.primaryRevisionId} testId="summary-speakers-not-read" /> : null}
       </div>
       {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
       {generate.error instanceof ApiError ? <ErrorView error={generate.error.error} /> : null}
@@ -227,8 +233,24 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
       ) : (
         <>
           {current.quality === "degraded" ? <p className="text-xs text-muted">{t("contentView.summary.degraded")}</p> : null}
+          <SpeakerBasisLine
+            contentId={page.content.id}
+            primaryRevisionId={page.primaryRevisionId}
+            stale={entry.stale || current.stale}
+            speakerContext={current.speakerContext}
+            testId="summary-speaker-basis"
+          />
           <div ref={bodyMenu} data-testid="summary-body" data-explainable>
-            <RichText source={current.body} timeOf={timeOf} onCitation={onCitation} />
+            <RichText
+              source={current.body}
+              timeOf={timeOf}
+              onCitation={onCitation}
+              wrapCitation={(segmentId, badge) => (
+                <CitationCard contentId={page.content.id} cited={citedSentence(segmentId)} playback={playback}>
+                  {badge}
+                </CitationCard>
+              )}
+            />
           </div>
         </>
       )}
@@ -466,6 +488,9 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
           </span>
         )}
       </div>
+      {showConfigure || !hasTranscript ? null : (
+        <SpeakersNotReadHint className="mb-2 block text-right" contentId={contentId} revisionId={page.primaryRevisionId} testId="chapters-speakers-not-read" />
+      )}
       {hasTranscript ? null : (
         <p className="mb-2 text-xs text-muted" data-testid="chapters-needs-transcript">
           {t("contentView.chapters.needsTranscript")}
@@ -484,6 +509,17 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
         </div>
       ) : null}
       {chapters.data?.current?.stale === true ? <p className="mb-2 text-xs text-muted">{t("contentView.chapters.stale")}</p> : null}
+      {/* Platform chapters read no transcript, so they have no speaker basis to speak of. */}
+      {chapters.data?.current?.origin.kind === "ai" ? (
+        <SpeakerBasisLine
+          className="mb-2"
+          contentId={contentId}
+          primaryRevisionId={page.primaryRevisionId}
+          stale={chapters.data.current.stale}
+          speakerContext={chapters.data.current.speakerContext}
+          testId="chapters-speaker-basis"
+        />
+      ) : null}
       {hasChapters ? (
         <ol className="flex flex-col gap-1">
           {list.map((chapter, index) => (

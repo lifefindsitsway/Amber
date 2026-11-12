@@ -70,4 +70,19 @@ describe("BilibiliPlayer", () => {
       expect(srcParams().get("t")).toBe("30");
     });
   });
+
+  it("only jumps for a range: the embed can neither pause nor tell its time", () => {
+    const controller = new PlayerController();
+    render(
+      <PlayerControllerProvider controller={controller}>
+        <BilibiliPlayer source={{ kind: "bilibili", bvid: "BV1" }} />
+      </PlayerControllerProvider>,
+    );
+    expect(controller.rangePlayback).toBe("jump");
+    act(() => {
+      controller.playRange(42_000, 45_000);
+    });
+    expect(new URL(screen.getByTestId("player-bilibili").getAttribute("src") ?? "").searchParams.get("t")).toBe("42");
+    expect(controller.playingRange()).toBeUndefined();
+  });
 });

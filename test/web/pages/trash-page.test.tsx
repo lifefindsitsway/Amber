@@ -169,7 +169,8 @@ describe("TrashPage", () => {
   it("restores an entry, says so, refreshes the views it returns to and tells other tabs", async () => {
     let restored = false;
     const { calls } = mockApi({
-      "GET /api/trash": () => list(restored ? [] : [item("c1")]),
+      // Trashed now by the real clock: this test does not fake time, and an expired row cannot be restored.
+      "GET /api/trash": () => list(restored ? [] : [item("c1", { trashedAt: Date.now() })]),
       "POST /api/trash/c1/restore": () => {
         restored = true;
         return { body: content("c1", { title: "讲次 c1" }) };
@@ -193,7 +194,8 @@ describe("TrashPage", () => {
 
   it("shows why a restore was refused inside the row", async () => {
     mockApi({
-      "GET /api/trash": list([item("c1")]),
+      // Trashed now by the real clock, as above: the refusal must come from the server, not from a disabled button.
+      "GET /api/trash": list([item("c1", { trashedAt: Date.now() })]),
       "POST /api/trash/c1/restore": {
         status: 409,
         body: { error: { class: "conflict", code: "conflict.trash_expired", retryDisposition: "never", userMessage: "这条内容在回收站中已到期，不能再恢复" } },

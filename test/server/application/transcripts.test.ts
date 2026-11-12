@@ -1063,7 +1063,8 @@ describe("TranscriptService commit with speakers", () => {
     expect(primaryOf(h, contentId)).toBe(committed.id);
     expect(speakersOf(h, committed.id)).toEqual([b, a, undefined, b]);
     expect(segmentsOf(h, committed.id).every((segment) => !("speakerReview" in segment))).toBe(true);
-    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    // Sentences 1 and 3 changed hands compared with the parent.
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: 2 } });
     expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
     expect(countRows(h.db, "transcript_draft")).toBe(0);
     // The first commit folds nothing: every earlier revision is still there.
@@ -1143,7 +1144,7 @@ describe("TranscriptService commit with speakers", () => {
       draftWith(h, contentId, corrected, speakers, review);
       const committed = commitAgainstPrimary(h, contentId, 1, choice);
       expect(speakersOf(h, committed.id)).toEqual([a, undefined, undefined, undefined]);
-      expect(generationOf(committed.id)).toEqual({ kind: "manual" });
+      expect(generationOf(committed.id)).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: 3 } });
       expect(artifactsFresh(h, contentId)).toEqual([true, true, true]);
     }
 
@@ -1151,7 +1152,7 @@ describe("TranscriptService commit with speakers", () => {
     const accepted = commitAgainstPrimary(h, contentId, 1, "accept_suggestions");
     // The fourth sentence waits for review but has no suggestion: nothing to accept there.
     expect(speakersOf(h, accepted.id)).toEqual([a, b, b, undefined]);
-    expect(generationOf(accepted.id)).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2 } });
+    expect(generationOf(accepted.id)).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2, changedFromParent: 2 } });
     expect(segmentsOf(h, accepted.id).every((segment) => !("speakerReview" in segment))).toBe(true);
     expect(h.transcripts.segments(LOCAL, accepted.id, { limit: 10 }).items.map((item) => item.speakerId)).toEqual([a, b, b, undefined]);
   });
@@ -1174,7 +1175,7 @@ describe("TranscriptService commit with speakers", () => {
     draftWith(h, contentId, fixture.corrected.revision.id, [b, a, undefined, null], ["needs_review", "needs_review", "needs_review", "needs_review"]);
     const committed = commitAgainstPrimary(h, contentId, 1, "accept_suggestions");
     expect(speakersOf(h, committed.id)).toEqual([b, a, b, undefined]);
-    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2 } });
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 2, changedFromParent: 2 } });
   });
 
   it("keeps the commit conflicts: a changed draft or primary refuses the commit and leaves the speakers alone", async () => {
@@ -1230,5 +1231,365 @@ describe("TranscriptService commit with speakers", () => {
         ),
       ),
     ).toThrow();
+  });
+});
+
+describe("TranscriptService commit and the speaker review mark", () => {
+  const confirm = (h: Harness, contentId: string, revisionId: string) =>
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, contentId, revisionId, 5));
+  const confirmedAt = (h: Harness, revisionId: string) => h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revisionId));
+  const commit = (h: Harness, contentId: string, extra: { speakersConfirmed?: boolean; speakerReview?: "accept_suggestions" | "unassign" } = {}) =>
+    h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primaryOf(h, contentId) as string, draftVersion: 1, ...extra });
+
+  it("leaves a revision whose base is not reviewed unreviewed, and refuses to keep a mark the base does not have", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    draftWith(h, contentId, corrected, [a, a, b, b]);
+    expect(await codeOf(() => commit(h, contentId, { speakersConfirmed: true }))).toEqual({ code: "invalid_request" });
+    expect(primaryOf(h, contentId)).toBe(corrected);
+    expect(h.transcripts.getDraft(LOCAL, contentId).version).toBe(1);
+    const committed = commit(h, contentId);
+    expect(confirmedAt(h, committed.id)).toBeUndefined();
+    expect(committed).not.toHaveProperty("speakersConfirmedAt");
+  });
+
+  it("inherits the mark by itself when no sentence changes hands, deleted sentences included", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    confirm(h, contentId, corrected);
+    const base = segmentsOf(h, corrected);
+    h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: corrected, expectedVersion: null,
+      segments: base.slice(0, 3).map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: `${segment.text}。`, sourceSegmentIds: [segment.id] })),
+    });
+    const committed = commit(h, contentId);
+    expect(confirmedAt(h, committed.id)).toBeDefined();
+    expect(committed.speakersConfirmedAt).toBe(confirmedAt(h, committed.id));
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    expect(h.contents.revisions(LOCAL, contentId).revisions.find((item) => item.id === committed.id)?.speakersConfirmedAt).toBeDefined();
+  });
+
+  it("keeps the mark across a change of hands only when the request says so, and records how many changed", () => {
+    for (const keep of [false, true]) {
+      const h = createHarness();
+      open.push(h);
+      const { contentId, fixture, a, b } = speakerLecture(h);
+      confirm(h, contentId, fixture.corrected.revision.id);
+      draftWith(h, contentId, fixture.corrected.revision.id, [b, a, b, b]);
+      const committed = commit(h, contentId, keep ? { speakersConfirmed: true } : {});
+      expect(confirmedAt(h, committed.id) !== undefined).toBe(keep);
+      expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: 1 } });
+    }
+  });
+
+  it("judges sentences that were waiting for review by the speaker they are committed with", () => {
+    for (const keep of [false, true]) {
+      // Accepted suggestions that match the parent change no hands: the mark is kept by itself.
+      const h = createHarness();
+      open.push(h);
+      const { contentId, fixture, a, b } = speakerLecture(h);
+      confirm(h, contentId, fixture.corrected.revision.id);
+      draftWith(h, contentId, fixture.corrected.revision.id, [a, a, b, b], ["needs_review"]);
+      const committed = commit(h, contentId, { speakerReview: "accept_suggestions", ...(keep ? { speakersConfirmed: true } : {}) });
+      expect(speakersOf(h, committed.id)).toEqual([a, a, b, b]);
+      expect(confirmedAt(h, committed.id)).toBeDefined();
+    }
+    for (const keep of [false, true]) {
+      // Unassigned on commit, the sentence changes hands: the mark is kept only on request.
+      const h = createHarness();
+      open.push(h);
+      const { contentId, fixture, a, b } = speakerLecture(h);
+      confirm(h, contentId, fixture.corrected.revision.id);
+      draftWith(h, contentId, fixture.corrected.revision.id, [a, a, b, b], ["needs_review"]);
+      const committed = commit(h, contentId, { speakerReview: "unassign", ...(keep ? { speakersConfirmed: true } : {}) });
+      expect(speakersOf(h, committed.id)).toEqual([undefined, a, b, b]);
+      expect(confirmedAt(h, committed.id) !== undefined).toBe(keep);
+    }
+  });
+
+  it("never marks a revision in which no sentence names a speaker, even when asked to keep the mark", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = speakerLecture(h);
+    confirm(h, contentId, fixture.corrected.revision.id);
+    draftWith(h, contentId, fixture.corrected.revision.id, [null, null, null, null]);
+    const committed = commit(h, contentId, { speakersConfirmed: true });
+    expect(speakersOf(h, committed.id)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(confirmedAt(h, committed.id)).toBeUndefined();
+    expect(committed).not.toHaveProperty("speakersConfirmedAt");
+    expect(primaryOf(h, contentId)).toBe(committed.id);
+  });
+
+  it("does not inherit the mark onto a revision that names nobody, though no sentence changes hands", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    confirm(h, contentId, fixture.corrected.revision.id);
+    draftWith(h, contentId, fixture.corrected.revision.id, [a, null, b, null]);
+    const reviewed = commit(h, contentId, { speakersConfirmed: true });
+    expect(confirmedAt(h, reviewed.id)).toBeDefined();
+    // A translation keeps `reviewed` from being folded, so the next commit is compared with it.
+    insertTranslation(h, contentId, reviewed.id, "en", 20);
+    const kept = segmentsOf(h, reviewed.id).filter((segment) => segment.speakerId === undefined);
+    expect(kept).toHaveLength(2);
+    h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: reviewed.id, expectedVersion: null,
+      segments: kept.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id] })),
+    });
+    const committed = commit(h, contentId);
+    expect(committed.parentRevisionId).toBe(reviewed.id);
+    // Nothing changed hands: only the missing speakers keep the mark away.
+    expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    expect(speakersOf(h, committed.id)).toEqual([undefined, undefined]);
+    expect(confirmedAt(h, committed.id)).toBeUndefined();
+    expect(committed).not.toHaveProperty("speakersConfirmedAt");
+  });
+
+  it("judges the review against the base the user edited, even when it is folded, and records the change against the anchor", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    confirm(h, contentId, corrected);
+    draftWith(h, contentId, corrected, [b, a, b, b]);
+    const first = commit(h, contentId, { speakersConfirmed: true });
+    expect(confirmedAt(h, first.id)).toBeDefined();
+
+    // Unchanged against `first`, which is folded: the mark carries over; against the anchor one sentence changed hands.
+    draftWith(h, contentId, first.id, [b, a, b, b]);
+    const folded = commit(h, contentId);
+    expect(folded.parentRevisionId).toBe(corrected);
+    expect(revisionOf(h, first.id)).toBeUndefined();
+    expect(confirmedAt(h, folded.id)).toBeDefined();
+    expect(revisionOf(h, folded.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: 1 } });
+
+    // Changed against the base (folded again): only kept on request.
+    draftWith(h, contentId, folded.id, [b, b, b, b]);
+    const changed = commit(h, contentId);
+    expect(revisionOf(h, folded.id)).toBeUndefined();
+    expect(confirmedAt(h, changed.id)).toBeUndefined();
+
+    // A translation keeps a revision from being folded: the next commit is compared with it alone.
+    confirm(h, contentId, changed.id);
+    insertTranslation(h, contentId, changed.id, "en", 20);
+    draftWith(h, contentId, changed.id, [b, b, b, b]);
+    const kept = commit(h, contentId);
+    expect(kept.parentRevisionId).toBe(changed.id);
+    expect(confirmedAt(h, kept.id)).toBeDefined();
+    expect(revisionOf(h, kept.id)?.generation).toEqual({ kind: "manual" });
+  });
+
+  /**
+   * A draft of `baseId` shaped sentence by sentence from the base's sentences at `from`:
+   * a merge spans its sources, `half` keeps one half of a split, and an unsourced sentence
+   * (which must come last) is placed after the base's end. `speakerId` as in `draftWith`.
+   */
+  function shapedDraft(
+    h: Harness,
+    contentId: string,
+    baseId: string,
+    sentences: ReadonlyArray<{ from: readonly number[]; speakerId?: string | null | undefined; half?: 0 | 1 }>,
+  ) {
+    const base = segmentsOf(h, baseId);
+    const end = Math.max(...base.map((segment) => segment.endMs));
+    return h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: baseId,
+      expectedVersion: null,
+      segments: sentences.map(({ from, speakerId, half }, index) => {
+        const sources = from.map((ordinal) => base[ordinal] as TranscriptSegment);
+        let startMs = sources.length === 0 ? end + 1000 * (index + 1) : Math.min(...sources.map((segment) => segment.startMs));
+        let endMs = sources.length === 0 ? startMs + 500 : Math.max(...sources.map((segment) => segment.endMs));
+        if (half !== undefined) {
+          const middle = Math.floor((startMs + endMs) / 2);
+          [startMs, endMs] = half === 0 ? [startMs, middle] : [middle, endMs];
+        }
+        return {
+          startMs, endMs, text: `第${index + 1}句`, sourceSegmentIds: sources.map((segment) => segment.id),
+          ...(speakerId === undefined ? {} : { speakerId }),
+        };
+      }),
+    });
+  }
+
+  it("keeps the mark across splits and merges within one speaker, and counts a split or merge that mixes speakers", () => {
+    type Who = "a" | "b";
+    const cases: Array<{ sentences: Array<{ from: number[]; speakerId?: Who; half?: 0 | 1 }>; changed: number; speakers: Who[] }> = [
+      // Merge 1+2 (both A), split 3 (B) into two B sentences: nobody changes hands.
+      { sentences: [{ from: [0, 1], speakerId: "a" }, { from: [2], speakerId: "b", half: 0 }, { from: [2], speakerId: "b", half: 1 }, { from: [3] }], changed: 0, speakers: ["a", "b", "b", "b"] },
+      // Split 1 between A and B: sentence 1 changes hands.
+      { sentences: [{ from: [0], speakerId: "a", half: 0 }, { from: [0], speakerId: "b", half: 1 }, { from: [1] }, { from: [2] }, { from: [3] }], changed: 1, speakers: ["a", "b", "a", "b", "b"] },
+      // Merge 2 (A) and 3 (B) into one sentence that keeps its first source's speaker: sentence 3 changes hands.
+      { sentences: [{ from: [0] }, { from: [1, 2] }, { from: [3] }], changed: 1, speakers: ["a", "a", "b"] },
+    ];
+    for (const { sentences, changed, speakers } of cases) {
+      for (const keep of [false, true]) {
+        const h = createHarness();
+        open.push(h);
+        const { contentId, fixture, a, b } = speakerLecture(h);
+        const id = { a, b };
+        confirm(h, contentId, fixture.corrected.revision.id);
+        shapedDraft(h, contentId, fixture.corrected.revision.id, sentences.map(({ speakerId, ...sentence }) => ({ ...sentence, ...(speakerId === undefined ? {} : { speakerId: id[speakerId] }) })));
+        const committed = commit(h, contentId, keep ? { speakersConfirmed: true } : {});
+        expect(speakersOf(h, committed.id)).toEqual(speakers.map((who) => id[who]));
+        expect(confirmedAt(h, committed.id) !== undefined).toBe(changed === 0 || keep);
+        expect(revisionOf(h, committed.id)?.generation).toEqual(
+          changed === 0 ? { kind: "manual" } : { kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: changed } },
+        );
+      }
+    }
+  });
+
+  it("does not keep the review over a new sentence that names a speaker, and records no change of hands for it", () => {
+    for (const [speakerId, changed] of [[null, 0], [undefined, 0], ["a", 1]] as const) {
+      const h = createHarness();
+      open.push(h);
+      const { contentId, fixture, a } = speakerLecture(h);
+      const corrected = fixture.corrected.revision.id;
+      confirm(h, contentId, corrected);
+      shapedDraft(h, contentId, corrected, [{ from: [0] }, { from: [1] }, { from: [2] }, { from: [3] }, { from: [], speakerId: speakerId === "a" ? a : speakerId }]);
+      const committed = commit(h, contentId);
+      expect(speakersOf(h, committed.id).at(-1)).toBe(speakerId === "a" ? a : undefined);
+      expect(confirmedAt(h, committed.id) !== undefined).toBe(changed === 0);
+      // The history counts sentences of the parent that changed hands; an added sentence is none.
+      expect(revisionOf(h, committed.id)?.generation).toEqual({ kind: "manual" });
+    }
+  });
+
+  it("judges a split of a folded merge against the merged sentence the user saw, while the history counts against the anchor", () => {
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture, a, b } = speakerLecture(h);
+    const corrected = fixture.corrected.revision.id;
+    confirm(h, contentId, corrected);
+    // Merge sentences 3 and 4 (both B): no change of hands, the mark carries over.
+    shapedDraft(h, contentId, corrected, [{ from: [0] }, { from: [1] }, { from: [2, 3] }]);
+    const merged = commit(h, contentId);
+    expect(confirmedAt(h, merged.id)).toBeDefined();
+    const [s3, s4] = fixture.corrected.segments.slice(2).map((segment) => segment.id);
+
+    // Split the merged sentence back into two B sentences: unchanged against the base, which is folded.
+    shapedDraft(h, contentId, merged.id, [{ from: [0] }, { from: [1] }, { from: [2], half: 0 }, { from: [2], half: 1 }]);
+    const split = commit(h, contentId);
+    expect(split.parentRevisionId).toBe(corrected);
+    expect(revisionOf(h, merged.id)).toBeUndefined();
+    expect(confirmedAt(h, split.id)).toBeDefined();
+    expect(revisionOf(h, split.id)?.generation).toEqual({ kind: "manual" });
+    expect(segmentsOf(h, split.id).slice(2).map((segment) => segment.sourceSegmentIds)).toEqual([[s3, s4], [s3, s4]]);
+
+    // Hand the second half to A: one sentence of the base changes hands, but both anchor
+    // sentences behind the merge now reach A, so the history counts two.
+    shapedDraft(h, contentId, split.id, [{ from: [0] }, { from: [1] }, { from: [2], speakerId: b }, { from: [3], speakerId: a }]);
+    const handed = commit(h, contentId);
+    expect(handed.parentRevisionId).toBe(corrected);
+    expect(confirmedAt(h, handed.id)).toBeUndefined();
+    expect(revisionOf(h, handed.id)?.generation).toEqual({ kind: "manual", speakerReview: { acceptedSuggestions: 0, changedFromParent: 2 } });
+  });
+});
+
+describe("TranscriptService deleting a comparison transcription", () => {
+  const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  /** An `asr` revision naming `speakerIds` one sentence each; `comparison` marks it as made only for comparison. */
+  function asrNaming(h: Harness, contentId: string, speakerIds: ReadonlyArray<string | undefined>, options: { comparison?: boolean; kind?: "asr" | "manual"; archived?: boolean } = {}): string {
+    const id = h.newId();
+    const kind = options.kind ?? "asr";
+    const revision: TranscriptRevision = {
+      id, contentId, kind, language: "zh-CN", timingFidelity: "segment_only",
+      generation: kind === "manual" ? { kind: "manual" } : { kind: "asr", asrProfileId: "asr", modelId: "other", ...(options.comparison === true ? { purpose: "comparison" as const } : {}) },
+      segmentCount: speakerIds.length, createdAt: 1,
+    };
+    const segments: TranscriptSegment[] = speakerIds.map((speakerId, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId: id, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `${ordinal}`,
+      ...(speakerId === undefined ? {} : { speakerId }), sourceSegmentIds: [],
+    }));
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+      if (options.archived === true) scope.transcripts.setArchived(LOCAL.userId, id, 2);
+    });
+    return id;
+  }
+
+  /** Registers speakers `1..count`, unnamed, as recognition does. */
+  function speakers(h: Harness, contentId: string, count: number): string[] {
+    const ids = Array.from({ length: count }, () => h.newId());
+    h.repository.withTransaction((scope) => scope.speakers.insert(LOCAL.userId, contentId, ids.map((id) => ({ id })), 1));
+    return ids;
+  }
+
+  const remaining = (h: Harness, contentId: string) => h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, contentId).map((speaker) => speaker.ordinal));
+
+  function setup() {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    return { h, contentId };
+  }
+
+  it("is deletable, unlike an ordinary transcription, and reclaims only the unnamed speakers nothing else names", () => {
+    const { h, contentId } = setup();
+    // 1 only in the comparison; 2 named; 3 with a photo; 4 also in the primary; 5 in the draft;
+    // 6 in another comparison; 7 in an archived manual revision; 8 named by nothing at all.
+    const ids = speakers(h, contentId, 8);
+    const [s1, s2, s3, s4, s5, s6, s7] = ids as [string, string, string, string, string, string, string];
+    h.repository.withTransaction((scope) => {
+      scope.speakers.update(LOCAL.userId, contentId, s2, { name: "王老师" }, 2);
+      scope.speakers.update(LOCAL.userId, contentId, s3, { avatar: { mime: "image/png", bytes: PNG } }, 2);
+    });
+    const primary = asrNaming(h, contentId, [s4]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, primary, 2));
+    const comparison = asrNaming(h, contentId, [s1, s2, s3, s4, s5, s6, s7, undefined], { comparison: true });
+    asrNaming(h, contentId, [s6], { comparison: true });
+    asrNaming(h, contentId, [s7], { kind: "manual", archived: true });
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: primary, expectedVersion: null, segments: [{ startMs: 0, endMs: 900, text: "一句", sourceSegmentIds: [], speakerId: s5 }] });
+
+    const listed = h.contents.revisions(LOCAL, contentId).revisions;
+    expect(listed.find((item) => item.id === comparison)).toMatchObject({ deletable: true });
+    expect(listed.find((item) => item.id === primary)).toMatchObject({ deletable: false });
+
+    h.transcripts.deleteRevision(LOCAL, comparison, { withDescendants: false });
+    expect(revisionOf(h, comparison)).toBeUndefined();
+    expect(remaining(h, contentId)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("keeps an ordinary transcription protected", async () => {
+    const { h, contentId } = setup();
+    const [s1] = speakers(h, contentId, 1) as [string];
+    const primary = asrNaming(h, contentId, [s1]);
+    const ordinary = asrNaming(h, contentId, [s1]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, primary, 2));
+    expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, ordinary, { withDescendants: false }))).toEqual({ code: "invalid_request.revision_kind_protected" });
+    expect(revisionOf(h, ordinary)).toBeDefined();
+  });
+
+  it("is refused as the primary or with a child, and then reclaims nothing", async () => {
+    const { h, contentId } = setup();
+    const [s1, s2] = speakers(h, contentId, 2) as [string, string];
+    const comparison = asrNaming(h, contentId, [s1]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, comparison, 2));
+    const marked = asrNaming(h, contentId, [s2], { comparison: true });
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, marked, 3));
+    expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, marked, { withDescendants: false }))).toEqual({ code: "conflict.revision_is_primary" });
+    expect(remaining(h, contentId)).toEqual([1, 2]);
+
+    // Back to the first as primary, with a manual revision built on the comparison.
+    h.repository.withTransaction((scope) => {
+      scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, comparison, 4);
+      const child = h.newId();
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id: child, contentId, kind: "manual", parentRevisionId: marked, language: "zh-CN", timingFidelity: "segment_only", generation: { kind: "manual" }, segmentCount: 1, createdAt: 5 },
+        [{ id: h.newId() as SegmentId, revisionId: child, ordinal: 0, startMs: 0, endMs: 900, text: "改", sourceSegmentIds: [] }],
+      );
+    });
+    expect(await codeOf(() => h.transcripts.deleteRevision(LOCAL, marked, { withDescendants: false }))).toMatchObject({ code: "conflict.revision_referenced", details: { children: 1 } });
+    expect(remaining(h, contentId)).toEqual([1, 2]);
+
+    // Deleted together with its child, the speaker only they named goes.
+    h.transcripts.deleteRevision(LOCAL, marked, { withDescendants: true });
+    expect(remaining(h, contentId)).toEqual([1]);
   });
 });

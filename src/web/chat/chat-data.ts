@@ -1,5 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { chatDtoSchema, chatThreadCreatedDtoSchema, chatThreadsDtoSchema, type ChatMessageDto, type ChatThreadDto, type ChatThreadPatchRequest } from "../../shared/dto/chat.ts";
+import {
+  chatDtoSchema,
+  chatThreadCreatedDtoSchema,
+  chatThreadsDtoSchema,
+  type ChatContextDto,
+  type ChatContextUsedDto,
+  type ChatMessageDto,
+  type ChatThreadDto,
+  type ChatThreadPatchRequest,
+} from "../../shared/dto/chat.ts";
 import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
 import type { ProviderProfileDto } from "../../shared/dto/provider.ts";
 import type { UserSettingsDto } from "../../shared/dto/settings.ts";
@@ -168,4 +177,32 @@ export function turnDisplay(turn: ChatTurn): { answer: ChatMessageDto | undefine
   const answer = effectiveAnswer(turn);
   const failedAttempt = last !== undefined && last !== answer && (last.status === "failed" || last.status === "interrupted") ? last : undefined;
   return { answer, failedAttempt };
+}
+
+/** What the context label shows: the mode, whether it is a selection of someone's speech, whether the summary was left out. */
+export interface ChatContextMarker {
+  mode: ChatContextDto["mode"];
+  speakerClips: boolean;
+  summaryOmitted: boolean;
+}
+
+/**
+ * The context label. What an answer actually used (its `context` event while and after it
+ * streams here, or the last answer's stored `contextUsed` after a reload) is only known once
+ * it was planned, and wins over the estimate `GET chat` gives for the next question, since
+ * web material may have pushed full text into retrieval. While a new question is under way
+ * without such an event, and for answers that recorded nothing (older ones, or ones that
+ * read no speakers), the estimate shows.
+ */
+export function chatContextMarker(
+  estimate: ChatContextDto,
+  messages: readonly ChatMessageDto[],
+  streamed: { running: boolean; used: ChatContextUsedDto | undefined },
+): ChatContextMarker {
+  const lastAnswer = messages.findLast((message) => message.role === "assistant");
+  const used = streamed.used ?? (streamed.running ? undefined : lastAnswer?.contextUsed);
+  if (used === undefined) {
+    return { mode: estimate.mode, speakerClips: false, summaryOmitted: estimate.summaryOmitted === true };
+  }
+  return { mode: used.mode, speakerClips: used.speakerClips === true, summaryOmitted: used.summaryOmitted === true };
 }

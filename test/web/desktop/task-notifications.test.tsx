@@ -92,4 +92,12 @@ describe("useTaskNotifications", () => {
     await vi.waitFor(() => expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "缓存视频", body: "缓存视频：失败" }));
     expect(plugin.requestPermission).not.toHaveBeenCalled();
   });
+
+  it("names a transcription made only to compare speakers with as such, not as a re-transcription", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    plugin.isPermissionGranted.mockResolvedValue(true);
+    const frame = await mounted();
+    frame("task.finished", { ...TASK, kind: "retranscribe", comparison: true, statusProjection: "failed", finishedAt: 2 });
+    await vi.waitFor(() => expect(plugin.sendNotification).toHaveBeenCalledWith({ title: "第一讲", body: "对比转录：失败" }));
+  });
 });

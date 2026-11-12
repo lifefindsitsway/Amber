@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { TaskDto } from "../../shared/dto/task.ts";
 import { useTaskHub } from "../api/context.tsx";
+import { taskKindLabel } from "../components/task-kind-label.ts";
 import { useDesktop } from "./use-desktop.ts";
 
 /** Sends one system notification, asking for permission the first time; failures stay silent. */
@@ -40,8 +41,8 @@ export function useTaskNotifications(): void {
 }
 
 /** Title = what the Task worked on (its kind when untitled); body = kind and final status. */
-export function taskNotification(task: Pick<TaskDto, "kind" | "statusProjection" | "targetTitle">, t: TFunction): { title: string; body: string } {
-  const kind = t(`common.taskKind.${task.kind}`);
+export function taskNotification(task: Pick<TaskDto, "kind" | "comparison" | "statusProjection" | "targetTitle">, t: TFunction): { title: string; body: string } {
+  const kind = taskKindLabel(task, t);
   return {
     title: task.targetTitle ?? kind,
     body: t("shell.notification.finished", { kind, status: t(`common.status.${task.statusProjection}`) }),

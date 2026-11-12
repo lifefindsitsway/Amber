@@ -13,6 +13,9 @@ export type SpeakerAvatarMime = (typeof SPEAKER_AVATAR_MIMES)[number];
  * One speaker of a Content. `avatarVersion` is present when the speaker has a photo and
  * changes with every new one, so a client caches the photo by it. `used`: some unarchived
  * revision or the Content's transcript draft names the speaker; unused speakers are hidden.
+ * `nameConfirmed`: the name was saved as the person's confirmed name, which is what lets an
+ * AI request use it; absent = not confirmed. `comparisonOnly`: only transcriptions made for
+ * comparison name the speaker, so rosters and pickers leave it out; absent = false.
  */
 export const speakerDtoSchema = z.object({
   id: idSchema,
@@ -21,6 +24,8 @@ export const speakerDtoSchema = z.object({
   colorIndex: colorIndexSchema,
   avatarVersion: z.number().int().positive().exactOptional(),
   used: z.boolean(),
+  nameConfirmed: z.boolean().exactOptional(),
+  comparisonOnly: z.boolean().exactOptional(),
 });
 export type SpeakerDto = z.infer<typeof speakerDtoSchema>;
 
@@ -28,8 +33,14 @@ export type SpeakerDto = z.infer<typeof speakerDtoSchema>;
 export const speakerListDtoSchema = z.object({ items: z.array(speakerDtoSchema) });
 export type SpeakerListDto = z.infer<typeof speakerListDtoSchema>;
 
-/** `POST /api/contents/:id/speakers`: a new identity; the name is normalized and may be left out. */
-export const speakerCreateRequestSchema = z.object({ name: z.string().exactOptional(), colorIndex: colorIndexSchema.exactOptional() }).strict();
+/**
+ * `POST /api/contents/:id/speakers`: a new identity; the name is normalized and may be left
+ * out. `nameConfirmed: true` records the name as confirmed by the user; without it a name is
+ * stored unconfirmed, whoever the caller is.
+ */
+export const speakerCreateRequestSchema = z
+  .object({ name: z.string().exactOptional(), colorIndex: colorIndexSchema.exactOptional(), nameConfirmed: z.boolean().exactOptional() })
+  .strict();
 export type SpeakerCreateRequest = z.infer<typeof speakerCreateRequestSchema>;
 
 /** A photo upload: base64 of the bytes. `null` in a patch removes the photo. */
@@ -38,7 +49,10 @@ export const speakerAvatarUploadSchema = z.object({ data: z.base64(), mime: z.en
 /**
  * `PATCH /api/contents/:id/speakers/:sid`: change the name (`null` or blank = unnamed), the
  * color or the photo; or copy another speaker of the same user, a snapshot of its name,
- * color and photo as they are now.
+ * color and photo as they are now. A request that writes a name (the current one re-sent
+ * included, or a copied one) confirms it only with `nameConfirmed: true`; a name changed
+ * without it becomes unconfirmed. Colour and photo changes, and the flag sent without a
+ * name, leave the confirmation alone.
  */
 export const speakerPatchRequestSchema = z.union([
   z
@@ -46,9 +60,10 @@ export const speakerPatchRequestSchema = z.union([
       name: z.string().nullable().exactOptional(),
       colorIndex: colorIndexSchema.exactOptional(),
       avatar: speakerAvatarUploadSchema.nullable().exactOptional(),
+      nameConfirmed: z.boolean().exactOptional(),
     })
     .strict(),
-  z.object({ copyFrom: z.object({ contentId: idSchema, speakerId: idSchema }).strict() }).strict(),
+  z.object({ copyFrom: z.object({ contentId: idSchema, speakerId: idSchema }).strict(), nameConfirmed: z.boolean().exactOptional() }).strict(),
 ]);
 export type SpeakerPatchRequest = z.infer<typeof speakerPatchRequestSchema>;
 

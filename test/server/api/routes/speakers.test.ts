@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SPEAKER_AVATAR_MAX_BYTES, SPEAKER_AVATAR_MAX_PX, SPEAKER_NAME_MAX_GRAPHEMES, SPEAKERS_PER_CONTENT_MAX } from "../../../../src/shared/defaults.ts";
 import { speakerDtoSchema, speakerListDtoSchema, speakerSuggestionListDtoSchema } from "../../../../src/shared/dto/speaker.ts";
+import { speakerReviewDtoSchema } from "../../../../src/shared/dto/transcript.ts";
 import { SpeakerService } from "../../../../src/server/application/speakers.ts";
 import { registerSpeakerRoutes, SPEAKER_PATCH_BODY_LIMIT_BYTES } from "../../../../src/server/api/routes/speakers.ts";
 import { BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { lectureTranscripts } from "../../../fixtures/transcripts/lecture.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -206,5 +208,46 @@ describe("speaker routes", () => {
     const { app, contentId } = await setup();
     expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}/speakers` })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/api/speakers/suggestions" })).statusCode).toBe(401);
+  });
+});
+
+describe("speaker review routes", () => {
+  async function reviewSetup() {
+    const context = await setup();
+    const { h, contentId } = context;
+    const fixture = lectureTranscripts(contentId);
+    h.repository.withTransaction((scope) => {
+      scope.speakers.insert(LOCAL.userId, contentId, [{ id: "S1", name: "蒋炎岩" }], 1);
+      scope.transcripts.insertRevision(LOCAL.userId, fixture.asr.revision, fixture.asr.segments.map((segment) => ({ ...segment, speakerId: "S1" })));
+    });
+    return { ...context, revisionId: fixture.asr.revision.id };
+  }
+
+  it("shows the review and confirms with the digest it gave; a stale digest is 409 and a confirmation without one is 400", async () => {
+    const { app, revisionId } = await reviewSetup();
+    const url = `/api/transcript/revisions/${revisionId}`;
+    const review = await app.inject({ method: "GET", url: `${url}/speaker-review`, headers: auth });
+    expect(review.statusCode).toBe(200);
+    const { rosterDigest } = speakerReviewDtoSchema.parse(review.json());
+    expect(review.json()).toMatchObject({ revisionId, pendingNames: 1, unassigned: 0 });
+
+    expect((await app.inject({ method: "PUT", url: `${url}/speakers-confirmed`, headers: auth, payload: { confirmed: true } })).statusCode).toBe(400);
+    const stale = await app.inject({ method: "PUT", url: `${url}/speakers-confirmed`, headers: auth, payload: { confirmed: true, expectedRosterDigest: "stale" } });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ error: { class: "conflict", code: "conflict.speakers_changed" } });
+
+    const confirmed = await app.inject({ method: "PUT", url: `${url}/speakers-confirmed`, headers: auth, payload: { confirmed: true, expectedRosterDigest: rosterDigest } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(speakerReviewDtoSchema.parse(confirmed.json())).toMatchObject({ revisionId, pendingNames: 0, confirmedAt: expect.any(Number) });
+    const withdrawn = await app.inject({ method: "PUT", url: `${url}/speakers-confirmed`, headers: auth, payload: { confirmed: false } });
+    expect(withdrawn.statusCode).toBe(200);
+    expect("confirmedAt" in withdrawn.json()).toBe(false);
+  });
+
+  it("answers another user as if the revision did not exist", async () => {
+    const { app, revisionId } = await reviewSetup();
+    const url = `/api/transcript/revisions/${revisionId}`;
+    expect((await app.inject({ method: "GET", url: `${url}/speaker-review`, headers: bob })).statusCode).toBe(404);
+    expect((await app.inject({ method: "PUT", url: `${url}/speakers-confirmed`, headers: bob, payload: { confirmed: false } })).statusCode).toBe(404);
   });
 });

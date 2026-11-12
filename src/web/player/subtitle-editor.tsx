@@ -12,7 +12,7 @@ import {
   SUBTITLE_TRANSLATION_COLOR,
 } from "../../shared/defaults.ts";
 import { SUBTITLE_BACKGROUND_SCOPES, SUBTITLE_BILINGUAL_ORDERS } from "../../shared/enums.ts";
-import { BASIS_POINTS, defaultSubtitlePlacement, type SubtitleAppearance, type SubtitlePlacement } from "../../shared/subtitle-style.ts";
+import { BASIS_POINTS, defaultSubtitlePlacement, SUBTITLE_SPEAKER_MODES, type SubtitleAppearance, type SubtitlePlacement, type SubtitleSpeakerMode } from "../../shared/subtitle-style.ts";
 import type { SubtitleTrackModel } from "./subtitle-overlay.tsx";
 
 /** Swatches beside the colour picker: the default colours first, then a few common subtitle colours. */
@@ -118,6 +118,15 @@ function Toggle(props: { label: string; checked: boolean; onChange: (checked: bo
       {props.label}
     </label>
   );
+}
+
+/**
+ * The appearance with speaker labels set to `mode`; `undefined` drops the key altogether, so
+ * an appearance without labels is stored (and frozen into exports) exactly as before.
+ */
+export function withSpeakerMode(appearance: SubtitleAppearance, mode: SubtitleSpeakerMode | undefined): SubtitleAppearance {
+  const { speaker: _speaker, ...rest } = appearance;
+  return mode === undefined ? rest : { ...rest, speaker: mode };
 }
 
 /** A position in percent of the picture, two decimals: one basis point. */
@@ -373,6 +382,26 @@ export function SubtitleEditor(props: { model: SubtitleTrackModel; side: "left" 
             onChange={(yBp) => model.setPlacement({ ...placement, yBp })}
             testId="subtitle-position-y"
           />
+        </Section>
+        <Section title={t("subtitleSpeaker.editor.title")} testId="subtitle-speaker-section">
+          <div className="flex flex-wrap gap-x-3 gap-y-1" role="radiogroup" aria-label={t("subtitleSpeaker.editor.title")} aria-describedby="subtitle-speaker-hint">
+            {([undefined, ...SUBTITLE_SPEAKER_MODES] as const).map((mode) => (
+              <label key={mode ?? "off"} className={FIELD_CLASS}>
+                <input
+                  type="radio"
+                  className="accent-accent"
+                  name="subtitle-speaker"
+                  checked={appearance.speaker === mode}
+                  onChange={() => update((current) => withSpeakerMode(current, mode))}
+                  data-testid={`subtitle-speaker-${mode ?? "off"}`}
+                />
+                {t(`subtitleSpeaker.editor.value.${mode ?? "off"}`)}
+              </label>
+            ))}
+          </div>
+          <p id="subtitle-speaker-hint" className="text-xs text-white/60">
+            {t("subtitleSpeaker.editor.hint")}
+          </p>
         </Section>
         <div className="flex flex-wrap gap-1 border-t border-white/15 pt-2">
           <button type="button" className={BUTTON_CLASS} onClick={props.onPreview} data-testid="subtitle-preview">

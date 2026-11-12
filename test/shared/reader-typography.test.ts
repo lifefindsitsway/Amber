@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, READER_LINE_HEIGHT_DEFAULT } from "../../src/shared/defaults.ts";
-import { READER_LINE_HEIGHT_OPTIONS, READER_TYPOGRAPHY_DEFAULTS, readerTypographyKey, readerTypographySchema } from "../../src/shared/reader-typography.ts";
+import { READER_FONT_NAME_MAX_CHARS, READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, READER_LINE_HEIGHT_DEFAULT } from "../../src/shared/defaults.ts";
+import {
+  READER_FONTS,
+  READER_LINE_HEIGHT_OPTIONS,
+  READER_TYPOGRAPHY_DEFAULTS,
+  readerCustomFontSchema,
+  readerTypographyKey,
+  readerTypographySchema,
+} from "../../src/shared/reader-typography.ts";
 
 describe("readerTypographySchema", () => {
   it("accepts the defaults, the font size bounds and every offered line height", () => {
@@ -26,6 +33,43 @@ describe("readerTypographySchema", () => {
       { version: 1, fontSize: 16, lineHeight: 1.7 },
     ];
     for (const value of bad) expect(readerTypographySchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("readerTypographySchema fonts", () => {
+  it("accepts a value saved before fonts could be chosen, and every font with or without a custom name", () => {
+    expect(readerTypographySchema.safeParse({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true }).success).toBe(true);
+    for (const font of READER_FONTS) {
+      expect(readerTypographySchema.safeParse({ ...READER_TYPOGRAPHY_DEFAULTS, font }).success).toBe(true);
+      expect(readerTypographySchema.safeParse({ ...READER_TYPOGRAPHY_DEFAULTS, font, customFont: "霞鹜文楷" }).success).toBe(true);
+    }
+    expect(readerTypographySchema.safeParse({ ...READER_TYPOGRAPHY_DEFAULTS, customFont: "Kaiti SC" }).success).toBe(true);
+  });
+
+  it("rejects an unknown font, an explicit undefined and a custom name that could leave a CSS value", () => {
+    const bad: unknown[] = [
+      { ...READER_TYPOGRAPHY_DEFAULTS, font: "default" },
+      { ...READER_TYPOGRAPHY_DEFAULTS, font: "comic" },
+      { ...READER_TYPOGRAPHY_DEFAULTS, font: undefined },
+      { ...READER_TYPOGRAPHY_DEFAULTS, font: 1 },
+      { ...READER_TYPOGRAPHY_DEFAULTS, font: "custom", customFont: "a;b" },
+      { ...READER_TYPOGRAPHY_DEFAULTS, customFont: "" },
+      { ...READER_TYPOGRAPHY_DEFAULTS, customFont: null },
+    ];
+    for (const value of bad) expect(readerTypographySchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("readerCustomFontSchema", () => {
+  it("takes a plain family name up to READER_FONT_NAME_MAX_CHARS characters", () => {
+    for (const name of ["Kaiti", "Source Han Serif SC", "霞鹜文楷 屏幕阅读版", "x".repeat(READER_FONT_NAME_MAX_CHARS)]) {
+      expect(readerCustomFontSchema.safeParse(name).success, name).toBe(true);
+    }
+  });
+
+  it("refuses quotes, a backslash, a semicolon, braces, a comma, control characters, padding, empty and too long", () => {
+    const bad = ['A"B', "A'B", "A\\B", "A;B", "A{B", "A}B", "A,B", "A\nB", "A\u0000B", "A\u007fB", " A", "A ", "", "   ", "x".repeat(READER_FONT_NAME_MAX_CHARS + 1)];
+    for (const name of bad) expect(readerCustomFontSchema.safeParse(name).success, JSON.stringify(name)).toBe(false);
   });
 });
 

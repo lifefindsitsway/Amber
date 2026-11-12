@@ -1,15 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { SUBTITLE_EDGE_ZONE_BP } from "../../src/shared/defaults.ts";
+import {
+  SUBTITLE_EDGE_ZONE_BP,
+  SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES,
+  SUBTITLE_SPEAKER_LABEL_SCALE,
+  SUBTITLE_SPEAKER_MAX_PARTS,
+  SUBTITLE_SPEAKER_REPEAT_MS,
+} from "../../src/shared/defaults.ts";
 import {
   assColor,
   blockOrigin,
+  labelSubtitleCues,
   pictureRect,
   placementFromBlock,
   sliceCues,
   sliceIndexAt,
+  sliceSubtitleUnits,
+  speakerLabelFontSize,
   subtitleCues,
   subtitleGlyphText,
+  subtitleSpeakerLabel,
+  subtitleUnitLines,
   type SubtitleSentence,
+  type TimedSubtitle,
 } from "../../src/shared/subtitle-geometry.ts";
 
 describe("pictureRect", () => {
@@ -236,5 +248,217 @@ describe("sliceCues glyphs", () => {
     expect(first?.original).toBe("It's fine");
     expect(second).toMatchObject({ original: 'It\'s fine\n"Hi"', translation: "他说“好”\n“嗨”" });
     expect(third).toMatchObject({ original: '"Hi"', translation: "“嗨”" });
+  });
+});
+
+describe("subtitleSpeakerLabel", () => {
+  it("keeps a label up to the limit and cuts a longer one there with an ellipsis", () => {
+    const exact = "甲".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES);
+    expect(subtitleSpeakerLabel(exact)).toBe(exact);
+    expect(subtitleSpeakerLabel(`${exact}乙丙`)).toBe(`${exact}…`);
+    expect(subtitleSpeakerLabel("发言人 2")).toBe("发言人 2");
+  });
+
+  it("counts grapheme clusters, never splitting one", () => {
+    const family = "👨‍👩‍👧";
+    const label = family.repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES + 1);
+    expect(subtitleSpeakerLabel(label)).toBe(`${family.repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…`);
+  });
+
+  it("gives a cut label back unchanged when cut again", () => {
+    const cut = subtitleSpeakerLabel("x".repeat(40));
+    expect(subtitleSpeakerLabel(cut)).toBe(cut);
+  });
+});
+
+describe("speaker label look", () => {
+  it("is the first line the unit itself shows, in the user's order", () => {
+    const head = (unit: { original?: string; translation?: string }, order: "original_first" | "translation_first") => subtitleUnitLines(unit, order)[0]?.line;
+    expect(head({ original: "A" }, "translation_first")).toBe("original");
+    expect(head({ translation: "甲" }, "original_first")).toBe("translation");
+    expect(head({ original: "A", translation: "甲" }, "original_first")).toBe("original");
+    expect(head({ original: "A", translation: "甲" }, "translation_first")).toBe("translation");
+    // An empty line is not drawn, so it never heads a unit.
+    expect(head({ original: "A", translation: "" }, "translation_first")).toBe("original");
+    expect(subtitleUnitLines({ original: "A", translation: "甲" }, "translation_first")).toEqual([
+      { line: "translation", text: "甲" },
+      { line: "original", text: "A" },
+    ]);
+  });
+
+  it("scales the font size to a whole pixel", () => {
+    expect(speakerLabelFontSize(40)).toBe(Math.round(40 * SUBTITLE_SPEAKER_LABEL_SCALE));
+    expect(Number.isInteger(speakerLabelFontSize(33))).toBe(true);
+  });
+});
+
+describe("labelSubtitleCues", () => {
+  const LABELS = new Map([
+    ["a", "张三"],
+    ["b", "李四"],
+  ]);
+  const cue = (startMs: number, endMs = startMs + 1000): TimedSubtitle => ({ startMs, endMs, original: String(startMs) });
+  const shown = (cues: ReturnType<typeof labelSubtitleCues>) => cues.map((item) => (item.labeled ? item.label : undefined));
+
+  it("on change, labels the first cue of each turn; an unassigned sentence ends a turn", () => {
+    const cues = [cue(0), cue(1000), cue(2000), cue(3000), cue(4000), cue(5000)];
+    expect(shown(labelSubtitleCues(cues, ["a", "a", "b", undefined, "b", "b"], LABELS, "change"))).toEqual(["张三", undefined, "李四", undefined, "李四", undefined]);
+  });
+
+  it("on change, labels a long turn again once more than the repeat time has passed since its last label", () => {
+    const step = SUBTITLE_SPEAKER_REPEAT_MS / 2;
+    const after = SUBTITLE_SPEAKER_REPEAT_MS + 1;
+    const cues = [cue(0), cue(step), cue(SUBTITLE_SPEAKER_REPEAT_MS), cue(after), cue(after + step), cue(after * 2)];
+    expect(shown(labelSubtitleCues(cues, ["a", "a", "a", "a", "a", "a"], LABELS, "change"))).toEqual(["张三", undefined, undefined, "张三", undefined, "张三"]);
+  });
+
+  it("every labels each cue with a speaker, never an unassigned one or one without a label", () => {
+    const cues = [cue(0), cue(1000), cue(2000), cue(3000)];
+    expect(shown(labelSubtitleCues(cues, ["a", "a", undefined, "unknown"], LABELS, "every"))).toEqual(["张三", "张三", undefined, undefined]);
+  });
+
+  describe("crowded cues", () => {
+    const NAMES = new Map([
+      ["a", "张三"],
+      ["b", "李四"],
+      ["c", "王五"],
+      ["d", "赵六"],
+    ]);
+    const shownNames = (cues: TimedSubtitle[], ids: (string | undefined)[], mode: "change" | "every" = "change") => shown(labelSubtitleCues(cues, ids, NAMES, mode));
+    /** `count` cues of different speakers all on screen during 1000–2000, then one more cue of the last speaker alone. */
+    const overlap = (count: number) => {
+      const ids = ["a", "b", "c", "d", "a", "b"].slice(0, count);
+      const cues: TimedSubtitle[] = ids.map((_, index) => ({ startMs: index * 100, endMs: 2_000 + index * 100, original: `L${index}` }));
+      cues.push({ startMs: 5_000, endMs: 6_000, original: "after" });
+      return { cues, ids: [...ids, ids.at(-1)] };
+    };
+
+    it(`names each of ${SUBTITLE_SPEAKER_MAX_PARTS} overlapping cues, which are not crowded`, () => {
+      const { cues, ids } = overlap(SUBTITLE_SPEAKER_MAX_PARTS);
+      const labeled = labelSubtitleCues(cues, ids, NAMES, "change");
+      expect(labeled.map((item) => item.crowded)).toEqual(cues.map(() => false));
+      expect(shown(labeled)).toEqual(["张三", "李四", undefined]);
+    });
+
+    for (const count of [SUBTITLE_SPEAKER_MAX_PARTS + 1, SUBTITLE_SPEAKER_MAX_PARTS + 2]) {
+      it(`names none of ${count} overlapping cues and gives the name owed to the last one's turn to its next cue`, () => {
+        const { cues, ids } = overlap(count);
+        const labeled = labelSubtitleCues(cues, ids, NAMES, "change");
+        expect(labeled.map((item) => item.crowded)).toEqual([...cues.slice(0, -1).map(() => true), false]);
+        const last = NAMES.get(ids.at(-1) as string);
+        // Every crowded cue starts a turn; only the last turn goes on, and its next cue carries the name.
+        expect(shown(labeled)).toEqual([...cues.slice(0, -1).map(() => undefined), last]);
+        expect(labeled.map((item) => item.label)).toEqual(ids.map((id) => NAMES.get(id as string)));
+      });
+    }
+
+    it("never names a turn that is crowded throughout", () => {
+      const { cues, ids } = overlap(SUBTITLE_SPEAKER_MAX_PARTS + 1);
+      // The cue after the crowd belongs to someone else: the crowded turns end unnamed.
+      expect(shownNames(cues, [...ids.slice(0, -1), "d"])).toEqual([undefined, undefined, undefined, "赵六"]);
+    });
+
+    it("runs the repeat time from the last name shown, not from a name the crowd held back", () => {
+      // b and c talk over a's first cue; a's turn goes on alone afterwards.
+      const cues: TimedSubtitle[] = [
+        { startMs: 0, endMs: 3_000, original: "b" },
+        { startMs: 0, endMs: 3_000, original: "c" },
+        { startMs: 1_000, endMs: 2_000, original: "a1" },
+        { startMs: 3_000, endMs: 4_000, original: "a2" },
+        { startMs: 3_000 + SUBTITLE_SPEAKER_REPEAT_MS, endMs: 4_000 + SUBTITLE_SPEAKER_REPEAT_MS, original: "a3" },
+        { startMs: 3_001 + SUBTITLE_SPEAKER_REPEAT_MS, endMs: 4_001 + SUBTITLE_SPEAKER_REPEAT_MS, original: "a4" },
+        { startMs: 5_000 + SUBTITLE_SPEAKER_REPEAT_MS * 2, endMs: 6_000 + SUBTITLE_SPEAKER_REPEAT_MS * 2, original: "a5" },
+      ];
+      expect(shownNames(cues, ["b", "c", "a", "a", "a", "a", "a"])).toEqual([undefined, undefined, undefined, "张三", undefined, "张三", "张三"]);
+    });
+
+    it("holds a repeat the crowd swallowed for the turn's next cue that is not crowded", () => {
+      const late = SUBTITLE_SPEAKER_REPEAT_MS + 1;
+      const cues: TimedSubtitle[] = [
+        { startMs: 0, endMs: 1_000, original: "a0" },
+        // Three cues of a's own, on screen together: the repeat falls due on the first of them.
+        { startMs: late, endMs: late + 3_000, original: "a1" },
+        { startMs: late + 100, endMs: late + 3_000, original: "a2" },
+        { startMs: late + 200, endMs: late + 3_000, original: "a3" },
+        { startMs: late + 4_000, endMs: late + 5_000, original: "a4" },
+        { startMs: late + 6_000, endMs: late + 7_000, original: "a5" },
+      ];
+      expect(shownNames(cues, ["a", "a", "a", "a", "a", "a"])).toEqual(["张三", undefined, undefined, undefined, "张三", undefined]);
+    });
+
+    it("on every, only leaves out the crowded cues", () => {
+      const { cues, ids } = overlap(SUBTITLE_SPEAKER_MAX_PARTS + 1);
+      cues.push({ startMs: 7_000, endMs: 8_000, original: "next" });
+      expect(shownNames(cues, [...ids, "a"], "every")).toEqual([undefined, undefined, undefined, "王五", "张三"]);
+    });
+  });
+
+  it("cuts long labels and keeps the label on cues the rule leaves bare", () => {
+    const long = new Map([["a", "很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES + 5)]]);
+    const labeled = labelSubtitleCues([cue(0), cue(1000)], ["a", "a"], long, "change");
+    expect(labeled.map((item) => [item.label, item.labeled])).toEqual([
+      [`${"很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…`, true],
+      [`${"很".repeat(SUBTITLE_SPEAKER_LABEL_MAX_GRAPHEMES)}…`, false],
+    ]);
+  });
+});
+
+describe("sliceSubtitleUnits", () => {
+  const labeled = (cues: TimedSubtitle[], ids: (string | undefined)[]) =>
+    labelSubtitleCues(cues, ids, new Map([["a", "张三"], ["b", "李四"], ["c", "王五"]]), "every");
+
+  it("cuts the timeline exactly as sliceCues does", () => {
+    const cues = [
+      { startMs: 0, endMs: 10, original: "outer" },
+      { startMs: 3, endMs: 5, original: "inner" },
+      { startMs: 7, endMs: 12, original: "late" },
+    ];
+    const units = sliceSubtitleUnits(labeled(cues, ["a", "b", "c"]));
+    expect(units.map(({ startMs, endMs }) => ({ startMs, endMs }))).toEqual(sliceCues(cues).map(({ startMs, endMs }) => ({ startMs, endMs })));
+  });
+
+  it("keeps two overlapping cues as two units, each with its own speaker", () => {
+    const units = sliceSubtitleUnits(
+      labeled(
+        [
+          { startMs: 0, endMs: 2000, original: "A", translation: "甲" },
+          { startMs: 1000, endMs: 3000, original: "B", translation: "乙" },
+        ],
+        ["a", "b"],
+      ),
+    );
+    expect(units[1]).toEqual({
+      startMs: 1000,
+      endMs: 2000,
+      units: [
+        { cue: 0, original: "A", translation: "甲", label: "张三", speakerLabel: "张三" },
+        { cue: 1, original: "B", translation: "乙", label: "李四", speakerLabel: "李四" },
+      ],
+    });
+  });
+
+  it("drops the labels of cues that ever share the screen with too many others, for their whole display", () => {
+    const crowd = Array.from({ length: SUBTITLE_SPEAKER_MAX_PARTS + 1 }, (_, index) => ({ startMs: index * 1000, endMs: 10_000 + index * 1000, original: `L${index}` }));
+    const loner = { startMs: 20_000, endMs: 21_000, original: "solo" };
+    const units = sliceSubtitleUnits(labeled([...crowd, loner], ["a", "b", "c", "a"]));
+    const crowdedSlices = units.filter((slice) => slice.units.some((unit) => unit.cue < crowd.length));
+    expect(crowdedSlices.length).toBeGreaterThan(1);
+    for (const slice of crowdedSlices) {
+      for (const unit of slice.units) {
+        expect(unit.speakerLabel).toBeUndefined();
+        expect(unit.label).toBeUndefined();
+      }
+    }
+    expect(units.at(-1)?.units).toEqual([{ cue: crowd.length, original: "solo", label: "张三", speakerLabel: "张三" }]);
+  });
+
+  it("draws every line and label in its drawn form", () => {
+    const [slice] = sliceSubtitleUnits(labelSubtitleCues([{ startMs: 0, endMs: 1, original: "It’s", translation: "他说“好”" }], ["a"], new Map([["a", "O’Neil"]]), "every"));
+    expect(slice?.units[0]).toEqual({ cue: 0, original: "It's", translation: "他说“好”", label: "O'Neil", speakerLabel: "O'Neil" });
+  });
+
+  it("finds the slice at a time like sliceIndexAt does for plain slices", () => {
+    const units = sliceSubtitleUnits(labeled([{ startMs: 0, endMs: 1000, original: "x" }, { startMs: 2000, endMs: 3000, original: "y" }], ["a", "a"]));
+    expect([sliceIndexAt(units, 500), sliceIndexAt(units, 1500), sliceIndexAt(units, 2000)]).toEqual([0, -1, 1]);
   });
 });

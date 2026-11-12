@@ -261,6 +261,22 @@ describe("the platform working copy", () => {
     expect(platformOf(overManual)).toBeDefined();
   });
 
+  it("stores a new platform revision as not reviewed, even over a primary whose speakers were reviewed", async () => {
+    const h = harness();
+    const id = bvid(9);
+    scriptVideo(h, id, VERDICT_DURATION_MS, evenCues(120, VERDICT_DURATION_MS));
+    const contentId = platformContent(h, id, VERDICT_DURATION_MS);
+    const reviewed = givePrimary(h, contentId, "asr");
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, contentId, reviewed, 5));
+    await runSubtitle(h, contentId);
+    const platform = revisionsOf(h, contentId).find((revision) => revision.kind === "platform");
+    expect(platform?.parentRevisionId).toBeUndefined();
+    expect(contentOf(h, contentId)?.primaryTranscriptRevisionId).toBe(platform?.id);
+    const confirmedAt = (revisionId: string) => h.repository.withTransaction((scope) => scope.speakerConfirmations.confirmedAt(LOCAL.userId, revisionId));
+    expect(confirmedAt(platform?.id as string)).toBeUndefined();
+    expect(confirmedAt(reviewed)).toBe(5);
+  });
+
   it("reuses an identical platform revision the user archived without making it primary", async () => {
     const h = harness();
     const id = bvid(5);

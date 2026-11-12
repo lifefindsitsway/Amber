@@ -10,6 +10,8 @@ import { searchKeys } from "../../../src/web/search/search.ts";
 import { useContentEventSync } from "../../../src/web/shell/content-sync.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 
+/** What a speaker change elsewhere does not touch; collection details and search hits derive speaker bases, so they are read again. */
+const UNTOUCHED_BY_SPEAKERS = [queryKeys.contentsAll, queryKeys.collections, noteKeys.groups, [...queryKeys.trash, "list"], queryKeys.unfinishedTasks, queryKeys.taskHistory];
 const SHOWN = [queryKeys.contentsAll, queryKeys.collections, queryKeys.collection("k1"), noteKeys.groups, searchKeys.query("x", "global"), [...queryKeys.trash, "list"], queryKeys.unfinishedTasks, queryKeys.taskHistory];
 
 /** Mounts the sync hook and, like an open content page, an observed detail of `c-open`. */
@@ -103,7 +105,7 @@ describe("useContentEventSync", () => {
 });
 
 describe("useContentEventSync on speaker changes", () => {
-  it("refreshes only that Content's speaker list, not its photos or versions, when another tab changed them", async () => {
+  it("refreshes that Content's speaker list and what derives from names, not its photos or versions, when another tab changed them", async () => {
     mockApi({});
     let client: QueryClient | undefined;
     let bus: ContentEventBus | undefined;
@@ -122,9 +124,35 @@ describe("useContentEventSync on speaker changes", () => {
     expect(client.getQueryState(contentKeys.speakerAvatar("c1", "s1", 1))?.isInvalidated).toBe(false);
     expect(client.getQueryState(contentKeys.speakers("c2"))?.isInvalidated).toBe(false);
     expect(client.getQueryState(contentKeys.revisions("c2"))?.isInvalidated).toBe(false);
-    for (const key of SHOWN) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+    for (const key of UNTOUCHED_BY_SPEAKERS) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+    expect(client.getQueryState(queryKeys.collection("k1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(searchKeys.query("x", "global"))?.isInvalidated).toBe(true);
     expect(client.getQueryData(queryKeys.content("c1"))).toEqual({ id: "c1" });
     expect(client.getQueryData(noteKeys.content("c1"))).toEqual({ items: [] });
+  });
+
+  it("refreshes that Content's speaker views and its revision list when another tab reviewed its speakers", async () => {
+    mockApi({});
+    let client: QueryClient | undefined;
+    let bus: ContentEventBus | undefined;
+    renderApp(<Harness onReady={(c, b) => ((client = c), (bus = b))} />);
+    await waitFor(() => expect(screen.getByTestId("open").textContent).toBe("c-open"));
+    if (client === undefined || bus === undefined) throw new Error("not ready");
+    seed(client);
+    client.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    client.setQueryData(contentKeys.revisions("c1"), { items: [] });
+    client.setQueryData(contentKeys.speakerReview("c1", "r1"), { revisionId: "r1" });
+    client.setQueryData(contentKeys.revisions("c2"), { items: [] });
+    client.setQueryData(contentKeys.speakerAvatar("c1", "s1", 1), "blob");
+    remote({ type: "speakerReviewChanged", contentId: "c1" });
+    expect(client.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.revisions("c1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.speakerReview("c1", "r1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.speakerAvatar("c1", "s1", 1))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(contentKeys.revisions("c2"))?.isInvalidated).toBe(false);
+    for (const key of UNTOUCHED_BY_SPEAKERS) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+    expect(client.getQueryState(queryKeys.collection("k1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(searchKeys.query("x", "global"))?.isInvalidated).toBe(true);
   });
 
   it("leaves a speaker event of this tab to whoever published it", async () => {

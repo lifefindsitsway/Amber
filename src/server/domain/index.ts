@@ -21,3 +21,4 @@ export * from "./token-estimate.ts";
 export * from "./transcript.ts";
 export * from "./usage.ts";
 export * from "./user.ts";
+export * from "./speaker-context.ts";

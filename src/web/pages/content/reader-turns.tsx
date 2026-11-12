@@ -4,6 +4,7 @@ import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import type { SpeakerShare } from "../../../shared/speaker-turns.ts";
 import { formatDuration } from "../../format.ts";
 import type { Paragraph } from "./content-data.ts";
+import { READER_TEXT_ATTRIBUTE } from "./reader-font.ts";
 import { PARAGRAPH_GAP_EM, READER_MEASURE_EM, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
 import { MARKER_FADE_MS, TURN_HEADER_ATTRIBUTE, TURN_KEY_ATTRIBUTE, TURN_SPEAKER_ATTRIBUTE, useFadedTurn, type StickyTurn } from "./reader-sticky.ts";
 import type { TurnPlace } from "./reader-rows.ts";
@@ -42,6 +43,9 @@ const rowStyle = (context: TurnContext, turn: TurnPlace): CSSProperties =>
   }) as CSSProperties;
 
 const GRID_COLUMNS: CSSProperties = { gridTemplateColumns: [`calc(var(${AVATAR_VAR}) + ${GUTTER_GAP_EM}em)`, `minmax(0, ${READER_MEASURE_EM}em)`].join(" ") };
+
+/** Marks a turn's paragraph as sentence text, which takes the reading font; the header around it keeps the UI font. */
+const READER_TEXT = { [READER_TEXT_ATTRIBUTE]: "" };
 
 const TRIGGER_CLASS = "inline-flex min-w-0 items-center rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
@@ -147,10 +151,12 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
   if (turn.compact && !context.narrow) {
     return (
       <div {...marker} role="group" aria-label={label} data-turn-layout="compact" className="grid items-start" style={{ ...style, ...GRID_COLUMNS }}>
-        <div {...{ [TURN_HEADER_ATTRIBUTE]: "" }} data-reading-time ref={skipTabStop} style={{ marginTop: `calc((1lh - var(${AVATAR_VAR})) / 2)` }}>
+        {/* A flex cell, so the avatar starts at the cell's top: in a line box it would sit on the
+            baseline of a full-height line and drop below the text's first line at large sizes. */}
+        <div {...{ [TURN_HEADER_ATTRIBUTE]: "" }} data-reading-time ref={skipTabStop} className="flex" style={{ marginTop: `calc((1lh - var(${AVATAR_VAR})) / 2)` }}>
           <SpeakerTag context={context} speakerId={turn.speakerId} part="avatar" />
         </div>
-        <p className="break-words">
+        <p className="break-words" {...READER_TEXT}>
           <span data-reading-time className="mr-2 inline-block max-w-full align-bottom">
             <SpeakerTag context={context} speakerId={turn.speakerId} part="name" />
           </span>
@@ -180,7 +186,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
     return (
       <div {...marker} data-turn-layout="narrow" style={style}>
         {header}
-        <p className="break-words" style={{ ...measure, ...(header === null ? {} : { marginTop: "0.25em" }) }}>
+        <p className="break-words" {...READER_TEXT} style={{ ...measure, ...(header === null ? {} : { marginTop: "0.25em" }) }}>
           {turn.first ? null : time}
           {runs}
         </p>
@@ -192,7 +198,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
       {header}
       <div className="grid" style={GRID_COLUMNS}>
         <TurnLine context={context} turn={turn} />
-        <p className="break-words">
+        <p className="break-words" {...READER_TEXT}>
           {turn.first ? null : time}
           {runs}
         </p>

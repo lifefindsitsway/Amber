@@ -1,0 +1,173 @@
+{
+  "full": {
+    "requests": "bfcf1fe39a6c186b39e36a84ef39b712005c0065102f35009dcf8ab26caa96f5",
+    "chars": 6295,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "full/unreviewed": {
+    "requests": "bfcf1fe39a6c186b39e36a84ef39b712005c0065102f35009dcf8ab26caa96f5",
+    "chars": 6295,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "full/single_unnamed": {
+    "requests": "bfcf1fe39a6c186b39e36a84ef39b712005c0065102f35009dcf8ab26caa96f5",
+    "chars": 6295,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "retrieval": {
+    "requests": "53e9643c77ebf8f49eacb8a18bad3b255257ab8cd5ca232fd2558cb1165e639b",
+    "chars": 2870,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 1
+  },
+  "retrieval/unreviewed": {
+    "requests": "53e9643c77ebf8f49eacb8a18bad3b255257ab8cd5ca232fd2558cb1165e639b",
+    "chars": 2870,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 1
+  },
+  "retrieval/single_unnamed": {
+    "requests": "53e9643c77ebf8f49eacb8a18bad3b255257ab8cd5ca232fd2558cb1165e639b",
+    "chars": 2870,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 1
+  },
+  "metadata": {
+    "requests": "60321f6b73bc9e8e143d0de483dd40ab547e1771bf8e24f8942d7308ebfa2d91",
+    "chars": 951,
+    "context": {
+      "mode": "metadata",
+      "estimatedTokens": 670
+    },
+    "calls": 1
+  },
+  "web": {
+    "requests": "7190028acffe88e41e64b11809ab90d1a8bd6dd5c4987851f52e4ac49e138b80",
+    "chars": 6420,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "web/unreviewed": {
+    "requests": "7190028acffe88e41e64b11809ab90d1a8bd6dd5c4987851f52e4ac49e138b80",
+    "chars": 6420,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "web/single_unnamed": {
+    "requests": "7190028acffe88e41e64b11809ab90d1a8bd6dd5c4987851f52e4ac49e138b80",
+    "chars": 6420,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "compaction": {
+    "requests": "01fd5567ffde450f8e7bdd2e32c8b42ad5ab49f7b18a3568e6a85c60587c6a44",
+    "chars": 7090,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 6017
+    },
+    "calls": 2
+  },
+  "compaction/unreviewed": {
+    "requests": "01fd5567ffde450f8e7bdd2e32c8b42ad5ab49f7b18a3568e6a85c60587c6a44",
+    "chars": 7090,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 6017
+    },
+    "calls": 2
+  },
+  "compaction/single_unnamed": {
+    "requests": "01fd5567ffde450f8e7bdd2e32c8b42ad5ab49f7b18a3568e6a85c60587c6a44",
+    "chars": 7090,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 6017
+    },
+    "calls": 2
+  },
+  "retry": {
+    "requests": "bccf3ddaeda0dcc0501164eab948a83f9c39cabfe58a3275a463723c384afe03",
+    "chars": 5739,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 2
+  },
+  "retry/unreviewed": {
+    "requests": "bccf3ddaeda0dcc0501164eab948a83f9c39cabfe58a3275a463723c384afe03",
+    "chars": 5739,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 2
+  },
+  "retry/single_unnamed": {
+    "requests": "bccf3ddaeda0dcc0501164eab948a83f9c39cabfe58a3275a463723c384afe03",
+    "chars": 5739,
+    "context": {
+      "mode": "retrieval",
+      "estimatedTokens": 743
+    },
+    "calls": 2
+  },
+  "web_retrieval": {
+    "requests": "1066450c43b2cee80e0b19cbf581996f936167d585c8a238f0a6c016218a71f5",
+    "chars": 5181,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "web_retrieval/unreviewed": {
+    "requests": "1066450c43b2cee80e0b19cbf581996f936167d585c8a238f0a6c016218a71f5",
+    "chars": 5181,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  },
+  "web_retrieval/single_unnamed": {
+    "requests": "1066450c43b2cee80e0b19cbf581996f936167d585c8a238f0a6c016218a71f5",
+    "chars": 5181,
+    "context": {
+      "mode": "full",
+      "estimatedTokens": 5910
+    },
+    "calls": 1
+  }
+}

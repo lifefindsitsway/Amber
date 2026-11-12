@@ -5,12 +5,12 @@ import { searchKeys } from "../search/search.ts";
 import { queryKeys } from "./queries.ts";
 
 /**
- * A Content moved into the trash, out of it, or purged for good, or had its speakers
- * changed. Other tabs of the same user show the same lists and pages, so the change is
- * broadcast to them as well.
+ * A Content moved into the trash, out of it, or purged for good, had its speakers changed, or
+ * had a revision's speaker review confirmed or withdrawn. Other tabs of the same user show the
+ * same lists and pages, so the change is broadcast to them as well.
  */
 export interface ContentEvent {
-  type: "trashed" | "restored" | "purged" | "speakersChanged";
+  type: "trashed" | "restored" | "purged" | "speakersChanged" | "speakerReviewChanged";
   contentId: string;
 }
 
@@ -22,7 +22,7 @@ export interface ContentEventOrigin {
 type Listener = (event: ContentEvent, origin: ContentEventOrigin) => void;
 
 const CONTENT_CHANNEL = "amber-content";
-const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>(["trashed", "restored", "purged", "speakersChanged"]);
+const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>(["trashed", "restored", "purged", "speakersChanged", "speakerReviewChanged"]);
 
 /** Messages from other tabs are untrusted input in shape: anything else is ignored. */
 function contentEventOf(data: unknown): ContentEvent | undefined {
@@ -110,12 +110,26 @@ export async function forgetContent(queryClient: QueryClient, contentId: string)
 }
 
 /**
- * Re-reads a Content's speaker list. Photo queries sit under the same prefix, but their keys
- * carry the photo version, so a changed photo already has a new key and unchanged photos
- * must not be downloaded again: only the list key itself is invalidated.
+ * Re-reads a Content's speaker list and the speaker reviews of its revisions (a rename, a
+ * name confirmation or a review changes what a review shows). Photo queries sit under the
+ * speaker list's prefix, but their keys carry the photo version, so a changed photo already
+ * has a new key and unchanged photos must not be downloaded again: only the list key itself
+ * is invalidated.
  */
 export async function refreshSpeakerViews(queryClient: QueryClient, contentId: string): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: contentKeys.speakers(contentId), exact: true });
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: contentKeys.speakers(contentId), exact: true }),
+    queryClient.invalidateQueries({ queryKey: contentKeys.speakerReviews(contentId) }),
+    // Whether an artifact's speaker basis still holds is derived on read from the names and
+    // the review, so the artifacts, their revision lists, the collection summaries that count
+    // members' bases, and search hits that show speakers are read again too.
+    queryClient.invalidateQueries({ queryKey: contentKeys.summaries(contentId) }),
+    queryClient.invalidateQueries({ queryKey: contentKeys.chapters(contentId) }),
+    queryClient.invalidateQueries({ queryKey: contentKeys.highlights(contentId) }),
+    queryClient.invalidateQueries({ queryKey: ["summary-revisions"] }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.collectionDetails }),
+    queryClient.invalidateQueries({ queryKey: searchKeys.all }),
+  ]);
 }
 
 /**
@@ -125,4 +139,19 @@ export async function refreshSpeakerViews(queryClient: QueryClient, contentId: s
 export function publishSpeakersChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string): void {
   void refreshSpeakerViews(queryClient, contentId);
   bus.publish({ type: "speakersChanged", contentId });
+}
+
+/**
+ * Re-reads what a review changes: the speaker views (confirming a review also confirms the
+ * names it covers) and the Content's revision list, whose items carry `speakersConfirmedAt`.
+ * A plain speaker change leaves the revision list alone; a review does not.
+ */
+export async function refreshSpeakerReviewViews(queryClient: QueryClient, contentId: string): Promise<void> {
+  await Promise.all([refreshSpeakerViews(queryClient, contentId), queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId), exact: true })]);
+}
+
+/** A revision's speaker review was confirmed or withdrawn in this tab: refreshed here, and other tabs are told. */
+export function publishSpeakerReviewChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string): void {
+  void refreshSpeakerReviewViews(queryClient, contentId);
+  bus.publish({ type: "speakerReviewChanged", contentId });
 }

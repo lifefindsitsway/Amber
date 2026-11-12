@@ -24,9 +24,15 @@ import { translationsDtoSchema } from "../../../shared/dto/translation.ts";
 import type { ApiClient } from "../../api/client.ts";
 import { contentKeys, useSummaries } from "./content-data.ts";
 import { revisionLabel, revisionTimeLabel, templateName } from "./labels.ts";
+import { isComparisonGeneration } from "../../../shared/speaker-comparison.ts";
 
 /** Kinds kept as evidence: they can be archived but never permanently deleted. */
 const PROTECTED_KINDS: ReadonlySet<string> = new Set(["platform", "asr"]);
+
+/** Kept as evidence, except a transcription made only for comparison, which the user may delete. */
+function isProtected(revision: TranscriptRevisionListItemDto): boolean {
+  return PROTECTED_KINDS.has(revision.kind) && !isComparisonGeneration(revision.generation);
+}
 
 export const BLOCKER_CATEGORIES = ["children", "draft", "notes", "highlights", "chatMessages", "artifacts", "activeTasks", "history"] as const satisfies ReadonlyArray<keyof RevisionBlockersDto>;
 
@@ -165,12 +171,12 @@ export function RevisionActions(props: {
             >
               {revision.archived ? t("contentView.revisions.unarchive") : t("contentView.revisions.archive")}
             </DropdownMenu.Item>
-            {PROTECTED_KINDS.has(revision.kind) ? null : (
+            {isProtected(revision) ? null : (
               <DropdownMenu.Item className={item} disabled={isPrimary} onSelect={() => setDeleting(true)} data-testid="revision-delete">
                 {t("contentView.revisions.delete")}
               </DropdownMenu.Item>
             )}
-            {isPrimary || PROTECTED_KINDS.has(revision.kind) ? (
+            {isPrimary || isProtected(revision) ? (
               <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-xs text-muted" data-testid="revision-actions-hint">
                 {isPrimary ? t("contentView.revisions.primaryHint") : t("contentView.revisions.protectedHint")}
               </DropdownMenu.Label>

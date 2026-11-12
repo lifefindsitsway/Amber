@@ -3,16 +3,34 @@ import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import type { RollupPartial } from "../../../../../src/server/domain/artifact.ts";
 import type { SegmentId } from "../../../../../src/shared/ids.ts";
-import { countRows, insertRow, openTempDatabase } from "../../../../tools/sqlite.ts";
+import { countRows, insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 
 const T0 = 1_790_000_000_000;
+const SPEAKER_CONTEXT = {
+  version: 1 as const,
+  rules: { id: "speaker.rules", version: 1 },
+  attributionDigest: "d".repeat(64),
+  speakers: [
+    { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+    { id: "s2", ordinal: 2, label: "发言人 2" },
+  ],
+};
 const SEGMENT = "01J0000000000000000000000A" as SegmentId;
 const modelRef = { providerProfileId: "p", modelId: "m", providerNameSnapshot: "relay", modelDisplaySnapshot: "m" };
+let opened: ReturnType<typeof openTempDatabase>;
 let db: SqliteConnection;
 let repository: SqliteRepository;
 
+/** Closes the database and opens its file again, so what is read next comes from disk. */
+function reopen(): void {
+  opened = reopenTempDatabase(opened);
+  db = opened.db;
+  repository = new SqliteRepository(db);
+}
+
 beforeEach(() => {
-  db = openTempDatabase().db;
+  opened = openTempDatabase();
+  db = opened.db;
   repository = new SqliteRepository(db);
   for (const id of ["alice", "bob"]) insertRow(db, "user", { id, role: "user", status: "active", created_at: T0 });
   insertRow(db, "content", { id: "c", user_id: "alice", source_kind: "local", processing_status: "queued", created_at: T0, updated_at: T0 });
@@ -72,5 +90,23 @@ describe("rollup partial repository", () => {
     expect(first).toEqual(withRefs);
     expect(second).not.toHaveProperty("promptRefs");
     expect(db.prepare("SELECT prompt_refs_json FROM rollup_partial WHERE id = 's1'").get()).toEqual({ prompt_refs_json: null });
+  });
+});
+
+describe("rollup partial repository: speaker context", () => {
+  it("stores the speakers a partial was written with, also across a reopen, and reads none where none were stored or the value is of another shape", () => {
+    repository.withTransaction((scope) => scope.rollupPartials.insertMany("alice", "summary", [{ ...partial("s0", "sr", 0), speakerContext: SPEAKER_CONTEXT }, partial("s1", "sr", 1)]));
+    insertRow(db, "rollup_partial", {
+      id: "s2", summary_revision_id: "sr", partial_index: 2, inputs_json: "[]", body: "b", citations_json: "[]",
+      model_ref_json: JSON.stringify(modelRef), prompt_ref_json: '{"id":"rollup.partial","version":1}', prompt_snapshot: "p", created_at: T0,
+      speaker_context_json: "[]",
+    });
+    const written = repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision("alice", "sr"));
+    reopen();
+    const read = repository.withTransaction((scope) => scope.rollupPartials.listByOwnerRevision("alice", "sr"));
+    expect(read).toEqual(written);
+    expect(read[0]).toEqual({ ...partial("s0", "sr", 0), speakerContext: SPEAKER_CONTEXT });
+    expect(read[1]).toEqual(partial("s1", "sr", 1));
+    expect(read[2] && "speakerContext" in read[2]).toBe(false);
   });
 });

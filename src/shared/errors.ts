@@ -156,6 +156,10 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.translation_changed": { detailsKeys: ["currentRevisionId"] },
   // The draft was saved, committed or discarded elsewhere since this version; `currentVersion` is absent when it is gone.
   "conflict.draft_changed": { detailsKeys: ["currentVersion"] },
+  // The speakers a revision names changed (renamed, name confirmation changed) since the client read them for review.
+  "conflict.speakers_changed": {},
+  // Too few speaker slots are left on the Content for another transcription made only for comparison.
+  "conflict.speaker_capacity": { detailsKeys: ["room", "required"] },
   // The cache check the request refers to has expired, is unknown or no longer matches the request.
   "conflict.cache_inspection_expired": {},
   "conflict.last_admin": {},

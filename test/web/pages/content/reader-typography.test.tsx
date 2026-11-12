@@ -1,5 +1,6 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
+import { filterUiPreferences } from "../../../../src/shared/backup.ts";
 import { READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_LINE_HEIGHT_DEFAULT } from "../../../../src/shared/defaults.ts";
 import {
   parseReaderTypography,
@@ -57,6 +58,29 @@ describe("parseReaderTypography", () => {
     });
     expect(parseReaderTypography(JSON.stringify({ fontSize: 24, lineHeight: 9, showSpeakers: 1 }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, fontSize: 24 });
   });
+
+  it("reads a value saved before fonts could be chosen as the default font", () => {
+    const parsed = parseReaderTypography(JSON.stringify({ version: 1, fontSize: 20, lineHeight: 1.8, showSpeakers: false }));
+    expect(parsed).toEqual({ version: 1, fontSize: 20, lineHeight: 1.8, showSpeakers: false });
+    expect("font" in parsed).toBe(false);
+    expect("customFont" in parsed).toBe(false);
+  });
+
+  it("keeps a stored font and custom name, and drops only the damaged one of them", () => {
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" });
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom", customFont: "Kaiti" }))).toEqual({
+      ...READER_TYPOGRAPHY_DEFAULTS,
+      font: "custom",
+      customFont: "Kaiti",
+    });
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, fontSize: 20, font: "comic", customFont: "Kaiti" }))).toEqual({
+      ...READER_TYPOGRAPHY_DEFAULTS,
+      fontSize: 20,
+      customFont: "Kaiti",
+    });
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom", customFont: "a;}b" }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom" });
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: null, customFont: 7 }))).toEqual(READER_TYPOGRAPHY_DEFAULTS);
+  });
 });
 
 describe("useReaderTypography", () => {
@@ -75,6 +99,15 @@ describe("useReaderTypography", () => {
     mockApi({ "GET /api/auth/me": { body: ME } });
     renderApp(<Probe />);
     await waitFor(() => expect(current()).toEqual({ version: 1, fontSize: READER_FONT_SIZE_DEFAULT, lineHeight: 2, showSpeakers: false }));
+  });
+
+  it("reads a font a restored backup wrote, the value having passed the backup whitelist", async () => {
+    const restored = JSON.stringify({ version: 1, fontSize: 18, lineHeight: 1.8, showSpeakers: true, font: "custom", customFont: "Kaiti SC" });
+    expect(filterUiPreferences({ [KEY]: restored }).accepted).toEqual({ [KEY]: restored });
+    localStorage.setItem(KEY, restored);
+    mockApi({ "GET /api/auth/me": { body: ME } });
+    renderApp(<Probe />);
+    await waitFor(() => expect(current()).toEqual({ version: 1, fontSize: 18, lineHeight: 1.8, showSpeakers: true, font: "custom", customFont: "Kaiti SC" }));
   });
 
   it("applies two changes made in the same tick", async () => {
@@ -98,6 +131,23 @@ describe("useReaderTypography", () => {
     await mountSignedIn();
     act(() => api?.[1]({ fontSize: 28, lineHeight: 2 }));
     expect(localStorage.getItem(KEY)).not.toBeNull();
+    act(() => api?.[2]());
+    expect(current()).toEqual(READER_TYPOGRAPHY_DEFAULTS);
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("stores a font and a custom name, removes them when changed to undefined, and 恢复默认 clears them", async () => {
+    await mountSignedIn();
+    act(() => api?.[1]({ font: "custom", customFont: "Kaiti" }));
+    expect(current()).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom", customFont: "Kaiti" });
+    act(() => api?.[1]({ font: "serif" }));
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "serif", customFont: "Kaiti" });
+    act(() => api?.[1]({ font: undefined }));
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, customFont: "Kaiti" });
+    act(() => api?.[1]({ customFont: "a,b" }));
+    expect(current()).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, customFont: "Kaiti" });
+    act(() => api?.[1]({ font: "kai", customFont: undefined }));
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" });
     act(() => api?.[2]());
     expect(current()).toEqual(READER_TYPOGRAPHY_DEFAULTS);
     expect(localStorage.getItem(KEY)).toBeNull();

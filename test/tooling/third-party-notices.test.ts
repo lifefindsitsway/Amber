@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FONT_ASSETS } from "../../src/tooling/runtime-assets.ts";
 import {
   collectNpmPackages,
   complianceArtifactsOf,
@@ -236,6 +237,54 @@ describe("renderThirdPartyNotices", () => {
     const texts = runtimeLicenseTexts(licensesZip({ "node/LICENSE": "Node license", "noto-sans-sc/OFL.txt": "OFL text" }));
     const render = () => renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: SHIPPED, runtimeTexts: texts, npm: [], cargo: [], cargoComplete: true });
     expect(render).toThrow(/no license text in runtime-licenses\.zip for shipped component\(s\): ffmpeg$/u);
+  });
+});
+
+describe("renderThirdPartyNotices for the bundled fonts", () => {
+  const FONT_MANIFEST = parseRuntimeManifest(
+    JSON.stringify({
+      version: "runtime-assets-test",
+      assets: [
+        { file: "18_NotoSansSC.zip", component: "noto-sans-sc", version: "Sans2.004", platform: "any", license: "OFL-1.1" },
+        { file: "OFL.txt", component: "noto-sans-sc", version: "Sans2.004", platform: "any", license: "OFL-1.1" },
+        { file: "NotoSerifSC-Regular.otf", component: "noto-serif-sc", version: "Serif2.003", platform: "any", license: "OFL-1.1" },
+        { file: "LXGWWenKaiLite-Regular.ttf", component: "lxgw-wenkai-lite", version: "v1.530", platform: "any", license: "OFL-1.1" },
+        { file: "LXGWWenKaiLite-OFL.txt", component: "lxgw-wenkai-lite", version: "v1.530", platform: "any", license: "OFL-1.1" },
+      ],
+    }),
+  );
+  // The two Noto fonts carry the same license text; LXGW WenKai Lite has its own.
+  const FONT_LICENSES = {
+    "noto-sans-sc/OFL.txt": "Noto OFL text",
+    "noto-serif-sc/OFL.txt": "Noto OFL text",
+    "lxgw-wenkai-lite/OFL.txt": "LXGW OFL text",
+  };
+  const render = (licenses: Record<string, string>) =>
+    renderThirdPartyNotices({
+      amberVersion: "0.1.0",
+      runtime: FONT_MANIFEST,
+      shippedAssets: FONT_ASSETS,
+      runtimeTexts: runtimeLicenseTexts(licensesZip(licenses)),
+      npm: [],
+      cargo: [],
+      cargoComplete: true,
+    });
+
+  it("lists all three fonts and embeds the shared Noto license text once", () => {
+    const notices = render(FONT_LICENSES);
+    expect(notices).toContain("| noto-sans-sc | 18_NotoSansSC.zip | Sans2.004 | any | OFL-1.1 |");
+    expect(notices).toContain("| noto-serif-sc | NotoSerifSC-Regular.otf | Serif2.003 | any | OFL-1.1 |");
+    expect(notices).toContain("| lxgw-wenkai-lite | LXGWWenKaiLite-Regular.ttf | v1.530 | any | OFL-1.1 |");
+    expect(notices).toContain("| lxgw-wenkai-lite | LXGWWenKaiLite-OFL.txt | v1.530 | any | OFL-1.1 |");
+    expect(notices.match(/Noto OFL text/gu)).toHaveLength(1);
+    expect(notices).toContain("适用于：noto-sans-sc（OFL.txt）、noto-serif-sc（OFL.txt）");
+    expect(notices).toContain("适用于：lxgw-wenkai-lite（OFL.txt）");
+    expect(notices).toContain("LXGW OFL text");
+  });
+
+  it.each(["noto-serif-sc", "lxgw-wenkai-lite"])("refuses to render when %s has no license text", (component) => {
+    const licenses = Object.fromEntries(Object.entries(FONT_LICENSES).filter(([name]) => !name.startsWith(`${component}/`)));
+    expect(() => render(licenses)).toThrow(new RegExp(`no license text in runtime-licenses\\.zip for shipped component\\(s\\): ${component}$`, "u"));
   });
 });
 

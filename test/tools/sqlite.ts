@@ -15,6 +15,16 @@ export function openTempDatabase(): OpenedDatabase & { dir: string; file: string
   return { ...openDatabase(file, { backupDir: join(dir, "backups") }), dir, file };
 }
 
+/**
+ * Closes a database from `openTempDatabase` and opens the same file again, the way a restart
+ * does: what a test reads afterwards is what was written to disk, not anything the old
+ * connection still held.
+ */
+export function reopenTempDatabase(opened: { db: SqliteConnection; dir: string; file: string }): OpenedDatabase & { dir: string; file: string } {
+  opened.db.close();
+  return { ...openDatabase(opened.file, { backupDir: join(opened.dir, "backups") }), dir: opened.dir, file: opened.file };
+}
+
 /** Inserts one row from a map of SQL column names to values; values are bound, never interpolated. */
 export function insertRow(db: SqliteConnection, table: string, row: Record<string, unknown>): void {
   const columns = Object.keys(row);

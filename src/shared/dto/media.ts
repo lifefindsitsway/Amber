@@ -127,7 +127,7 @@ export type CacheMediaInspectDto = z.infer<typeof cacheMediaInspectDtoSchema>;
  * them the request is the legacy fixed-style MP4 burn-in; a hard-subtitle export is MP4 only.
  * `sourceAssetId` picks the source video (the original file or one cached quality) and is
  * accepted only with the styled fields; without it the server picks the original, else the
- * highest cached quality.
+ * highest cached quality. A style showing speaker labels is refused with MP4 soft subtitles.
  */
 export const burnRequestSchema = z
   .object({
@@ -155,6 +155,11 @@ export const burnRequestSchema = z
   .refine((body) => body.delivery !== "hard" || body.container === "mp4", {
     message: "a hard-subtitle export is MP4 only",
     path: ["container"],
+  })
+  // An MP4 subtitle track is mov_text, which keeps neither positions nor boxes: speaker label lines cannot be laid out in it.
+  .refine((body) => !(body.delivery === "soft" && body.container === "mp4" && body.style?.appearance.speaker !== undefined), {
+    message: "speaker labels need hard subtitles or an MKV track",
+    path: ["style", "appearance", "speaker"],
   });
 export type BurnRequest = z.infer<typeof burnRequestSchema>;
 

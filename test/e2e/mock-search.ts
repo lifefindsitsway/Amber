@@ -1,6 +1,7 @@
 import type { Request, Route } from "@playwright/test";
-import { searchResultDtoSchema, type SearchRange } from "../../src/shared/dto/search.ts";
+import { searchResultDtoSchema, type SearchRange, type SpeakerHitDto } from "../../src/shared/dto/search.ts";
 import { BILI_REVISION, BILIBILI_CONTENT, segmentId } from "./mock-backend.ts";
+import { BASIS_LECTURE, lectureConfirmed, lectureSummaryText, NAMESAKE_LECTURE, speakerBasisState, type SpeakerBasisState } from "./mock-outputs.ts";
 
 /**
  * `GET /api/search` of the fake backend over the always-processed bilibili lecture: its
@@ -50,12 +51,88 @@ export async function handleSearch(route: Route, request: Request, url: URL, hid
           },
         ],
   );
+  const lectures = speakerBasisState(request.frame().page());
+  const extra = lectures === undefined ? undefined : lectureHits(lectures, terms);
   const body = searchResultDtoSchema.parse({
     contents: titleRanges === undefined ? [] : [{ contentId: BILIBILI_CONTENT, title: TITLE, matchedIn: "title", snippet: TITLE, ranges: titleRanges }],
-    segments,
-    summaries: [],
+    segments: [...segments, ...(extra?.segments ?? [])],
+    summaries: extra?.summaries ?? [],
     collections: [],
+    ...(extra?.speakers === undefined || extra.speakers.length === 0 ? {} : { speakers: extra.speakers }),
   });
   await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   return true;
+}
+
+/**
+ * Hits in the two speaker lectures, when the page installed them: each matched sentence with
+ * its speaker as now and whether that lecture's speakers are reviewed; each matched summary
+ * with the state of the speakers it was generated with; and every named speaker whose name
+ * holds all terms, once per lecture — two lectures' namesakes are two hits. Names are matched
+ * on their own and never through the sentences, titles or summaries, as on the server.
+ */
+function lectureHits(state: SpeakerBasisState, terms: readonly string[]): { segments: unknown[]; summaries: unknown[]; speakers: SpeakerHitDto[] } {
+  const lectures = [BASIS_LECTURE, NAMESAKE_LECTURE];
+  const segments = lectures.flatMap((lecture) =>
+    lecture.sequence.flatMap((speakerId, index) => {
+      const ranges = match(lecture.sentence(index), terms);
+      const speaker = lecture.speakers.find((candidate) => candidate.id === speakerId);
+      if (ranges === undefined || speaker === undefined) return [];
+      return [
+        {
+          contentId: lecture.contentId,
+          contentTitle: lecture.title,
+          transcriptRevisionId: lecture.revisionId,
+          segmentId: segmentId(lecture.revisionId, index),
+          startMs: index * SEGMENT_MS,
+          speaker: {
+            id: speaker.id,
+            ordinal: speaker.ordinal,
+            ...(speaker.name === undefined ? {} : { name: speaker.name }),
+            colorIndex: speaker.colorIndex,
+            confirmed: lectureConfirmed(lecture, state),
+          },
+          snippet: lecture.sentence(index),
+          ranges,
+        },
+      ];
+    }),
+  );
+  const summaries = lectures.flatMap((lecture) => {
+    const text = lectureSummaryText(lecture);
+    const ranges = match(text, terms);
+    if (ranges === undefined) return [];
+    // The first lecture's summary reports the basis the spec set; the second one's still holds.
+    const contextState = lecture === BASIS_LECTURE ? state.basis?.state : "consistent";
+    return [
+      {
+        contentId: lecture.contentId,
+        contentTitle: lecture.title,
+        artifactId: `01J00000000000000000ARTSB${lecture.contentId.slice(-1)}`,
+        templateId: "summary.core",
+        summaryRevisionId: `01J00000000000000000SUMSB${lecture.contentId.slice(-1)}`,
+        ...(contextState === undefined ? {} : { speakerContextState: contextState }),
+        snippet: text,
+        ranges,
+      },
+    ];
+  });
+  const speakers = lectures.flatMap((lecture) =>
+    lecture.speakers.flatMap((speaker) =>
+      speaker.name === undefined || match(speaker.name, terms) === undefined
+        ? []
+        : [
+            {
+              contentId: lecture.contentId,
+              contentTitle: lecture.title,
+              speakerId: speaker.id,
+              ordinal: speaker.ordinal,
+              name: speaker.name,
+              colorIndex: speaker.colorIndex,
+              sentences: lecture.sequence.filter((id) => id === speaker.id).length,
+            },
+          ],
+    ),
+  );
+  return { segments, summaries, speakers };
 }

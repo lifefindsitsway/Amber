@@ -1,4 +1,5 @@
 import type { ChapterActiveStage, ChapterRevisionDto, ChaptersDto } from "../../shared/dto/chapter.ts";
+import type { SpeakerContextDto } from "../../shared/dto/speaker-context.ts";
 import type { ChapterRevision } from "../domain/artifact.ts";
 import type { Content } from "../domain/content.ts";
 import type { StageRun, Task } from "../domain/task.ts";
@@ -8,16 +9,25 @@ import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { laneKeys } from "../pipeline/lane.ts";
 import { isTerminalProjection, latestAttempts } from "../pipeline/projection.ts";
+import { chapterSpeakerContext } from "./artifact-speakers.ts";
+import { SpeakerLineageReader } from "./speaker-lineage.ts";
 
 export interface ChapterServiceOptions {
   repository: Repository;
+  /** Shared with the other readers of speaker states, so a revision pair is compared once. */
+  speakerLineage?: SpeakerLineageReader;
 }
 
 /**
  * A chapter revision as the UI sees it, with freshness derived against the current primary
- * and its ancestors (`primaryAncestors`, nearest first).
+ * and its ancestors (`primaryAncestors`, nearest first), and its speaker state when it has one.
  */
-export function chapterRevisionDto(revision: ChapterRevision, content: Content, primaryAncestors: readonly string[]): ChapterRevisionDto {
+export function chapterRevisionDto(
+  revision: ChapterRevision,
+  content: Content,
+  primaryAncestors: readonly string[],
+  speakerContext?: SpeakerContextDto,
+): ChapterRevisionDto {
   const { provenance } = revision;
   const freshness = deriveFreshness(provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
@@ -40,6 +50,7 @@ export function chapterRevisionDto(revision: ChapterRevision, content: Content, 
     // Chapters carry no citations, so no quality reason applies to them.
     qualityReasons: [],
     ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
+    ...(speakerContext === undefined ? {} : { speakerContext }),
     createdAt: provenance.createdAt,
   };
 }
@@ -51,9 +62,11 @@ export function chapterRevisionDto(revision: ChapterRevision, content: Content, 
  */
 export class ChapterService {
   private readonly options: ChapterServiceOptions;
+  private readonly lineage: SpeakerLineageReader;
 
   constructor(options: ChapterServiceOptions) {
     this.options = options;
+    this.lineage = options.speakerLineage ?? new SpeakerLineageReader();
   }
 
   get(principal: RequestPrincipal, contentId: string): ChaptersDto {
@@ -83,10 +96,12 @@ export class ChapterService {
     const active = tasks.find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
     const activeStage = active === undefined ? undefined : activeStageOf(active, chapterRun(scope, owner, active));
     const failed = lastFailedTask(scope, owner, tasks, current?.provenance.createdAt);
+    const dto = (revision: ChapterRevision): ChapterRevisionDto =>
+      chapterRevisionDto(revision, content, ancestors, chapterSpeakerContext(scope, owner, this.lineage, content.id, revision));
     return {
       ...(artifact === undefined ? {} : { artifactId: artifact.id }),
-      ...(current === undefined ? {} : { current: chapterRevisionDto(current, content, ancestors) }),
-      revisions: revisions.map((revision) => chapterRevisionDto(revision, content, ancestors)),
+      ...(current === undefined ? {} : { current: dto(current) }),
+      revisions: revisions.map(dto),
       ...(active === undefined ? {} : { activeTaskId: active.id }),
       ...(activeStage === undefined ? {} : { activeStage }),
       ...(failed === undefined ? {} : { lastFailedTaskId: failed.id }),

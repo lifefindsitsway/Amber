@@ -6,6 +6,7 @@ import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import { BOB, createLocalContent, createTaskOfKind, LOCAL } from "../../fixtures/pipeline/harness.ts";
 import { createMediaStack, type MediaStack } from "../../fixtures/pipeline/media-stack.ts";
+import { lectureTranscripts } from "../../fixtures/transcripts/lecture.ts";
 import { countRows, tempDataDir } from "../../tools/sqlite.ts";
 
 const open: MediaStack[] = [];
@@ -146,5 +147,26 @@ describe("DeleteContentService.purge", () => {
     expect(await s.files.stat(legacyRef)).not.toBeNull();
     await s.janitor.sweep();
     expect(await s.files.stat(legacyRef)).toBeNull();
+  });
+});
+
+describe("DeleteContentService.purge and speaker review marks", () => {
+  it("purging a Content from the trash takes its revisions' review marks and its speakers with it, and no one else's", async () => {
+    const s = createMediaStack();
+    open.push(s);
+    const [gone, kept] = [createLocalContent(s.h), createLocalContent(s.h)];
+    for (const contentId of [gone, kept]) {
+      const fixture = lectureTranscripts(contentId);
+      s.h.repository.withTransaction((scope) => {
+        scope.speakers.insert(LOCAL.userId, contentId, [{ id: `${contentId}-a`, name: "Ann", nameConfirmedAt: 1 }], 1);
+        scope.transcripts.insertRevision(LOCAL.userId, fixture.asr.revision, fixture.asr.segments);
+        scope.speakerConfirmations.set(LOCAL.userId, contentId, fixture.asr.revision.id, 2);
+      });
+    }
+    trash(s, gone);
+    await s.deleteContent.purge(LOCAL.userId, gone, { onlyTrashed: true });
+    expect(countRows(s.h.db, "transcript_revision_speaker_confirmation", "content_id = ?", gone)).toBe(0);
+    expect(countRows(s.h.db, "content_speaker", "content_id = ?", gone)).toBe(0);
+    expect(countRows(s.h.db, "transcript_revision_speaker_confirmation", "content_id = ?", kept)).toBe(1);
   });
 });

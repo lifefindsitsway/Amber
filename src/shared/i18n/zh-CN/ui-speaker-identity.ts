@@ -27,6 +27,7 @@ export const speakerIdentity = {
     namePlaceholder: "未命名（显示为「发言人 {{ordinal}}」）",
     nameCounter: "{{count}}/{{max}}",
     nameTooLong: "名字最多 {{max}} 个字符",
+    nameConfirmHint: "保存后 AI 将以此姓名称呼该发言人",
     color: "颜色",
     colorOption: "{{name}}",
     photo: "照片",

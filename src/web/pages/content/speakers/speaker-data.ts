@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { speakerDtoSchema, speakerListDtoSchema, speakerSuggestionListDtoSchema, type SpeakerCreateRequest, type SpeakerDto, type SpeakerPatchRequest } from "../../../../shared/dto/speaker.ts";
+import { speakerReviewDtoSchema, type SpeakersConfirmedRequest } from "../../../../shared/dto/transcript.ts";
 import { graphemesOf } from "../../../../shared/speakers.ts";
 import { useApi, useContentEvents } from "../../../api/context.tsx";
-import { publishSpeakersChanged } from "../../../api/content-events.ts";
+import { publishSpeakerReviewChanged, publishSpeakersChanged } from "../../../api/content-events.ts";
 import { queryString } from "../../../api/queries.ts";
 import { contentKeys } from "../content-data.ts";
 
 const speakersPath = (contentId: string): string => `/api/contents/${encodeURIComponent(contentId)}/speakers`;
+
+const reviewPath = (revisionId: string): string => `/api/transcript/revisions/${encodeURIComponent(revisionId)}`;
 
 /** Query key of the suggestions for a typed name; they are the user's own data, shared by every Content. */
 export const speakerSuggestionKeys = {
@@ -55,6 +58,38 @@ export function usePatchSpeaker(contentId: string) {
       publishSpeakersChanged(events, queryClient, contentId);
       // A copied speaker's suggestions may now rank differently.
       void queryClient.invalidateQueries({ queryKey: speakerSuggestionKeys.all });
+    },
+  });
+}
+
+/**
+ * The review of one revision's speakers: counts, unconfirmed names, and the roster digest a
+ * confirmation sends back. Only for revisions that name speakers (others are refused).
+ */
+export function useSpeakerReview(contentId: string, revisionId: string | undefined) {
+  const client = useApi();
+  return useQuery({
+    queryKey: contentKeys.speakerReview(contentId, revisionId ?? ""),
+    queryFn: () => client.get(`${reviewPath(revisionId as string)}/speaker-review`, speakerReviewDtoSchema),
+    enabled: revisionId !== undefined,
+  });
+}
+
+/**
+ * Marks a revision's speakers as reviewed (which also confirms the names shown), or takes
+ * the mark back. The names and reviews it changes are read again here and in other windows;
+ * the revision list, which shows the mark too, is read again here.
+ */
+export function useSetSpeakersConfirmed(contentId: string) {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const events = useContentEvents();
+  return useMutation({
+    mutationFn: (input: { revisionId: string; request: SpeakersConfirmedRequest }) =>
+      client.put(`${reviewPath(input.revisionId)}/speakers-confirmed`, speakerReviewDtoSchema, { body: input.request }),
+    onSuccess: (review) => {
+      queryClient.setQueryData(contentKeys.speakerReview(contentId, review.revisionId), review);
+      publishSpeakerReviewChanged(events, queryClient, contentId);
     },
   });
 }

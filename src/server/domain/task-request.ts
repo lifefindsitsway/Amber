@@ -6,6 +6,14 @@ import { BURN_MODES, CACHE_MEDIA_QUALITIES, SUBTITLE_DELIVERIES, SUBTITLE_VIDEO_
 import { subtitleStyleSchema } from "../../shared/subtitle-style.ts";
 import { canonicalJson } from "./canonical-json.ts";
 import type { AsrModelRef, ModelRef, PromptRef } from "./model-ref.ts";
+import { speakerContextSnapshotSchema } from "./speaker-context.ts";
+
+/**
+ * The speakers a Task's model calls are given, frozen at submission when the base transcript's
+ * speakers are reviewed. A request without it — every request stored before speakers were
+ * read, and any whose transcript is not reviewed — runs exactly as before.
+ */
+const speakerContextField = speakerContextSnapshotSchema.exactOptional();
 
 /** A summary template version, resolved and frozen when a Task is submitted, so later template edits never reach it. */
 export const templateRefSchema = z.object({ id: z.string().min(1), version: z.number().int().positive() }).strict();
@@ -59,6 +67,7 @@ export const regenerateSummaryRequestSchema = z
     outputLanguage: z.string().min(1).exactOptional(),
     templateRef: templateRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
+    speakerContext: speakerContextField,
   })
   .strict();
 export type RegenerateSummaryRequest = z.infer<typeof regenerateSummaryRequestSchema>;
@@ -84,6 +93,8 @@ export const summarizeCollectionRequestSchema = z
             summaryRevisionId: z.string().min(1),
             transcriptRevisionId: z.string().min(1),
             position: z.number().int(),
+            // The member's summary was generated with speakers that no longer match: its text is sent with a caution.
+            speakerCaution: z.literal(true).exactOptional(),
           })
           .strict(),
       )
@@ -103,6 +114,8 @@ export const retranscribeRequestSchema = z
     kind: z.literal("retranscribe"),
     asrModelRef: asrModelRefSchema.exactOptional(),
     diarization: diarizationRequestSchema.exactOptional(),
+    // A transcription made only to compare speakers with: it is stored, and changes nothing else about the Content.
+    comparison: z.literal(true).exactOptional(),
   })
   .strict();
 export type RetranscribeRequest = z.infer<typeof retranscribeRequestSchema>;
@@ -118,6 +131,7 @@ export const reproofreadRequestSchema = z
     promptRefs: promptRefsSchema.exactOptional(),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
+    speakerContext: speakerContextField,
   })
   .strict();
 export type ReproofreadRequest = z.infer<typeof reproofreadRequestSchema>;
@@ -134,6 +148,7 @@ export const regenerateChaptersRequestSchema = z
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
     outputLanguage: z.string().min(1),
+    speakerContext: speakerContextField,
   })
   .strict();
 export type RegenerateChaptersRequest = z.infer<typeof regenerateChaptersRequestSchema>;
@@ -150,6 +165,7 @@ export const recomputeHighlightsRequestSchema = z
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
     outputLanguage: z.string().min(1),
+    speakerContext: speakerContextField,
   })
   .strict();
 export type RecomputeHighlightsRequest = z.infer<typeof recomputeHighlightsRequestSchema>;
@@ -167,6 +183,7 @@ export const translateRequestSchema = z
     targetLanguages: z.array(z.string().min(1)).min(1),
     modelRef: modelRefSchema.exactOptional(),
     baseRevisionId: z.string().min(1),
+    speakerContext: speakerContextField,
   })
   .strict();
 export type TranslateRequest = z.infer<typeof translateRequestSchema>;
@@ -287,6 +304,8 @@ export const burnTaskRequestV2Schema = z
     delivery: z.enum(SUBTITLE_DELIVERIES),
     container: z.enum(SUBTITLE_VIDEO_CONTAINERS),
     style: subtitleStyleSchema,
+    // Present exactly when the style shows speaker labels: each speaker's label as it was at submission.
+    speakerLabels: z.record(z.string().min(1), z.string().min(1)).exactOptional(),
   })
   .strict();
 export type BurnTaskRequestV2 = z.infer<typeof burnTaskRequestV2Schema>;
@@ -307,6 +326,8 @@ export interface TaskRequestView {
   promptRefs?: Record<string, PromptRef>;
   /** Absent = `off`. A re-run keeps it even when it switches the model. */
   diarization?: DiarizationRequest;
+  /** A re-transcription made only to compare speakers with; absent = an ordinary one. */
+  comparison?: true;
 }
 
 const requestViewSchema = z.object({
@@ -317,6 +338,7 @@ const requestViewSchema = z.object({
   targetLanguages: z.array(z.string().min(1)).exactOptional(),
   promptRefs: promptRefsSchema.exactOptional(),
   diarization: diarizationRequestSchema.exactOptional(),
+  comparison: z.literal(true).exactOptional(),
 });
 
 export function taskRequestView(requestJson: string): TaskRequestView {

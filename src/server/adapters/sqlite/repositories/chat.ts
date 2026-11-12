@@ -6,6 +6,7 @@ import type { ChatWebSearch } from "../../../domain/web-search.ts";
 import type { ChatRepository, ChatThreadSummary } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { jsonOrNull, notFound, nullable, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
+import { contextUsedColumn, speakerBasesColumn, speakerContextColumn } from "./speaker-context-columns.ts";
 
 interface ThreadRow {
   id: string;
@@ -26,6 +27,8 @@ interface MessageRow {
   status: ChatMessage["status"];
   model_ref_json: string | null;
   context_transcript_revision_id: string | null;
+  speaker_context_json: string | null;
+  context_used_json: string | null;
   citations_json: string;
   suggestions_json: string | null;
   web_search_json: string | null;
@@ -43,6 +46,7 @@ interface CompactionRow {
   model_ref_json: string;
   prompt_ref_json: string;
   prompt_snapshot: string;
+  speaker_bases_json: string | null;
   created_at: number;
 }
 
@@ -68,6 +72,8 @@ function toMessage(row: MessageRow): ChatMessage {
     status: row.status,
     modelRef: parseJsonOrNull<ModelRefSnapshot>(row.model_ref_json),
     contextTranscriptRevisionId: row.context_transcript_revision_id,
+    speakerContext: speakerContextColumn(row.speaker_context_json),
+    contextUsed: contextUsedColumn(row.context_used_json),
     citations: parseJson<Citation[]>(row.citations_json),
     suggestions: parseJsonOrNull<string[]>(row.suggestions_json),
     webSearch: parseJsonOrNull<ChatWebSearch>(row.web_search_json),
@@ -79,6 +85,7 @@ function toMessage(row: MessageRow): ChatMessage {
 }
 
 function toCompaction(row: CompactionRow): ChatCompaction {
+  const speakerBases = speakerBasesColumn(row.speaker_bases_json);
   return {
     id: row.id,
     threadId: row.thread_id,
@@ -87,6 +94,7 @@ function toCompaction(row: CompactionRow): ChatCompaction {
     modelRef: parseJson<ModelRefSnapshot>(row.model_ref_json),
     promptRef: parseJson<PromptRef>(row.prompt_ref_json),
     promptSnapshot: row.prompt_snapshot,
+    ...(speakerBases === null ? {} : { speakerBases }),
     createdAt: row.created_at,
   };
 }
@@ -131,10 +139,13 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
      WHERE chat_message.id = ? AND content.user_id = ?`,
   );
   const insertMessage = db.prepare(
-    `INSERT INTO chat_message (id, thread_id, role, text, status, model_ref_json, context_transcript_revision_id, citations_json, suggestions_json,
-       web_search_json, replaces_message_id, error_json, created_at, finished_at)
-     VALUES (@id, @threadId, @role, @text, @status, @modelRef, @contextTranscriptRevisionId, @citations, @suggestions,
-       @webSearch, @replacesMessageId, @error, @createdAt, @finishedAt)`,
+    `INSERT INTO chat_message (id, thread_id, role, text, status, model_ref_json, context_transcript_revision_id, speaker_context_json, context_used_json,
+       citations_json, suggestions_json, web_search_json, replaces_message_id, error_json, created_at, finished_at)
+     VALUES (@id, @threadId, @role, @text, @status, @modelRef, @contextTranscriptRevisionId, @speakerContext, @contextUsed,
+       @citations, @suggestions, @webSearch, @replacesMessageId, @error, @createdAt, @finishedAt)`,
+  );
+  const recordContextUsed = db.prepare(
+    `UPDATE chat_message SET context_used_json = ? WHERE id = ? AND role = 'assistant' AND thread_id IN (${OWNED_THREADS})`,
   );
   const finishMessage = db.prepare(
     `UPDATE chat_message SET text = @text, status = @status, citations_json = @citations, suggestions_json = @suggestions,
@@ -153,8 +164,8 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
      WHERE chat_compaction.thread_id = ? AND content.user_id = ? ORDER BY chat_compaction.created_at, chat_compaction.id`,
   );
   const insertCompaction = db.prepare(
-    `INSERT INTO chat_compaction (id, thread_id, through_message_id, body, model_ref_json, prompt_ref_json, prompt_snapshot, created_at)
-     VALUES (@id, @threadId, @throughMessageId, @body, @modelRef, @promptRef, @promptSnapshot, @createdAt)`,
+    `INSERT INTO chat_compaction (id, thread_id, through_message_id, body, model_ref_json, prompt_ref_json, prompt_snapshot, speaker_bases_json, created_at)
+     VALUES (@id, @threadId, @throughMessageId, @body, @modelRef, @promptRef, @promptSnapshot, @speakerBases, @createdAt)`,
   );
   const moveCompaction = db.prepare(`UPDATE chat_compaction SET through_message_id = ? WHERE id = ? AND thread_id IN (${OWNED_THREADS})`);
   const deleteCompaction = db.prepare(`DELETE FROM chat_compaction WHERE id = ? AND thread_id IN (${OWNED_THREADS})`);
@@ -211,6 +222,8 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
         status: message.status,
         modelRef: jsonOrNull(message.modelRef),
         contextTranscriptRevisionId: nullable(message.contextTranscriptRevisionId),
+        speakerContext: jsonOrNull(message.speakerContext),
+        contextUsed: jsonOrNull(message.contextUsed),
         citations: JSON.stringify(message.citations),
         suggestions: jsonOrNull(message.suggestions),
         webSearch: jsonOrNull(message.webSearch),
@@ -235,6 +248,9 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
         finishedAt: nullable(message.finishedAt),
       });
     },
+    recordContextUsed(ownerUserId, messageId, contextUsed) {
+      return recordContextUsed.run(JSON.stringify(contextUsed), messageId, ownerUserId).changes > 0;
+    },
     deleteMessages(ownerUserId, messageIds) {
       if (messageIds.length === 0) {
         return 0;
@@ -258,6 +274,7 @@ export function sqliteChatRepository(db: SqliteConnection): ChatRepository {
         modelRef: JSON.stringify(compaction.modelRef),
         promptRef: JSON.stringify(compaction.promptRef),
         promptSnapshot: compaction.promptSnapshot,
+        speakerBases: jsonOrNull(compaction.speakerBases),
         createdAt: compaction.createdAt,
       });
       setCurrentCompaction.run(compaction.id, compaction.threadId);

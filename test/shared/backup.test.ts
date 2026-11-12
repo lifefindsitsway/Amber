@@ -129,6 +129,24 @@ describe("filterUiPreferences", () => {
     ]);
   });
 
+  it("carries a reader typography saved with or without a font, and drops one whose font or custom name is damaged", () => {
+    const old = JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true });
+    const withFont = JSON.stringify({ version: 1, fontSize: 18, lineHeight: 1.8, showSpeakers: true, font: "kai" });
+    const withCustom = JSON.stringify({ version: 1, fontSize: 18, lineHeight: 1.8, showSpeakers: true, font: "custom", customFont: "Kaiti SC" });
+    const { accepted, dropped } = filterUiPreferences({
+      "amber.reader.typography.old": old,
+      "amber.reader.typography.font": withFont,
+      "amber.reader.typography.custom": withCustom,
+      "amber.reader.typography.badfont": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, font: "comic" }),
+      "amber.reader.typography.badname": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, font: "custom", customFont: "x;}y" }),
+    });
+    expect(accepted).toEqual({ "amber.reader.typography.old": old, "amber.reader.typography.font": withFont, "amber.reader.typography.custom": withCustom });
+    expect(dropped).toEqual([
+      { key: "amber.reader.typography.badfont", reason: "invalid_value" },
+      { key: "amber.reader.typography.badname", reason: "invalid_value" },
+    ]);
+  });
+
   it("recognises whitelisted keys only", () => {
     expect(isBackupPreferenceKey("amber.reader.typography.u1")).toBe(true);
     expect(isBackupPreferenceKey("amber.player.volume")).toBe(true);

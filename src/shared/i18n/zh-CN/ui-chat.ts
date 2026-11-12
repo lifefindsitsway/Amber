@@ -40,8 +40,14 @@ export const chat = {
     full: "全文",
     retrieval: "智能检索",
     metadata: "基本信息",
+    retrievalSpeakerClips: "检索 · 发言人片段",
     estimate: "估算约 {{tokens}} tokens",
   },
+  summaryOmitted: {
+    speakers_changed: "总结的发言人依据已变化，未带入",
+  },
+  speakerMismatch: "回答时的发言人：{{names}} · 与当前不一致",
+  speakerSeparator: "、",
   unavailable: {
     no_model: "还没有可用的模型，配置后即可对话。",
     context_window_unknown: "该模型未填写上下文窗口大小，对话需要先填写。",

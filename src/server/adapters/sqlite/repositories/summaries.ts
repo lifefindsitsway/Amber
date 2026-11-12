@@ -2,6 +2,7 @@ import type { SummaryArtifact, SummaryRevision } from "../../../domain/artifact.
 import type { SummaryRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { jsonOrNull, notFound, nullable, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
+import { speakerContextColumn } from "./speaker-context-columns.ts";
 
 interface ArtifactRow {
   id: string;
@@ -18,6 +19,7 @@ interface RevisionRow {
   prompt_ref_json: string | null;
   prompt_refs_json: string | null;
   prompt_snapshot: string | null;
+  speaker_context_json: string | null;
   quality: SummaryRevision["quality"];
   body: string;
   citations_json: string;
@@ -45,6 +47,7 @@ function toRevision(row: RevisionRow): SummaryRevision {
       promptRef: parseJsonOrNull(row.prompt_ref_json),
       promptRefs: parseJsonOrNull(row.prompt_refs_json),
       promptSnapshot: row.prompt_snapshot,
+      speakerContext: speakerContextColumn(row.speaker_context_json),
       createdAt: row.created_at,
     }),
     quality: row.quality,
@@ -78,11 +81,11 @@ export function sqliteSummaryRepository(db: SqliteConnection): SummaryRepository
   const insertArtifact = db.prepare("INSERT INTO summary_artifact (id, content_id, template_id) VALUES (?, ?, ?)");
   const insertRevision = db.prepare(
     `INSERT INTO summary_revision (
-       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, quality, body, citations_json,
-       chapter_revision_id, partial_ids_json, created_at
+       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, speaker_context_json, quality, body,
+       citations_json, chapter_revision_id, partial_ids_json, created_at
      ) VALUES (
-       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @quality, @body, @citationsJson,
-       @chapterRevisionId, @partialIdsJson, @createdAt
+       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @speakerContextJson, @quality, @body,
+       @citationsJson, @chapterRevisionId, @partialIdsJson, @createdAt
      )`,
   );
   const ownedRevision = db.prepare(
@@ -129,6 +132,7 @@ export function sqliteSummaryRepository(db: SqliteConnection): SummaryRepository
         promptRefJson: jsonOrNull(provenance.promptRef),
         promptRefsJson: jsonOrNull(provenance.promptRefs),
         promptSnapshot: nullable(provenance.promptSnapshot),
+        speakerContextJson: jsonOrNull(provenance.speakerContext),
         quality: revision.quality,
         body: revision.body,
         citationsJson: JSON.stringify(revision.citations),

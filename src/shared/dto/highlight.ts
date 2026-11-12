@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { STALE_REASONS } from "./chapter.ts";
+import { speakerContextDtoSchema } from "./speaker-context.ts";
 import { QUALITY_REASONS } from "./summary.ts";
 import { modelRefSnapshotDtoSchema } from "./usage.ts";
 
@@ -16,6 +17,8 @@ export const highlightItemDtoSchema = z.object({
   score: z.number().int().min(0).max(100),
   text: z.string(),
   segmentText: z.string(),
+  /** Who the sentence is given to in the revision the highlights were built from. */
+  speakerId: idSchema.exactOptional(),
   startMs: msSchema,
   endMs: msSchema,
 });
@@ -33,6 +36,8 @@ export const highlightRevisionDtoSchema = z.object({
   qualityReasons: z.array(z.enum(QUALITY_REASONS)),
   stale: z.boolean(),
   staleReason: z.enum(STALE_REASONS).exactOptional(),
+  /** Present when the revision was generated with speakers, and only while the transcript it read is the primary or one of its ancestors. */
+  speakerContext: speakerContextDtoSchema.exactOptional(),
   createdAt: msSchema,
 });
 export type HighlightRevisionDto = z.infer<typeof highlightRevisionDtoSchema>;

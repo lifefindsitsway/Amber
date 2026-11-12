@@ -7,12 +7,15 @@ import { canonicalJson } from "../../domain/canonical-json.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { ModelRef } from "../../domain/model-ref.ts";
 import { outputLanguageName, renderPrompt, type ResolvedPrompt } from "../../domain/prompts.ts";
+import { speakerContextDigest } from "../../domain/speaker-context.ts";
+import { speakerSectionForRead, type SpeakerSection } from "../../domain/speaker-lines.ts";
 import { translateRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
 import { assertBaseRevisionExists, stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
+import { assertCarries } from "./rollup-runner.ts";
 
 export interface TranslateStageDeps {
   repository: Repository;
@@ -47,6 +50,12 @@ interface Batch {
  * the base's sentences and timing, each pointing at exactly its parent sentence. It becomes
  * the language's current translation, never the primary, and the calls that produced it
  * are attributed to it.
+ *
+ * A request with a frozen speaker context also tells the model who says which line: the
+ * speaker section follows the terminology in `{{terms_section}}`, listing the batch's lines
+ * by their numbers. The numbered lines and the answer protocol are unchanged; the section is
+ * context for persons, forms of address and tone, and names never go into the translation.
+ * Without that context every request is exactly as it always was.
  */
 export class TranslateStageExecutor implements StageExecutor {
   private readonly deps: TranslateStageDeps;
@@ -84,13 +93,14 @@ export class TranslateStageExecutor implements StageExecutor {
     if (segments.length === 0) {
       throw amberError("internal", "the base revision has no sentences");
     }
+    const speakers = speakerSectionForRead(request.speakerContext, segments);
 
     // Every batch is queued at once; how many run together is up to the model lane.
     const batches = request.targetLanguages.flatMap((language) => batchesOf(language, segments));
     let settledCount = 0;
     const settled = await Promise.allSettled(
       batches.map(async (batch) => {
-        const payload = await this.runBatch(context, { batch, base, termsSection: terms, modelRef, prompt });
+        const payload = await this.runBatch(context, { batch, base, termsSection: terms, modelRef, prompt, speakers });
         settledCount += 1;
         context.reportProgress(settledCount / batches.length);
         return payload;
@@ -134,8 +144,9 @@ export class TranslateStageExecutor implements StageExecutor {
           kind: "llm",
           modelRef: model.snapshot,
           promptRef: prompt.ref,
-          promptRefs: [prompt.ref],
+          promptRefs: speakers === undefined ? [prompt.ref] : [prompt.ref, speakers.rules.ref],
           promptSnapshot: renderPrompt(prompt.text, { target_language: outputLanguageName(language), terms_section: terms }),
+          ...(speakers === undefined ? {} : { speakerContext: speakers.snapshot }),
         },
         segmentCount: translated.length,
         createdAt,
@@ -162,9 +173,9 @@ export class TranslateStageExecutor implements StageExecutor {
 
   private async runBatch(
     context: StageExecutionContext,
-    input: { batch: Batch; base: TranscriptRevision; termsSection: string; modelRef: ModelRef; prompt: ResolvedPrompt },
+    input: { batch: Batch; base: TranscriptRevision; termsSection: string; modelRef: ModelRef; prompt: ResolvedPrompt; speakers: SpeakerSection | undefined },
   ): Promise<BatchPayload> {
-    const { batch, modelRef } = input;
+    const { batch, modelRef, speakers } = input;
     const sources = batch.segments.map((segment) => oneLine(segment.text));
     const inputDigest = digestOf(
       canonicalJson({
@@ -176,12 +187,20 @@ export class TranslateStageExecutor implements StageExecutor {
         termsSection: input.termsSection,
         promptRef: input.prompt.ref,
         modelRef,
+        ...(speakers === undefined ? {} : { speakerContext: speakerContextDigest(speakers.snapshot) }),
       }),
     );
+    const termsValue =
+      speakers === undefined
+        ? input.termsSection
+        : speakers.termsValue(
+            input.termsSection,
+            batch.segments.map((segment, offset) => ({ name: String(offset + 1), ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }) })),
+          );
     const prompt = renderPrompt(input.prompt.text, {
       target_language: outputLanguageName(batch.language),
       count: String(sources.length),
-      terms_section: input.termsSection,
+      terms_section: termsValue,
       subtitles: sources.map((text, offset) => `${offset + 1}. ${text}`).join("\n"),
     });
     const value = await context.runUnit({
@@ -189,6 +208,7 @@ export class TranslateStageExecutor implements StageExecutor {
       inputDigest,
       billing: "llm",
       run: async (_signal: AbortSignal, unit: UnitIdentity): Promise<BatchPayload> => {
+        assertCarries(prompt, speakers?.rules, "{{terms_section}}");
         const completion = await context.llm.complete(
           { modelRef, system: "", messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] },
           { feature: "translate", workUnitId: unit.id },

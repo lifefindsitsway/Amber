@@ -31,8 +31,13 @@ import { idempotencyKeyOf, parseInput, sendValidated } from "../validation.ts";
 export const TEXT_BODY_LIMIT_BYTES = SUBTITLE_IMPORT_MAX_BYTES * 2;
 
 const contentParamsSchema = z.object({ id: z.string().min(1) });
-/** `retranscribe` may name the ASR profile to use (else the default applies); a client may also send no body at all. */
-const retranscribeRequestSchema = z.object({ asrModelRef: asrModelRefSchema.exactOptional(), diarization: diarizationRequestSchema.exactOptional() }).strict();
+/**
+ * `retranscribe` may name the ASR profile to use (else the default applies); a client may also
+ * send no body at all. `comparison: true` asks for a transcription only to compare speakers with.
+ */
+const retranscribeRequestSchema = z
+  .object({ asrModelRef: asrModelRefSchema.exactOptional(), diarization: diarizationRequestSchema.exactOptional(), comparison: z.literal(true).exactOptional() })
+  .strict();
 /** `ids=a,b,c`: deduplicated, an empty entry is malformed rather than skipped. */
 const contentIdsSchema = z
   .string()
@@ -137,7 +142,7 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
       const { id } = parseInput(contentParamsSchema, request.params, "params");
       const body = parseInput(retranscribeRequestSchema, request.body ?? {}, "body");
       const key = idempotencyKeyOf(request);
-      const result = await retranscribe.retranscribe(principalOf(request), id, key, body.asrModelRef, body.diarization);
+      const result = await retranscribe.retranscribe(principalOf(request), id, key, body.asrModelRef, body.diarization, body.comparison === true);
       return sendValidated(reply, result.status, taskAcceptedDtoSchema, result.body);
     });
   }

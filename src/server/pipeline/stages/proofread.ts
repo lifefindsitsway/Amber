@@ -18,6 +18,8 @@ import type { LlmCompletion, LlmContentPart, LlmRequest, LlmStopReason } from ".
 import type { MediaAsset } from "../../domain/media-asset.ts";
 import type { ModelRef, PromptRef } from "../../domain/model-ref.ts";
 import { composeProofreadAudioPrompt, renderPrompt, type ResolvedPrompt } from "../../domain/prompts.ts";
+import { speakerContextDigest } from "../../domain/speaker-context.ts";
+import { speakerSectionForRead, type SpeakerSection } from "../../domain/speaker-lines.ts";
 import { reproofreadRequestSchema } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import { revisionTakesPrimary, type TranscriptRevision, type TranscriptSegment } from "../../domain/transcript.ts";
@@ -37,6 +39,7 @@ import {
 import type { MediaFiles } from "../media-files.ts";
 import { ensureExtractedAudio } from "./extracted-audio.ts";
 import { platformTarget, taskContent, type PlatformAccess } from "./platform-access.ts";
+import { assertCarries } from "./rollup-runner.ts";
 import { availableMediaSource, taskScratchRef } from "./source-media.ts";
 
 export interface ProofreadStageDeps {
@@ -145,6 +148,7 @@ interface RangeInput {
   modelRef: ModelRef;
   audio: AudioPlan | undefined;
   prompts: RangePrompts;
+  speakers: SpeakerSection | undefined;
 }
 
 /**
@@ -179,6 +183,13 @@ interface RangePrompts {
  * sentence and carrying its paragraph mark (the first sentence always opens one); it becomes
  * primary only if the base is still primary, and the calls of the accepted ranges are
  * attributed to it. Nothing is published while any range failed.
+ *
+ * A `reproofread` whose request froze a speaker context also tells the model who says which
+ * line: the speaker section follows the terminology in `{{terms_section}}` (and so reaches
+ * the audio variant through the text prompt it wraps), listing the call's lines by alias,
+ * context lines included. The roster is the canonical spelling of the names. Target lines,
+ * their aliases and the answer protocol are unchanged. Proofreading inside `process_content`
+ * never reads speakers, and without that context every request is exactly as it always was.
  */
 export class ProofreadStageExecutor implements StageExecutor {
   private readonly deps: ProofreadStageDeps;
@@ -204,6 +215,8 @@ export class ProofreadStageExecutor implements StageExecutor {
     if (segments.length === 0) {
       throw amberError("internal", "the base revision has no sentences");
     }
+    const speakers =
+      context.task.kind === "reproofread" ? speakerSectionForRead(reproofreadRequestSchema.parse(context.request).speakerContext, segments) : undefined;
     const terms = termsSection(repository.withTransaction((scope) => scope.terminology.effectiveFor(owner, content.id)));
 
     // A model declared able to take audio behind a protocol that cannot encode any is still
@@ -217,7 +230,7 @@ export class ProofreadStageExecutor implements StageExecutor {
       text: textPrompt,
       audio: { ref: audioPrompt.ref, text: composeProofreadAudioPrompt(audioPrompt.text, textPrompt.text) },
     };
-    const input: RangeInput = { baseRevisionId: base.id, termsSection: terms, modelRef, audio, prompts };
+    const input: RangeInput = { baseRevisionId: base.id, termsSection: terms, modelRef, audio, prompts, speakers };
 
     const roots = rootsOf(segments);
     const tree = await this.proofreadTree(context, roots, segments, input);
@@ -256,7 +269,7 @@ export class ProofreadStageExecutor implements StageExecutor {
     // audio preamble around the text prompt, text ranges the text prompt alone.
     const withAudio = accepted.some((leaf) => leaf.payload.audio);
     const prompt = withAudio ? prompts.audio : prompts.text;
-    const promptRefs = withAudio ? [prompts.audio.ref, prompts.text.ref] : [prompts.text.ref];
+    const promptRefs = [...(withAudio ? [prompts.audio.ref, prompts.text.ref] : [prompts.text.ref]), ...(speakers === undefined ? [] : [speakers.rules.ref])];
     const revisionId = this.newId();
     const texts = accepted.flatMap((leaf) => leaf.payload.texts);
     const corrected: TranscriptSegment[] = segments.map((parent, position) => ({
@@ -278,7 +291,14 @@ export class ProofreadStageExecutor implements StageExecutor {
       parentRevisionId: base.id,
       language: base.language,
       timingFidelity: "inherited_segment",
-      generation: { kind: "llm", modelRef: model.snapshot, promptRef: prompt.ref, promptRefs, promptSnapshot: renderPrompt(prompt.text, { terms_section: terms }) },
+      generation: {
+        kind: "llm",
+        modelRef: model.snapshot,
+        promptRef: prompt.ref,
+        promptRefs,
+        promptSnapshot: renderPrompt(prompt.text, { terms_section: terms }),
+        ...(speakers === undefined ? {} : { speakerContext: speakers.snapshot }),
+      },
       segmentCount: corrected.length,
       createdAt: this.now(),
     };
@@ -297,6 +317,11 @@ export class ProofreadStageExecutor implements StageExecutor {
       publish: (scope) => {
         assertBaseRevisionExists(scope, owner, content.id, base.id);
         scope.transcripts.insertRevision(owner, revision, corrected);
+        // Every sentence keeps its parent's speaker, so a review of the parent holds for the
+        // proofread revision too; read here, at publication, since it may have changed meanwhile.
+        if (scope.speakerConfirmations.confirmedAt(owner, base.id) !== undefined) {
+          scope.speakerConfirmations.set(owner, content.id, revision.id, this.now());
+        }
         const current = scope.contents.getIncludingTrashed(owner, content.id);
         const primary =
           current?.primaryTranscriptRevisionId === undefined ? undefined : scope.transcripts.getRevision(owner, current.primaryTranscriptRevisionId);
@@ -410,20 +435,30 @@ export class ProofreadStageExecutor implements StageExecutor {
         ...(audio === undefined ? {} : { textPromptRef: prompts.text.ref }),
         modelRef: input.modelRef,
         ...(audioDigest === undefined ? {} : { audioChunkDigest: audioDigest }),
+        ...(input.speakers === undefined ? {} : { speakerContext: speakerContextDigest(input.speakers.snapshot) }),
       }),
     );
+    const termsSection = rangeTermsValue(range, input.termsSection, input.speakers);
     const value = await context.runUnit({
       key: `${RANGE_KEY_PREFIX}${range.firstAlias}-${lastAlias}`,
       inputDigest,
       billing: "llm",
       run: async (signal: AbortSignal, unit: UnitIdentity): Promise<RangePayload> => {
+        if (input.speakers !== undefined) {
+          // Either variant the range may be sent with must carry the section it records: the
+          // text prompt in its terminology slot, the audio one through the text prompt it wraps.
+          assertCarries(rangeText({ range, termsSection, prompt: prompts.text }), input.speakers.rules, "{{terms_section}}");
+          if (audio !== undefined) {
+            assertCarries(rangeText({ range, termsSection, prompt: prompts.audio }), input.speakers.rules, "{{proofread_text}}");
+          }
+        }
         if (audio !== undefined) {
-          const withAudio = await this.proofreadWithAudio(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, audio, prompts }, clip, unit, signal);
+          const withAudio = await this.proofreadWithAudio(context, { range, termsSection, modelRef: input.modelRef, audio, prompts }, clip, unit, signal);
           if (withAudio !== undefined) {
             return withAudio.kind === "accepted" && withAudio.audio ? { ...withAudio, audioDigest: audioDigest as string } : withAudio;
           }
         }
-        return this.proofread(context, { range, termsSection: input.termsSection, modelRef: input.modelRef, prompt: prompts.text }, unit);
+        return this.proofread(context, { range, termsSection, modelRef: input.modelRef, prompt: prompts.text }, unit);
       },
     });
     const parsed = rangePayloadSchema.safeParse(value);
@@ -568,7 +603,38 @@ export class ProofreadStageExecutor implements StageExecutor {
   }
 }
 
-/** The request for one range in the line protocol of the `proofread.text` prompt, with its audio clip when given. */
+/**
+ * The `{{terms_section}}` value of one range: the terminology, then, with speakers, the
+ * section naming every line the call shows (context before, targets, context after) by its
+ * alias without brackets, `s<n>`.
+ */
+function rangeTermsValue(range: Range, terms: string, speakers: SpeakerSection | undefined): string {
+  if (speakers === undefined) {
+    return terms;
+  }
+  const first = range.firstAlias - range.before.length;
+  const shown = [...range.before, ...range.targets, ...range.after];
+  return speakers.termsValue(
+    terms,
+    shown.map((segment, offset) => ({ name: `s${first + offset}`, ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }) })),
+  );
+}
+
+/** The text of one range's request in the line protocol of the `proofread.text` prompt (or the audio variant around it). */
+function rangeText(input: { range: Range; termsSection: string; prompt: ResolvedPrompt }): string {
+  const { range } = input;
+  const lines = (segments: readonly TranscriptSegment[], firstAlias: number): string =>
+    segments.map((segment, offset) => `[s${firstAlias + offset}] ${oneLine(segment.text)}`).join("\n");
+  return renderPrompt(input.prompt.text, {
+    terms_section: input.termsSection,
+    context_before: lines(range.before, range.firstAlias - range.before.length),
+    count: String(range.targets.length),
+    target_lines: lines(range.targets, range.firstAlias),
+    context_after: lines(range.after, range.firstAlias + range.targets.length),
+  });
+}
+
+/** The request for one range, with its audio clip when given; `termsSection` is the range's own value. */
 function rangeRequest(input: {
   range: Range;
   termsSection: string;
@@ -576,16 +642,7 @@ function rangeRequest(input: {
   prompt: ResolvedPrompt;
   clip?: { mimeType: string; dataRef: string };
 }): LlmRequest {
-  const { range } = input;
-  const lines = (segments: readonly TranscriptSegment[], firstAlias: number): string =>
-    segments.map((segment, offset) => `[s${firstAlias + offset}] ${oneLine(segment.text)}`).join("\n");
-  const text = renderPrompt(input.prompt.text, {
-    terms_section: input.termsSection,
-    context_before: lines(range.before, range.firstAlias - range.before.length),
-    count: String(range.targets.length),
-    target_lines: lines(range.targets, range.firstAlias),
-    context_after: lines(range.after, range.firstAlias + range.targets.length),
-  });
+  const text = rangeText(input);
   const parts: LlmContentPart[] = [{ type: "text", text }];
   if (input.clip !== undefined) {
     parts.push({ type: "audio", mimeType: input.clip.mimeType, dataRef: input.clip.dataRef });

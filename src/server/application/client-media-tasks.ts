@@ -18,11 +18,13 @@ import type { BurnRequest, CacheMediaInspectDto, CacheMediaInspectRequest, Cache
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { TaskKind } from "../../shared/enums.ts";
 import { cacheFile } from "../../shared/i18n/zh-CN/cache-file.ts";
+import { subtitleSpeakerLabel } from "../../shared/subtitle-geometry.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import { displayTitle, displayTitleOf, type Content } from "../domain/content.ts";
 import { AmberError, amberError, appError } from "../domain/errors.ts";
 import { isVideoCache, verifiedCacheHeight, type MediaAsset } from "../domain/media-asset.ts";
 import { incompatibleStreamDetail, mp4IncompatibleStreams } from "../domain/export/container-policy.ts";
+import { speakerLabels } from "../domain/export/speaker-labels.ts";
 import { burnTaskRequestSchema, cacheMediaTaskRequestSchema, cacheMediaTaskRequestV4Schema } from "../domain/task-request.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { VideoTarget } from "../ports/platform-source.ts";
@@ -524,7 +526,8 @@ export class ClientMediaTaskService {
    * and of this Content) or else the original, else the highest cached quality; it is
    * inspected now and frozen with its fingerprint; a soft-subtitle MP4
    * is refused when the source has streams outside the MP4 rule, and the data volume must
-   * stay above the low-water mark after an output the size of the source.
+   * stay above the low-water mark after an output the size of the source. A style showing
+   * speaker labels freezes each named speaker's label with the request.
    */
   async burn(principal: RequestPrincipal, contentId: string, body: BurnRequest, idempotencyKey?: string): Promise<IdempotentResult<TaskAcceptedDto>> {
     const owner = principal.userId;
@@ -594,6 +597,7 @@ export class ClientMediaTaskService {
           delivery,
           container,
           style,
+          ...(style.appearance.speaker === undefined ? {} : { speakerLabels: frozenSpeakerLabels(scope, owner, content.id, body) }),
         }),
       );
     });
@@ -666,6 +670,25 @@ export class ClientMediaTaskService {
     }
     return result;
   }
+}
+
+/**
+ * The label of every speaker the exported sentences name, as it is now and already cut to
+ * the length subtitles draw: label lines use only these strings, so renaming a speaker
+ * after the request never changes the export. Both revisions count, since a bilingual
+ * soft-subtitle export also writes a track of the translation alone, labelled by its own
+ * sentences' speakers.
+ */
+function frozenSpeakerLabels(scope: RepositoryScope, owner: string, contentId: string, body: BurnRequest): Record<string, string> {
+  const revisionIds = body.mode === "original" ? [body.revisionId] : [body.revisionId, body.translationRevisionId as string];
+  const used = new Set(
+    revisionIds.flatMap((revisionId) => scope.transcripts.listSegments(owner, revisionId).flatMap((segment) => (segment.speakerId === undefined ? [] : [segment.speakerId]))),
+  );
+  const labels: Record<string, string> = {};
+  for (const [id, label] of speakerLabels(scope.speakers.list(owner, contentId))) {
+    if (used.has(id)) labels[id] = subtitleSpeakerLabel(label);
+  }
+  return labels;
 }
 
 /**

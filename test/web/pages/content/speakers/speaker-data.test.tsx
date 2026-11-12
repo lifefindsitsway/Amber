@@ -6,7 +6,16 @@ import { useContentEvents } from "../../../../../src/web/api/context.tsx";
 import type { ContentEvent } from "../../../../../src/web/api/content-events.ts";
 import { SPEAKER_NAME_MAX_GRAPHEMES } from "../../../../../src/shared/defaults.ts";
 import { normalizeSpeakerName } from "../../../../../src/shared/speakers.ts";
-import { speakerLabel, speakerNameLength, useCreateSpeaker, usePatchSpeaker, useSpeakers, useSpeakerSuggestions } from "../../../../../src/web/pages/content/speakers/speaker-data.ts";
+import {
+  speakerLabel,
+  speakerNameLength,
+  useCreateSpeaker,
+  usePatchSpeaker,
+  useSetSpeakersConfirmed,
+  useSpeakerReview,
+  useSpeakers,
+  useSpeakerSuggestions,
+} from "../../../../../src/web/pages/content/speakers/speaker-data.ts";
 import { renderApp } from "../../../../fixtures/web/render.tsx";
 import { stubFetch } from "../../../../fixtures/web/speaker-fetch.ts";
 
@@ -130,5 +139,41 @@ describe("speakerNameLength", () => {
       if (stored === undefined) expect(length).toBe(0);
       if (typeof stored === "string" && stored !== "too_long") expect(length).toBe([...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(stored)].length);
     }
+  });
+});
+
+describe("speaker review hooks", () => {
+  const REVIEW = { revisionId: "r1", rosterDigest: "abc", speakers: [{ id: "s1", sentences: 3, assignedMs: 4000 }], unassigned: 1, pendingNames: 1 };
+
+  function ReviewProbe(props: { onEvent: (event: ContentEvent) => void }) {
+    const review = useSpeakerReview("c1", "r1");
+    const confirm = useSetSpeakersConfirmed("c1");
+    const events = useContentEvents();
+    useEffect(() => events.subscribe((event) => props.onEvent(event)), [events, props]);
+    return (
+      <div>
+        <p data-testid="pending">{review.data?.pendingNames ?? "-"}</p>
+        <button onClick={() => confirm.mutate({ revisionId: "r1", request: { confirmed: true, expectedRosterDigest: review.data?.rosterDigest as string } })}>confirm</button>
+      </div>
+    );
+  }
+
+  it("reads a revision's review, confirms it with the digest it read and tells the other windows", async () => {
+    let stored: typeof REVIEW & { confirmedAt?: number } = REVIEW;
+    const calls = stubFetch({
+      "GET /api/transcript/revisions/r1/speaker-review": () => ({ json: stored }),
+      "PUT /api/transcript/revisions/r1/speakers-confirmed": () => {
+        stored = { ...REVIEW, confirmedAt: 5, pendingNames: 0, rosterDigest: "def" };
+        return { json: stored };
+      },
+      "GET /api/contents/c1/speakers": { json: { items: [ONE] } },
+    });
+    const onEvent = vi.fn();
+    renderApp(<ReviewProbe onEvent={onEvent} />);
+    await waitFor(() => expect(screen.getByTestId("pending").textContent).toBe("1"));
+    fireEvent.click(screen.getByText("confirm"));
+    await waitFor(() => expect(onEvent).toHaveBeenCalledWith({ type: "speakerReviewChanged", contentId: "c1" }));
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ confirmed: true, expectedRosterDigest: "abc" });
+    await waitFor(() => expect(screen.getByTestId("pending").textContent).toBe("0"));
   });
 });

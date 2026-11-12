@@ -1,5 +1,6 @@
 import type { SegmentId } from "../../shared/ids.ts";
 import type { ModelRefSnapshot, PromptRef } from "./model-ref.ts";
+import type { SpeakerContextSnapshot } from "./speaker-context.ts";
 
 /**
  * Invariant: evidence into a transcript is stored as
@@ -42,6 +43,11 @@ export interface Provenance {
   promptRefs?: PromptRef[];
   /** Effective prompt: envelope + template + parameters + terminology, not just the template text. */
   promptSnapshot?: string;
+  /**
+   * The speakers the result was generated with; absent when it read none, and on artifacts
+   * stored before speakers were read. It is not an input: freshness never looks at it.
+   */
+  speakerContext?: SpeakerContextSnapshot;
   createdAt: number;
 }
 
@@ -186,5 +192,7 @@ export interface RollupPartial {
   /** The prompt versions that produced this partial; absent on partials stored before it was recorded. */
   promptRefs?: PromptRef[];
   promptSnapshot: string;
+  /** As on the summary revision the partial belongs to. */
+  speakerContext?: SpeakerContextSnapshot;
   createdAt: number;
 }

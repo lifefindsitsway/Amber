@@ -1,8 +1,22 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type SyntheticEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { SUBTITLE_ASS_EM_RATIO, SUBTITLE_NUDGE_BP, SUBTITLE_NUDGE_FAST_BP, SUBTITLE_WRAP_RATIO } from "../../shared/defaults.ts";
 import type { BurnMode } from "../../shared/enums.ts";
-import { pictureRect, placementFromBlock, sliceIndexAt, subtitleGlyphText, type Rect, type Size, type TimedSubtitle } from "../../shared/subtitle-geometry.ts";
+import {
+  pictureRect,
+  placementFromBlock,
+  sliceIndexAt,
+  speakerLabelFontSize,
+  subtitleGlyphText,
+  subtitleUnitLines,
+  type Rect,
+  type Size,
+  type SlicedSubtitleUnit,
+  type SlicedUnitSubtitle,
+  type SubtitleUnit,
+  type TimedSubtitle,
+  type UnitSubtitle,
+} from "../../shared/subtitle-geometry.ts";
 import { BASIS_POINTS, boxedLines, lineBoxPadding, type SubtitleAppearance, type SubtitlePlacement } from "../../shared/subtitle-style.ts";
 import { hasCommandModifier } from "../shortcut-registry.tsx";
 import { SUBTITLE_FONT_STACK } from "./subtitle-font.ts";
@@ -58,6 +72,11 @@ export interface SubtitleTrackModel {
    * sentences active during it in ordinal order.
    */
   slices: readonly TimedSubtitle[];
+  /**
+   * With speaker labels on, the same slices with every sentence kept as a unit of its own
+   * and its label; the overlay then draws these instead of `slices`. Absent with labels off.
+   */
+  units?: readonly SlicedUnitSubtitle[];
   /** The bundled font could not be loaded, so the preview uses a system font. */
   fontFallback: boolean;
   appearance: SubtitleAppearance;
@@ -108,25 +127,125 @@ export function usePictureRect(video: HTMLVideoElement | null, audioOnly: boolea
   return rect;
 }
 
+const NO_CUES: readonly string[] = [];
+
+/** A cue of a slice as seeks follow it: an identity that survives re-reading the same subtitles, and whether it can carry a name at all. */
+interface SliceCue {
+  id: string;
+  nameable: boolean;
+}
+
+/** Where a slice clock stands: the slice on screen and, when seeks are tracked, the cues on screen holding a seek's name. */
+interface ClockState<T> {
+  slices: readonly T[];
+  index: number;
+  sought: readonly string[];
+}
+
+/**
+ * What a seek-following clock knows about the screen. It outlives a change of the slices
+ * followed, so re-reading the same subtitles (a rename, a new avatar) neither adds nor
+ * removes a name on a cue already on screen, and a seek still waiting for its cue keeps waiting.
+ */
+interface SeekMemory {
+  /** The cues last shown. */
+  onScreen: readonly string[];
+  /** The cues on screen holding a seek's name. */
+  sought: readonly string[];
+  /** While the latest seek has named no cue yet: the cues on screen when it began that have stayed on screen ever since. */
+  kept: ReadonlySet<string> | undefined;
+  /** The time the seek in progress was taken at, so the `seeking` event of a seek a frame already took does not take it again. */
+  seekAt: number | undefined;
+}
+
+const freshSeekMemory = (): SeekMemory => ({ onScreen: NO_CUES, sought: NO_CUES, kept: undefined, seekAt: undefined });
+
+const sameCues = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((cue, index) => cue === b[index]);
+
 /**
  * The slice on screen. While playing, the time is read once per presented video frame
  * (`requestVideoFrameCallback`, or an animation frame where there is none or no picture);
  * paused, it is re-read on the events that move the time. State changes only when the slice
  * does, so playback does not re-render the player every frame.
+ *
+ * With `cuesOf` (the cues of a slice) it also follows seeks by cue: after each seek, the
+ * first cue to newly appear that can carry a name holds the seek's name until it leaves the
+ * screen, whether it appears at the landing point or later. Cues on screen when the seek
+ * began that stay on screen keep what they had, so a drag within one cue neither adds nor
+ * removes a name, and the next cue to appear after it is the new one; a cue that leaves the
+ * screen after the seek is new when it comes back. A later seek replaces an earlier one still
+ * waiting. Slices followed this way are taken up before paint, so a re-read never flashes
+ * the subtitles away.
  */
-export function useSubtitleClock(video: HTMLVideoElement | null, slices: readonly TimedSubtitle[], enabled: boolean, audioOnly: boolean): TimedSubtitle | undefined {
-  const [shown, setShown] = useState<{ slices: readonly TimedSubtitle[]; index: number }>({ slices, index: -1 });
-  useEffect(() => {
-    if (video === null || !enabled) return undefined;
+function useSliceClock<T extends { startMs: number; endMs: number }>(
+  video: HTMLVideoElement | null,
+  slices: readonly T[],
+  enabled: boolean,
+  audioOnly: boolean,
+  cuesOf?: (slice: T) => readonly SliceCue[],
+): { index: number; sought: readonly string[] } | undefined {
+  const [shown, setShown] = useState<ClockState<T>>({ slices, index: -1, sought: NO_CUES });
+  const memory = useRef<SeekMemory>(freshSeekMemory());
+  // Whether seeks are followed is fixed per call site, so the hook order never changes.
+  const useClockEffect = cuesOf === undefined ? useEffect : useLayoutEffect;
+  useClockEffect(() => {
+    if (video === null || !enabled) {
+      // Subtitles not shown have left the screen: shown again, every cue is new.
+      memory.current = freshSeekMemory();
+      return undefined;
+    }
     let index = Number.NaN;
+    let sought = NO_CUES;
     let handle: number | undefined;
     let byVideoFrame = false;
     let stopped = false;
+    const takeSeek = (): void => {
+      const state = memory.current;
+      state.kept = new Set(state.onScreen);
+      state.seekAt = video.currentTime;
+    };
     const update = (): void => {
+      let took = false;
+      if (cuesOf !== undefined) {
+        // The time moves before the `seeking` event is dispatched, so a frame in between can
+        // see the new time first; it then takes the seek, judged by what was on screen before.
+        if (!video.seeking) memory.current.seekAt = undefined;
+        else if (video.currentTime !== memory.current.seekAt) {
+          takeSeek();
+          took = true;
+        }
+      }
       const next = sliceIndexAt(slices, video.currentTime * 1000);
-      if (next === index) return;
+      if (next === index && !took) return;
+      if (cuesOf === undefined) {
+        index = next;
+        setShown({ slices, index: next, sought: NO_CUES });
+        return;
+      }
+      const cues = next >= 0 ? cuesOf(slices[next] as T) : [];
+      const ids = cues.map((cue) => cue.id);
+      const state = memory.current;
+      const held = state.sought.filter((id) => ids.includes(id));
+      let kept = state.kept === undefined ? undefined : new Set([...state.kept].filter((id) => ids.includes(id)));
+      if (kept !== undefined) {
+        const waiting = kept;
+        const fresh = cues.find((cue) => cue.nameable && !waiting.has(cue.id));
+        if (fresh !== undefined) {
+          if (!held.includes(fresh.id)) held.push(fresh.id);
+          kept = undefined;
+        }
+      }
+      state.onScreen = ids;
+      state.sought = held;
+      state.kept = kept;
+      if (next === index && sameCues(held, sought)) return;
       index = next;
-      setShown({ slices, index: next });
+      sought = held;
+      setShown({ slices, index: next, sought: held });
+    };
+    const onSeeking = (): void => {
+      if (cuesOf !== undefined && !(video.seeking && video.currentTime === memory.current.seekAt)) takeSeek();
+      update();
     };
     const cancel = (): void => {
       if (handle === undefined) return;
@@ -154,13 +273,14 @@ export function useSubtitleClock(video: HTMLVideoElement | null, slices: readonl
       cancel();
       update();
     };
-    const moved = ["seeking", "seeked", "loadedmetadata", "timeupdate", "emptied"] as const;
+    const moved = ["seeked", "loadedmetadata", "timeupdate", "emptied"] as const;
     update();
     if (!video.paused) schedule();
     video.addEventListener("play", onPlay);
     video.addEventListener("playing", onPlay);
     video.addEventListener("pause", onStop);
     video.addEventListener("ended", onStop);
+    video.addEventListener("seeking", onSeeking);
     for (const name of moved) video.addEventListener(name, update);
     return () => {
       stopped = true;
@@ -169,11 +289,50 @@ export function useSubtitleClock(video: HTMLVideoElement | null, slices: readonl
       video.removeEventListener("playing", onPlay);
       video.removeEventListener("pause", onStop);
       video.removeEventListener("ended", onStop);
+      video.removeEventListener("seeking", onSeeking);
       for (const name of moved) video.removeEventListener(name, update);
     };
-  }, [video, slices, enabled, audioOnly]);
+  }, [video, slices, enabled, audioOnly, cuesOf]);
   // A slice index from the previous track never names a cue of the new one.
-  return enabled && shown.slices === slices && shown.index >= 0 ? slices[shown.index] : undefined;
+  return enabled && shown.slices === slices && shown.index >= 0 ? { index: shown.index, sought: shown.sought } : undefined;
+}
+
+/** The slice on screen; see `useSliceClock`. */
+export function useSubtitleClock(video: HTMLVideoElement | null, slices: readonly TimedSubtitle[], enabled: boolean, audioOnly: boolean): TimedSubtitle | undefined {
+  const at = useSliceClock(video, slices, enabled, audioOnly);
+  return at === undefined ? undefined : slices[at.index];
+}
+
+/** A cue's identity across re-reads of the same subtitles: its place and its lines, never its label, so a rename keeps it. */
+const unitId = (unit: SlicedSubtitleUnit): string => JSON.stringify([unit.cue, unit.original ?? null, unit.translation ?? null]);
+
+const unitCues = (slice: SlicedUnitSubtitle): readonly SliceCue[] => slice.units.map((unit) => ({ id: unitId(unit), nameable: unit.label !== undefined }));
+
+/**
+ * The units on screen with the labels they show: each cue's label where the rule shows it,
+ * and also on the cue that holds a seek's name (see `useSliceClock`) — a jump lands
+ * mid-conversation, so whoever starts talking there is named once.
+ */
+export function useUnitSubtitleClock(video: HTMLVideoElement | null, slices: readonly SlicedUnitSubtitle[], enabled: boolean, audioOnly: boolean): UnitSubtitle | undefined {
+  const at = useSliceClock(video, slices, enabled, audioOnly, unitCues);
+  const index = at?.index;
+  const sought = at?.sought ?? NO_CUES;
+  return useMemo(() => {
+    const slice = index === undefined ? undefined : slices[index];
+    if (slice === undefined) return undefined;
+    return {
+      startMs: slice.startMs,
+      endMs: slice.endMs,
+      units: slice.units.map((unit) => {
+        const label = unit.speakerLabel ?? (sought.includes(unitId(unit)) ? unit.label : undefined);
+        return {
+          ...(unit.original === undefined ? {} : { original: unit.original }),
+          ...(unit.translation === undefined ? {} : { translation: unit.translation }),
+          ...(label === undefined ? {} : { speakerLabel: label }),
+        };
+      }),
+    };
+  }, [slices, index, sought]);
 }
 
 /** `#RRGGBB` at `opacityPct` as a CSS colour. */
@@ -198,6 +357,37 @@ const TRANSLATE_Y: Record<SubtitlePlacement["anchor"], string> = { top: "0", cen
 /** Text-box styles that decide where lines wrap: shared by the text and the line-box layer so both wrap alike. */
 const TEXT_LAYOUT: CSSProperties = { textAlign: "center", textWrap: "balance", whiteSpace: "pre-line", fontFamily: SUBTITLE_FONT_STACK };
 
+/** The box around every line, spreading outwards from the text box as libass's `BorderStyle 4` does. */
+function BlockBox(props: { appearance: SubtitleAppearance; unit: number }) {
+  const { background } = props.appearance;
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        position: "absolute",
+        inset: -background.padding * props.unit,
+        zIndex: -1,
+        background: rgba(background.color, background.opacityPct),
+      }}
+      data-testid="subtitle-background"
+    />
+  );
+}
+
+/** A visible line's colour and outline. */
+function inkStyle(color: string, appearance: SubtitleAppearance, unit: number): CSSProperties {
+  return {
+    color,
+    paintOrder: "stroke fill",
+    ...(appearance.outline.enabled ? { WebkitTextStroke: `${appearance.outline.width * 2 * unit}px ${appearance.outline.color}` } : {}),
+  };
+}
+
+/** A line's box in the flow: `size` in 1080p picture pixels, the font sized as libass sizes it. */
+function lineBoxStyle(size: number, unit: number): CSSProperties {
+  return { display: "block", fontSize: size * SUBTITLE_ASS_EM_RATIO * unit, lineHeight: `${size * unit}px` };
+}
+
 /**
  * The text box: the anchored object, sized in 1080p picture pixels scaled to
  * the picture height. A box around every line spreads outwards from it as libass's
@@ -209,40 +399,75 @@ function SubtitleText(props: { slice: TimedSubtitle; appearance: SubtitleAppeara
   const unit = picture.height / 1080;
   const boxed = boxedLines(appearance, props.mode);
   const lines = linesOf(props.slice, appearance);
-  const lineStyle = (kind: LineKind): CSSProperties => {
-    const look = appearance[kind];
-    return { display: "block", fontSize: look.fontSize * SUBTITLE_ASS_EM_RATIO * unit, lineHeight: `${look.fontSize * unit}px` };
-  };
+  const lineStyle = (kind: LineKind): CSSProperties => lineBoxStyle(appearance[kind].fontSize, unit);
   return (
     <div style={{ ...TEXT_LAYOUT, position: "relative", isolation: "isolate", maxWidth: SUBTITLE_WRAP_RATIO * picture.width }} data-testid="subtitle-text">
-      {boxed === "block" ? (
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            inset: -appearance.background.padding * unit,
-            zIndex: -1,
-            background: rgba(appearance.background.color, appearance.background.opacityPct),
-          }}
-          data-testid="subtitle-background"
-        />
-      ) : null}
-      {lines.map((line) => {
-        const style: CSSProperties = {
-          ...lineStyle(line.kind),
-          color: appearance[line.kind].color,
-          paintOrder: "stroke fill",
-          ...(appearance.outline.enabled ? { WebkitTextStroke: `${appearance.outline.width * 2 * unit}px ${appearance.outline.color}` } : {}),
-        };
-        return (
-          <span key={line.kind} style={style} data-line={line.kind}>
-            {line.text}
-          </span>
-        );
-      })}
+      {boxed === "block" ? <BlockBox appearance={appearance} unit={unit} /> : null}
+      {lines.map((line) => (
+        <span key={line.kind} style={{ ...lineStyle(line.kind), ...inkStyle(appearance[line.kind].color, appearance, unit) }} data-line={line.kind}>
+          {line.text}
+        </span>
+      ))}
       {/* After the text so a lookup by line finds the visible text first; z-index -1 in the isolated text box still paints it beneath. */}
       {(boxed === "original" || boxed === "translation") && lines.some((line) => line.kind === boxed) ? (
-        <LineBoxLayer lines={lines} boxed={boxed} appearance={appearance} unit={unit} lineStyle={lineStyle} />
+        <LineBoxLayer
+          rows={lines.map((line) => ({ line: line.kind, text: line.text, boxed: line.kind === boxed, style: lineStyle(line.kind) }))}
+          appearance={appearance}
+          unit={unit}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** One drawn row of labelled subtitles: a speaker label heads the line after it. */
+type UnitRow = { kind: LineKind; text: string; unit: number } | { kind: "speaker"; text: string; unit: number; heads: LineKind };
+
+/** The rows of the units on screen, unit by unit: the label (when shown), then the lines in the user's order. */
+function rowsOf(units: readonly SubtitleUnit[], appearance: SubtitleAppearance): UnitRow[] {
+  return units.flatMap((unit, index) => {
+    const lines = subtitleUnitLines(unit, appearance.bilingualOrder);
+    const rows: UnitRow[] = lines.map(({ line, text }) => ({ kind: line, text, unit: index }));
+    const first = lines[0];
+    return first === undefined || unit.speakerLabel === undefined ? rows : [{ kind: "speaker", text: unit.speakerLabel, unit: index, heads: first.line }, ...rows];
+  });
+}
+
+/**
+ * The text box with speaker labels: the units stacked in sentence order, each its label
+ * line and its own lines, laid out like `SubtitleText`. A label copies the first line its
+ * own unit shows — `SUBTITLE_SPEAKER_LABEL_SCALE` times its size, its colour and the subtitle
+ * outline, never a speaker colour — as the exported label styles do, so a unit without a
+ * translation labels in the original's look even when the translation goes first. A block box holds the labels too; a one-line box boxes a label exactly when it boxes
+ * the line the label heads, and the hidden layer repeats the labels so it wraps as the text.
+ */
+function UnitsText(props: { units: readonly SubtitleUnit[]; appearance: SubtitleAppearance; picture: Rect; mode: BurnMode }) {
+  const { appearance, picture } = props;
+  const unit = picture.height / 1080;
+  const boxed = boxedLines(appearance, props.mode);
+  const rows = rowsOf(props.units, appearance);
+  const look = (row: UnitRow): LineKind => (row.kind === "speaker" ? row.heads : row.kind);
+  const rowStyle = (row: UnitRow): CSSProperties =>
+    lineBoxStyle(row.kind === "speaker" ? speakerLabelFontSize(appearance[row.heads].fontSize) : appearance[row.kind].fontSize, unit);
+  return (
+    <div style={{ ...TEXT_LAYOUT, position: "relative", isolation: "isolate", maxWidth: SUBTITLE_WRAP_RATIO * picture.width }} data-testid="subtitle-text">
+      {boxed === "block" ? <BlockBox appearance={appearance} unit={unit} /> : null}
+      {rows.map((row, index) => (
+        <span
+          key={index}
+          style={{ ...rowStyle(row), ...inkStyle(appearance[look(row)].color, appearance, unit) }}
+          data-line={row.kind}
+          data-unit={row.unit}
+        >
+          {row.text}
+        </span>
+      ))}
+      {(boxed === "original" || boxed === "translation") && rows.some((row) => row.kind === boxed) ? (
+        <LineBoxLayer
+          rows={rows.map((row) => ({ line: row.kind, text: row.text, boxed: look(row) === boxed, style: rowStyle(row) }))}
+          appearance={appearance}
+          unit={unit}
+        />
       ) : null}
     </div>
   );
@@ -250,25 +475,19 @@ function SubtitleText(props: { slice: TimedSubtitle; appearance: SubtitleAppeara
 
 /**
  * A box around one bilingual line, mirroring the export's `BorderStyle 3`: an
- * invisible copy of the lines lies under the text and wraps exactly as it does, and the chosen
- * line's inline background, spread by a box shadow and cloned on every wrapped visual line,
- * gives one box per visual line, all of them beneath all the text, the padding never
+ * invisible copy of the rows lies under the text and wraps exactly as it does, and each
+ * boxed row's inline background, spread by a box shadow and cloned on every wrapped visual
+ * line, gives one box per visual line, all of them beneath all the text, the padding never
  * changing where lines wrap.
  */
-function LineBoxLayer(props: {
-  lines: ReadonlyArray<{ kind: LineKind; text: string }>;
-  boxed: LineKind;
-  appearance: SubtitleAppearance;
-  unit: number;
-  lineStyle: (kind: LineKind) => CSSProperties;
-}) {
+function LineBoxLayer(props: { rows: ReadonlyArray<{ line: string; text: string; boxed: boolean; style: CSSProperties }>; appearance: SubtitleAppearance; unit: number }) {
   const { background } = props.appearance;
   const fill = rgba(background.color, background.opacityPct);
   return (
     <div aria-hidden="true" style={{ ...TEXT_LAYOUT, position: "absolute", inset: 0, zIndex: -1, pointerEvents: "none", color: "transparent" }}>
-      {props.lines.map((line) => (
-        <span key={line.kind} style={props.lineStyle(line.kind)}>
-          {line.kind === props.boxed ? (
+      {props.rows.map((row, index) => (
+        <span key={index} style={row.style}>
+          {row.boxed ? (
             <span
               style={{
                 background: fill,
@@ -277,12 +496,12 @@ function LineBoxLayer(props: {
                 WebkitBoxDecorationBreak: "clone",
               }}
               data-testid="subtitle-line-background"
-              data-line={line.kind}
+              data-line={row.line}
             >
-              {line.text}
+              {row.text}
             </span>
           ) : (
-            line.text
+            row.text
           )}
         </span>
       ))}
@@ -290,9 +509,14 @@ function LineBoxLayer(props: {
   );
 }
 
+/** What the block draws: a plain slice, or units with their labels when speaker labels are on. */
+type ShownSubtitle = TimedSubtitle | UnitSubtitle;
+
+const NO_UNITS: readonly SlicedUnitSubtitle[] = [];
+
 interface DragState {
   pointerId: number;
-  slice: TimedSubtitle;
+  slice: ShownSubtitle;
   size: Size;
   /** Where the pointer grabbed the block, from its top-left corner: the block never snaps to the pointer. */
   grab: { x: number; y: number };
@@ -324,11 +548,13 @@ export function SubtitleOverlay(props: {
   const { model, picture } = props;
   const burnMode: BurnMode | undefined = model.mode === "off" ? undefined : model.mode;
   const on = burnMode !== undefined;
-  const live = useSubtitleClock(props.video, model.slices, on, props.audioOnly);
+  const units = model.units;
+  const live = useSubtitleClock(props.video, model.slices, on && units === undefined, props.audioOnly);
+  const liveUnits = useUnitSubtitleClock(props.video, units ?? NO_UNITS, on && units !== undefined, props.audioOnly);
   const frameRef = useRef<HTMLDivElement>(null);
   const blockRef = useRef<HTMLDivElement>(null);
   const drag = useRef<DragState | undefined>(undefined);
-  const [frozen, setFrozen] = useState<TimedSubtitle | undefined>(undefined);
+  const [frozen, setFrozen] = useState<ShownSubtitle | undefined>(undefined);
   const [draft, setDraftState] = useState<SubtitlePlacement | undefined>(undefined);
   // Pointer events can outrun rendering; the release commits the last position, not the last rendered one.
   const draftRef = useRef<SubtitlePlacement | undefined>(undefined);
@@ -339,13 +565,16 @@ export function SubtitleOverlay(props: {
   const [outOfBounds, setOutOfBounds] = useState(false);
   const editing = props.mode === "edit";
 
-  const sample: TimedSubtitle = {
-    startMs: 0,
-    endMs: 0,
+  const sampleLines = {
     ...(model.mode === "translation" ? {} : { original: t("contentView.player.subtitles.sample.original") }),
     ...(model.mode === "original" ? {} : { translation: t("contentView.player.subtitles.sample.translation") }),
   };
-  const slice = frozen ?? live ?? (props.mode === "view" ? undefined : sample);
+  // With labels on, the sample shows a label too, so their look can be set before anyone speaks.
+  const sample: ShownSubtitle =
+    units === undefined
+      ? { startMs: 0, endMs: 0, ...sampleLines }
+      : { startMs: 0, endMs: 0, units: [{ ...sampleLines, speakerLabel: t("speakerIdentity.unnamed", { ordinal: 1 }) }] };
+  const slice = frozen ?? (units === undefined ? live : liveUnits) ?? (props.mode === "view" ? undefined : sample);
   const placement = draft ?? model.placement;
 
   useLayoutEffect(() => {
@@ -461,7 +690,11 @@ export function SubtitleOverlay(props: {
           data-testid="subtitle-block"
           data-anchor={placement.anchor}
         >
-          <SubtitleText slice={slice} appearance={model.appearance} picture={picture} mode={burnMode} />
+          {"units" in slice ? (
+            <UnitsText units={slice.units} appearance={model.appearance} picture={picture} mode={burnMode} />
+          ) : (
+            <SubtitleText slice={slice} appearance={model.appearance} picture={picture} mode={burnMode} />
+          )}
         </div>
       )}
       {editing && outOfBounds ? (

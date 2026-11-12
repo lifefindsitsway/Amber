@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { BUILTIN_SUMMARY_TEMPLATES } from "../../../src/server/domain/prompts.ts";
+import { attributionDigest, speakerLabels } from "../../../src/server/domain/speaker-context.ts";
+import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import type { SearchResultDto } from "../../../src/shared/dto/search.ts";
+import type { SegmentId } from "../../../src/shared/ids.ts";
 import { evenCues } from "../../fixtures/platform/subtitles.ts";
 import { createDemoStack, type DemoStack } from "../../fixtures/pipeline/demo-stack.ts";
 import { BOB, createHarness, LOCAL, LOCAL_TOKEN, taskOf, waitFor, type Harness } from "../../fixtures/pipeline/harness.ts";
@@ -190,5 +194,177 @@ describe("incremental projection equals a rebuild", () => {
     expect(h.search.search(LOCAL, { q: "向量数据库" }).segments).toHaveLength(1);
     expect(h.search.search(LOCAL, { q: "检索第二讲" }).contents).toEqual([]);
     expect(h.search.search(LOCAL, { q: "修订" }).collections).toHaveLength(1);
+  });
+});
+
+describe("SearchService: speakers", () => {
+  const CORE = BUILTIN_SUMMARY_TEMPLATES[0] as (typeof BUILTIN_SUMMARY_TEMPLATES)[number];
+
+  /**
+   * A Content titled `title` whose primary gives each line to a speaker (`undefined` =
+   * unassigned). `speakers` are registered by index; `extra` revisions are stored beside the
+   * primary without becoming it.
+   */
+  function speakerContent(
+    h: Harness,
+    input: { title: string; lines: Array<[string, number | undefined]>; speakers: Array<{ name?: string; confirmed?: boolean }>; userId?: string },
+  ) {
+    const userId = input.userId ?? LOCAL.userId;
+    const contentId = h.newId();
+    const revisionId = h.newId();
+    const speakerIds = input.speakers.map(() => h.newId());
+    const segments: TranscriptSegment[] = input.lines.map(([text, speaker], ordinal) => ({
+      id: h.newId() as SegmentId,
+      revisionId,
+      ordinal,
+      startMs: ordinal * 1000,
+      endMs: ordinal * 1000 + 900,
+      text,
+      ...(speaker === undefined ? {} : { speakerId: speakerIds[speaker] as string }),
+      sourceSegmentIds: [],
+    }));
+    const revision: TranscriptRevision = {
+      id: revisionId,
+      contentId,
+      kind: "asr",
+      language: "zh-CN",
+      timingFidelity: "exact_words",
+      generation: { kind: "asr", asrProfileId: "a", modelId: "m" },
+      segmentCount: segments.length,
+      createdAt: 1,
+    };
+    h.repository.withTransaction((scope) => {
+      scope.contents.insert({ id: contentId, userId, source: { kind: "local" }, title: input.title, processingStatus: "succeeded", createdAt: 1, updatedAt: 1 });
+      scope.speakers.insert(
+        userId,
+        contentId,
+        input.speakers.map((speaker, index) => ({
+          id: speakerIds[index] as string,
+          ...(speaker.name === undefined ? {} : { name: speaker.name }),
+          ...(speaker.confirmed === true ? { nameConfirmedAt: 1 } : {}),
+        })),
+        1,
+      );
+      scope.transcripts.insertRevision(userId, revision, segments);
+      scope.contents.setPrimaryTranscript(userId, contentId, revisionId, 2);
+      scope.search.syncContent(userId, contentId);
+    });
+    return { contentId, revisionId, speakerIds, segments };
+  }
+
+  it("a sentence hit carries who it is given to, as now, and whether the revision's speakers were reviewed", () => {
+    const h = harness();
+    const c = speakerContent(h, {
+      title: "访谈",
+      lines: [
+        ["主持人问梯度下降", 0],
+        ["嘉宾答梯度下降", 1],
+        ["旁白说梯度下降", undefined],
+      ],
+      speakers: [{ name: "主持人" }, {}],
+    });
+    const speakerOf = () => new Map(h.search.search(LOCAL, { q: "梯度下降" }).segments.map((hit) => [hit.segmentId, hit.speaker]));
+    const first = speakerOf();
+    expect(first.get(c.segments[0]?.id as SegmentId)).toEqual({ id: c.speakerIds[0], ordinal: 1, name: "主持人", colorIndex: expect.any(Number), confirmed: false });
+    expect(first.get(c.segments[1]?.id as SegmentId)).toEqual({ id: c.speakerIds[1], ordinal: 2, colorIndex: expect.any(Number), confirmed: false });
+    expect(first.has(c.segments[2]?.id as SegmentId)).toBe(true);
+    expect(first.get(c.segments[2]?.id as SegmentId)).toBeUndefined();
+    // Reviewing and renaming show at once: nothing about speakers is indexed.
+    h.repository.withTransaction((scope) => {
+      scope.speakerConfirmations.set(LOCAL.userId, c.contentId, c.revisionId, 3);
+      scope.speakers.update(LOCAL.userId, c.contentId, c.speakerIds[1] as string, { name: "嘉宾甲" }, 3);
+    });
+    const after = speakerOf();
+    expect(after.get(c.segments[0]?.id as SegmentId)?.confirmed).toBe(true);
+    expect(after.get(c.segments[1]?.id as SegmentId)).toMatchObject({ name: "嘉宾甲", confirmed: true });
+  });
+
+  it("a summary hit carries the state of the speakers it was generated with, and stays found in its place whatever the state", () => {
+    const h = harness();
+    const c = speakerContent(h, { title: "访谈", lines: [["主持人开场", 0], ["嘉宾回答", 1]], speakers: [{ name: "主持人", confirmed: true }, {}] });
+    const plain = seedContent(h, { title: "讲座", lines: ["一句"] });
+    h.repository.withTransaction((scope) => {
+      scope.summaryTemplates.syncBuiltin(
+        BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, name: template.nameKey, versions: [{ version: template.version, prompt: template.prompt }] })),
+        1,
+      );
+      const store = (contentId: string, transcriptRevisionId: string, body: string, speakerContext?: ReturnType<typeof snapshot>) => {
+        const revisionId = h.newId();
+        const { artifactId } = scope.summaries.insertRevision(LOCAL.userId, {
+          contentId,
+          templateId: CORE.id,
+          artifactId: h.newId(),
+          revision: {
+            id: revisionId,
+            provenance: {
+              inputs: [{ kind: "transcriptRevision", id: transcriptRevisionId }],
+              promptRef: { id: CORE.id, version: CORE.version },
+              ...(speakerContext === undefined ? {} : { speakerContext }),
+              createdAt: 1,
+            },
+            quality: "normal",
+            body,
+            citations: [],
+          },
+        });
+        scope.summaries.setCurrent(LOCAL.userId, artifactId, revisionId);
+        scope.search.syncContent(LOCAL.userId, contentId);
+      };
+      const snapshot = () => ({
+        version: 1 as const,
+        rules: { id: "speaker.rules", version: 1 },
+        attributionDigest: attributionDigest(c.segments),
+        speakers: speakerLabels(scope.speakers.list(LOCAL.userId, c.contentId)),
+      });
+      store(c.contentId, c.revisionId, "访谈总结：检索增强生成的观点", snapshot());
+      store(plain.contentId, plain.revisionId as string, "讲座总结：检索增强生成的原理");
+    });
+    const states = () => h.search.search(LOCAL, { q: "检索增强生成" }).summaries.map((hit) => [hit.contentId, hit.speakerContextState] as const);
+    // The interview's primary is not reviewed yet.
+    const before = states();
+    expect(new Map(before)).toEqual(new Map([[c.contentId, "unconfirmed"], [plain.contentId, undefined]]));
+    expect(h.search.search(LOCAL, { q: "检索增强生成" }).summaries.find((hit) => hit.contentId === plain.contentId)).not.toHaveProperty("speakerContextState");
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, c.contentId, c.revisionId, 3));
+    const after = states();
+    expect(after.map(([contentId]) => contentId)).toEqual(before.map(([contentId]) => contentId));
+    expect(new Map(after).get(c.contentId)).toBe("consistent");
+  });
+
+  it("names a matching speaker once per Content, only the owner's, outside the trash and given sentences by the primary", async () => {
+    const h = harness();
+    const a = speakerContent(h, { title: "第一讲", lines: [["开场", 0], ["提问", 1], ["回答", 0]], speakers: [{ name: "张伟", confirmed: true }, { name: "李雷" }] });
+    const b = speakerContent(h, { title: "第二讲", lines: [["开场", 0]], speakers: [{ name: "张伟" }, { name: "张伟伟" }] });
+    const trashed = speakerContent(h, { title: "回收站里", lines: [["开场", 0]], speakers: [{ name: "张伟" }] });
+    speakerContent(h, { title: "别人的", lines: [["开场", 0]], speakers: [{ name: "张伟" }], userId: BOB.userId });
+    h.repository.withTransaction((scope) => scope.contents.trash(LOCAL.userId, trashed.contentId, 5));
+    const course = h.collections.create(LOCAL, { name: "课程" });
+    await h.collections.addItem(LOCAL, course.id, { contentId: a.contentId });
+
+    const result = h.search.search(LOCAL, { q: "张伟" });
+    // 「张伟伟」 of the second lecture is registered but says nothing in its primary.
+    expect(result.speakers).toEqual([
+      { contentId: a.contentId, contentTitle: "第一讲", speakerId: a.speakerIds[0], ordinal: 1, name: "张伟", colorIndex: expect.any(Number), sentences: 2 },
+      { contentId: b.contentId, contentTitle: "第二讲", speakerId: b.speakerIds[0], ordinal: 1, name: "张伟", colorIndex: expect.any(Number), sentences: 1 },
+    ]);
+    expect(h.search.search(LOCAL, { q: "张伟", scope: "library" }).speakers).toEqual(result.speakers);
+    // A collection scope has no speaker group; nor does a query no name contains.
+    expect(h.search.search(LOCAL, { q: "张伟", scope: course.id })).not.toHaveProperty("speakers");
+    expect(h.search.search(LOCAL, { q: "开场" })).not.toHaveProperty("speakers");
+    expect(h.search.search(BOB, { q: "张伟" }).speakers).toEqual([expect.objectContaining({ name: "张伟", contentTitle: "别人的" })]);
+    // Names are not in the projection: they find no sentence, title or summary.
+    const byName = h.search.search(LOCAL, { q: "李雷" });
+    expect([byName.contents, byName.segments, byName.summaries, byName.collections]).toEqual([[], [], [], []]);
+    expect(byName.speakers?.map((hit) => hit.speakerId)).toEqual([a.speakerIds[1]]);
+    expect(h.db.prepare("SELECT count(*) AS n FROM search_index WHERE text LIKE '%张伟%' OR text LIKE '%李雷%'").get()).toEqual({ n: 0 });
+  });
+
+  it("matches names literally: every term, LIKE wildcards taken as text", () => {
+    const h = harness();
+    const c = speakerContent(h, { title: "讲座", lines: [["一", 0], ["二", 1]], speakers: [{ name: "Zhang Wei" }, { name: "100%_王" }] });
+    expect(h.search.search(LOCAL, { q: "zhang wei" }).speakers?.map((hit) => hit.speakerId)).toEqual([c.speakerIds[0]]);
+    expect(h.search.search(LOCAL, { q: "zhang li" })).not.toHaveProperty("speakers");
+    expect(h.search.search(LOCAL, { q: "%_" }).speakers?.map((hit) => hit.speakerId)).toEqual([c.speakerIds[1]]);
+    expect(h.search.search(LOCAL, { q: "0%" }).speakers?.map((hit) => hit.speakerId)).toEqual([c.speakerIds[1]]);
+    expect(h.search.search(LOCAL, { q: "_王x" })).not.toHaveProperty("speakers");
   });
 });

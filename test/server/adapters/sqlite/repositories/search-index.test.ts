@@ -3,6 +3,7 @@ import type { SearchIndexQuery } from "../../../../../src/server/ports/repositor
 import { insertSummary } from "../../../../fixtures/pipeline/summary-data.ts";
 import { BOB, createHarness, LOCAL, type Harness } from "../../../../fixtures/pipeline/harness.ts";
 import { projectionSnapshot, seedContent } from "../../../../fixtures/search/corpus.ts";
+import { fixedSpeakerId, seedContent as seedSpeakerContent } from "../../../../fixtures/pipeline/speaker-context.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -95,6 +96,21 @@ describe("sqlite search index", () => {
     expect(h.repository.withTransaction((scope) => scope.search.matchSegments(LOCAL.userId, seeded.revisionId as string, "啊？", 2))).toEqual([]);
   });
 
+  it("ranks chat retrieval within some speakers' sentences in the query itself, so the limit counts only theirs", () => {
+    const h = harness();
+    // The first speaker's sentences match better, so a filter applied after the limit would leave nothing.
+    const texts = Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? `重排序模型重排序模型第${i}句` : `重排序模型在第${i}句`));
+    const { contentId, revision, segments } = seedSpeakerContent(h, { texts, speakers: [{}, {}], assign: (i) => i % 2 });
+    h.repository.withTransaction((scope) => scope.search.syncContent(LOCAL.userId, contentId));
+    const match = (speakerIds?: string[]) =>
+      h.repository.withTransaction((scope) => scope.search.matchSegments(LOCAL.userId, revision.id, "重排序模型", 5, speakerIds === undefined ? undefined : { speakerIds }));
+    const speakerOf = new Map(segments.map((segment) => [segment.id as string, segment.speakerId]));
+    expect(match().map((id) => speakerOf.get(id))).toEqual(Array(5).fill(fixedSpeakerId(0)));
+    expect(match([fixedSpeakerId(1)]).map((id) => speakerOf.get(id))).toEqual(Array(5).fill(fixedSpeakerId(1)));
+    expect(match([fixedSpeakerId(0), fixedSpeakerId(1)])).toEqual(match());
+    expect(match([])).toEqual([]);
+  });
+
   it("removes a Content's or Collection's rows and rebuilds everything from the business tables", () => {
     const h = harness();
     const seeded = seedContent(h, { title: "要删除的内容", lines: ["一句话"] });
@@ -139,5 +155,45 @@ describe("sqlite search index", () => {
       scope.search.syncContent(LOCAL.userId, seeded.contentId);
     });
     expect(query(h, { terms: ["回收站"], mode: "like" }).map((hit) => hit.kind)).toEqual(["title"]);
+  });
+});
+
+describe("sqlite search index: speakers", () => {
+  /** Three speakers (the third unnamed) over nine sentences: 4, 3 and 1 of them, one unassigned. */
+  function seeded(h: Harness) {
+    const texts = Array.from({ length: 9 }, (_, i) => `检索增强生成第${i}句`);
+    const assign = (i: number) => (i < 4 ? 0 : i < 7 ? 1 : i === 7 ? 2 : undefined);
+    const seed = seedSpeakerContent(h, { texts, speakers: [{ name: "张伟" }, { name: "张伟明" }, {}], assign });
+    h.repository.withTransaction((scope) => scope.search.syncContent(LOCAL.userId, seed.contentId));
+    return seed;
+  }
+
+  it("joins each matched sentence's speaker as it is now, in both match modes", () => {
+    const h = harness();
+    const seed = seeded(h);
+    for (const mode of ["fts", "like"] as const) {
+      const hits = query(h, { terms: mode === "fts" ? ["检索增强生成"] : ["检索"], mode });
+      const bySegment = new Map(hits.flatMap((hit) => (hit.kind === "segment" ? [[hit.segmentId, hit.speaker]] : [])));
+      expect(bySegment.size).toBe(9);
+      expect(bySegment.get(seed.segments[0]?.id as string)).toEqual({ id: fixedSpeakerId(0), ordinal: 1, name: "张伟", colorIndex: expect.any(Number), confirmed: false });
+      expect(bySegment.get(seed.segments[7]?.id as string)).toEqual({ id: fixedSpeakerId(2), ordinal: 3, colorIndex: expect.any(Number), confirmed: false });
+      expect(bySegment.get(seed.segments[8]?.id as string)).toBeUndefined();
+    }
+    h.repository.withTransaction((scope) => scope.speakerConfirmations.set(LOCAL.userId, seed.contentId, seed.revision.id, 1));
+    expect(query(h, { terms: ["检索增强生成"] }).every((hit) => hit.kind !== "segment" || hit.speaker === undefined || hit.speaker.confirmed)).toBe(true);
+  });
+
+  it("matches named speakers given sentences by the primary, most sentences first, within the limit", () => {
+    const h = harness();
+    const seed = seeded(h);
+    const match = (terms: string[], limit = 20, owner = LOCAL.userId) => h.repository.withTransaction((scope) => scope.search.matchSpeakers(owner, terms, limit));
+    expect(match(["张伟"])).toEqual([
+      { contentId: seed.contentId, speakerId: fixedSpeakerId(0), ordinal: 1, name: "张伟", colorIndex: expect.any(Number), sentences: 4 },
+      { contentId: seed.contentId, speakerId: fixedSpeakerId(1), ordinal: 2, name: "张伟明", colorIndex: expect.any(Number), sentences: 3 },
+    ]);
+    expect(match(["张伟"], 1).map((hit) => hit.speakerId)).toEqual([fixedSpeakerId(0)]);
+    expect(match(["伟", "明"]).map((hit) => hit.speakerId)).toEqual([fixedSpeakerId(1)]);
+    expect(match([])).toEqual([]);
+    expect(match(["张伟"], 20, BOB.userId)).toEqual([]);
   });
 });

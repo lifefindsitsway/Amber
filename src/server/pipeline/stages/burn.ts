@@ -31,6 +31,8 @@ export interface StyledSubtitleRequest {
   style: SubtitleStyle;
   playRes: AssPlayRes;
   textOnly: boolean;
+  /** The speaker labels frozen with the request: label lines never read the names as they are when the export runs. */
+  speakerLabels?: Readonly<Record<string, string>>;
 }
 
 /** The styled ASS text of a Content's revision(s), rendered by the subtitle export service. */
@@ -178,6 +180,7 @@ export class BurnStageExecutor implements StageExecutor {
             style: request.style,
             playRes,
             textOnly,
+            ...(request.speakerLabels === undefined ? {} : { speakerLabels: request.speakerLabels }),
           }),
         ),
       );

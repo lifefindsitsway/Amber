@@ -26,6 +26,16 @@ describe("burnRequestSchema", () => {
   it("refuses a hard-subtitle MKV", () => {
     expect(burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "hard", container: "mkv", style }).success).toBe(false);
   });
+
+  it("refuses speaker labels with MP4 soft subtitles, whose mov_text track keeps no layout, and takes them elsewhere", () => {
+    const labelled = { ...style, appearance: { ...style.appearance, speaker: "change" as const } };
+    const refused = burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "soft", container: "mp4", style: labelled });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues.map((issue) => issue.path)).toContainEqual(["style", "appearance", "speaker"]);
+    expect(burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "soft", container: "mkv", style: labelled }).success).toBe(true);
+    expect(burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "hard", container: "mp4", style: labelled }).success).toBe(true);
+    expect(burnRequestSchema.safeParse({ revisionId: "r1", mode: "original", delivery: "soft", container: "mp4", style }).success).toBe(true);
+  });
 });
 
 describe("cacheMediaInspectRequestSchema / cacheMediaRequestSchema", () => {

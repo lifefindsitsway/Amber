@@ -1,6 +1,10 @@
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import type { SpeakerDto } from "../../../../src/shared/dto/speaker.ts";
 import { draftKey, type DraftSegment } from "../../../../src/web/pages/content/speaker-draft.ts";
 import { leadViews, LeadStore } from "../../../../src/web/pages/content/use-speaker-editing.tsx";
+import { mockApi } from "../../../fixtures/web/render.tsx";
+import { editorRoutes, renderSpeakerEditor, SPEAKER_A, SPEAKER_B, SPEAKER_C } from "../../../fixtures/web/speaker-editor.tsx";
 
 const seg = (id: string): DraftSegment => ({ id, startMs: 0, endMs: 1_000, text: id, sourceSegmentIds: [id] });
 const segments = ["1", "2", "3", "4", "5"].map(seg);
@@ -46,5 +50,19 @@ describe("LeadStore", () => {
     store.set(views);
     store.set(leadViews(segments, resolved, new Set(), undefined, undefined, views));
     expect(calls).toBe(1);
+  });
+});
+
+describe("speakers of comparison transcriptions in the editor", () => {
+  it("are offered in no roster, used or not, while the draft does not name them", async () => {
+    const compared: SpeakerDto = { id: "spk-x", ordinal: 4, colorIndex: 3, used: true, comparisonOnly: true };
+    mockApi(editorRoutes(undefined, [SPEAKER_A, SPEAKER_B, SPEAKER_C, compared]));
+    renderSpeakerEditor();
+    fireEvent.click(await screen.findByTestId("speaker-panel-toggle"));
+    await waitFor(() => expect(screen.getAllByTestId("speaker-panel-row").length).toBeGreaterThan(0));
+    const listed = () => screen.getAllByTestId("speaker-panel-row").map((row) => row.getAttribute("data-speaker-id"));
+    expect(listed()).toEqual(["spk-a", "spk-b"]);
+    fireEvent.click(screen.getByTestId("speaker-panel-others-toggle"));
+    expect(listed()).toEqual(["spk-a", "spk-b", "spk-c"]);
   });
 });

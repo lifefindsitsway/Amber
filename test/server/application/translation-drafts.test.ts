@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { SpeakerContextSnapshot } from "../../../src/server/domain/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import type { TranslationDraftSegment } from "../../../src/shared/dto/translation.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
@@ -37,7 +38,7 @@ function setup() {
     scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, fixture.corrected.revision.id, 2);
   });
   /** A machine translation of the primary, with speakers and paragraph marks, made current. */
-  const machineTranslate = (language: string, createdAt: number): string => {
+  const machineTranslate = (language: string, createdAt: number, speakerContext?: SpeakerContextSnapshot): string => {
     const id = h.newId();
     const segments: TranscriptSegment[] = fixture.corrected.segments.map((source, ordinal) => ({
       id: h.newId() as SegmentId,
@@ -57,7 +58,7 @@ function setup() {
       parentRevisionId: fixture.corrected.revision.id,
       language,
       timingFidelity: "segment_only",
-      generation: { kind: "llm", modelRef: MODEL_REF, promptRef: PROMPT_REF, promptSnapshot: "<prompt>" },
+      generation: { kind: "llm", modelRef: MODEL_REF, promptRef: PROMPT_REF, promptSnapshot: "<prompt>", ...(speakerContext === undefined ? {} : { speakerContext }) },
       segmentCount: segments.length,
       createdAt,
     };
@@ -342,5 +343,26 @@ describe("deleting a Content with drafts of every kind", () => {
     expect(countRows(h.db, "transcript_draft")).toBe(0);
     expect(countRows(h.db, "transcript_revision")).toBe(0);
     expect(h.db.pragma("foreign_key_check")).toEqual([]);
+  });
+});
+
+describe("the origin of a hand-edited translation and speakers", () => {
+  it("carries the speakers the machine translation was given into the origin, across a second edit and after that translation is gone", () => {
+    const { h, contentId, machineTranslate } = setup();
+    const speakerContext: SpeakerContextSnapshot = {
+      version: 1, rules: { id: "speaker.lines", version: 1 }, attributionDigest: "d".repeat(64),
+      speakers: [{ id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" }, { id: "s2", ordinal: 2, label: "发言人 2" }],
+    };
+    const fr = machineTranslate("fr", 12, speakerContext);
+    const editAndCommit = (base: string): TranscriptRevision => {
+      h.translationDrafts.put(LOCAL, contentId, "fr", { baseRevisionId: base, expectedVersion: null, segments: edited(h, base) });
+      return h.translationDrafts.commit(LOCAL, contentId, "fr", { expectedRevisionId: base, draftVersion: 1 }) as TranscriptRevision;
+    };
+    const first = editAndCommit(fr);
+    expect(first.generation).toEqual({ kind: "manual", origin: { revisionId: fr, modelRef: MODEL_REF, promptRef: PROMPT_REF, speakerContext } });
+    const second = editAndCommit(first.id);
+    h.repository.withTransaction((scope) => scope.transcripts.deleteRevision(LOCAL.userId, fr));
+    expect(revisionOf(h, fr)).toBeUndefined();
+    expect(revisionOf(h, second.id)?.generation).toEqual({ kind: "manual", origin: { revisionId: fr, modelRef: MODEL_REF, promptRef: PROMPT_REF, speakerContext } });
   });
 });

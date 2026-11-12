@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { RevisionDeleteDialog, setBlockers, setHistoryArtifacts } from "../../../../src/web/pages/content/revision-actions-dialog.tsx";
+import { RevisionActions, RevisionDeleteDialog, setBlockers, setHistoryArtifacts } from "../../../../src/web/pages/content/revision-actions-dialog.tsx";
 import { revision } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
@@ -225,5 +225,28 @@ describe("RevisionDeleteDialog", () => {
     expect((await screen.findByTestId("revision-blocker-history")).textContent).toBe("历史版本 1 份（可勾选上方选项一并删除）");
     expect((screen.getByTestId("revision-delete-confirm") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("revision-history-artifacts").textContent).toContain("同时删除这些历史版本（1 份）");
+  });
+});
+
+describe("RevisionActions", () => {
+  const asr = (id: string, comparison: boolean) =>
+    revision(id, { kind: "asr", deletable: comparison, generation: { kind: "asr", modelId: "scribe_v2", ...(comparison ? { purpose: "comparison" } : {}) } });
+
+  function open(target: ReturnType<typeof revision>) {
+    mockApi({});
+    renderApp(<RevisionActions contentId="c1" revision={target} revisions={[revision("r1"), target]} primaryId="r1" onDeleted={() => undefined} />);
+    fireEvent.keyDown(screen.getByTestId("revision-actions"), { key: "Enter" });
+  }
+
+  it("offers permanent deletion of a comparison transcription", async () => {
+    open(asr("c-asr", true));
+    expect(await screen.findByTestId("revision-delete")).toBeTruthy();
+    expect(screen.queryByTestId("revision-actions-hint")).toBeNull();
+  });
+
+  it("keeps an ordinary transcription to archiving only", async () => {
+    open(asr("o-asr", false));
+    expect(await screen.findByTestId("revision-actions-hint")).toBeTruthy();
+    expect(screen.queryByTestId("revision-delete")).toBeNull();
   });
 });

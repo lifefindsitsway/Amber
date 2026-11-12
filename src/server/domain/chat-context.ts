@@ -7,7 +7,20 @@ import {
   CONTEXT_SAFETY_RATIO,
   WEB_SEARCH_CONTEXT_MAX_TOKENS,
 } from "../../shared/defaults.ts";
+import type { SpeakerContextState } from "../../shared/dto/speaker-context.ts";
 import type { ContentSourceKind, LlmProtocol } from "../../shared/enums.ts";
+import {
+  allTurnSections,
+  clipNote,
+  historyNotice,
+  historyNoticeFragment,
+  interleavedGroups,
+  sampleSection,
+  turnsShown,
+  type HistoryNotice,
+  type SpeakerClipSection,
+  type SpeakerTurn,
+} from "./chat-speakers.ts";
 import { AliasTable, type AliasEntry } from "./citations.ts";
 import { amberError } from "./errors.ts";
 import type { LlmRequest } from "./llm.ts";
@@ -22,6 +35,7 @@ import {
   outputLanguageName,
   renderPrompt,
 } from "./prompts.ts";
+import type { SpeakerContextSpeaker, SpeakerFraming } from "./speaker-context.ts";
 import { estimateTokens } from "./token-estimate.ts";
 import type { TranscriptSegment } from "./transcript.ts";
 import type { WebSource } from "./web-search.ts";
@@ -88,6 +102,38 @@ export interface ChatTurnText {
   quote?: ChatQuoteText;
   /** Empty when the answer failed before any text. */
   answer: string;
+  /**
+   * How what the answer said about who said what compares with now, by the speakers it was
+   * given; absent when it was given none (it then never calls for a notice).
+   */
+  speakerState?: SpeakerContextState;
+}
+
+/**
+ * How an answer reads the speakers of the revision it is grounded in. Present only when
+ * that revision's speakers were reviewed and are read by speaker; without it a request is
+ * exactly what it would be without speakers.
+ */
+export interface ChatSpeakerReading {
+  /** Header lines over the revision's sentences in `ordinal` order (positions are indexes into that order). */
+  framing: SpeakerFraming;
+  /** The speakers the revision names, with the labels the model sees. */
+  speakers: readonly SpeakerContextSpeaker[];
+  /** Every turn of the revision, in order. */
+  turns: readonly SpeakerTurn[];
+  /**
+   * The people the quoted text and question name, and what was found for them; absent when
+   * there is no question (the context shown before asking), which never takes speaker clips.
+   */
+  person?: {
+    /** Named speaker ids, `ordinal` order. */
+    mentioned: readonly string[];
+    /**
+     * Ranked hits within each named person's sentences (segment ids), searched with the
+     * names taken out; absent when nothing is left to search for.
+     */
+    speakerHits?: Readonly<Record<string, readonly string[]>>;
+  };
 }
 
 export interface ChatChapter {
@@ -140,6 +186,18 @@ export interface ChatPlanInput {
    * answer: the user's own versions or the builtin ones.
    */
   prompts: { system: string; metadata: string };
+  /** The speakers this answer reads; absent: none. */
+  speakers?: ChatSpeakerReading;
+  /**
+   * The speaker states of the current compaction's bases, judged like `ChatTurnText.speakerState`;
+   * absent or empty when there is no compaction or no answer it absorbed read speakers.
+   */
+  compactionSpeakerStates?: readonly SpeakerContextState[];
+  /**
+   * Set while planning: older chat text goes in behind this notice, which opens the
+   * compaction when there is one and otherwise the first history message sent.
+   */
+  historyNotice?: HistoryNotice;
 }
 
 export interface ChatRequestPlan {
@@ -152,6 +210,8 @@ export interface ChatRequestPlan {
   carriedTurns: number;
   /** All uncompacted turns did not fit: compaction is due. */
   overBudget: boolean;
+  /** Retrieval took speaker clips: some person's material is a selection, not all their turns. */
+  speakerClips?: true;
 }
 
 /** A date as `YYYY-MM-DD` in Beijing time (UTC+8), whatever the host's time zone. */
@@ -175,7 +235,8 @@ export function fitWebSources(input: ChatPlanInput, sources: readonly WebSource[
   const { web: _web, ...bare } = input;
   const table = new AliasTable([]);
   const system = bare.revisionId === undefined ? metadataSystem(bare, metadataFacts(bare.metadata), table) : systemText(bare, retrievalContext(bare, table, [], []), table);
-  const recent = bare.turns.slice(-CHAT_RECENT_TURNS_MIN).reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const cost = turnCost(bare);
+  const recent = bare.turns.slice(-CHAT_RECENT_TURNS_MIN).reduce((sum, turn) => sum + cost(turn), 0);
   const avail = chatBudget(bare.contextWindowTokens) - estimateTokens(system) - estimateTokens(currentTurnText(bare, table)) - quoteAllowance(bare) - recent;
   const webBudget = Math.min(WEB_SEARCH_CONTEXT_MAX_TOKENS, Math.floor(avail / 2));
   for (let count = sources.length; count > 0; count -= 1) {
@@ -221,9 +282,38 @@ function commonSlots(input: ChatPlanInput, table: AliasTable): Record<string, st
     today: input.today ?? beijingDate(Date.now()),
     output_language: outputLanguageName(input.outputLanguage),
     model_section: input.model === undefined ? "" : chatModelSection({ ...input.model, profileName: oneLine(input.model.profileName) }),
-    compaction_section: input.compaction === undefined || input.compaction === "" ? "" : `${CHAT_COMPACTION_HEADING}\n${aliased(input.compaction, table)}`,
+    compaction_section: compactionSection(input, table),
     web_section: webSection(input.web),
   };
+}
+
+/**
+ * The `{{compaction_section}}`: the current compaction under its heading, with the history
+ * notice in front when older chat text calls for one. Empty without a compaction: the notice
+ * then opens the first history message instead (see `finish`), since in this slot it would
+ * stand right before this answer's material and read as a warning about that.
+ */
+function compactionSection(input: ChatPlanInput, table: AliasTable): string {
+  if (!hasCompaction(input)) {
+    return "";
+  }
+  const body = `${CHAT_COMPACTION_HEADING}\n${aliased(input.compaction as string, table)}`;
+  return input.historyNotice === undefined ? body : `${historyNoticeFragment(input.historyNotice).text}\n${body}`;
+}
+
+function hasCompaction(input: ChatPlanInput): boolean {
+  return input.compaction !== undefined && input.compaction !== "";
+}
+
+/** The notice that opens the first history message: one is due and there is no compaction to stand before. */
+function noticeInHistory(input: ChatPlanInput): HistoryNotice | undefined {
+  return hasCompaction(input) ? undefined : input.historyNotice;
+}
+
+/** Room the notice takes when it opens the first history message; part of the fixed part. */
+function noticeAllowance(input: ChatPlanInput): number {
+  const notice = noticeInHistory(input);
+  return notice === undefined ? 0 : estimateTokens(`${historyNoticeFragment(notice).text}\n`);
 }
 
 /** The chat budget: the safe share of the context window. */
@@ -241,8 +331,9 @@ export function chooseChatMode(input: ChatPlanInput): ChatMode {
     return "metadata";
   }
   const table = tableOf(input.revisionId, input.segments);
-  const fixed = estimateTokens(systemText(input, fullContext(input, table), table)) + estimateTokens(currentTurnText(input, table));
-  const recent = input.turns.slice(-CHAT_RECENT_TURNS_MIN).reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const fixed = estimateTokens(systemText(input, fullContext(input, table), table)) + estimateTokens(currentTurnText(input, table)) + noticeAllowance(input);
+  const cost = turnCost(input);
+  const recent = input.turns.slice(-CHAT_RECENT_TURNS_MIN).reduce((sum, turn) => sum + cost(turn), 0);
   return fixed + recent <= chatBudget(input.contextWindowTokens) ? "full" : "retrieval";
 }
 
@@ -254,9 +345,78 @@ export function chooseChatMode(input: ChatPlanInput): ChatMode {
  * cannot be made: `llm_capability.context_length`.
  */
 export function planChatRequest(input: ChatPlanInput, hits: readonly string[] = []): ChatRequestPlan {
+  if (input.historyNotice !== undefined) {
+    return carrying(planOnce(input, hits), input);
+  }
+  // The notice is part of the request it is decided for: it lengthens the fixed part, which
+  // can move the mode between full and retrieval and so carry more or fewer history turns,
+  // and those turns decide the notice. Each level is planned in turn, lightest first, and
+  // the first whose plan carries history calling for exactly that level is sent. Without
+  // speakers the first plan already holds, so such a request is planned once, as before.
+  const planned: Array<{ input: ChatPlanInput; plan: ChatRequestPlan; due: HistoryNotice | undefined }> = [];
+  for (const level of NOTICE_LEVELS) {
+    const noticed = level === undefined ? input : { ...input, historyNotice: level };
+    const plan = planOnce(noticed, hits);
+    const due = noticeDue(input, plan.carriedTurns);
+    if (due === level) {
+      return carrying(plan, noticed);
+    }
+    planned.push({ input: noticed, plan, due });
+  }
+  // No level holds (each one moves the history into calling for another): take the lightest
+  // whose history calls for no stronger notice than it carries, so older text is never sent
+  // under a lighter warning than it needs; at worst that is the caution, which always holds.
+  const safe = planned.find((entry) => noticeRank(entry.due) <= noticeRank(entry.input.historyNotice)) as (typeof planned)[number];
+  return carrying(safe.plan, safe.input);
+}
+
+/** The notice levels from lightest to strongest; each is stronger than every one before it. */
+const NOTICE_LEVELS: ReadonlyArray<HistoryNotice | undefined> = [undefined, "unverified", "caution"];
+
+function noticeRank(notice: HistoryNotice | undefined): number {
+  return NOTICE_LEVELS.indexOf(notice);
+}
+
+/**
+ * Refuses a request whose system prompt lost a speaker fragment it must carry: the rules
+ * when the answer reads speakers (they ride in `{{context_section}}`), the history notice
+ * when older chat text calls for it and there is a compaction (it rides in
+ * `{{compaction_section}}`; without one it opens the first history message, which the
+ * prompt text cannot lose). The answer records the speakers it was given, so it must never
+ * be sent without the model being shown them. A prompt saved through the settings keeps
+ * both slots; this guards any text that did not.
+ */
+function carrying(plan: ChatRequestPlan, input: ChatPlanInput): ChatRequestPlan {
+  const rules = input.speakers?.framing.rules;
+  const notice = input.historyNotice;
+  const missing = [
+    ...(rules !== undefined && plan.mode !== "metadata" && !plan.system.includes(rules.text) ? ["{{context_section}}"] : []),
+    ...(notice !== undefined && hasCompaction(input) && !plan.system.includes(historyNoticeFragment(notice).text) ? ["{{compaction_section}}"] : []),
+  ];
+  if (missing.length > 0) {
+    throw amberError("invalid_request", "the chat system prompt has no slot to carry the speaker fragments in", {
+      code: "invalid_request.prompt_protocol",
+      details: { missing, unknown: [] },
+    });
+  }
+  return plan;
+}
+
+/**
+ * The notice the older chat text a plan carries calls for: its answers that were given
+ * speakers and have text (a failed answer adds none), and the compaction's bases.
+ */
+function noticeDue(input: ChatPlanInput, carried: number): HistoryNotice | undefined {
+  const answers = input.turns.slice(input.turns.length - carried).filter((turn) => turn.answer !== "");
+  const compaction = hasCompaction(input) ? (input.compactionSpeakerStates ?? []) : [];
+  return historyNotice([...answers.map((turn) => turn.speakerState), ...compaction]);
+}
+
+function planOnce(input: ChatPlanInput, hits: readonly string[]): ChatRequestPlan {
   const mode = chooseChatMode(input);
   const budget = chatBudget(input.contextWindowTokens);
-  const allTurns = input.turns.reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const cost = turnCost(input);
+  const allTurns = input.turns.reduce((sum, turn) => sum + cost(turn), 0);
   if (input.revisionId === undefined) {
     return planMetadataRequest(input, budget, allTurns);
   }
@@ -264,24 +424,27 @@ export function planChatRequest(input: ChatPlanInput, hits: readonly string[] = 
     const table = tableOf(input.revisionId, input.segments);
     const system = systemText(input, fullContext(input, table), table);
     const current = currentTurnText(input, table);
-    const avail = budget - estimateTokens(system) - estimateTokens(current);
-    const carried = fitTurns(input.turns, avail);
+    const avail = budget - estimateTokens(system) - estimateTokens(current) - noticeAllowance(input);
+    const carried = fitTurns(input.turns, avail, cost);
     return finish(mode, table, system, current, input, carried, allTurns > avail);
   }
 
   const ordered = [...input.segments].sort((a, b) => a.ordinal - b.ordinal);
   const shellTable = new AliasTable([]);
   const shellSystem = systemText(input, retrievalContext(input, shellTable, [], []), shellTable);
-  const avail = budget - estimateTokens(shellSystem) - estimateTokens(currentTurnText(input, shellTable)) - quoteAllowance(input);
+  const avail = budget - estimateTokens(shellSystem) - estimateTokens(currentTurnText(input, shellTable)) - quoteAllowance(input) - noticeAllowance(input);
   if (avail <= 0) {
     throw amberError("llm_capability", "the fixed part of a chat request exceeds the model's budget", { code: "llm_capability.context_length" });
+  }
+  if (input.speakers !== undefined) {
+    return planSpeakerRetrieval(input, input.speakers, ordered, hits, avail, allTurns);
   }
   const chapterSegments = currentChapterSegments(input, ordered);
   const groups = hitGroups(ordered, hits);
   const material = [...chapterSegments, ...groups.flat()].reduce((sum, segment) => sum + lineTokens(segment), 0);
   const turnsBudget = avail - Math.min(material, Math.floor(avail / 2));
-  const carried = fitTurns(input.turns, turnsBudget);
-  const used = input.turns.slice(input.turns.length - carried).reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const carried = fitTurns(input.turns, turnsBudget, cost);
+  const used = input.turns.slice(input.turns.length - carried).reduce((sum, turn) => sum + cost(turn), 0);
   let room = avail - used;
 
   const included = new Set<string>();
@@ -326,15 +489,16 @@ function planMetadataRequest(input: ChatPlanInput, budget: number, allTurns: num
   const table = new AliasTable([]);
   const facts = metadataFacts(input.metadata);
   const current = currentTurnText(input, table);
-  const avail = budget - estimateTokens(metadataSystem(input, facts, table)) - estimateTokens(current);
+  const avail = budget - estimateTokens(metadataSystem(input, facts, table)) - estimateTokens(current) - noticeAllowance(input);
   if (avail <= 0) {
     throw amberError("llm_capability", "the fixed part of a chat request exceeds the model's budget", { code: "llm_capability.context_length" });
   }
   const references = input.metadata?.references ?? [];
   const material = references.reduce((sum, text) => sum + estimateTokens(`${text}\n`), estimateTokens(`${CHAT_REFERENCE_HEADING}\n`));
   const turnsBudget = avail - (references.length === 0 ? 0 : Math.min(material, Math.floor(avail / 2)));
-  const carried = fitTurns(input.turns, turnsBudget);
-  const used = input.turns.slice(input.turns.length - carried).reduce((sum, turn) => sum + turnTokens(turn), 0);
+  const turnCostOf = turnCost(input);
+  const carried = fitTurns(input.turns, turnsBudget, turnCostOf);
+  const used = input.turns.slice(input.turns.length - carried).reduce((sum, turn) => sum + turnCostOf(turn), 0);
   let room = avail - used - estimateTokens(`${CHAT_REFERENCE_HEADING}\n`);
   const kept: string[] = [];
   for (const text of references) {
@@ -466,11 +630,15 @@ function finish(
 ): ChatRequestPlan {
   const messages: LlmRequest["messages"] = [];
   let estimated = estimateTokens(system) + estimateTokens(current);
+  // Without a compaction the notice opens the oldest history message that is sent.
+  let notice = noticeInHistory(input);
   for (const turn of input.turns.slice(input.turns.length - carried)) {
     if (turn.answer === "") {
       continue;
     }
-    const user = userText(turn.question, turn.quote, table);
+    const asked = userText(turn.question, turn.quote, table);
+    const user = notice === undefined ? asked : `${historyNoticeFragment(notice).text}\n${asked}`;
+    notice = undefined;
     const answer = aliased(turn.answer, table);
     estimated += estimateTokens(user) + estimateTokens(answer);
     messages.push({ role: "user", content: [{ type: "text", text: user }] }, { role: "assistant", content: [{ type: "text", text: answer }] });
@@ -480,11 +648,11 @@ function finish(
 }
 
 /** The most recent turns that fit `room`, but never fewer than `CHAT_RECENT_TURNS_MIN` (or all, if fewer exist). */
-function fitTurns(turns: readonly ChatTurnText[], room: number): number {
+function fitTurns(turns: readonly ChatTurnText[], room: number, costOf: (turn: ChatTurnText) => number): number {
   let used = 0;
   let count = 0;
   for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const cost = turnTokens(turns[index] as ChatTurnText);
+    const cost = costOf(turns[index] as ChatTurnText);
     if (used + cost > room && count >= CHAT_RECENT_TURNS_MIN) {
       break;
     }
@@ -502,28 +670,284 @@ function tableOf(revisionId: string, segments: readonly TranscriptSegment[]): Al
   );
 }
 
+/** The `chat.system` prompt; with speakers the rules fragment opens the material (`{{context_section}}`). */
 function systemText(input: ChatPlanInput, context: string, table: AliasTable): string {
-  return renderPrompt(input.prompts.system, { ...commonSlots(input, table), context_section: context });
+  const value = input.speakers === undefined ? context : input.speakers.framing.slotValue(context);
+  return renderPrompt(input.prompts.system, { ...commonSlots(input, table), context_section: value });
 }
 
+/** The whole revision, one block: with speakers a header line opens it and marks every change of speaker. */
 function fullContext(input: ChatPlanInput, table: AliasTable): string {
   const lines = table.entries.map((entry) => table.line(entry.alias));
-  return [...summarySection(input, table), SECTION.transcript, ...lines].join("\n");
+  const shown = input.speakers === undefined ? lines : input.speakers.framing.block(lines, 0);
+  return [...summarySection(input, table), SECTION.transcript, ...shown].join("\n");
 }
 
 function retrievalContext(input: ChatPlanInput, table: AliasTable, chapter: readonly TranscriptSegment[], hits: readonly TranscriptSegment[]): string {
+  return retrievalContextOf(
+    input,
+    table,
+    chapter.map((segment) => lineOf(segment, table)),
+    hits.map((segment) => lineOf(segment, table)),
+  );
+}
+
+/** Summary, chapter list, the current chapter's lines and the retrieved lines, each part only when it has something. */
+function retrievalContextOf(input: ChatPlanInput, table: AliasTable, chapterLines: readonly string[], hitLines: readonly string[]): string {
   const parts = [...summarySection(input, table)];
   if (input.chapters.length > 0) {
     parts.push(SECTION.chapters, ...input.chapters.map((chapter) => `- ${clock(chapter.startMs)} ${chapter.title}`));
   }
   const current = currentChapter(input);
-  if (current !== undefined && chapter.length > 0) {
-    parts.push(`${SECTION.currentChapter}${current.title}`, ...chapter.map((segment) => lineOf(segment, table)));
+  if (current !== undefined && chapterLines.length > 0) {
+    parts.push(`${SECTION.currentChapter}${current.title}`, ...chapterLines);
   }
-  if (hits.length > 0) {
-    parts.push(SECTION.hits, ...hits.map((segment) => lineOf(segment, table)));
+  if (hitLines.length > 0) {
+    parts.push(SECTION.hits, ...hitLines);
   }
   return parts.join("\n");
+}
+
+/** A sentence line as planned, before the aliases are numbered: with the widest marker the table may give it. */
+function planLine(segment: TranscriptSegment): string {
+  return `[[s9999]] ${oneLine(segment.text)}`;
+}
+
+/**
+ * What adding sentence `position` to the sentences `set` already sent together adds, header
+ * lines included: its line, its header when it opens a block or the speaker changes there,
+ * less the header the next sentence no longer needs once this one joins it to a block. The
+ * sum over any order of additions is the exact cost of the final set.
+ */
+function addedCost(framing: SpeakerFraming, ordered: readonly TranscriptSegment[], set: ReadonlySet<number>, position: number): number {
+  const own = framing.cost(planLine(ordered[position] as TranscriptSegment), position, !set.has(position - 1));
+  const next = position + 1;
+  if (!set.has(next)) {
+    return own;
+  }
+  const line = planLine(ordered[next] as TranscriptSegment);
+  return own - (framing.cost(line, next, true) - framing.cost(line, next, false));
+}
+
+/** The cost of sending `positions` together. */
+function setCost(framing: SpeakerFraming, ordered: readonly TranscriptSegment[], positions: Iterable<number>): number {
+  const set = new Set<number>();
+  let cost = 0;
+  for (const position of positions) {
+    if (set.has(position)) continue;
+    cost += addedCost(framing, ordered, set, position);
+    set.add(position);
+  }
+  return cost;
+}
+
+/** Sorted positions cut into runs of consecutive sentences. */
+function runsOf(positions: Iterable<number>): number[][] {
+  const runs: number[][] = [];
+  for (const position of [...positions].sort((a, b) => a - b)) {
+    const run = runs.at(-1);
+    if (run !== undefined && run.at(-1) === position - 1) {
+      run.push(position);
+    } else {
+      runs.push([position]);
+    }
+  }
+  return runs;
+}
+
+/** The lines of `positions`, each run of consecutive sentences a block with its header lines. */
+function framedLines(framing: SpeakerFraming, ordered: readonly TranscriptSegment[], positions: Iterable<number>, table: AliasTable): string[] {
+  return runsOf(positions).flatMap((run) => framing.block(run.map((position) => lineOf(ordered[position] as TranscriptSegment, table)), run[0] as number));
+}
+
+/** A section of retrieved material: a person's (with its coverage line) or, without `clip`, the plain hits. */
+interface PlannedSection {
+  clip?: SpeakerClipSection;
+  set: Set<number>;
+}
+
+/** Sentences one step of planning added: a retrieved group to `section`, or (without one) a current-chapter sentence. */
+interface Addition {
+  section?: number;
+  positions: number[];
+}
+
+/**
+ * Retrieval when the answer reads speakers. The current chapter and every retrieved group
+ * carry header lines and are budgeted with them. Without a question about someone the hits
+ * are taken as without speakers. A question naming people takes, for each of them, every
+ * turn with the sentence before it when all of that fits the room for retrieved material;
+ * otherwise each named person gets hits searched within their own sentences (when the
+ * question has words besides the names and that search found something) or representative
+ * turns, sharing the room. With nobody named and no hit at all, every speaker gets
+ * representative turns. Each person's material opens with a line saying how much of their
+ * speech it is; a group that does not fit is skipped, as hits are. History is costed as it
+ * is sent, and a rendered request still over the budget gives back what was added last.
+ */
+function planSpeakerRetrieval(
+  input: ChatPlanInput,
+  speakers: ChatSpeakerReading,
+  ordered: readonly TranscriptSegment[],
+  hits: readonly string[],
+  avail: number,
+  allTurns: number,
+): ChatRequestPlan {
+  const revisionId = input.revisionId as string;
+  const framing = speakers.framing;
+  const position = new Map(ordered.map((segment, index) => [segment.id as string, index]));
+  const positionOf = (segment: TranscriptSegment): number => position.get(segment.id) as number;
+  const chapterSegments = currentChapterSegments(input, ordered);
+  const chapterMaterial = setCost(framing, ordered, chapterSegments.map(positionOf));
+  const anchor = anchorMs(input, ordered);
+
+  const allocate = (material: number) => {
+    const turnsBudget = avail - Math.min(chapterMaterial + material, Math.floor(avail / 2));
+    const carried = fitTurns(input.turns, turnsBudget, sentTurnTokens);
+    const used = input.turns.slice(input.turns.length - carried).reduce((sum, turn) => sum + sentTurnTokens(turn), 0);
+    let room = avail - used;
+    const chapter = new Set<number>();
+    let chapterRoom = Math.floor(room / 2);
+    for (const segment of byDistance(chapterSegments, anchor)) {
+      const at = positionOf(segment);
+      const cost = addedCost(framing, ordered, chapter, at);
+      if (cost > chapterRoom) {
+        break;
+      }
+      chapterRoom -= cost;
+      room -= cost;
+      chapter.add(at);
+    }
+    return { turnsBudget, carried, chapter, room };
+  };
+
+  const noteCost = (clip: SpeakerClipSection): number => estimateTokens(`${clipNote(clip.label, clip.turns, clip.complete ? "all" : clip.turns)}\n`);
+  const materialOf = (clips: ReadonlyArray<SpeakerClipSection | undefined>, groups: ReadonlyArray<{ section: number; group: number[] }>): number =>
+    clips.reduce((sum, clip) => sum + (clip === undefined ? 0 : noteCost(clip)), 0) + groups.reduce((sum, { group }) => sum + setCost(framing, ordered, group), 0);
+
+  /** Takes the groups in order while they fit; reports whether any had to be skipped, and what each taken group added. */
+  const pick = (clips: ReadonlyArray<SpeakerClipSection | undefined>, groups: ReadonlyArray<{ section: number; group: number[] }>, start: { chapter: Set<number>; room: number }) => {
+    const included = new Set(start.chapter);
+    const sections: PlannedSection[] = clips.map((clip) => (clip === undefined ? { set: new Set<number>() } : { clip, set: new Set<number>() }));
+    const added: Addition[] = [];
+    let room = start.room;
+    let skipped = false;
+    for (const { section, group } of groups) {
+      const planned = sections[section] as PlannedSection;
+      const fresh = group.filter((at) => !included.has(at));
+      if (fresh.length === 0) {
+        continue;
+      }
+      const trial = new Set(planned.set);
+      let cost = planned.clip !== undefined && planned.set.size === 0 ? noteCost(planned.clip) : 0;
+      for (const at of fresh) {
+        cost += addedCost(framing, ordered, trial, at);
+        trial.add(at);
+      }
+      if (cost > room) {
+        skipped = true;
+        continue;
+      }
+      room -= cost;
+      for (const at of fresh) {
+        planned.set.add(at);
+        included.add(at);
+      }
+      added.push({ section, positions: fresh });
+    }
+    return { sections, skipped, added };
+  };
+
+  const regularGroups = hitGroups(ordered, hits).map((group) => ({ section: 0, group: group.map(positionOf) }));
+  const bySpeaker = new Map(speakers.speakers.map((speaker) => [speaker.id, speaker]));
+  const person = speakers.person;
+  const named = (person?.mentioned ?? []).flatMap((id) => {
+    const speaker = bySpeaker.get(id);
+    return speaker === undefined ? [] : [speaker];
+  });
+  const turnsOfSpeaker = (id: string): number => speakers.turns.filter((turn) => turn.speakerId === id).length;
+
+  let clips: Array<SpeakerClipSection | undefined> = [undefined];
+  let groups = regularGroups;
+  let allocation = allocate(materialOf(clips, groups));
+  let picked = pick(clips, groups, allocation);
+  if (person !== undefined && named.length > 0) {
+    const complete = allTurnSections(speakers.turns, named);
+    const all = complete.flatMap((section, index) => section.groups.map((group) => ({ section: index, group })));
+    allocation = allocate(materialOf(complete, all));
+    picked = pick(complete, all, allocation);
+    clips = complete;
+    if (picked.skipped) {
+      const partial = named.map((speaker) => {
+        const own = person.speakerHits?.[speaker.id] ?? [];
+        const ownGroups = hitGroups(ordered, own).map((group) => group.map(positionOf));
+        return ownGroups.length > 0
+          ? { speakerId: speaker.id, label: speaker.label, turns: turnsOfSpeaker(speaker.id), complete: false, groups: ownGroups }
+          : sampleSection(speakers.turns, speaker, ordered);
+      });
+      const order = interleavedGroups(partial);
+      allocation = allocate(materialOf(partial, order));
+      picked = pick(partial, order, allocation);
+      clips = partial;
+    }
+  } else if (person !== undefined && regularGroups.length === 0 && speakers.speakers.length > 0) {
+    const samples = speakers.speakers.map((speaker) => sampleSection(speakers.turns, speaker, ordered));
+    const order = interleavedGroups(samples);
+    allocation = allocate(materialOf(samples, order));
+    picked = pick(samples, order, allocation);
+    clips = samples;
+  }
+
+  const quoted = input.quote === undefined ? undefined : position.get(input.quote.segmentId);
+  const chapter = new Set(allocation.chapter);
+  const sections = picked.sections;
+  /** Sections of every turn of a person that lost a group while trimming: no longer all of it. */
+  const trimmed = new Set<number>();
+  const completeShown = (index: number): boolean => sections[index]?.clip?.complete === true && !trimmed.has(index);
+  const render = (): ChatRequestPlan => {
+    const included = new Set([...chapter, ...sections.flatMap((section) => [...section.set])]);
+    const shown = ordered.filter((_segment, index) => included.has(index) || index === quoted);
+    const table = tableOf(revisionId, shown);
+    const hitLines = sections.flatMap((section, index) => {
+      if (section.set.size === 0) {
+        return [];
+      }
+      const lines = framedLines(framing, ordered, section.set, table);
+      if (section.clip === undefined) {
+        return lines;
+      }
+      const clip = section.clip;
+      const note = clipNote(clip.label, clip.turns, completeShown(index) ? "all" : turnsShown(speakers.turns, clip.speakerId, section.set));
+      return [note, ...lines];
+    });
+    const chapterLines = framedLines(framing, ordered, chapter, table);
+    const system = systemText(input, retrievalContextOf(input, table, chapterLines, hitLines), table);
+    return finish("retrieval", table, system, currentTurnText(input, table), input, allocation.carried, allTurns > allocation.turnsBudget);
+  };
+
+  // The material was budgeted line by line with its header lines, but headings, aliases and
+  // the clip lines are only known once rendered. A request over the budget gives back what
+  // was added last (retrieved groups latest first, then the current chapter's sentences
+  // farthest first) rather than lose a header line or fail; only when nothing is left to
+  // give back does it fail.
+  const additions: Addition[] = [...[...chapter].map((at) => ({ positions: [at] })), ...picked.added];
+  const budget = chatBudget(input.contextWindowTokens);
+  let plan = render();
+  while (plan.estimatedTokens > budget && additions.length > 0) {
+    const last = additions.pop() as Addition;
+    const from = last.section === undefined ? chapter : (sections[last.section] as PlannedSection).set;
+    for (const at of last.positions) {
+      from.delete(at);
+    }
+    if (last.section !== undefined) {
+      trimmed.add(last.section);
+    }
+    plan = render();
+  }
+  if (!plan.overBudget && plan.estimatedTokens > budget) {
+    throw amberError("llm_capability", "a chat request with speaker headers exceeds the model's budget", { code: "llm_capability.context_length" });
+  }
+  const clipped = sections.some((section, index) => section.clip !== undefined && !completeShown(index) && section.set.size > 0);
+  return clipped ? { ...plan, speakerClips: true } : plan;
 }
 
 function summarySection(input: ChatPlanInput, table: AliasTable): string[] {
@@ -531,15 +955,33 @@ function summarySection(input: ChatPlanInput, table: AliasTable): string[] {
 }
 
 function currentTurnText(input: ChatPlanInput, table: AliasTable): string {
-  return userText(input.question, input.quote, table);
+  return userText(input.question, input.quote, table, quoteHeader(input));
 }
 
-function userText(question: string, quote: ChatQuoteText | undefined, table: AliasTable): string {
+/**
+ * The header line of the quoted sentence when this answer reads speakers and the sentence
+ * belongs to the revision it reads; a sentence quoted from another revision has no speaker
+ * the model could check against the material.
+ */
+function quoteHeader(input: ChatPlanInput): string | undefined {
+  const speakers = input.speakers;
+  const quote = input.quote;
+  if (speakers === undefined || quote === undefined) {
+    return undefined;
+  }
+  const position = [...input.segments].sort((a, b) => a.ordinal - b.ordinal).findIndex((segment) => segment.id === quote.segmentId);
+  return position < 0 ? undefined : speakers.framing.block([""], position)[0];
+}
+
+function userText(question: string, quote: ChatQuoteText | undefined, table: AliasTable, header?: string): string {
   if (quote === undefined) {
     return question;
   }
   const alias = table.aliasOf(quote.segmentId);
   const marker = alias === undefined ? "" : `[[s${alias}]] `;
+  if (header !== undefined) {
+    return `${CHAT_QUOTE_HEADING}\n${header}\n${marker}${oneLine(quote.text)}\n${question}`;
+  }
   return `${CHAT_QUOTE_HEADING}${marker}${oneLine(quote.text)}\n${question}`;
 }
 
@@ -610,9 +1052,26 @@ function lineTokens(segment: TranscriptSegment): number {
   return estimateTokens(`[[s9999]] ${oneLine(segment.text)}\n`);
 }
 
+/**
+ * What a history turn is planned to cost. Without speakers it is the long-standing estimate
+ * (stored markers left out). An answer that reads speakers is checked against its budget
+ * once rendered, so there its history is costed as it will be sent: each stored marker as
+ * the widest alias it may become, the question as it is written.
+ */
+function turnCost(input: ChatPlanInput): (turn: ChatTurnText) => number {
+  return input.speakers === undefined ? turnTokens : sentTurnTokens;
+}
+
 function turnTokens(turn: ChatTurnText): number {
   const quote = turn.quote === undefined ? "" : `${CHAT_QUOTE_HEADING}[[s9999]] ${turn.quote.text}\n`;
   return estimateTokens(quote + stripMarkers(turn.question)) + estimateTokens(stripMarkers(turn.answer));
+}
+
+/** An upper bound of a history turn as `finish` renders it: never below what is sent. */
+function sentTurnTokens(turn: ChatTurnText): number {
+  const quote = turn.quote === undefined ? "" : `${CHAT_QUOTE_HEADING}[[s9999]] ${oneLine(turn.quote.text)}\n`;
+  const answer = turn.answer.replace(CANONICAL, "[[s9999]]").replace(UNRESOLVED, "").replace(WEB_MARKER, "");
+  return estimateTokens(quote + turn.question) + estimateTokens(answer);
 }
 
 function stripMarkers(text: string): string {

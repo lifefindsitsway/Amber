@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { SPEAKER_PALETTE_SIZE } from "../defaults.ts";
 import { segmentIdSchema } from "../ids.ts";
+import { SPEAKER_CONTEXT_STATES } from "./speaker-context.ts";
 
 const idSchema = z.string().min(1);
 const msSchema = z.number().int().nonnegative();
@@ -34,6 +36,18 @@ export const contentHitDtoSchema = z.object({
 });
 export type ContentHitDto = z.infer<typeof contentHitDtoSchema>;
 
+const speakerColorSchema = z.number().int().min(0).max(SPEAKER_PALETTE_SIZE - 1);
+
+/** Who a matched sentence is given to. `confirmed`: the revision's speakers are reviewed; otherwise the name is only a label. */
+export const hitSpeakerDtoSchema = z.object({
+  id: idSchema,
+  ordinal: z.number().int().positive(),
+  name: z.string().min(1).optional(),
+  colorIndex: speakerColorSchema,
+  confirmed: z.boolean(),
+});
+export type HitSpeakerDto = z.infer<typeof hitSpeakerDtoSchema>;
+
 /** A sentence of a Content's primary revision; opens `?tab=transcript&revision=&segment=`. */
 export const segmentHitDtoSchema = z.object({
   contentId: idSchema,
@@ -41,6 +55,7 @@ export const segmentHitDtoSchema = z.object({
   transcriptRevisionId: idSchema,
   segmentId: segmentIdSchema,
   startMs: msSchema,
+  speaker: hitSpeakerDtoSchema.optional(),
   ...hitText,
 });
 export type SegmentHitDto = z.infer<typeof segmentHitDtoSchema>;
@@ -52,6 +67,8 @@ export const summaryHitDtoSchema = z.object({
   artifactId: idSchema,
   templateId: idSchema,
   summaryRevisionId: idSchema,
+  /** Present on a summary generated with speakers; anything but `consistent` means its attributions may no longer hold. */
+  speakerContextState: z.enum(SPEAKER_CONTEXT_STATES).optional(),
   ...hitText,
 });
 export type SummaryHitDto = z.infer<typeof summaryHitDtoSchema>;
@@ -64,11 +81,29 @@ export const collectionHitDtoSchema = z.object({
 });
 export type CollectionHitDto = z.infer<typeof collectionHitDtoSchema>;
 
-/** Each group holds at most `SEARCH_GROUP_LIMIT` hits, best first. */
+/**
+ * A speaker whose name matches the query, in a Content whose primary revision names that
+ * speaker. A name match only: the same name in two Contents is two hits, never one person.
+ * Opens the Content's reading view filtered to the speaker.
+ */
+export const speakerHitDtoSchema = z.object({
+  contentId: idSchema,
+  contentTitle: z.string().optional(),
+  speakerId: idSchema,
+  ordinal: z.number().int().positive(),
+  name: z.string().min(1),
+  colorIndex: speakerColorSchema,
+  /** Sentences of the primary revision given to the speaker. */
+  sentences: z.number().int().nonnegative(),
+});
+export type SpeakerHitDto = z.infer<typeof speakerHitDtoSchema>;
+
+/** Each group holds at most `SEARCH_GROUP_LIMIT` hits, best first. `speakers` only in the `global` and `library` scopes, and only when a name matches. */
 export const searchResultDtoSchema = z.object({
   contents: z.array(contentHitDtoSchema),
   segments: z.array(segmentHitDtoSchema),
   summaries: z.array(summaryHitDtoSchema),
   collections: z.array(collectionHitDtoSchema),
+  speakers: z.array(speakerHitDtoSchema).optional(),
 });
 export type SearchResultDto = z.infer<typeof searchResultDtoSchema>;

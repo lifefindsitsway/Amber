@@ -29,6 +29,8 @@ function filterCount(filter: SpeakerFilter, counts: FilterCounts): number {
       return counts.unassigned;
     case "changed":
       return counts.changed;
+    case "keys":
+      return filter.keys.size;
   }
 }
 

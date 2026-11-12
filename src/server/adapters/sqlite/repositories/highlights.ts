@@ -2,6 +2,7 @@ import type { ArtifactInputRef, HighlightArtifact, HighlightRevision } from "../
 import type { HighlightRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { jsonOrNull, notFound, parseJson, parseJsonOrNull, withoutNulls } from "./rows.ts";
+import { speakerContextColumn } from "./speaker-context-columns.ts";
 
 interface HighlightRevisionRow {
   id: string;
@@ -11,6 +12,7 @@ interface HighlightRevisionRow {
   prompt_ref_json: string | null;
   prompt_refs_json: string | null;
   prompt_snapshot: string | null;
+  speaker_context_json: string | null;
   quality: HighlightRevision["quality"];
   transcript_revision_id: string;
   items_json: string;
@@ -27,6 +29,7 @@ function toRevision(row: HighlightRevisionRow): HighlightRevision {
       promptRef: parseJsonOrNull(row.prompt_ref_json),
       promptRefs: parseJsonOrNull(row.prompt_refs_json),
       promptSnapshot: row.prompt_snapshot,
+      speakerContext: speakerContextColumn(row.speaker_context_json),
       createdAt: row.created_at,
     }),
     quality: row.quality,
@@ -45,9 +48,9 @@ export function sqliteHighlightRepository(db: SqliteConnection): HighlightReposi
   const insertArtifact = db.prepare("INSERT INTO highlight_artifact (id, content_id) VALUES (?, ?)");
   const insertRevision = db.prepare(
     `INSERT INTO highlight_revision (
-       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, quality, transcript_revision_id, items_json, created_at
+       id, artifact_id, inputs_json, model_ref_json, prompt_ref_json, prompt_refs_json, prompt_snapshot, speaker_context_json, quality, transcript_revision_id, items_json, created_at
      ) VALUES (
-       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @quality, @transcriptRevisionId, @itemsJson, @createdAt
+       @id, @artifactId, @inputsJson, @modelRefJson, @promptRefJson, @promptRefsJson, @promptSnapshot, @speakerContextJson, @quality, @transcriptRevisionId, @itemsJson, @createdAt
      )`,
   );
   const transcriptOfContent = db.prepare("SELECT 1 FROM transcript_revision WHERE id = ? AND content_id = ?");
@@ -86,6 +89,7 @@ export function sqliteHighlightRepository(db: SqliteConnection): HighlightReposi
         promptRefJson: JSON.stringify(revision.promptRef),
         promptRefsJson: jsonOrNull(revision.promptRefs),
         promptSnapshot: revision.promptSnapshot,
+        speakerContextJson: jsonOrNull(revision.speakerContext),
         quality: revision.quality,
         transcriptRevisionId: revision.transcriptRevisionId,
         itemsJson: JSON.stringify(revision.items),

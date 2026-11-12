@@ -11,10 +11,12 @@ import {
   ROLLUP_CARRY_PROMPT,
   ROLLUP_FINAL_PROMPT,
   ROLLUP_PARTIAL_PROMPT,
+  SPEAKER_RULES_FRAGMENT,
   SUMMARY_ENVELOPE_PROMPT,
   renderPrompt,
 } from "../../../../src/server/domain/prompts.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
+import { estimateTokens } from "../../../../src/server/domain/token-estimate.ts";
 import { SummaryStageExecutor } from "../../../../src/server/pipeline/stages/summary.ts";
 import { CONTEXT_SAFETY_RATIO } from "../../../../src/shared/defaults.ts";
 import type { SegmentId } from "../../../../src/shared/ids.ts";
@@ -32,7 +34,10 @@ import {
   workUnitsOf,
   type Harness,
 } from "../../../fixtures/pipeline/harness.ts";
+import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
 import { countRows } from "../../../tools/sqlite.ts";
+import { resolveSpeakerContext } from "../../../../src/server/application/speaker-context.ts";
+import type { SpeakerContextSnapshot } from "../../../../src/server/domain/speaker-context.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -644,5 +649,199 @@ describe("summary stage: custom prompts", () => {
     const revision = revisionOf(s.h, resultOf(s.h, job.taskId)["revisionId"] as string);
     expect(revision.provenance.promptRefs).toEqual([CORE_REF, historical?.ref, ROLLUP_CARRY_PROMPT.ref, ROLLUP_FINAL_PROMPT.ref]);
     expect(partialsOf(s.h, revision.id).map((partial) => partial.promptRef)).toEqual([historical?.ref, historical?.ref, historical?.ref]);
+  });
+});
+
+describe("summary stage: reviewed speakers", () => {
+  const CORE_REF = { id: CORE.id, version: CORE.version };
+  /** Two speakers in runs of five, every seventh sentence unassigned; one confirmed name. */
+  const SPEAKERS: sc.SeedOptions = {
+    speakers: [{ name: "蒋炎岩", confirmed: true }, { name: "张伟" }],
+    assign: (position) => (position % 7 === 6 ? undefined : Math.floor(position / 5) % 2),
+    reviewed: true,
+  };
+  const assigned = (position: number) => SPEAKERS.assign?.(position);
+  const changes = sc.LECTURE.filter((_, position) => position === 0 || assigned(position) !== assigned(position - 1)).length;
+  const frozenOf = (h: Harness) =>
+    h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, sc.FIXED_CONTENT_ID, sc.FIXED_REVISION_ID, "transcript")) as SpeakerContextSnapshot;
+  /** The prompt without the rules fragment and header lines: what it would have been without speakers. */
+  const withoutSpeakers = (prompt: string) =>
+    prompt
+      .replace(`${SPEAKER_RULES_FRAGMENT.text}\n`, "")
+      .split("\n")
+      .filter((line) => !line.startsWith("【发言人】"))
+      .join("\n");
+
+  async function submittedRun(seed: sc.SeedOptions, room: number, answer?: sc.Answer, setup?: (h: Harness) => void) {
+    const fake = sc.scriptedProvider(answer);
+    const { h, modelRef } = sc.speakerHarness(fake, room);
+    open.push(h);
+    sc.seedContent(h, seed);
+    setup?.(h);
+    const taskId = (await h.summaries.create(LOCAL, sc.FIXED_CONTENT_ID, { templateId: CORE.id, modelRef })).body.taskId;
+    return { h, fake, modelRef, taskId };
+  }
+
+  it("single call: the rules open the transcript slot, headers mark the first speaker and every change, and the result records the snapshot", async () => {
+    const plain = await submittedRun({}, 100_000);
+    expect(await sc.settle(plain.h, plain.taskId, "summary")).toBe("succeeded");
+    const run = await submittedRun(SPEAKERS, 100_000);
+    expect(await sc.settle(run.h, run.taskId, "summary")).toBe("succeeded");
+
+    expect(run.fake.calls.map((call) => sc.kindOf(call.request))).toEqual(["envelope"]);
+    const prompt = sc.promptOf(run.fake.calls[0]?.request as LlmRequest);
+    expect(prompt).toContain(`【逐字稿】\n${SPEAKER_RULES_FRAGMENT.text}\n【发言人】蒋炎岩\n[[s1]] `);
+    expect(prompt).toContain("【发言人】发言人 2\n[[s6]] ");
+    expect(prompt).toContain("【发言人】未分配\n[[s7]] ");
+    expect(prompt.split("\n").filter((line) => line.startsWith("【发言人】"))).toHaveLength(changes);
+    expect(withoutSpeakers(prompt)).toBe(sc.promptOf(plain.fake.calls[0]?.request as LlmRequest));
+    expect(workUnitsOf(run.h, run.taskId)[0]?.inputDigest).not.toBe(workUnitsOf(plain.h, plain.taskId)[0]?.inputDigest);
+
+    const revision = revisionOf(run.h, resultOf(run.h, run.taskId)["revisionId"] as string);
+    expect(revision.provenance.speakerContext).toEqual(frozenOf(run.h));
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, SUMMARY_ENVELOPE_PROMPT.ref, SPEAKER_RULES_FRAGMENT.ref]);
+    expect(revisionOf(plain.h, resultOf(plain.h, plain.taskId)["revisionId"] as string).provenance.speakerContext).toBeUndefined();
+  });
+
+  it("rolling: every group opens with the rules and a header, and partial, carry, final and a citation repair all run once end to end", async () => {
+    let repaired = false;
+    const answer: sc.Answer = (kind, request) => {
+      if (kind === "partial" && !repaired) {
+        repaired = true;
+        return "本组讲了 [[s999]]";
+      }
+      return sc.validAnswer(kind, request);
+    };
+    const run = await submittedRun(SPEAKERS, 5_000, answer);
+    expect(await sc.settle(run.h, run.taskId, "summary")).toBe("succeeded");
+
+    const kindsSent = run.fake.calls.map((call) => sc.kindOf(call.request));
+    expect(kindsSent.filter((kind) => kind === "partial").length).toBeGreaterThan(1);
+    expect(new Set(kindsSent)).toEqual(new Set(["partial", "repair", "carry", "final"]));
+    expect(keys(run.h, run.taskId)).toContain("rollup:partial:0:repair");
+    for (const call of run.fake.calls.filter((sent) => sc.kindOf(sent.request) === "partial")) {
+      const group = sc.promptOf(call.request).split("【本组内容】\n")[1] ?? "";
+      expect(group.startsWith(`${SPEAKER_RULES_FRAGMENT.text}\n【发言人】`)).toBe(true);
+      expect(group.split("\n")[SPEAKER_RULES_FRAGMENT.text.split("\n").length + 1]).toMatch(/^\[\[s\d+\]\] /);
+    }
+    for (const call of run.fake.calls.filter((sent) => ["carry", "final", "repair"].includes(sc.kindOf(sent.request)))) {
+      expect(sc.promptOf(call.request)).not.toContain(SPEAKER_RULES_FRAGMENT.text);
+    }
+
+    const frozen = frozenOf(run.h);
+    const revision = revisionOf(run.h, resultOf(run.h, run.taskId)["revisionId"] as string);
+    expect(revision.provenance.speakerContext).toEqual(frozen);
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, ROLLUP_PARTIAL_PROMPT.ref, ROLLUP_CARRY_PROMPT.ref, ROLLUP_FINAL_PROMPT.ref, SPEAKER_RULES_FRAGMENT.ref]);
+    const partials = partialsOf(run.h, revision.id);
+    expect(partials.length).toBe(kindsSent.filter((kind) => kind === "partial").length);
+    for (const partial of partials) {
+      expect(partial.speakerContext).toEqual(frozen);
+      expect(partial.promptRefs).toEqual([ROLLUP_PARTIAL_PROMPT.ref, SPEAKER_RULES_FRAGMENT.ref]);
+    }
+  });
+
+  it("keeps the rules in a custom envelope that keeps its slot, and records both refs", async () => {
+    const custom = `自定义摘要说明。\n${SUMMARY_ENVELOPE_PROMPT.text}`;
+    const run = await submittedRun(SPEAKERS, 100_000, undefined, (h) => h.prompts.update(LOCAL, "summary.envelope", { text: custom }));
+    expect(await sc.settle(run.h, run.taskId, "summary")).toBe("succeeded");
+    expect(run.fake.calls.map((call) => sc.kindOf(call.request))).toEqual(["envelope"]);
+    const prompt = sc.promptOf(run.fake.calls[0]?.request as LlmRequest);
+    expect(prompt.startsWith("自定义摘要说明。")).toBe(true);
+    expect(prompt).toContain(`【逐字稿】\n${SPEAKER_RULES_FRAGMENT.text}\n【发言人】蒋炎岩\n[[s1]] `);
+    const revision = revisionOf(run.h, resultOf(run.h, run.taskId)["revisionId"] as string);
+    expect(revision.provenance.speakerContext).toEqual(frozenOf(run.h));
+    expect(revision.provenance.promptRefs).toEqual([CORE_REF, customPromptRef("summary.envelope", 1), SPEAKER_RULES_FRAGMENT.ref]);
+  });
+
+  it("fails before any call when the read revision's attributions no longer match the snapshot", async () => {
+    const fake = sc.scriptedProvider();
+    const { h, modelRef } = sc.speakerHarness(fake, 100_000);
+    open.push(h);
+    sc.seedContent(h, SPEAKERS);
+    const snapshot = { ...frozenOf(h), attributionDigest: "sha256:0" };
+    const taskId = createTaskOfKind(
+      h,
+      "regenerate_summary",
+      { modelRef, baseRevisionId: sc.FIXED_REVISION_ID, outputLanguage: "zh-CN", templateRef: CORE_REF, speakerContext: snapshot },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    h.scheduler.kick();
+    expect(await sc.settle(h, taskId, "summary")).toBe("failed");
+    expect(errorOf(h, taskId)?.code).toBe("internal");
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  /** The current chapters of the fixed Content: one platform chapter per 40 sentences, each titled `title(i)`. */
+  function titledChapters(h: Harness, title: (index: number) => string): void {
+    h.repository.withTransaction((scope) => {
+      const { revisionId } = scope.chapters.insertPlatformRevision(LOCAL.userId, sc.FIXED_CONTENT_ID, {
+        id: h.newId(),
+        artifactId: h.newId(),
+        chapters: [0, 1, 2].map((index) => ({ startMs: index * 40_000, endMs: (index + 1) * 40_000, title: title(index) })),
+        createdAt: 1,
+      });
+      scope.chapters.setCurrent(LOCAL.userId, sc.FIXED_CONTENT_ID, revisionId);
+    });
+  }
+  const budgetOf = (room: number) => Math.floor(sc.windowFor(room) * CONTEXT_SAFETY_RATIO) - sc.MAX_OUTPUT;
+
+  it("prices a chapter's title line with the first sentence of each of its groups when it reads speakers", async () => {
+    for (const seed of [SPEAKERS]) {
+      const run = await submittedRun(seed, 5_000, undefined, (h) => titledChapters(h, (index) => `${index + 1}${"长".repeat(600)}`));
+      expect(await sc.settle(run.h, run.taskId, "summary")).toBe("succeeded");
+      const partials = run.fake.calls.filter((call) => sc.kindOf(call.request) === "partial").map((call) => sc.promptOf(call.request));
+      // Long titles split every chapter, and each run of a split chapter opens with its title too.
+      expect(partials.length).toBeGreaterThan(3);
+      for (const prompt of partials) {
+        expect(prompt).toMatch(/【章节】[123]长{600}\n/);
+      }
+      for (const call of run.fake.calls) {
+        expect(estimateTokens(sc.promptOf(call.request))).toBeLessThanOrEqual(budgetOf(5_000));
+      }
+    }
+  });
+
+  it("fails with context_length and sends nothing when a chapter's title leaves no room for a sentence, reading speakers", async () => {
+    for (const seed of [SPEAKERS]) {
+      const run = await submittedRun(seed, 5_000, undefined, (h) => titledChapters(h, () => "长".repeat(2_000)));
+      expect(await sc.settle(run.h, run.taskId, "summary")).toBe("failed");
+      expect(errorOf(run.h, run.taskId)?.code).toBe("llm_capability.context_length");
+      expect(run.fake.calls).toHaveLength(0);
+    }
+  });
+
+  it("fails the unit with invalid_request.prompt_protocol, sending nothing, when the rendered request lost the rules", async () => {
+    const fake = sc.scriptedProvider();
+    const { h, modelRef } = sc.speakerHarness(fake, 100_000);
+    open.push(h);
+    sc.seedContent(h, SPEAKERS);
+    // A frozen custom version without the slot (submission would refuse it; a re-run stage resolves prompts anew).
+    h.repository.withTransaction((scope) =>
+      scope.promptOverrides.addVersion({
+        userId: LOCAL.userId,
+        promptId: "summary.envelope",
+        version: 1,
+        text: SUMMARY_ENVELOPE_PROMPT.text.replace("{{transcript_with_aliases}}", ""),
+        createdAt: 1,
+      }),
+    );
+    const taskId = createTaskOfKind(
+      h,
+      "regenerate_summary",
+      {
+        modelRef,
+        baseRevisionId: sc.FIXED_REVISION_ID,
+        outputLanguage: "zh-CN",
+        templateRef: CORE_REF,
+        promptRefs: { "summary.envelope": customPromptRef("summary.envelope", 1) },
+        speakerContext: frozenOf(h),
+      },
+      { contentId: sc.FIXED_CONTENT_ID },
+    );
+    h.scheduler.kick();
+    expect(await sc.settle(h, taskId, "summary")).toBe("failed");
+    expect(errorOf(h, taskId)).toMatchObject({ code: "invalid_request.prompt_protocol", details: { missing: ["{{transcript_with_aliases}}"], unknown: [] } });
+    expect(workUnitsOf(h, taskId).map((unit) => [unit.key, unit.status])).toEqual([["summary:generate", "failed"]]);
+    expect(fake.calls).toHaveLength(0);
   });
 });

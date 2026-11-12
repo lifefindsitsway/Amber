@@ -37,7 +37,7 @@ const builtin = Object.values(prompts).filter(
 
 describe("builtin prompts", () => {
   it("are exactly the expected prompts", () => {
-    expect(EXPECTED_PROMPTS).toHaveLength(18);
+    expect(EXPECTED_PROMPTS).toHaveLength(22);
     expect(builtin.map((prompt) => prompt.ref.id).sort()).toEqual(EXPECTED_PROMPTS.map((prompt) => prompt.id).sort());
   });
 
@@ -162,7 +162,7 @@ describe("customizable prompts", () => {
     expect(entry("proofread.audio").slots).toEqual(["{{proofread_text}}"]);
     expect(entry("rollup.goal.collection").builtin).toBe(ROLLUP_GOAL_COLLECTION_PROMPT);
     expect(entry("rollup.goal.collection").slots).toEqual([]);
-    for (const id of ["citation.rules", "citation.none", "citation.repair", "chat.compaction", "chat.search.plan"]) {
+    for (const id of ["citation.rules", "citation.none", "citation.repair", "chat.compaction", "chat.search.plan", "speaker.rules", "speaker.lines", "speaker.caution", "speaker.unverified"]) {
       expect(customizablePrompt(id)).toBeUndefined();
     }
   });

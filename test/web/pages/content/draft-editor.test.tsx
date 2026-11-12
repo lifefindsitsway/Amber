@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useContentEvents } from "../../../../src/web/api/context.tsx";
@@ -7,6 +7,7 @@ import { ContentPageProvider } from "../../../../src/web/pages/content/content-c
 import { DraftEditor, draftFromSegments } from "../../../../src/web/pages/content/draft-editor.tsx";
 import { contentDetail, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
+import { recognition, segmentRoute, type Row } from "../../../fixtures/web/speaker-compare.ts";
 import { commitBodies, editorRoutes, puts as speakerPuts, renderSpeakerEditor, talk } from "../../../fixtures/web/speaker-editor.tsx";
 
 const NOT_FOUND = { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } };
@@ -302,5 +303,220 @@ describe("DraftEditor and speakers", () => {
     fireEvent.click(screen.getByTestId("draft-commit"));
     await waitFor(() => expect(commitBodies(calls)).toHaveLength(1));
     await waitFor(() => expect(seen).toContainEqual({ type: "speakersChanged", contentId: "c1" }));
+  });
+});
+
+/** The revision list with `r1` (the editor's base) reviewed or not, and any other revisions. */
+function revisionsRoute(confirmed: boolean, others: ReturnType<typeof revision>[] = []) {
+  return { "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1", confirmed ? { speakersConfirmedAt: 5 } : {}), ...others] } } };
+}
+
+/** Gives the first sentence (陈明's) to 林雪 with the digit key on its speaker lead. */
+async function reassignFirst() {
+  const lead = (await screen.findAllByTestId("speaker-lead"))[0] as HTMLElement;
+  fireEvent.keyDown(lead, { key: "2" });
+  await waitFor(() => expect(screen.getAllByTestId("speaker-lead")[0]?.getAttribute("aria-label")).toBe("发言人：林雪"));
+}
+
+describe("DraftEditor 保持发言人已核对", () => {
+  it("is offered only when the base is reviewed and the draft changes who says something", async () => {
+    mockApi({ ...editorRoutes(), ...revisionsRoute(true) });
+    renderSpeakerEditor();
+    fireEvent.change(await screen.findByDisplayValue("第1句内容。"), { target: { value: "只改了字。" } });
+    await act(async () => undefined);
+    expect(screen.queryByTestId("keep-speakers-confirmed")).toBeNull();
+    await reassignFirst();
+    const keep = await screen.findByTestId("keep-speakers-confirmed");
+    expect(keep.textContent).toContain("保持发言人已核对");
+    expect((within(keep).getByTestId("keep-speakers-confirmed-input") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("is not offered over a base whose speakers are not reviewed", async () => {
+    mockApi({ ...editorRoutes(), ...revisionsRoute(false) });
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    await reassignFirst();
+    await act(async () => undefined);
+    expect(screen.queryByTestId("keep-speakers-confirmed")).toBeNull();
+  });
+
+  it("sends nothing about the review while unticked", async () => {
+    const { calls } = mockApi({ ...editorRoutes(), ...revisionsRoute(true) });
+    const onClose = renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    await reassignFirst();
+    await screen.findByTestId("keep-speakers-confirmed");
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(commitBodies(calls)).toEqual([{ expectedPrimaryRevisionId: "r1", draftVersion: 1 }]);
+  });
+
+  it("keeps the review when ticked, on the commit and on its retry after the primary changed", async () => {
+    let commits = 0;
+    const { calls } = mockApi({
+      ...editorRoutes(),
+      ...revisionsRoute(true),
+      "POST /api/contents/c1/transcript/draft/commit": () => {
+        commits += 1;
+        return commits === 1
+          ? { status: 409, body: { error: { class: "conflict", code: "conflict.primary_changed", retryDisposition: "never", userMessage: "", details: { currentPrimaryRevisionId: "r2" } } } }
+          : { status: 201, body: revision("m1", { kind: "manual", parentRevisionId: "r1" }) };
+      },
+    });
+    const onClose = renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    await reassignFirst();
+    fireEvent.click(await screen.findByTestId("keep-speakers-confirmed-input"));
+    expect((screen.getByTestId("keep-speakers-confirmed-input") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    expect(await screen.findByTestId("draft-conflict")).toBeTruthy();
+    fireEvent.click(screen.getByText("仍然提交"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(commitBodies(calls)).toEqual([
+      { expectedPrimaryRevisionId: "r1", draftVersion: 1, speakersConfirmed: true },
+      { expectedPrimaryRevisionId: "r2", draftVersion: 1, speakersConfirmed: true },
+    ]);
+  });
+});
+
+describe("DraftEditor cross-recognition comparison", () => {
+  // Another vendor's recognition: the same two voices, except that it gives the fifth sentence to 陈明's voice.
+  const OTHER = recognition("r2", "scribe_v2", { comparison: true });
+  const THEIRS: Row[] = [
+    [0, 4_000, 3],
+    [4_000, 8_000, 3],
+    [8_000, 12_000, 4],
+    [12_000, 16_000, 4],
+    [16_000, 20_000, 3],
+    [20_000, 24_000, 3],
+  ];
+  const routes = () => ({ ...editorRoutes(), ...revisionsRoute(false, [OTHER]), ...segmentRoute("r2", THEIRS, OTHER) });
+  const rowCount = (): number => screen.getAllByTestId("speaker-lead").length;
+
+  async function openComparison() {
+    fireEvent.click(screen.getByTestId("comparison-toggle"));
+    const panel = await screen.findByTestId("comparison-panel");
+    await within(panel).findByTestId("comparison-header");
+    return panel;
+  }
+
+  it("opens and closes the panel from its toggle, which says whether it is open", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const toggle = screen.getByTestId("comparison-toggle");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    const panel = await openComparison();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(within(panel).getByTestId("comparison-header").textContent).toContain("归属不同 1");
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("comparison-panel")).toBeNull();
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("filters the rows by a picked category, names it in the bar, and lifts it from 「全部」", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    expect(rowCount()).toBe(6);
+    const panel = await openComparison();
+    fireEvent.click(within(panel).getByTestId("comparison-filter-different"));
+    await waitFor(() => expect(rowCount()).toBe(1));
+    expect(screen.getByDisplayValue("第5句内容。")).toBeTruthy();
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("只显示「归属不同」：1 / 6 句");
+    expect(screen.getByTestId("speaker-filter").textContent).toContain("归属不同");
+    fireEvent.click(within(panel).getByTestId("comparison-filter-all"));
+    await waitFor(() => expect(rowCount()).toBe(6));
+    expect(screen.queryByTestId("speaker-filter-bar")).toBeNull();
+  });
+
+  it("lifts a category filter when the panel is closed", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const panel = await openComparison();
+    fireEvent.click(within(panel).getByTestId("comparison-filter-different"));
+    await waitFor(() => expect(rowCount()).toBe(1));
+    fireEvent.click(screen.getByTestId("comparison-toggle"));
+    await waitFor(() => expect(rowCount()).toBe(6));
+    expect(screen.queryByTestId("speaker-filter-bar")).toBeNull();
+  });
+
+  it("leaves a speaker filter picked in the editor's menu alone, whatever the comparison does", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const panel = await openComparison();
+    fireEvent.keyDown(screen.getByTestId("speaker-filter"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("speaker-filter-speaker-spk-b"));
+    await waitFor(() => expect(rowCount()).toBe(3));
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("只显示「林雪」：3 / 6 句");
+    // 「全部」 in the comparison is already on; pressing it again lifts nothing of the editor's.
+    fireEvent.click(within(panel).getByTestId("comparison-filter-all"));
+    await act(async () => undefined);
+    expect(rowCount()).toBe(3);
+    // A change of the sentences makes the comparison report again; the speaker filter stays.
+    fireEvent.change(screen.getByDisplayValue("第3句内容。"), { target: { value: "改过的第3句。" } });
+    await act(async () => undefined);
+    expect(rowCount()).toBe(3);
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("林雪");
+    // Closing the panel does not lift it either.
+    fireEvent.click(screen.getByTestId("comparison-toggle"));
+    await act(async () => undefined);
+    expect(rowCount()).toBe(3);
+  });
+
+  it("keeps a speaker filter picked after a category when the sentences change", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const panel = await openComparison();
+    fireEvent.click(within(panel).getByTestId("comparison-filter-different"));
+    await waitFor(() => expect(rowCount()).toBe(1));
+    fireEvent.keyDown(screen.getByTestId("speaker-filter"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("speaker-filter-speaker-spk-b"));
+    await waitFor(() => expect(rowCount()).toBe(3));
+    fireEvent.change(screen.getByDisplayValue("第3句内容。"), { target: { value: "改过的第3句。" } });
+    await act(async () => undefined);
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("林雪");
+    expect(rowCount()).toBe(3);
+    // The menu's filter replaced the category, so the comparison shows 「全部」; one press picks the category again.
+    expect(within(panel).getByTestId("comparison-filter-all").getAttribute("aria-pressed")).toBe("true");
+    expect(within(panel).getByTestId("comparison-filter-different").getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(within(panel).getByTestId("comparison-filter-different"));
+    await waitFor(() => expect(rowCount()).toBe(1));
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("归属不同");
+  });
+
+  it("shows 「全部」 in the comparison once a filter is picked in the editor's menu, so one press re-applies the category", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const panel = await openComparison();
+    const chip = within(panel).getByTestId("comparison-filter-different");
+    fireEvent.click(chip);
+    await waitFor(() => expect(rowCount()).toBe(1));
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(screen.getByTestId("speaker-filter"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("speaker-filter-speaker-spk-b"));
+    await waitFor(() => expect(rowCount()).toBe(3));
+    await waitFor(() => expect(chip.getAttribute("aria-pressed")).toBe("false"));
+    expect(within(panel).getByTestId("comparison-filter-all").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(chip);
+    await waitFor(() => expect(rowCount()).toBe(1));
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toContain("归属不同");
+  });
+
+  it("follows the comparison while its category filter is shown", async () => {
+    mockApi(routes());
+    renderSpeakerEditor();
+    await screen.findByDisplayValue("第1句内容。");
+    const panel = await openComparison();
+    fireEvent.click(within(panel).getByTestId("comparison-filter-different"));
+    await waitFor(() => expect(rowCount()).toBe(1));
+    // Giving the listed sentence to the speaker the other recognition heard leaves nothing to list.
+    fireEvent.keyDown(screen.getAllByTestId("speaker-lead")[0] as HTMLElement, { key: "1" });
+    await waitFor(() => expect(screen.getByTestId("speaker-filter-bar").textContent).toBe("没有「归属不同」的句子显示全部"));
   });
 });

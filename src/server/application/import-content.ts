@@ -31,6 +31,7 @@ import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
 import { freezePromptRefs } from "./prompts.ts";
+import { freezeSpeakerContext } from "./speaker-context.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { PlatformRegistry } from "./platforms.ts";
 import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
@@ -148,19 +149,31 @@ function parseInitialSubtitle(item: ImportItem, index: number): InitialSubtitle 
   return { subtitle, language };
 }
 
-/** The `regenerate_summary` request that carries a re-import's summary settings onto `baseRevisionId`. */
-function summaryRequestJson(requestJson: string, baseRevisionId: string): string {
+/**
+ * The `regenerate_summary` request that carries a re-import's summary settings onto
+ * `baseRevisionId`. Like one submitted directly, it freezes the speakers of that revision
+ * when they are given to the model, and is otherwise exactly what it always was.
+ */
+function summaryRequestJson(scope: RepositoryScope, content: Content, requestJson: string, baseRevisionId: string): string {
   const request = JSON.parse(requestJson) as ProcessContentRequest;
+  const promptRefs =
+    request.promptRefs === undefined
+      ? undefined
+      : Object.fromEntries(promptIdsOf("regenerate_summary").flatMap((id) => (request.promptRefs?.[id] === undefined ? [] : [[id, request.promptRefs[id]]])));
   const summary: RegenerateSummaryRequest = {
     requestSchemaVersion: 1,
     kind: "regenerate_summary",
     ...(request.modelRef === undefined ? {} : { modelRef: request.modelRef }),
     ...(request.outputLanguage === undefined ? {} : { outputLanguage: request.outputLanguage }),
     ...(request.templateRef === undefined ? {} : { templateRef: request.templateRef }),
-    ...(request.promptRefs === undefined
-      ? {}
-      : { promptRefs: Object.fromEntries(promptIdsOf("regenerate_summary").flatMap((id) => (request.promptRefs?.[id] === undefined ? [] : [[id, request.promptRefs[id]]]))) }),
+    ...(promptRefs === undefined ? {} : { promptRefs }),
     baseRevisionId,
+    ...freezeSpeakerContext(
+      scope,
+      content.userId,
+      { kind: "regenerate_summary", contentId: content.id, revisionId: baseRevisionId, promptRefs: promptRefs ?? {} },
+      "transcript",
+    ),
   };
   return canonicalJson(summary);
 }
@@ -567,11 +580,13 @@ export class ImportContentService {
       .filter((task) => !isTerminalProjection(task.statusProjection))
       .map((task) => ({ task, keys: laneKeys(task, content.source.kind) }));
     const primary = content.primaryTranscriptRevisionId;
-    const summaryJson = primary === undefined ? undefined : summaryRequestJson(requestJson, primary);
+    // Built only where a summary Task is compared or created: freezing its speakers may refuse it.
+    const summaryJson = (): string | undefined => (primary === undefined ? undefined : summaryRequestJson(scope, content, requestJson, primary));
     const blocking = laneConflict(laneKeys(candidate, content.source.kind), unfinished);
     if (blocking !== undefined) {
       // The same re-import submitted again while its derived summary Task still runs.
-      const sameSummary = blocking.kind === "regenerate_summary" && summaryJson !== undefined && sameIntent("regenerate_summary", summaryJson, blocking);
+      const summary = blocking.kind === "regenerate_summary" ? summaryJson() : undefined;
+      const sameSummary = summary !== undefined && sameIntent("regenerate_summary", summary, blocking);
       if (sameSummary || sameIntent(candidate.kind, requestJson, blocking)) {
         return { task: blocking, created: false };
       }
@@ -585,9 +600,9 @@ export class ImportContentService {
     if (latest !== undefined && latest.statusProjection === "succeeded" && differences?.length === 0) {
       return { task: latest, created: false };
     }
-    if (summaryJson !== undefined && differences !== undefined && differences.length > 0 && differences.every((field) => SUMMARY_ONLY_FIELDS.has(field))) {
+    if (primary !== undefined && differences !== undefined && differences.length > 0 && differences.every((field) => SUMMARY_ONLY_FIELDS.has(field))) {
       const task = createTask(scope, outbox, {
-        task: { id: this.newId(), userId: content.userId, contentId: content.id, kind: "regenerate_summary", requestJson: summaryJson, createdAt: now },
+        task: { id: this.newId(), userId: content.userId, contentId: content.id, kind: "regenerate_summary", requestJson: summaryJson() as string, createdAt: now },
         sourceKind: content.source.kind,
         newId: this.newId,
       });

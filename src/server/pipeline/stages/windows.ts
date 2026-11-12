@@ -1,6 +1,7 @@
 import { CONTEXT_SAFETY_RATIO, LLM_MAX_OUTPUT_TOKENS_DEFAULT } from "../../../shared/defaults.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { ModelRef } from "../../domain/model-ref.ts";
+import type { SpeakerFraming } from "../../domain/speaker-context.ts";
 import { estimateTokens } from "../../domain/token-estimate.ts";
 import type { TranscriptSegment } from "../../domain/transcript.ts";
 
@@ -18,10 +19,13 @@ export interface SentenceWindow {
  * is the caller's prompt with an empty transcript and its longest window note, plus any
  * JSON schema it sends. Aliases are global (`s<position + 1>`) and a sentence is always one
  * physical line. Without a known window nothing is sent.
+ *
+ * With `speakers` a sentence also pays for its header line where it has one: at a change of
+ * speaker, and wherever it opens a window (`fixedTokens` then includes the rules fragment).
  */
 export function planSentenceWindows(
   segments: readonly TranscriptSegment[],
-  input: { fixedTokens: number; limits: { contextWindowTokens?: number; maxOutputTokens?: number }; modelRef: ModelRef },
+  input: { fixedTokens: number; limits: { contextWindowTokens?: number; maxOutputTokens?: number }; modelRef: ModelRef; speakers?: SpeakerFraming },
 ): SentenceWindow[] {
   const { limits, modelRef } = input;
   const contextWindow = limits.contextWindowTokens;
@@ -31,27 +35,52 @@ export function planSentenceWindows(
       details: { providerProfileId: modelRef.providerProfileId, modelId: modelRef.modelId },
     });
   }
-  const budget = Math.floor(contextWindow * CONTEXT_SAFETY_RATIO) - input.fixedTokens - (limits.maxOutputTokens ?? LLM_MAX_OUTPUT_TOKENS_DEFAULT);
+  const budget = windowBudget(contextWindow, limits.maxOutputTokens) - input.fixedTokens;
   if (budget <= 0) {
     throw amberError("llm_capability", "no room for any transcript in the model's budget", { code: "llm_capability.context_length" });
   }
+  const { speakers } = input;
+  const costOf = (line: string, position: number, first: boolean): number =>
+    speakers === undefined ? estimateTokens(`${line}\n`) : speakers.cost(line, position, first);
   const windows: SentenceWindow[] = [];
   let current: SentenceWindow | undefined;
   let used = 0;
   segments.forEach((segment, position) => {
     const line = `[[s${position + 1}]] ${segment.text.replace(/\r\n|\r|\n/g, " ")}`;
-    const cost = estimateTokens(`${line}\n`);
-    if (cost > budget) {
+    const opening = costOf(line, position, true);
+    if (opening > budget) {
       throw amberError("llm_capability", "a single sentence exceeds the model's budget", { code: "llm_capability.context_length" });
     }
-    if (current === undefined || used + cost > budget) {
+    const following = current === undefined ? opening : costOf(line, position, false);
+    let cost = following;
+    if (current === undefined || used + following > budget) {
       current = { offset: position, segments: [], lines: [] };
       windows.push(current);
       used = 0;
+      cost = opening;
     }
     current.segments.push(segment);
     current.lines.push(line);
     used += cost;
   });
   return windows;
+}
+
+/** Room for input in one call: `contextWindowTokens × CONTEXT_SAFETY_RATIO − output reservation`. */
+function windowBudget(contextWindowTokens: number, maxOutputTokens: number | undefined): number {
+  return Math.floor(contextWindowTokens * CONTEXT_SAFETY_RATIO) - (maxOutputTokens ?? LLM_MAX_OUTPUT_TOKENS_DEFAULT);
+}
+
+/**
+ * The second check of a window that reads speakers: the request as it will be sent (its
+ * prompt and `extraTokens`, e.g. the JSON schema) must fit the same budget planning used, or
+ * the stage fails with `llm_capability.context_length` — nothing is cut and nothing is sent.
+ */
+export function assertWindowFits(prompt: string, extraTokens: number, limits: { contextWindowTokens?: number; maxOutputTokens?: number }): void {
+  if (limits.contextWindowTokens === undefined) {
+    return;
+  }
+  if (estimateTokens(prompt) + extraTokens > windowBudget(limits.contextWindowTokens, limits.maxOutputTokens)) {
+    throw amberError("llm_capability", "a window with its speaker lines exceeds the model's budget", { code: "llm_capability.context_length" });
+  }
 }

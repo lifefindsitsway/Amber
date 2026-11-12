@@ -118,6 +118,14 @@ export function burnRequest(
   return translationId === undefined ? undefined : { revisionId: original.id, translationRevisionId: translationId, mode, ...choice };
 }
 
+/**
+ * The container a soft-subtitle export uses: the one picked, except that speaker labels
+ * rule out MP4, whose `mov_text` track keeps no layout for them; the dialog then shows MKV.
+ */
+export function burnContainer(picked: SubtitleVideoContainer, speakerLabels: boolean): SubtitleVideoContainer {
+  return speakerLabels && picked === "mp4" ? "mkv" : picked;
+}
+
 /** A video the export can be made from. */
 export interface BurnVideoSource {
   asset: MediaAssetDto;
@@ -240,7 +248,10 @@ export function BurnDialog(props: {
       : t("contentView.burn.sourceVideoCacheLabel", { ...values, quality: qualityLabel(cacheHeight(item.asset), t) });
   };
   const style: SubtitleStyle = { appearance: prefs.appearance, placement: prefs.placement };
-  const body = userId === undefined ? undefined : burnRequest(original, mode, translationId, { delivery, container, style }, source?.asset.id);
+  const speakerMode = prefs.appearance.speaker;
+  // An MP4 track (mov_text) cannot lay out speaker labels, so with labels on it is not offered.
+  const effectiveContainer = burnContainer(container, speakerMode !== undefined);
+  const body = userId === undefined ? undefined : burnRequest(original, mode, translationId, { delivery, container: effectiveContainer, style }, source?.asset.id);
   const start = useMutation({
     mutationFn: (request: BurnRequest) =>
       client.post(`/api/contents/${encodeURIComponent(props.contentId)}/burn`, taskAcceptedDtoSchema, { body: request, idempotent: true }),
@@ -378,7 +389,8 @@ export function BurnDialog(props: {
                   name="burn-container"
                   className="mt-1"
                   value={value}
-                  checked={container === value}
+                  checked={effectiveContainer === value}
+                  disabled={value === "mp4" && speakerMode !== undefined}
                   onChange={() => {
                     setContainer(value);
                     start.reset();
@@ -388,7 +400,11 @@ export function BurnDialog(props: {
                 <span className="flex flex-col">
                   <span>{t(`contentView.burn.containerValue.${value}`)}</span>
                   <span id={`burn-container-hint-${value}`} className="text-xs text-muted">
-                    {t(`contentView.burn.containerHint.${value}`)}
+                    {value === "mp4" && speakerMode !== undefined ? (
+                      <span data-testid="burn-mp4-speaker-unsupported">{t("subtitleSpeaker.burn.mp4Unsupported")}</span>
+                    ) : (
+                      t(`contentView.burn.containerHint.${value}`)
+                    )}
                   </span>
                 </span>
               </label>
@@ -401,6 +417,7 @@ export function BurnDialog(props: {
             <span aria-hidden className="inline-block size-3 rounded-sm border border-line" style={{ backgroundColor: appearance.original.color }} />
             <span aria-hidden className="inline-block size-3 rounded-sm border border-line" style={{ backgroundColor: appearance.translation.color }} />
             {t("contentView.burn.styleSummary", { originalSize: appearance.original.fontSize, translationSize: appearance.translation.fontSize })}
+            {speakerMode === undefined ? null : <span className="ml-2" data-testid="burn-style-speaker">{t("subtitleSpeaker.burn.summary", { mode: t(`subtitleSpeaker.editor.value.${speakerMode}`) })}</span>}
           </span>
           <Button
             size="sm"
@@ -414,6 +431,11 @@ export function BurnDialog(props: {
             {t("contentView.burn.adjustInPlayer")}
           </Button>
         </div>
+        {speakerMode !== undefined && original.speakersConfirmedAt === undefined ? (
+          <p className="text-xs text-muted" data-testid="burn-speakers-unreviewed">
+            {t("subtitleSpeaker.burn.unreviewed")}
+          </p>
+        ) : null}
         {source === undefined ? null : (
           <p className="text-xs text-muted" data-testid="burn-estimated-size">
             {delivery === "soft" ? t("contentView.burn.estimatedSize", { size: formatBytes(source.asset.sizeBytes) }) : t("contentView.burn.estimatedSizeHard")}

@@ -1187,6 +1187,173 @@ describe("chat web search", () => {
   });
 });
 
+describe("chat speakers", () => {
+  it("says under an answer who the speakers were when they no longer match now, and nothing when they do", async () => {
+    api({
+      chat: () =>
+        chatOf([
+          { id: "m1", role: "user", text: "张三怎么看？", status: "complete", citations: [], createdAt: 1 },
+          {
+            id: "m2",
+            role: "assistant",
+            text: "旧回答",
+            status: "complete",
+            contextTranscriptRevisionId: "r1",
+            speakerContext: { state: "names_changed", speakers: [{ id: "s1", label: "张三" }, { id: "s2", label: "主持人" }], renamed: [{ id: "s1", was: "张三", now: "王五" }] },
+            citations: [],
+            createdAt: 2,
+          },
+          { id: "m3", role: "user", text: "还有呢？", status: "complete", citations: [], createdAt: 3 },
+          { id: "m4", role: "assistant", text: "新回答", status: "complete", contextTranscriptRevisionId: "r1", citations: [], createdAt: 4 },
+        ]),
+    });
+    renderPanel();
+    const hints = await screen.findAllByTestId("chat-speaker-mismatch");
+    expect(hints).toHaveLength(1);
+    expect(hints[0]?.textContent).toBe("回答时的发言人：张三、主持人 · 与当前不一致");
+    expect(hints[0]?.getAttribute("data-state")).toBe("names_changed");
+  });
+
+  it("marks the line on who the speakers were as a note, like the other speaker notices", async () => {
+    api({
+      chat: () =>
+        chatOf([
+          { id: "m1", role: "user", text: "张三怎么看？", status: "complete", citations: [], createdAt: 1 },
+          {
+            id: "m2",
+            role: "assistant",
+            text: "旧回答",
+            status: "complete",
+            contextTranscriptRevisionId: "r1",
+            speakerContext: { state: "attribution_changed", speakers: [{ id: "s1", label: "张三" }], changedSentences: 3 },
+            citations: [],
+            createdAt: 2,
+          },
+        ]),
+    });
+    renderPanel();
+    const line = await screen.findByTestId("chat-speaker-mismatch");
+    expect(line.textContent).toBe("回答时的发言人：张三 · 与当前不一致");
+    // Read with the answer, not announced: a note without a live region.
+    expect(line.getAttribute("role")).toBe("note");
+    expect(line.hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("labels the context 「检索 · 发言人片段」 after an answer that took speaker clips, until the next question", async () => {
+    let clips = true;
+    api({
+      threads: () => ({ threads: [{ id: "th1", createdAt: 0 }] }),
+      chat: () => ({ ...chatOf([], { mode: "retrieval", estimatedTokens: 3_000, summaryOmitted: true }), thread: { id: "th1", createdAt: 0 } }),
+      post: () =>
+        stream([
+          frame("context", clips ? { mode: "retrieval", speakerClips: true, summaryOmitted: true } : { mode: "retrieval" }),
+          frame("answer.delta", { delta: "回答" }),
+          frame("done", { threadId: "th1", userMessageId: "m1", messageId: "m2", status: "complete" }),
+        ]),
+    });
+    renderPanel();
+    const mode = await screen.findByTestId("chat-mode");
+    expect(mode.textContent).toBe("智能检索");
+    expect(screen.getByTestId("chat-summary-omitted").textContent).toBe("总结的发言人依据已变化，未带入");
+    fireEvent.change(input(), { target: { value: "张三怎么看？" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段"));
+    expect(screen.getByTestId("chat-summary-omitted")).toBeTruthy();
+    clips = false;
+    await waitFor(() => expect(input().disabled).toBe(false));
+    fireEvent.change(input(), { target: { value: "主题是什么？" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("智能检索"));
+    // The answer says what it actually used: the summary was carried this time.
+    await waitFor(() => expect(input().disabled).toBe(false));
+    expect(screen.queryByTestId("chat-summary-omitted")).toBeNull();
+  });
+
+  it("follows the answer's own context event: web material may push a full-text question into retrieval with clips", async () => {
+    api({
+      threads: () => ({ threads: [{ id: "th1", createdAt: 0 }] }),
+      chat: () => ({ ...chatOf([], { mode: "full", estimatedTokens: 12_345 }), thread: { id: "th1", createdAt: 0 } }),
+      post: () =>
+        stream([
+          frame("context", { mode: "retrieval", speakerClips: true }),
+          frame("answer.delta", { delta: "回答" }),
+          frame("done", { threadId: "th1", userMessageId: "m1", messageId: "m2", status: "complete" }),
+        ]),
+    });
+    renderPanel();
+    const mode = await screen.findByTestId("chat-mode");
+    expect(mode.textContent).toBe("全文");
+    fireEvent.change(input(), { target: { value: "张三怎么看？" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段"));
+    expect(screen.getByTestId("chat-mode").getAttribute("data-mode")).toBe("retrieval");
+    // Still after the thread was read back, whose estimate says full text.
+    await waitFor(() => expect(input().disabled).toBe(false));
+    expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段");
+  });
+
+  it("follows the event of an answer whose stream was cut off, and the retry's own event after it", async () => {
+    let posts = 0;
+    api({
+      threads: () => ({ threads: [{ id: "th1", createdAt: 0 }] }),
+      chat: () => ({
+        ...chatOf([user("u1", "张三怎么看？"), answer("a1", "说到一半", { status: "interrupted" })], { mode: "full", estimatedTokens: 12_345 }),
+        thread: { id: "th1", createdAt: 0 },
+      }),
+      post: () => {
+        posts += 1;
+        // The first stream ends without `done`; the retry reads the full text.
+        return posts === 1
+          ? stream([frame("context", { mode: "retrieval", speakerClips: true }), frame("answer.delta", { delta: "说到一半" })])
+          : stream([frame("context", { mode: "full" }), frame("answer.delta", { delta: "重答" }), frame("done", { threadId: "th1", userMessageId: "u1", messageId: "a2", status: "complete" })]);
+      },
+    });
+    renderPanel();
+    await screen.findByTestId("chat-mode");
+    fireEvent.change(input(), { target: { value: "张三怎么看？" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段"));
+    await waitFor(() => expect(input().disabled).toBe(false));
+    // Read back without the field (the stored copy here never recorded one): the event still speaks.
+    expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段");
+    fireEvent.click(await screen.findByTestId("chat-turn-retry"));
+    await waitFor(() => expect(posts).toBe(2));
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("全文"));
+    expect(screen.getByTestId("chat-mode").getAttribute("data-speaker-clips")).toBeNull();
+  });
+
+  it("restores the label from the last answer's recorded context after a reload, and shows the estimate for an answer that recorded none", async () => {
+    let lastRecorded = true;
+    api({
+      threads: () => ({ threads: [{ id: "th1", createdAt: 0 }] }),
+      chat: () => ({
+        ...chatOf(
+          [
+            user("u1", "张三怎么看？"),
+            answer("a1", "旧回答", { contextUsed: { mode: "retrieval", speakerClips: true } }),
+            user("u2", "李四呢？"),
+            answer("a2", "新回答", lastRecorded ? { contextUsed: { mode: "retrieval", speakerClips: true, summaryOmitted: true } } : {}),
+          ],
+          { mode: "full", estimatedTokens: 12_345 },
+        ),
+        thread: { id: "th1", createdAt: 0 },
+      }),
+    });
+    const first = renderPanel();
+    await screen.findByText("新回答");
+    expect(screen.getByTestId("chat-mode").textContent).toBe("检索 · 发言人片段");
+    expect(screen.getByTestId("chat-mode").getAttribute("data-mode")).toBe("retrieval");
+    expect(screen.getByTestId("chat-summary-omitted").textContent).toBe("总结的发言人依据已变化，未带入");
+    first.unmount();
+    // The last answer recorded nothing (an older one, or one without speakers): an earlier answer's record does not speak for it.
+    lastRecorded = false;
+    renderPanel();
+    await screen.findByText("新回答");
+    await waitFor(() => expect(screen.getByTestId("chat-mode").textContent).toBe("全文"));
+    expect(screen.queryByTestId("chat-summary-omitted")).toBeNull();
+  });
+});
+
 describe("chat input", () => {
   it("is resized from a grip on its top edge: dragging up makes it taller, down shorter, a double click restores it", async () => {
     api();

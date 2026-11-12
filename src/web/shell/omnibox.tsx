@@ -7,8 +7,10 @@ import { API_PAGE_SIZE_MAX, SEARCH_GROUP_LIMIT } from "../../shared/defaults.ts"
 import { useCollections, useContents } from "../api/queries.ts";
 import { COMMANDS, type CommandContext } from "../commands.ts";
 import { formatDuration } from "../format.ts";
+import { SpeakerAvatar } from "../pages/content/speakers/speaker-avatar.tsx";
 import { Highlighted } from "../search/highlighted.tsx";
-import { hitLink, useSearch } from "../search/search.ts";
+import { BasisChangedMark, HitSpeaker, speakerHitSubject } from "../search/hit-speaker.tsx";
+import { hitLink, speakerHitLink, summaryBasisChanged, useSearch } from "../search/search.ts";
 import { useShortcutRegistry } from "../shortcut-registry.tsx";
 import { parseOmniboxQuery, recentItems } from "./omnibox-search.ts";
 
@@ -132,7 +134,8 @@ function SearchGroups(props: GroupProps & { text: string }) {
   if (result === undefined) {
     return <p className="px-2 py-6 text-center text-sm text-muted">{search.isError ? t("search.failed") : t("search.searching")}</p>;
   }
-  const total = result.contents.length + result.segments.length + result.summaries.length + result.collections.length;
+  const speakers = result.speakers ?? [];
+  const total = result.contents.length + result.segments.length + result.summaries.length + result.collections.length + speakers.length;
   if (total === 0) {
     return search.isFetching ? <p className="px-2 py-6 text-center text-sm text-muted">{t("search.searching")}</p> : <EmptySearch {...props} />;
   }
@@ -159,8 +162,14 @@ function SearchGroups(props: GroupProps & { text: string }) {
               <Quote size={14} className="shrink-0 text-muted" aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <Highlighted text={hit.snippet} ranges={hit.ranges} className="line-clamp-2 text-ink" />
-                <span className="block truncate text-xs text-muted">
-                  {`${hit.contentTitle ?? t("search.untitled")} · ${formatDuration(hit.startMs)}`}
+                <span className="flex min-w-0 items-center gap-1 text-xs text-muted">
+                  {hit.speaker === undefined ? null : (
+                    <>
+                      <HitSpeaker contentId={hit.contentId} speaker={hit.speaker} className="max-w-[40%] shrink-0" />
+                      <span aria-hidden="true">·</span>
+                    </>
+                  )}
+                  <span className="truncate">{`${hit.contentTitle ?? t("search.untitled")} · ${formatDuration(hit.startMs)}`}</span>
                 </span>
               </span>
             </Command.Item>
@@ -175,6 +184,28 @@ function SearchGroups(props: GroupProps & { text: string }) {
               <span className="min-w-0 flex-1">
                 <Highlighted text={hit.snippet} ranges={hit.ranges} className="line-clamp-2 text-ink" />
                 <span className="block truncate text-xs text-muted">{hit.contentTitle ?? t("search.untitled")}</span>
+              </span>
+              {summaryBasisChanged(hit) ? <BasisChangedMark /> : null}
+            </Command.Item>
+          ))}
+        </Command.Group>
+      )}
+      {speakers.length === 0 ? null : (
+        // A name match only: the same name in two Contents is two entries, never one person.
+        <Command.Group heading={t("speakerContext.search.group")} className={GROUP} data-testid="omnibox-group-speakers">
+          {speakers.map((hit) => (
+            <Command.Item
+              key={`speaker:${hit.contentId}:${hit.speakerId}`}
+              value={`speaker:${hit.contentId}:${hit.speakerId}`}
+              className={ITEM}
+              onSelect={() => go(speakerHitLink(hit))}
+            >
+              <SpeakerAvatar contentId={hit.contentId} speaker={speakerHitSubject(hit)} size={16} decorative />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ink">{hit.name}</span>
+                <span className="block truncate text-xs text-muted">
+                  {t("speakerContext.search.hitDetail", { title: hit.contentTitle ?? t("search.untitled"), count: hit.sentences })}
+                </span>
               </span>
             </Command.Item>
           ))}

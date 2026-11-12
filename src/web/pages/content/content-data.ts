@@ -10,6 +10,7 @@ import { taskListDtoSchema } from "../../../shared/dto/task.ts";
 import type { TaskKind } from "../../../shared/enums.ts";
 import { transcriptSegmentPageDtoSchema, type TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { translationsDtoSchema } from "../../../shared/dto/translation.ts";
+import { isComparisonGeneration } from "../../../shared/speaker-comparison.ts";
 import { readingParagraphs, readingSections, type ReadingChapter } from "../../../shared/reading.ts";
 import type { ApiClient } from "../../api/client.ts";
 import { useApi, useTaskHub } from "../../api/context.tsx";
@@ -34,6 +35,9 @@ export const contentKeys = {
   /** The Content's speakers; the photo keys sit under it, so invalidating it refreshes the photos too. */
   speakers: (contentId: string) => ["content", contentId, "speakers"] as const,
   speakerAvatar: (contentId: string, speakerId: string, version: number) => ["content", contentId, "speakers", speakerId, "avatar", version] as const,
+  /** The speaker reviews of the Content's revisions, one key per revision under this prefix. */
+  speakerReviews: (contentId: string) => ["content", contentId, "speaker-review"] as const,
+  speakerReview: (contentId: string, revisionId: string) => ["content", contentId, "speaker-review", revisionId] as const,
 };
 
 export function useContentDetail(contentId: string) {
@@ -122,7 +126,9 @@ export const REDO_TASK_KINDS = {
  * The most recent redo Task of each of `stages` on the Content, folded into the empty-state
  * stage flow over the processing Task's own runs; values are Task ids. A summary
  * redo counts only for `summaryTemplateId`, the processing Task's template, so it is the newest
- * of one page of summary redos with that template. Under the Content's keys, so a Task created
+ * of one page of summary redos with that template. A transcription made only to compare
+ * speakers with is no redo of the Content's transcription, so the ASR redo is the newest of
+ * one page of re-transcriptions that is not one. Under the Content's keys, so a Task created
  * or finished on the Content reads them again.
  */
 export function useLatestRedos(contentId: string, stages: readonly RedoStage[], summaryTemplateId?: string) {
@@ -136,6 +142,10 @@ export function useLatestRedos(contentId: string, stages: readonly RedoStage[], 
             if (summaryTemplateId === undefined) return [stage, undefined] as const;
             const page = await client.get(`/api/tasks${queryString({ contentId, kind: REDO_TASK_KINDS[stage], limit: API_PAGE_SIZE_MAX })}`, taskListDtoSchema);
             return [stage, page.items.find((task) => task.templateId === summaryTemplateId)?.id] as const;
+          }
+          if (stage === "asr") {
+            const page = await client.get(`/api/tasks${queryString({ contentId, kind: REDO_TASK_KINDS[stage], limit: API_PAGE_SIZE_MAX })}`, taskListDtoSchema);
+            return [stage, page.items.find((task) => task.comparison !== true)?.id] as const;
           }
           return [
             stage,
@@ -368,13 +378,24 @@ const USER_CHOSEN_KINDS: ReadonlySet<TranscriptKind> = new Set(["imported", "man
 /**
  * The newest non-archived ASR original created after the primary, when the primary is an
  * imported, manual or corrected revision: a re-transcription the user may want to switch to,
- * since publishing it did not move the primary.
+ * since publishing it did not move the primary. A transcription made only to compare speakers
+ * with is no re-transcription of the Content, so it is never suggested.
  */
-export function newerAsrRevision<T extends PickableRevision>(revisions: readonly T[], primaryId: string | undefined): T | undefined {
+export function newerAsrRevision<T extends PickableRevision & Pick<TranscriptRevisionDto, "generation">>(
+  revisions: readonly T[],
+  primaryId: string | undefined,
+): T | undefined {
   const primary = revisions.find((revision) => revision.id === primaryId);
   if (primary === undefined || !USER_CHOSEN_KINDS.has(primary.kind)) return undefined;
   return revisions
-    .filter((revision) => revision.kind === "asr" && revision.parentRevisionId === undefined && revision.archived !== true && revision.createdAt > primary.createdAt)
+    .filter(
+      (revision) =>
+        revision.kind === "asr" &&
+        revision.parentRevisionId === undefined &&
+        revision.archived !== true &&
+        !isComparisonGeneration(revision.generation) &&
+        revision.createdAt > primary.createdAt,
+    )
     .reduce<T | undefined>((best, revision) => (best === undefined || revision.createdAt > best.createdAt ? revision : best), undefined);
 }
 

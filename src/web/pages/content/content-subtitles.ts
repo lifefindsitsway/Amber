@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ContentDetailDto, TranscriptRevisionDto } from "../../../shared/dto/content.ts";
-import { sliceCues, subtitleCues } from "../../../shared/subtitle-geometry.ts";
+import { labelSubtitleCues, sliceCues, sliceSubtitleUnits, subtitleCues, subtitleSpeakerLabel } from "../../../shared/subtitle-geometry.ts";
 import { useMe } from "../../api/queries.ts";
 import { useSubtitleFontFallback } from "../../player/subtitle-font.ts";
 import type { SubtitleStatus, SubtitleTrackModel, SubtitleTranslationLanguage } from "../../player/subtitle-overlay.tsx";
@@ -9,6 +9,7 @@ import { upgradeTrackPref, useSubtitlePrefs, type SubtitleDisplayMode, type Subt
 import { useContentPage } from "./content-context.tsx";
 import { pickTranslation, readableRevisions, translationCurrents, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
 import { languageLabel, revisionLabel } from "./labels.ts";
+import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 
 const usesOriginal = (mode: SubtitleDisplayMode): boolean => mode === "original" || mode === "bilingual";
 const usesTranslation = (mode: SubtitleDisplayMode): boolean => mode === "translation" || mode === "bilingual";
@@ -60,9 +61,26 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   const originalSegments = useSegments(on && usesOriginal(mode) ? originalId : undefined);
   const translationSegments = useSegments(on && usesTranslation(mode) ? translationId : undefined);
   const fontFallback = useSubtitleFontFallback(on);
+  const speakerMode = prefs.appearance.speaker;
+  const labelsOn = on && speakerMode !== undefined;
+  // Cues wait for the speakers, so a label never appears on a cue already on screen; a failed read shows them without labels.
+  const speakers = useSpeakers(content.id, labelsOn);
+  const speakersPending = labelsOn && speakers.isPending;
+  // Kept by value: re-reading the speakers (a new avatar, a colour) re-slices nothing, so the cues on screen stay as they are.
+  const labelsKey = JSON.stringify((speakers.data?.items ?? []).map((speaker) => [speaker.id, subtitleSpeakerLabel(speakerLabel(t, speaker))]));
+  const labels = useMemo(() => new Map<string, string>(JSON.parse(labelsKey) as Array<[string, string]>), [labelsKey]);
+  // With labels off the plain slices are cut exactly as before; with them on, each cue stays a unit with its speaker.
+  const units = useMemo(() => {
+    if (mode === "off" || speakerMode === undefined) return undefined;
+    if (speakersPending) return [];
+    const original = originalSegments.data ?? [];
+    const translation = translationSegments.data ?? [];
+    const shown = mode === "translation" ? translation : original;
+    return sliceSubtitleUnits(labelSubtitleCues(subtitleCues(mode, original, translation), shown.map((segment) => segment.speakerId), labels, speakerMode));
+  }, [mode, speakerMode, speakersPending, originalSegments.data, translationSegments.data, labels]);
   const slices = useMemo(
-    () => (mode === "off" ? [] : sliceCues(subtitleCues(mode, originalSegments.data ?? [], translationSegments.data ?? []))),
-    [mode, originalSegments.data, translationSegments.data],
+    () => (mode === "off" || units !== undefined ? [] : sliceCues(subtitleCues(mode, originalSegments.data ?? [], translationSegments.data ?? []))),
+    [mode, units, originalSegments.data, translationSegments.data],
   );
 
   const reads = [...(usesOriginal(mode) ? [originalSegments] : []), ...(usesTranslation(mode) ? [translationSegments] : [])];
@@ -74,7 +92,8 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
   else if (usesTranslation(mode) && !currentsKnown) status = "loading";
   else if (reads.some((read) => read.isError)) status = "error";
   else if (reads.some((read) => read.isPending)) status = "loading";
-  else status = slices.length === 0 ? "empty" : "ready";
+  else if (speakersPending) status = "loading";
+  else status = (units ?? slices).length === 0 ? "empty" : "ready";
 
   const remembered = (next: Partial<Omit<SubtitleTrackPref, "version">>): SubtitleTrackPref => {
     const merged = { mode: track.mode, revisionId: track.revisionId, translation: track.translation, ...next };
@@ -137,6 +156,7 @@ export function useContentSubtitles(content: ContentDetailDto, editRequest: numb
       for (const read of reads) if (read.isError) void read.refetch();
     },
     slices,
+    ...(units === undefined ? {} : { units }),
     fontFallback,
     appearance: prefs.appearance,
     setAppearance: prefs.setAppearance,

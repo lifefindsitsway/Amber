@@ -22,6 +22,7 @@ import { formatDateTime, formatTime, sameLocalDay } from "../format.ts";
 import { useIsServerAdmin } from "../auth/auth-gate.tsx";
 import { ConfirmDialog, appErrorOf } from "../components/confirm-dialog.tsx";
 import { ErrorView } from "../components/error-view.tsx";
+import { taskKindLabel } from "../components/task-kind-label.ts";
 import { latestStageRuns, ResendPrompt, runningStep, waitingUnits } from "../components/task-flow.tsx";
 import { Button } from "../ui/button.tsx";
 import { keepOpenForContextMenu, useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
@@ -103,8 +104,8 @@ export function TaskPanel(props: { open: boolean; onOpenChange: (open: boolean) 
   useEffect(
     () =>
       contentEvents.subscribe((event) => {
-        // Renaming or recoloring a speaker changes no task.
-        if (event.type === "speakersChanged") return;
+        // Renaming or recoloring a speaker, or reviewing them, changes no task.
+        if (event.type === "speakersChanged" || event.type === "speakerReviewChanged") return;
         void queryClient.invalidateQueries({ queryKey: queryKeys.tasksAll });
       }),
     [contentEvents, queryClient],
@@ -428,9 +429,9 @@ function TaskCard(props: { task: TaskDto; onNavigate: () => void; onGone: () => 
   if (gone) return null;
   return (
     <li ref={menuTarget} data-testid="task-card" className="rounded-md border border-line p-3 text-sm">
-      <p className="truncate font-medium">{task.targetTitle ?? t(`common.taskKind.${task.kind}`)}</p>
+      <p className="truncate font-medium">{task.targetTitle ?? taskKindLabel(task, t)}</p>
       <p className="mt-0.5 text-xs text-muted">
-        {t(`common.taskKind.${task.kind}`)} ·{" "}
+        {taskKindLabel(task, t)} ·{" "}
         {finished
           ? t(`common.status.${task.statusProjection}`)
           : waiting.length > 0 && waitingStage !== undefined
@@ -474,7 +475,7 @@ function HistoryCard(props: { task: TaskDto; onNavigate: () => void; onRemove: (
   const { task } = props;
   const target = taskTarget(task);
   const navigate = useNavigate();
-  const title = task.targetTitle ?? t(`common.taskKind.${task.kind}`);
+  const title = task.targetTitle ?? taskKindLabel(task, t);
   const menuTarget = useContextMenuTarget<HTMLLIElement>(() => {
     const entries: MenuAction[] = [];
     if (target !== undefined) entries.push(viewEntry(t("shell.tasks.view"), target, props.onNavigate, navigate));
@@ -496,7 +497,7 @@ function HistoryCard(props: { task: TaskDto; onNavigate: () => void; onRemove: (
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">{title}</p>
         <p className="mt-0.5 text-xs text-muted">
-          {t(`common.taskKind.${task.kind}`)} · {t(`common.status.${task.statusProjection}`)}
+          {taskKindLabel(task, t)} · {t(`common.status.${task.statusProjection}`)}
         </p>
         <p className="mt-0.5 text-xs text-muted">
           {t("shell.tasks.startedAt", { time: formatDateTime(task.createdAt, i18n.language) })}

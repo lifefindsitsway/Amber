@@ -110,6 +110,7 @@ const MATRIX: Record<string, Entry> = {
   "GET /api/instance-settings": { kind: "admin" },
   "PATCH /api/instance-settings": { kind: "admin" },
   "GET /api/fonts/subtitle": { kind: "self", reason: "the bundled subtitle font, the same file for every user; no user data" },
+  "GET /api/fonts/reader/:face": { kind: "self", reason: "the bundled reading fonts, the same files for every user; no user data" },
   "GET /api/settings": { kind: "self", reason: "the caller's own preferences", requests: () => [get("/api/settings")] },
   "PATCH /api/settings": {
     kind: "self",
@@ -168,6 +169,11 @@ const MATRIX: Record<string, Entry> = {
     { method: "POST", url: `/api/contents/${ids.contentId}/transcript/draft/commit`, payload: { expectedPrimaryRevisionId: ids.asrRevisionId, draftVersion: 1 } },
   ]),
   "GET /api/transcript/segments/:sid/map": owned((ids) => [get(`/api/transcript/segments/${ids.segmentId}/map?targetRevision=${ids.correctedRevisionId}`)]),
+  "GET /api/transcript/revisions/:rid/speaker-review": owned((ids) => [get(`/api/transcript/revisions/${ids.correctedRevisionId}/speaker-review`)]),
+  "PUT /api/transcript/revisions/:rid/speakers-confirmed": owned((ids) => [
+    { method: "PUT", url: `/api/transcript/revisions/${ids.correctedRevisionId}/speakers-confirmed`, payload: { confirmed: true, expectedRosterDigest: "any" } },
+    { method: "PUT", url: `/api/transcript/revisions/${ids.correctedRevisionId}/speakers-confirmed`, payload: { confirmed: false } },
+  ]),
   "POST /api/contents/:id/transcript/proofread": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/transcript/proofread`, payload: { modelRef: modelRef(ids) } }]),
   "GET /api/contents/:id/chapters": owned((ids) => [get(`/api/contents/${ids.contentId}/chapters`)]),
   "PUT /api/contents/:id/chapters/current": owned((ids) => [

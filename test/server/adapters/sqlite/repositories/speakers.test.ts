@@ -104,3 +104,82 @@ describe("speaker repository", () => {
     expect(repository.withTransaction((scope) => scope.speakers.suggestions("alice", "", undefined, 1))).toHaveLength(1);
   });
 });
+
+describe("speaker repository: name confirmation", () => {
+  it("stores the confirmation given on insert, and reads none where none was given", () => {
+    const [confirmed, plain] = repository.withTransaction((scope) =>
+      scope.speakers.insert("alice", "c1", [{ id: "A", name: "蒋炎岩", nameConfirmedAt: T0 + 5 }, { id: "B", name: "张三" }], T0),
+    );
+    expect(confirmed).toMatchObject({ name: "蒋炎岩", nameConfirmedAt: T0 + 5 });
+    expect(plain && "nameConfirmedAt" in plain).toBe(false);
+    expect(repository.withTransaction((scope) => scope.speakers.get("alice", "c1", "A"))?.nameConfirmedAt).toBe(T0 + 5);
+  });
+
+  it("sets and withdraws the confirmation by patch, and leaves it alone when the patch does not name it", () => {
+    repository.withTransaction((scope) => scope.speakers.insert("alice", "c1", [{ id: "A", name: "主持人" }], T0));
+    const set = repository.withTransaction((scope) => scope.speakers.update("alice", "c1", "A", { nameConfirmedAt: T0 + 1 }, T0 + 1));
+    expect(set).toMatchObject({ name: "主持人", nameConfirmedAt: T0 + 1, updatedAt: T0 + 1 });
+    const recoloured = repository.withTransaction((scope) => scope.speakers.update("alice", "c1", "A", { colorIndex: 3 }, T0 + 2));
+    expect(recoloured).toMatchObject({ colorIndex: 3, nameConfirmedAt: T0 + 1 });
+    const withdrawn = repository.withTransaction((scope) => scope.speakers.update("alice", "c1", "A", { name: "嘉宾", nameConfirmedAt: null }, T0 + 3));
+    expect(withdrawn?.name).toBe("嘉宾");
+    expect(withdrawn && "nameConfirmedAt" in withdrawn).toBe(false);
+    expect(repository.withTransaction((scope) => scope.speakers.update("bob", "c1", "A", { nameConfirmedAt: T0 }, T0))).toBeUndefined();
+    expect(repository.withTransaction((scope) => scope.speakers.get("alice", "c1", "A"))?.nameConfirmedAt).toBeUndefined();
+  });
+
+  describe("speakers of comparison transcriptions", () => {
+    const revision = (id: string, comparison: boolean, contentId = "c1") =>
+      insertRow(db, "transcript_revision", {
+        id, content_id: contentId, kind: "asr", language: "zh", timing_fidelity: "segment_only",
+        generation_json: JSON.stringify({ kind: "asr", asrProfileId: "p", modelId: "m", ...(comparison ? { purpose: "comparison" } : {}) }), segment_count: 1, created_at: T0,
+      });
+    let segment = 0;
+    const naming = (revisionId: string, speakerId: string) => {
+      segment += 1;
+      insertRow(db, "transcript_segment", { id: `s${segment}`, revision_id: revisionId, ordinal: segment, start_ms: 0, end_ms: 1, text: "a", speaker_id: speakerId });
+    };
+
+    beforeEach(() => {
+      segment = 0;
+      repository.withTransaction((scope) => scope.speakers.insert("alice", "c1", [{ id: "A" }, { id: "B" }, { id: "C" }, { id: "D" }], T0));
+      revision("r1", false);
+      revision("r2", true);
+      naming("r1", "A");
+      naming("r2", "A");
+      naming("r2", "B");
+      naming("r2", "C");
+      // C also in a translation draft: a draft of any kind keeps it in use.
+      insertRow(db, "transcript_draft", {
+        id: "t", content_id: "c1", base_revision_id: "r1", target_language: "en", version: 1, updated_at: T0,
+        segments_json: JSON.stringify([{ startMs: 0, endMs: 1, text: "a", sourceSegmentIds: [], speakerId: "C" }]),
+      });
+    });
+
+    it("finds the speakers only comparison transcriptions name, for the owner only", () => {
+      expect([...repository.withTransaction((scope) => scope.speakers.comparisonOnlyIds("alice", "c1"))]).toEqual(["B"]);
+      expect(repository.withTransaction((scope) => scope.speakers.comparisonOnlyIds("bob", "c1")).size).toBe(0);
+      expect(repository.withTransaction((scope) => scope.speakers.comparisonOnlyIds("alice", "c2")).size).toBe(0);
+      // Made the primary, the comparison is read like any other revision.
+      db.prepare("UPDATE content SET primary_transcript_revision_id = 'r2' WHERE id = 'c1'").run();
+      expect(repository.withTransaction((scope) => scope.speakers.comparisonOnlyIds("alice", "c1")).size).toBe(0);
+    });
+
+    it("reports which speakers anything still names and deletes the others, for the owner only", () => {
+      expect([...repository.withTransaction((scope) => scope.speakers.referencedAmong("alice", "c1", ["A", "B", "C", "D"]))].sort()).toEqual(["A", "B", "C"]);
+      expect(repository.withTransaction((scope) => scope.speakers.referencedAmong("bob", "c1", ["A", "B", "C"])).size).toBe(0);
+      expect(repository.withTransaction((scope) => scope.speakers.referencedAmong("alice", "c1", [])).size).toBe(0);
+      expect(repository.withTransaction((scope) => scope.speakers.delete("bob", "c1", ["D"]))).toBe(0);
+      expect(repository.withTransaction((scope) => scope.speakers.delete("alice", "c1", ["D"]))).toBe(1);
+      expect(repository.withTransaction((scope) => scope.speakers.list("alice", "c1")).map((speaker) => speaker.id)).toEqual(["A", "B", "C"]);
+    });
+
+    it("leaves comparison-only speakers out of the suggestions", () => {
+      repository.withTransaction((scope) => {
+        scope.speakers.update("alice", "c1", "A", { name: "甲" }, T0 + 1);
+        scope.speakers.update("alice", "c1", "B", { name: "乙" }, T0 + 2);
+      });
+      expect(repository.withTransaction((scope) => scope.speakers.suggestions("alice", "", "c2", 8)).map((speaker) => speaker.id)).toEqual(["A"]);
+    });
+  });
+});

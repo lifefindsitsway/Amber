@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
+import { GitCompare } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { queryKeys } from "../../api/queries.ts";
@@ -27,6 +28,9 @@ import { SpeakerEditingProvider, useSpeakerEditing } from "./use-speaker-editing
 import { useSpeakers, speakerLabel } from "./speakers/speaker-data.ts";
 import { draftChangedVersion, useDraftSync } from "./use-draft-sync.ts";
 import { isChineseLanguage, SentenceEditor, type SentenceEditorHandle } from "./sentence-editor.tsx";
+import { KeepSpeakersConfirmed, keepSpeakersConfirmedField, useKeepSpeakersConfirmed } from "./speakers/review/keep-speakers-confirmed.tsx";
+import { ComparisonView, type ComparisonFilter } from "./speakers/compare/comparison-view.tsx";
+import { usePlayRange } from "../../player/player-controller.tsx";
 
 export type { DraftSegment };
 
@@ -72,6 +76,8 @@ const segmentTime = (segment: DraftSegment): string => formatDuration(segment.st
 interface CommitInput {
   expected: string | undefined;
   review?: SpeakerReviewResolution;
+  /** Ticked 「保持发言人已核对」: the new revision keeps the base's review. */
+  speakersConfirmed?: true;
 }
 
 /**
@@ -86,6 +92,8 @@ export function DraftEditor(props: {
   onClose: () => void;
   /** Opens the apply-speakers flow on mount with this revision as the source. */
   applySpeakersFrom?: string;
+  /** Opens the cross-recognition comparison on mount. */
+  openComparison?: boolean;
 }) {
   const { t } = useTranslation();
   const client = useApi();
@@ -101,6 +109,7 @@ export function DraftEditor(props: {
   const [conflict, setConflict] = useState<string | undefined>(undefined);
   const [applyOpen, setApplyOpen] = useState(props.applySpeakersFrom !== undefined);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [comparing, setComparing] = useState(props.openComparison === true);
   const handleRef = useRef<SentenceEditorHandle<DraftSegment>>(null);
   /** The choice for unconfirmed sentences a commit was made with: a retry after a conflict repeats it. */
   const lastReview = useRef<SpeakerReviewResolution | undefined>(undefined);
@@ -143,12 +152,52 @@ export function DraftEditor(props: {
   const showColumn = labeling || speakers.length > 0 || resolved.some((id) => id !== null);
   const pendingReviews = useMemo(() => (segments ?? NO_SEGMENTS).filter((segment) => segment.speakerReview === "needs_review"), [segments]);
   const suggested = pendingReviews.filter((segment) => typeof segment.speakerId === "string").length;
+  const keepReview = useKeepSpeakersConfirmed({ contentId, baseRevisionId, segments });
+  const range = usePlayRange();
+  // The comparison reads the sentences as the editor resolves them now, keyed like its rows.
+  const compared = useMemo(
+    () => (segments ?? NO_SEGMENTS).map((segment, index) => ({ id: draftKey(segment, index), startMs: segment.startMs, endMs: segment.endMs, speakerId: resolved[index] ?? null })),
+    [segments, resolved],
+  );
+  // A category picked in the comparison filters the rows; going back to 「全部」 there only
+  // lifts that filter, never one the user picked in the editor's own menu. The comparison
+  // reports its category again whenever the sentences change: that refreshes a category
+  // filter still shown, but must not take over from a filter picked in the menu since.
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const reportedCategory = useRef<ComparisonFilter["kind"] | undefined>(undefined);
+  const onComparisonFilter = useCallback(
+    (picked: ComparisonFilter | null) => {
+      const repeated = picked !== null && picked.kind === reportedCategory.current;
+      reportedCategory.current = picked?.kind;
+      if (picked !== null) {
+        if (!repeated || filterRef.current.kind === "keys") setFilter({ kind: "keys", keys: picked.ids, category: picked.kind });
+      } else if (filterRef.current.kind === "keys") setFilter({ kind: "all" });
+    },
+    [setFilter],
+  );
+  const locateRow = useCallback(
+    (key: string) => {
+      const index = (segments ?? NO_SEGMENTS).findIndex((segment, at) => draftKey(segment, at) === key);
+      if (index >= 0) handleRef.current?.focusSentence(index);
+    },
+    [segments],
+  );
+  const closeComparison = (): void => {
+    setComparing(false);
+    if (filter.kind === "keys") setFilter({ kind: "all" });
+  };
 
   const commit = useMutation({
     mutationFn: (input: CommitInput) =>
       sync.commit((draftVersion) =>
         client.post(`${draftUrl}/commit`, transcriptRevisionDtoSchema, {
-          body: { expectedPrimaryRevisionId: input.expected ?? "", draftVersion, ...(input.review === undefined ? {} : { speakerReview: input.review }) },
+          body: {
+            expectedPrimaryRevisionId: input.expected ?? "",
+            draftVersion,
+            ...(input.review === undefined ? {} : { speakerReview: input.review }),
+            ...(input.speakersConfirmed === true ? { speakersConfirmed: true } : {}),
+          },
         }),
       ),
     onSuccess: () => {
@@ -167,7 +216,7 @@ export function DraftEditor(props: {
   });
   const startCommit = (review: SpeakerReviewResolution | undefined): void => {
     lastReview.current = review;
-    commit.mutate({ expected: expectedPrimary, ...(review === undefined ? {} : { review }) });
+    commit.mutate({ expected: expectedPrimary, ...(review === undefined ? {} : { review }), ...keepSpeakersConfirmedField(keepReview) });
   };
 
   // Discarding is explicit and confirmed: the draft's unfinished edits are gone for good.
@@ -246,6 +295,16 @@ export function DraftEditor(props: {
                   hasChanged={speakerEditing.changedKeys.size > 0}
                 />
               ) : null}
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-pressed={comparing}
+                onClick={() => (comparing ? closeComparison() : setComparing(true))}
+                data-testid="comparison-toggle"
+              >
+                <GitCompare size={14} aria-hidden="true" />
+                {t(comparing ? "speakerCompare.panel.close" : "speakerCompare.panel.open")}
+              </Button>
               <SpeakerPanel
                 contentId={contentId}
                 segments={segments}
@@ -261,19 +320,39 @@ export function DraftEditor(props: {
             </>
           }
           commitNote={
-            pendingReviews.length === 0 ? null : (
-              <button
-                type="button"
-                className="rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
-                onClick={() => setFilter({ kind: "review" })}
-                data-testid="draft-review-count"
-              >
-                {t("speakerEditor.commit.pending", { count: pendingReviews.length })}
-              </button>
-            )
+            <>
+              <KeepSpeakersConfirmed state={keepReview} disabled={busy} />
+              {pendingReviews.length === 0 ? null : (
+                <button
+                  type="button"
+                  className="rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+                  onClick={() => setFilter({ kind: "review" })}
+                  data-testid="draft-review-count"
+                >
+                  {t("speakerEditor.commit.pending", { count: pendingReviews.length })}
+                </button>
+              )}
+            </>
           }
           notices={
             <>
+              {comparing ? (
+                <div className="max-h-[45vh] overflow-y-auto border-b border-line px-4 py-3" data-testid="comparison-panel">
+                  <ComparisonView
+                    contentId={contentId}
+                    {...(page.content.durationMs === undefined ? {} : { durationMs: page.content.durationMs })}
+                    sentences={compared}
+                    baseRevisionId={baseRevisionId}
+                    revisions={revisions.data?.revisions ?? []}
+                    speakers={speakers}
+                    {...(range.mode === "unsupported" ? {} : { playRange: range.playRange })}
+                    rangePlayable={range.mode === "play"}
+                    onLocate={locateRow}
+                    onFilterChange={onComparisonFilter}
+                    activeCategory={filter.kind === "keys" ? filter.category : null}
+                  />
+                </div>
+              ) : null}
               {speakerEditing.summary === undefined ? null : (
                 <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-1.5 text-xs" role="status" data-testid="apply-result">
                   <span className="font-medium tabular-nums">
@@ -354,7 +433,7 @@ export function DraftEditor(props: {
               const next = conflict === "" ? undefined : conflict;
               setConflict(undefined);
               setExpectedPrimary(next);
-              commit.mutate({ expected: next, ...(lastReview.current === undefined ? {} : { review: lastReview.current }) });
+              commit.mutate({ expected: next, ...(lastReview.current === undefined ? {} : { review: lastReview.current }), ...keepSpeakersConfirmedField(keepReview) });
             }}
           >
             {t("contentView.draft.conflictCommit")}
@@ -380,5 +459,7 @@ function filterLabel(t: TFunction, filter: SpeakerFilter, speakers: ReadonlyArra
       return t("speakerEditor.filter.unassigned");
     case "changed":
       return t("speakerEditor.filter.changed");
+    case "keys":
+      return t(`speakerCompare.kind.${filter.category}`);
   }
 }

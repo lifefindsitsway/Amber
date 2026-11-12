@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { speakerContextDtoSchema } from "./speaker-context.ts";
 import { modelRefSnapshotDtoSchema } from "./usage.ts";
 
 const idSchema = z.string().min(1);
@@ -31,6 +32,8 @@ export const chapterRevisionDtoSchema = z.object({
   qualityReasons: z.array(z.string()),
   stale: z.boolean(),
   staleReason: z.enum(STALE_REASONS).exactOptional(),
+  /** Present when the revision was generated with speakers, and only while the transcript it read is the primary or one of its ancestors. */
+  speakerContext: speakerContextDtoSchema.exactOptional(),
   createdAt: msSchema,
 });
 export type ChapterRevisionDto = z.infer<typeof chapterRevisionDtoSchema>;

@@ -3,7 +3,7 @@ import { COLLECTION_PARTIAL_SIZE } from "../../../shared/defaults.ts";
 import type { ArtifactInputRef, RollupPartial } from "../../domain/artifact.ts";
 import { withoutCitations } from "../../domain/citations.ts";
 import { amberError } from "../../domain/errors.ts";
-import { CITATION_NONE_FRAGMENT, outputLanguageName } from "../../domain/prompts.ts";
+import { CITATION_NONE_FRAGMENT, outputLanguageName, SPEAKER_CAUTION_FRAGMENT } from "../../domain/prompts.ts";
 import { summarizeCollectionRequestSchema, type SummarizeCollectionRequest } from "../../domain/task-request.ts";
 import { termsSection } from "../../domain/terminology.ts";
 import type { Repository } from "../../ports/repository.ts";
@@ -29,6 +29,12 @@ type InputItem = SummarizeCollectionRequest["inputItems"][number];
  * them buried the text. Members' markers are stripped before they are sent, the calls are
  * asked not to cite (`citation.none`), and any marker the model writes anyway is stripped,
  * never repaired; its quality never degrades over citations.
+ *
+ * A member frozen with `speakerCaution` — its summary was generated with speakers that no
+ * longer hold — is still summarised, its text preceded by the `speaker.caution` fragment so
+ * the model does not repeat who said what in it. The fragment's ref then joins the
+ * `promptRefs` of the revision and of the partials whose group carried it. Without such a
+ * member every request is exactly as it always was.
  */
 export class CollectionSummaryStageExecutor implements StageExecutor {
   private readonly deps: CollectionSummaryStageDeps;
@@ -77,6 +83,8 @@ export class CollectionSummaryStageExecutor implements StageExecutor {
     const snapshots = request.inputItems.map(snapshotOf);
 
     const groups: RollupGroup[] = [];
+    /** Per group: some member of it went with the speaker caution. */
+    const cautioned: boolean[] = [];
     for (let first = 0; first < members.length; first += COLLECTION_PARTIAL_SIZE) {
       const slice = members.slice(first, first + COLLECTION_PARTIAL_SIZE);
       groups.push({
@@ -85,11 +93,12 @@ export class CollectionSummaryStageExecutor implements StageExecutor {
           .map((member, offset) => {
             const k = first + offset + 1;
             const heading = member.title === undefined ? `【第 ${k} 项】` : `【第 ${k} 项】${member.title}`;
-            return `${heading}\n${member.body}`;
+            return member.item.speakerCaution === true ? `${heading}\n${SPEAKER_CAUTION_FRAGMENT.text}\n${member.body}` : `${heading}\n${member.body}`;
           })
           .join("\n\n"),
         inputs: snapshots.slice(first, first + COLLECTION_PARTIAL_SIZE),
       });
+      cautioned.push(slice.some((member) => member.item.speakerCaution === true));
     }
     const outcome = await runRollup(context, {
       citations: { rules: CITATION_NONE_FRAGMENT },
@@ -118,7 +127,7 @@ export class CollectionSummaryStageExecutor implements StageExecutor {
       citations: [],
       modelRef: description.snapshot,
       promptRef: outcome.partialRef,
-      promptRefs: [outcome.partialRef],
+      promptRefs: cautioned[partial.index] === true ? [outcome.partialRef, SPEAKER_CAUTION_FRAGMENT.ref] : [outcome.partialRef],
       promptSnapshot: outcome.partialSnapshot,
       createdAt,
     }));
@@ -134,12 +143,25 @@ export class CollectionSummaryStageExecutor implements StageExecutor {
               inputs: snapshots,
               modelRef: description.snapshot,
               promptRef: prompts.final.ref,
-              promptRefs: [prompts.goal.ref, prompts.partial.ref, prompts.carry.ref, prompts.final.ref],
+              promptRefs: [
+                prompts.goal.ref,
+                prompts.partial.ref,
+                prompts.carry.ref,
+                prompts.final.ref,
+                ...(cautioned.includes(true) ? [SPEAKER_CAUTION_FRAGMENT.ref] : []),
+              ],
               promptSnapshot: outcome.finalSnapshot,
               createdAt,
             },
             quality: "normal",
-            inputItems: request.inputItems.map((item) => ({ ...item })),
+            // The caution belongs to the request; the revision records the members it read.
+            inputItems: request.inputItems.map((item) => ({
+              collectionItemId: item.collectionItemId,
+              contentId: item.contentId,
+              summaryRevisionId: item.summaryRevisionId,
+              transcriptRevisionId: item.transcriptRevisionId,
+              position: item.position,
+            })),
             partialIds: partials.map((partial) => partial.id),
             body: outcome.final.text,
             citations: [],

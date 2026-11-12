@@ -10,6 +10,7 @@ import {
   chatThreadCreatedDtoSchema,
   chatTurnsDeleteResultSchema,
   type ChatContextDto,
+  type ChatContextUsedDto,
   type ChatMessageDto,
   type ChatQuote,
   type ChatStreamEvent,
@@ -32,6 +33,7 @@ import { Button } from "../ui/button.tsx";
 import { RESIZE_EDGES, useFloatingBox, type BoxRect, type ResizeEdge } from "../ui/use-floating-box.ts";
 import { useChatComposer, useComposerState, type QuoteDraft } from "./chat-composer.tsx";
 import {
+  chatContextMarker,
   chatKeys,
   chatModelOptions,
   defaultChatModel,
@@ -173,9 +175,14 @@ interface ThreadState {
   quote: QuoteDraft | undefined;
   /** Errors of answers that failed in this page, by message id; stored messages carry only their status. */
   failures: Record<string, AppError>;
+  /**
+   * The `context` event of the last answer streamed here: what it was actually planned with.
+   * The context label follows it until the next question (see `chatContextMarker`).
+   */
+  streamedContext: ChatContextUsedDto | undefined;
 }
 
-const EMPTY_THREAD: ThreadState = { pending: undefined, running: false, error: undefined, draft: "", quote: undefined, failures: {} };
+const EMPTY_THREAD: ThreadState = { pending: undefined, running: false, error: undefined, draft: "", quote: undefined, failures: {}, streamedContext: undefined };
 
 /** The state key of the thread a first question creates, until its `done` names it. */
 const NEW_THREAD = "";
@@ -310,6 +317,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   }, [stored.length, pending?.answer, pending?.status, key]);
 
   const context: ChatContextDto | undefined = chat.data?.context;
+  const marker = context === undefined ? undefined : chatContextMarker(context, stored, { running: state.running, used: state.streamedContext });
   const contextUnknown = state.error?.code === CONTEXT_WINDOW_UNKNOWN;
   const unavailableReason = modelRef === undefined && providers.isSuccess ? "no_model" : contextUnknown ? "context_window_unknown" : context?.mode === "unavailable" ? context.reason : undefined;
   const blocked = unavailableReason !== undefined || modelRef === undefined;
@@ -351,7 +359,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
     let streamKey = startKey;
     const controller = new AbortController();
     controllers.current.set(streamKey, controller);
-    patch(streamKey, (current) => ({ ...current, pending: turn, running: true, error: undefined }));
+    patch(streamKey, (current) => ({ ...current, pending: turn, running: true, error: undefined, streamedContext: undefined }));
     let persisted = true;
     try {
       const response = await client.postStream(url, { body, idempotent: true, signal: controller.signal });
@@ -363,6 +371,10 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
           }
           const failure = event.data.error;
           if (failure !== undefined) patch(streamKey, (current) => ({ ...current, failures: { ...current.failures, [event.data.messageId]: failure } }));
+        }
+        if (event.type === "context") {
+          const used = event.data;
+          patch(streamKey, (current) => ({ ...current, streamedContext: used }));
         }
         patch(streamKey, (current) => (current.pending === undefined ? current : { ...current, pending: applyChatEvent(current.pending, event) }));
       });
@@ -470,6 +482,8 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         setSelected(new Set());
       } finally {
         setConfirmTurns(undefined);
+        // The answer the label followed may be gone: the stored last answer speaks again.
+        patch(key, (current) => ({ ...current, streamedContext: undefined }));
         await refreshAll();
       }
     });
@@ -630,6 +644,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
           status={answer.status}
           revisionId={answer.contextTranscriptRevisionId}
           ungrounded={answer.contextTranscriptRevisionId === undefined}
+          speakerContext={answer.speakerContext}
           citations={answer.citations}
           webSources={answer.webSearch?.sources ?? []}
           search={storedSearchView(answer.webSearch)}
@@ -736,14 +751,20 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
               </select>
             )}
             {webSearchProfile.isPending ? null : <WebSearchToggle mode={searchAvailable ? webMode : "off"} available={searchAvailable} onChange={changeWebMode} />}
-            {context !== undefined && context.mode !== "unavailable" && !contextUnknown ? (
+            {context !== undefined && marker !== undefined && context.mode !== "unavailable" && marker.mode !== "unavailable" && !contextUnknown ? (
               <span
                 className="rounded bg-sunken px-1.5 py-0.5"
                 data-testid="chat-mode"
-                data-mode={context.mode}
+                data-mode={marker.mode}
+                data-speaker-clips={marker.speakerClips ? "true" : undefined}
                 title={context.estimatedTokens === undefined ? undefined : t("chat.mode.estimate", { tokens: context.estimatedTokens.toLocaleString() })}
               >
-                {t(`chat.mode.${context.mode}`)}
+                {marker.speakerClips ? t("chat.mode.retrievalSpeakerClips") : t(`chat.mode.${marker.mode}`)}
+              </span>
+            ) : null}
+            {marker?.summaryOmitted === true ? (
+              <span className="text-xs text-muted" data-testid="chat-summary-omitted">
+                {t("chat.summaryOmitted.speakers_changed")}
               </span>
             ) : null}
             <div className="ml-auto">{sendOrStop}</div>

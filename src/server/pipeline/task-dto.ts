@@ -22,7 +22,20 @@ export function toTaskDto(task: Task, targetTitle?: string, wait: TaskWait = {})
     ...(queued ? { retryNotBefore: wait.retryNotBefore } : {}),
     ...(queued && wait.waitingStep !== undefined ? { waitingStep: wait.waitingStep } : {}),
     ...summaryTemplateOf(task),
+    ...(comparisonOf(task) ? { comparison: true as const } : {}),
   };
+}
+
+/** Whether a `retranscribe` Task's frozen request marks a transcription made only to compare speakers with. */
+function comparisonOf(task: Task): boolean {
+  if (task.kind !== "retranscribe") {
+    return false;
+  }
+  try {
+    return taskRequestView(task.requestJson).comparison === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -10,8 +10,10 @@ import type {
 import type { TranscriptRevisionDto, TranscriptRevisionListItemDto } from "../../shared/dto/content.ts";
 import type { SegmentId } from "../../shared/ids.ts";
 import type { Content } from "../domain/content.ts";
+import { isComparisonRevision, isPermanentRevision, isRecyclableSpeaker } from "../domain/comparison-revision.ts";
 import { amberError } from "../domain/errors.ts";
 import { mapSegment } from "../domain/segment-map.ts";
+import { attributionChangeCounts, countAttributionChanges } from "../domain/speaker-lineage.ts";
 import {
   deletionOrder,
   descendantsOf,
@@ -20,7 +22,6 @@ import {
   historyArtifactsOf,
   inheritedParagraphStarts,
   manualMergeChain,
-  PROTECTED_REVISION_KINDS,
   remapSourcesThroughChain,
   revisionBlockers,
   timingFidelityFor,
@@ -214,6 +215,16 @@ export class TranscriptService {
    * waiting for review keeps its suggested speaker only when the request accepts the
    * suggestions (counted in the revision's generation); otherwise it is committed unassigned,
    * so an unconfirmed speaker never passes for a confirmed one.
+   *
+   * Speaker review: the new revision is reviewed only if its base is. The base is what the
+   * user reviewed and edited, so the new revision inherits the mark by itself when no sentence
+   * changes hands compared with the base — even when the base is folded away below, which only
+   * tidies the history; otherwise only when the request keeps it (`speakersConfirmed: true`),
+   * which an unreviewed base refuses. A revision in which no sentence names a speaker is never
+   * marked, whatever the request says. Sentences still waiting for review are compared as they
+   * are committed (suggested or unassigned). Separately, the revision records how many
+   * sentences changed hands compared with its parent (the anchor, when revisions are folded),
+   * for the history only; the two counts answer different questions and are never mixed.
    */
   commitDraft(principal: RequestPrincipal, contentId: string, body: DraftCommitRequest): TranscriptRevisionDto {
     const owner = principal.userId;
@@ -234,6 +245,10 @@ export class TranscriptService {
       const baseSegments = new Map(scope.transcripts.listSegments(owner, base.id).map((segment) => [segment.id as string, segment]));
       if (draft.segments.length === 0) {
         invalidDraft("segments", "a revision needs at least one segment");
+      }
+      const baseConfirmedAt = scope.speakerConfirmations.confirmedAt(owner, base.id);
+      if (body.speakersConfirmed === true && baseConfirmedAt === undefined) {
+        invalidDraft("speakersConfirmed", "the base revision's speakers are not reviewed");
       }
       const contentSpeakers = new Set(scope.speakers.list(owner, contentId).map((speaker) => speaker.id));
       let previousStart = -Infinity;
@@ -309,6 +324,20 @@ export class TranscriptService {
         };
       });
       const now = this.now();
+      // Whether the review carries over: the committed speakers against the base's, with the
+      // sources as the draft names them (sentences of the base), before they are carried up.
+      const changedFromBase = countAttributionChanges(
+        [...baseSegments.values()],
+        segments.map((segment, index) => ({ ...segment, sourceSegmentIds: draft.segments[index]?.sourceSegmentIds ?? [] })),
+      );
+      // For the history: sentences of the parent (whose sentences the stored sources now name)
+      // that changed hands. New sentences without a source are not a change of hands there.
+      const anchorSegments = anchorId === base.id ? [...baseSegments.values()] : scope.transcripts.listSegments(owner, anchorId);
+      const changedFromParent = attributionChangeCounts(anchorSegments, segments).changed;
+      const generation: TranscriptRevision["generation"] =
+        acceptedSuggestions > 0 || changedFromParent > 0
+          ? { kind: "manual", speakerReview: { acceptedSuggestions, ...(changedFromParent > 0 ? { changedFromParent } : {}) } }
+          : { kind: "manual" };
       const revision: TranscriptRevision = {
         id: revisionId,
         contentId,
@@ -316,11 +345,18 @@ export class TranscriptService {
         parentRevisionId: anchorId,
         language: base.language,
         timingFidelity: timingFidelityFor("manual"),
-        generation: { kind: "manual", ...(acceptedSuggestions > 0 ? { speakerReview: { acceptedSuggestions } } : {}) },
+        generation,
         segmentCount: segments.length,
         createdAt: now,
       };
+      // A revision whose sentences name nobody has no speakers to vouch for, and the mark
+      // could never be withdrawn from it (a review needs a named speaker), so it never gets one.
+      const namesSpeakers = segments.some((segment) => segment.speakerId !== undefined);
+      const keepsReview = namesSpeakers && baseConfirmedAt !== undefined && (body.speakersConfirmed === true || changedFromBase === 0);
       scope.transcripts.insertRevision(owner, revision, segments);
+      if (keepsReview) {
+        scope.speakerConfirmations.set(owner, contentId, revisionId, now);
+      }
       scope.contents.setPrimaryTranscript(owner, contentId, revisionId, now);
       scope.transcripts.deleteDraft(owner, contentId, undefined);
       // Base first: each folded revision is a leaf once the one below it is gone.
@@ -329,7 +365,7 @@ export class TranscriptService {
       }
       scope.idempotency.deleteReferencingRevisions(owner, chain);
       scope.search.syncContent(owner, contentId);
-      return transcriptRevisionDto(revision);
+      return { ...transcriptRevisionDto(revision), ...(keepsReview ? { speakersConfirmedAt: now } : {}) };
     });
   }
 
@@ -375,8 +411,10 @@ export class TranscriptService {
   /**
    * Permanent deletion of a revision, with its descendants when asked. Everything is checked
    * against the whole set in one transaction and nothing is deleted unless all checks pass:
-   * platform and ASR originals are evidence and only archivable, the primary has to be
-   * switched first, and any row that would be left pointing into the set blocks the delete.
+   * platform and ASR originals are evidence and only archivable (a transcription made only
+   * for comparison excepted), the primary has to be switched first, and any row that would be
+   * left pointing into the set blocks the delete. Deleting a comparison transcription also
+   * reclaims the speaker rows only it named that the user gave no name or photo.
    * A deleted translation that is its language's current one hands over to the latest
    * remaining translation of that language; idempotency records naming the set go too, so a
    * replayed request runs again instead of answering with a deleted id. With `withHistory`,
@@ -390,7 +428,7 @@ export class TranscriptService {
       const revisions = scope.transcripts.listRevisions(owner, content.id);
       const ids = new Set([revision.id, ...(options.withDescendants ? descendantsOf(revisions, revision.id) : [])]);
       const members = revisions.filter((candidate) => ids.has(candidate.id));
-      if (members.some((member) => PROTECTED_REVISION_KINDS.has(member.kind))) {
+      if (members.some(isPermanentRevision)) {
         throw amberError("invalid_request", "platform and ASR originals can only be archived", { code: "invalid_request.revision_kind_protected" });
       }
       if (content.primaryTranscriptRevisionId !== undefined && ids.has(content.primaryTranscriptRevisionId)) {
@@ -417,8 +455,14 @@ export class TranscriptService {
           scope.translations.setCurrent(owner, content.id, artifact.targetLanguage, successor.id, artifact.id);
         }
       }
+      // Read before the sentences go: the speakers the comparison transcriptions in the set name.
+      const recyclable = comparisonSpeakersOf(scope, owner, content.id, members);
       for (const id of deletionOrder(revisions, ids)) {
         scope.transcripts.deleteRevision(owner, id);
+      }
+      if (recyclable.length > 0) {
+        const kept = scope.speakers.referencedAmong(owner, content.id, recyclable);
+        scope.speakers.delete(owner, content.id, recyclable.filter((id) => !kept.has(id)));
       }
       scope.idempotency.deleteReferencingRevisions(owner, [...ids]);
       scope.search.syncContent(owner, content.id);
@@ -477,6 +521,25 @@ export function ownedContent(scope: RepositoryScope, owner: string, contentId: s
     throw amberError("not_found", "content not found");
   }
   return content;
+}
+
+/**
+ * The speakers a delete of comparison transcriptions may reclaim: those their sentences name
+ * that hold nothing of the user's (no name, no photo). Whether another revision or a draft
+ * still names one is checked once the set is gone.
+ */
+function comparisonSpeakersOf(scope: RepositoryScope, owner: string, contentId: string, members: readonly TranscriptRevision[]): string[] {
+  const named = new Set<string>();
+  for (const member of members) {
+    if (!isComparisonRevision(member)) continue;
+    for (const segment of scope.transcripts.listSegments(owner, member.id)) {
+      if (segment.speakerId !== undefined) named.add(segment.speakerId);
+    }
+  }
+  return [...named].filter((id) => {
+    const speaker = scope.speakers.get(owner, contentId, id);
+    return speaker !== undefined && isRecyclableSpeaker(speaker);
+  });
 }
 
 /** A revision of a Content that is the principal's and outside the trash. */

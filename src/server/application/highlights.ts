@@ -7,16 +7,28 @@ import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { laneKeys } from "../pipeline/lane.ts";
 import { isTerminalProjection } from "../pipeline/projection.ts";
+import { highlightSpeakerContext } from "./artifact-speakers.ts";
+import { SpeakerLineageReader } from "./speaker-lineage.ts";
 
 export interface HighlightServiceOptions {
   repository: Repository;
+  /** Shared with the other readers of speaker states, so a revision pair is compared once. */
+  speakerLineage?: SpeakerLineageReader;
 }
 
 /**
- * A highlight revision as the UI sees it: each item with the sentence it points at, in time
- * order, and freshness derived against the current primary and its ancestors.
+ * A highlight revision as the UI sees it: each item with the sentence it points at (and who
+ * that sentence is given to in the revision it was picked from), in time order, freshness
+ * derived against the current primary and its ancestors, and, given `lineage`, its speaker
+ * state when it has one.
  */
-export function highlightRevisionDto(scope: RepositoryScope, owner: string, revision: HighlightRevision, content: Content): HighlightRevisionDto {
+export function highlightRevisionDto(
+  scope: RepositoryScope,
+  owner: string,
+  revision: HighlightRevision,
+  content: Content,
+  lineage?: SpeakerLineageReader,
+): HighlightRevisionDto {
   const { provenance } = revision;
   const freshness = deriveFreshness(provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
@@ -28,9 +40,18 @@ export function highlightRevisionDto(scope: RepositoryScope, owner: string, revi
       if (segment === undefined || segment.revisionId !== revision.transcriptRevisionId) {
         throw amberError("internal", "a highlight points outside its transcript revision");
       }
-      return { segmentId: item.segmentId, score: item.score, text: item.text, segmentText: segment.text, startMs: segment.startMs, endMs: segment.endMs };
+      return {
+        segmentId: item.segmentId,
+        score: item.score,
+        text: item.text,
+        segmentText: segment.text,
+        ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+      };
     })
     .sort((a, b) => a.startMs - b.startMs);
+  const speakerContext = lineage === undefined ? undefined : highlightSpeakerContext(scope, owner, lineage, content.id, revision);
   return {
     id: revision.id,
     artifactId: revision.artifactId,
@@ -42,6 +63,7 @@ export function highlightRevisionDto(scope: RepositoryScope, owner: string, revi
     // Highlights carry no citation markers, so no quality reason applies to them.
     qualityReasons: [],
     ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
+    ...(speakerContext === undefined ? {} : { speakerContext }),
     createdAt: provenance.createdAt,
   };
 }
@@ -49,9 +71,11 @@ export function highlightRevisionDto(scope: RepositoryScope, owner: string, revi
 /** Reading a Content's AI highlights; recomputing them is a Task. */
 export class HighlightService {
   private readonly options: HighlightServiceOptions;
+  private readonly lineage: SpeakerLineageReader;
 
   constructor(options: HighlightServiceOptions) {
     this.options = options;
+    this.lineage = options.speakerLineage ?? new SpeakerLineageReader();
   }
 
   get(principal: RequestPrincipal, contentId: string): HighlightsDto {
@@ -68,7 +92,7 @@ export class HighlightService {
         .find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("highlight"));
       return {
         ...(artifact === undefined ? {} : { artifactId: artifact.id }),
-        ...(current === undefined ? {} : { current: highlightRevisionDto(scope, owner, current, content) }),
+        ...(current === undefined ? {} : { current: highlightRevisionDto(scope, owner, current, content, this.lineage) }),
         ...(active === undefined ? {} : { activeTaskId: active.id }),
       };
     });

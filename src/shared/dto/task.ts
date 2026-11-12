@@ -40,6 +40,11 @@ export const taskDtoSchema = z.object({
    * the stage flow can tell a re-run of the same template; absent on other kinds.
    */
   templateId: idSchema.exactOptional(),
+  /**
+   * Present on a `retranscribe` Task made only to compare speakers with: it changes nothing
+   * about the Content, so it is never shown as the Content's own re-transcription.
+   */
+  comparison: z.literal(true).exactOptional(),
 });
 export type TaskDto = z.infer<typeof taskDtoSchema>;
 

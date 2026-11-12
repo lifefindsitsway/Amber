@@ -278,3 +278,29 @@ describe("TranslationTab edit entries", () => {
     expect((await screen.findByTestId("translation-replaces-manual")).textContent).toBe("新译文会设为当前，你手改的版本保留在历史中");
   });
 });
+
+describe("TranslationTab speakers", () => {
+  it("tells beside 开始翻译 that unreviewed speakers are not read, and nothing once reviewed", async () => {
+    const speakers = { body: { items: [{ id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true }] } };
+    const spoken = (confirmed: boolean) => {
+      const primary = revision("r1", confirmed ? { speakersConfirmedAt: 5 } : {});
+      return {
+        ...contentRoutes(),
+        "GET /api/providers": PROVIDERS,
+        "GET /api/contents/c1/speakers": speakers,
+        "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [primary] } },
+        "GET /api/transcript/revisions/r1/segments": {
+          body: { revision: primary, items: [{ id: "s1", revisionId: "r1", ordinal: 0, startMs: 0, endMs: 1_000, text: "开场。", sourceSegmentIds: [], speakerId: "sp1" }] },
+        },
+      };
+    };
+    mockApi(spoken(false));
+    const first = renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    expect((await screen.findByTestId("translation-speakers-not-read")).textContent).toBe("发言人未核对，本次不读取");
+    first.unmount();
+    mockApi(spoken(true));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    await screen.findByTestId("translation-start");
+    await waitFor(() => expect(screen.queryByTestId("translation-speakers-not-read")).toBeNull());
+  });
+});

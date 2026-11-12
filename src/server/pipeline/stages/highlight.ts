@@ -10,13 +10,15 @@ import { amberError } from "../../domain/errors.ts";
 import type { LlmRequest } from "../../domain/llm.ts";
 import type { ModelRef, PromptRef } from "../../domain/model-ref.ts";
 import { chapterWindowNote, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
+import { framingForRead, speakerContextDigest, type SpeakerFraming } from "../../domain/speaker-context.ts";
 import { recomputeHighlightsRequestSchema } from "../../domain/task-request.ts";
 import { estimateTokens } from "../../domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
 import { assertBaseRevisionExists, stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
-import { planSentenceWindows, type SentenceWindow } from "./windows.ts";
+import { assertCarries } from "./rollup-runner.ts";
+import { assertWindowFits, planSentenceWindows, type SentenceWindow } from "./windows.ts";
 
 export interface HighlightStageDeps {
   repository: Repository;
@@ -67,6 +69,9 @@ const MAX_SCORE = 100;
  * as `output_mismatch` so it is asked again. The windows' items, merged in time order,
  * become one `HighlightRevision` made current, with the usage of the calls that produced
  * it attributed to it in the same transaction.
+ *
+ * A request with a frozen speaker context sends each window with its speakers, planned and
+ * checked like the chapter stage's windows.
  */
 export class HighlightStageExecutor implements StageExecutor {
   private readonly deps: HighlightStageDeps;
@@ -83,12 +88,13 @@ export class HighlightStageExecutor implements StageExecutor {
     const { repository } = this.deps;
     const content = taskContent(repository, context);
     const owner = content.userId;
-    const { baseRevisionId, outputLanguage } = recomputeHighlightsRequestSchema.parse(context.request);
+    const { baseRevisionId, outputLanguage, speakerContext } = recomputeHighlightsRequestSchema.parse(context.request);
     const revision = this.baseOf(content, baseRevisionId);
     const segments = repository.withTransaction((scope) => scope.transcripts.listSegments(owner, revision.id));
     if (segments.length === 0) {
       throw amberError("internal", "the base transcript has no sentences");
     }
+    const framing = framingForRead(speakerContext, segments);
     const modelRef = context.modelRef;
     if (modelRef === undefined) {
       throw amberError("llm_unconfigured", "no model for the highlight stage");
@@ -97,15 +103,38 @@ export class HighlightStageExecutor implements StageExecutor {
     const structured = description.capability.flags.structuredOutput === "supported";
     const prompt = context.prompt("highlight.default");
     const template = renderPrompt(prompt.text, { output_language: outputLanguageName(outputLanguage) });
+    const limits = description.capability.limits;
+    const schemaTokens = structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0;
+    const emptyTranscript = framing === undefined ? "" : framing.slotValue("");
     const fixedTokens =
-      estimateTokens(renderPrompt(template, { window_note: chapterWindowNote(segments.length, segments.length), transcript_with_aliases: "" })) +
-      (structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0);
-    const windows = planSentenceWindows(segments, { fixedTokens, limits: description.capability.limits, modelRef });
+      estimateTokens(renderPrompt(template, { window_note: chapterWindowNote(segments.length, segments.length), transcript_with_aliases: emptyTranscript })) +
+      schemaTokens;
+    const windows = planSentenceWindows(segments, { fixedTokens, limits, modelRef, ...(framing === undefined ? {} : { speakers: framing }) });
+    const prompts = windows.map((window, index) =>
+      renderPrompt(template, {
+        window_note: chapterWindowNote(index + 1, windows.length),
+        transcript_with_aliases: framing === undefined ? window.lines.join("\n") : framing.slotValue(framing.block(window.lines, window.offset).join("\n")),
+      }),
+    );
+    if (framing !== undefined) {
+      prompts.forEach((rendered) => assertWindowFits(rendered, schemaTokens, limits));
+    }
 
     let finished = 0;
     const settled = await Promise.allSettled(
       windows.map(async (window, index) => {
-        const payload = await this.runWindow(context, { modelRef, promptRef: prompt.ref, revision, template, structured, outputLanguage, window, index, count: windows.length });
+        const payload = await this.runWindow(context, {
+          modelRef,
+          promptRef: prompt.ref,
+          revision,
+          prompt: prompts[index] as string,
+          structured,
+          outputLanguage,
+          window,
+          index,
+          count: windows.length,
+          framing,
+        });
         finished += 1;
         context.reportProgress(finished / windows.length);
         return payload;
@@ -133,8 +162,9 @@ export class HighlightStageExecutor implements StageExecutor {
           items,
           modelRef: description.snapshot,
           promptRef: prompt.ref,
-          promptRefs: [prompt.ref],
+          promptRefs: framing === undefined ? [prompt.ref] : [prompt.ref, framing.rules.ref],
           promptSnapshot: template,
+          ...(framing === undefined ? {} : { speakerContext: framing.snapshot }),
           quality: "normal",
           createdAt,
         });
@@ -159,19 +189,16 @@ export class HighlightStageExecutor implements StageExecutor {
       modelRef: ModelRef;
       promptRef: PromptRef;
       revision: TranscriptRevision;
-      template: string;
+      prompt: string;
       structured: boolean;
       outputLanguage: string;
       window: SentenceWindow;
       index: number;
       count: number;
+      framing: SpeakerFraming | undefined;
     },
   ): Promise<WindowPayload> {
-    const { modelRef, promptRef, revision, template, structured, outputLanguage, window, index, count } = input;
-    const prompt = renderPrompt(template, {
-      window_note: chapterWindowNote(index + 1, count),
-      transcript_with_aliases: window.lines.join("\n"),
-    });
+    const { modelRef, promptRef, revision, prompt, structured, outputLanguage, window, index, count, framing } = input;
     const request: LlmRequest = {
       modelRef,
       system: "",
@@ -188,6 +215,7 @@ export class HighlightStageExecutor implements StageExecutor {
         modelRef,
         outputLanguage,
         structured,
+        ...(framing === undefined ? {} : { speakerContext: speakerContextDigest(framing.snapshot) }),
       }),
     );
     const value = await context.runUnit({
@@ -195,6 +223,7 @@ export class HighlightStageExecutor implements StageExecutor {
       inputDigest,
       billing: "llm",
       run: async (_signal: AbortSignal, unit: UnitIdentity): Promise<WindowPayload> => {
+        assertCarries(prompt, framing?.rules, "{{transcript_with_aliases}}");
         const completion = await context.llm.complete(request, { feature: "highlight", workUnitId: unit.id });
         return { ...parseWindow(completion.text, window), invocationId: completion.invocationId };
       },

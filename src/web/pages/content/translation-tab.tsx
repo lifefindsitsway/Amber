@@ -20,6 +20,7 @@ import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, useLatestTranslateTask, useRevisions, useTranslations } from "./content-data.ts";
 import { languageLabel, revisionLabel } from "./labels.ts";
+import { SpeakersNotReadHint } from "./speaker-basis-notice.tsx";
 import { TranslationDraftEditor } from "./translation-draft-editor.tsx";
 
 /** Per Content, the failed translate Task whose flow the user closed. */
@@ -178,11 +179,12 @@ export function TranslationTab() {
               {t("contentView.translation.termsLink")}
             </Link>
           </p>
-          <div>
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="primary" size="sm" disabled={chosen.length === 0 || modelRef === undefined || start.isPending} onClick={() => start.mutate()} data-testid="translation-start">
               <Languages size={14} />
               {t("contentView.translation.start")}
             </Button>
+            <SpeakersNotReadHint contentId={contentId} revisionId={primaryId} testId="translation-speakers-not-read" />
           </div>
           {replacesManual ? (
             <p className="text-xs text-muted" data-testid="translation-replaces-manual">

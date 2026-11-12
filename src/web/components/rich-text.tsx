@@ -1,6 +1,7 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDuration } from "../format.ts";
 
@@ -90,6 +91,8 @@ export interface RichTextProps {
    * message being rendered; unknown ids show as an unresolved citation.
    */
   webSourceOf?: (sourceId: string) => { index: number; url: string; title: string } | undefined;
+  /** Wraps a sentence citation's badge, e.g. in a hover card about the cited sentence. */
+  wrapCitation?: (segmentId: string, badge: ReactNode) => ReactNode;
 }
 
 /** Source links open only for web addresses; anything else is shown as unresolved. */
@@ -137,7 +140,7 @@ export function RichText(props: RichTextProps) {
         return <Unresolved />;
       }
       const time = props.timeOf?.(segmentId);
-      return (
+      const badge = (
         <button
           type="button"
           className="mx-0.5 rounded bg-accent-soft px-1 font-mono text-xs text-accent not-italic hover:underline"
@@ -147,6 +150,7 @@ export function RichText(props: RichTextProps) {
           {time === undefined ? t("contentView.citation.jump") : formatDuration(time)}
         </button>
       );
+      return props.wrapCitation === undefined ? badge : props.wrapCitation(segmentId, badge);
     },
   };
   return (

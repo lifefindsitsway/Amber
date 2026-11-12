@@ -1,7 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { ContentEventBus, publishSpeakersChanged, type ContentEvent, type ContentEventOrigin } from "../../../src/web/api/content-events.ts";
+import { ContentEventBus, publishSpeakerReviewChanged, publishSpeakersChanged, type ContentEvent, type ContentEventOrigin } from "../../../src/web/api/content-events.ts";
+import { queryKeys } from "../../../src/web/api/queries.ts";
 import { contentKeys } from "../../../src/web/pages/content/content-data.ts";
+import { searchKeys } from "../../../src/web/search/search.ts";
 
 /**
  * A stand-in for `BroadcastChannel` shared by every bus in the test, as tabs share one
@@ -121,13 +123,61 @@ describe("publishSpeakersChanged", () => {
     queryClient.setQueryData(contentKeys.speakers("c1"), { items: [] });
     queryClient.setQueryData(contentKeys.speakerAvatar("c1", "s1", 1), "blob");
     queryClient.setQueryData(contentKeys.speakers("c2"), { items: [] });
+    queryClient.setQueryData(contentKeys.speakerReview("c1", "r1"), {});
+    queryClient.setQueryData(contentKeys.revisions("c1"), { revisions: [] });
+    queryClient.setQueryData(contentKeys.speakerReview("c2", "r2"), {});
     publishSpeakersChanged(here, queryClient, "c1");
     expect(queryClient.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(true);
+    // Names and their confirmation show in the revision reviews; the revision list does not change with them.
+    expect(queryClient.getQueryState(contentKeys.speakerReview("c1", "r1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(contentKeys.revisions("c1"))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(contentKeys.speakerReview("c2", "r2"))?.isInvalidated).toBe(false);
     // A photo's key carries its version, so its bytes are not fetched again.
     expect(queryClient.getQueryState(contentKeys.speakerAvatar("c1", "s1", 1))?.isInvalidated).toBe(false);
     expect(queryClient.getQueryState(contentKeys.speakers("c2"))?.isInvalidated).toBe(false);
     expect(heard).toEqual([[{ type: "speakersChanged", contentId: "c1" }, { remote: false }]]);
     expect(elsewhere).toEqual([[{ type: "speakersChanged", contentId: "c1" }, { remote: true }]]);
+    here.close();
+    there.close();
+    expect(open.size).toBe(0);
+  });
+
+  it("reads again what derives a speaker basis from names: the Content's artifacts, collection summaries and search", () => {
+    fakeBroadcastChannel();
+    const bus = new ContentEventBus();
+    const queryClient = new QueryClient();
+    const keys = [
+      contentKeys.summaries("c1"),
+      contentKeys.chapters("c1"),
+      contentKeys.highlights("c1"),
+      ["summary-revisions", "a1"],
+      [...queryKeys.collection("k1"), "summary"],
+      searchKeys.query("x", "global"),
+    ];
+    for (const key of keys) queryClient.setQueryData(key, {});
+    queryClient.setQueryData(contentKeys.summaries("c2"), {});
+    publishSpeakersChanged(bus, queryClient, "c1");
+    for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true);
+    expect(queryClient.getQueryState(contentKeys.summaries("c2"))?.isInvalidated).toBe(false);
+    bus.close();
+  });
+
+  it("re-reads the revision list too after a review, and tells the other tab", () => {
+    const { open } = fakeBroadcastChannel();
+    const here = new ContentEventBus();
+    const there = new ContentEventBus();
+    const elsewhere = record(there);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    queryClient.setQueryData(contentKeys.revisions("c1"), { revisions: [] });
+    queryClient.setQueryData(contentKeys.speakerReview("c1", "r1"), {});
+    queryClient.setQueryData(contentKeys.revisions("c2"), { revisions: [] });
+    publishSpeakerReviewChanged(here, queryClient, "c1");
+    expect(queryClient.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(contentKeys.revisions("c1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(contentKeys.speakerReview("c1", "r1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(contentKeys.revisions("c2"))?.isInvalidated).toBe(false);
+    expect(elsewhere).toEqual([[{ type: "speakerReviewChanged", contentId: "c1" }, { remote: true }]]);
     here.close();
     there.close();
     expect(open.size).toBe(0);

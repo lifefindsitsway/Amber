@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useLocation } from "react-router";
@@ -6,11 +8,17 @@ import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../s
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
-import { changedSegments } from "../../../../src/web/pages/content/transcript-tab.tsx";
+import { changedSegments, TranscriptTab } from "../../../../src/web/pages/content/transcript-tab.tsx";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
-import { mountReader, SPEAKER_SEGMENTS, speakerRoutes, TYPOGRAPHY_KEY } from "../../../fixtures/web/reader-speakers.tsx";
+import { CHEN, mountReader, pageState, READER_ME, SPEAKER_SEGMENTS, speakerRoutes, TYPOGRAPHY_KEY, UNNAMED } from "../../../fixtures/web/reader-speakers.tsx";
+import { recognition } from "../../../fixtures/web/speaker-compare.ts";
+import { stubResizeObserver } from "../../../fixtures/web/speaker-fetch.ts";
+import { ContentPageProvider } from "../../../../src/web/pages/content/content-context.tsx";
+import { CAPABILITIES } from "../../../../src/web/player/capabilities.ts";
+import { PlayerController, PlayerControllerProvider } from "../../../../src/web/player/player-controller.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { resetBundledFonts } from "../../../../src/web/bundled-fonts.ts";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 
 describe("changedSegments", () => {
@@ -811,10 +819,39 @@ describe("TranscriptTab speakers: copy and apply-speakers link", () => {
   });
 });
 
-describe("TranscriptTab keeps the reading position when the typography changes", () => {
-  type Change = "font" | "lineHeight" | "speakers";
+/**
+ * A FontFace stand-in: jsdom loads no fonts, so a registered face is only recorded. A face
+ * finishes loading once `ready` settles (at once without it).
+ */
+function stubFontFaces(ready: Promise<void> = Promise.resolve()): string[] {
+  const added: string[] = [];
+  class FakeFontFace {
+    readonly family: string;
+    constructor(family: string) {
+      this.family = family;
+    }
+    load(): Promise<this> {
+      return ready.then(() => this);
+    }
+  }
+  vi.stubGlobal("FontFace", FakeFontFace);
+  Object.defineProperty(document, "fonts", { configurable: true, value: { add: (face: FakeFontFace) => added.push(face.family) } });
+  onTestFinished(() => {
+    Reflect.deleteProperty(document, "fonts");
+    resetBundledFonts();
+  });
+  return added;
+}
 
-  type Typography = { fontSize: number; lineHeight: number; turns: boolean };
+const FONT_ROUTES = {
+  "GET /api/fonts/reader/serif": { body: "serif", headers: { "content-type": "font/otf" } },
+  "GET /api/fonts/reader/kai": { body: "kai", headers: { "content-type": "font/ttf" } },
+};
+
+describe("TranscriptTab keeps the reading position when the typography changes", () => {
+  type Change = "font" | "lineHeight" | "speakers" | "typeface";
+
+  type Typography = { fontSize: number; lineHeight: number; turns: boolean; face: string };
 
   /** Where the list sits on screen: its top edge, the height it shows and the padding above its first row. */
   const LIST_TOP = 100;
@@ -834,6 +871,7 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       fontSize: Number.parseFloat(holder?.style.fontSize || String(READER_FONT_SIZE_DEFAULT)),
       lineHeight: Number.parseFloat(holder?.style.lineHeight || String(READER_LINE_HEIGHT_DEFAULT)),
       turns: reader.querySelector("[data-turn-key]") !== null,
+      face: reader.closest("[data-reader-font]")?.getAttribute("data-reader-font") ?? "default",
     };
   }
 
@@ -919,6 +957,7 @@ describe("TranscriptTab keeps the reading position when the typography changes",
     await waitFor(() => {
       if (kind === "font") fireEvent.click(within(popover).getByRole("button", { name: "增大字号" }));
       else if (kind === "lineHeight") fireEvent.click(within(popover).getByRole("radio", { name: "2.0" }));
+      else if (kind === "typeface") fireEvent.click(within(popover).getByRole("radio", { name: /^宋体/u }));
       else fireEvent.click(within(popover).getByRole("switch", { name: "显示发言人" }));
       expect(localStorage.getItem(TYPOGRAPHY_KEY)).not.toBeNull();
     });
@@ -934,22 +973,39 @@ describe("TranscriptTab keeps the reading position when the typography changes",
    * typography `stored` holds (the defaults when nothing is stored) and, with speakers, their
    * turns: the stored typography only applies once the user has loaded.
    */
-  async function openList(windowed: boolean, speakers: boolean, stored?: Partial<ReaderTypography>) {
+  async function openList(
+    windowed: boolean,
+    speakers: boolean,
+    stored?: Partial<ReaderTypography>,
+    fonts: { ready?: Promise<void>; routes?: Parameters<typeof mockApi>[0]; drawn?: string } = {},
+  ) {
     // A windowed row is 400px at the defaults, a little less without the turn headers; a plain one about 80px.
     const windowedBase = (turns: boolean): number => (turns || !speakers ? 400 : 360);
-    layOut(({ fontSize, lineHeight, turns }) =>
+    // The serif face sets a little wider, so its rows wrap into more lines.
+    const faceFactor = (face: string): number => (face === "default" ? 1 : 1.25);
+    layOut(({ fontSize, lineHeight, turns, face }) =>
       windowed
-        ? windowedBase(turns) * (fontSize / READER_FONT_SIZE_DEFAULT) * (lineHeight / READER_LINE_HEIGHT_DEFAULT)
-        : fontSize * lineHeight * 3 + (turns ? 40 : 0),
+        ? windowedBase(turns) * (fontSize / READER_FONT_SIZE_DEFAULT) * (lineHeight / READER_LINE_HEIGHT_DEFAULT) * faceFactor(face)
+        : (fontSize * lineHeight * 3 + (turns ? 40 : 0)) * faceFactor(face),
     );
+    stubFontFaces(fonts.ready);
     const typography = { ...READER_TYPOGRAPHY_DEFAULTS, ...stored };
     if (stored !== undefined) localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify(typography));
-    mockApi({ ...speakerRoutes({ segments: sentences(windowed ? 200 : 12, speakers) }), "GET /api/contents/c1/chapters": { body: { revisions: [] } } });
+    mockApi({
+      ...speakerRoutes({ segments: sentences(windowed ? 200 : 12, speakers) }),
+      ...(fonts.routes ?? FONT_ROUTES),
+      "GET /api/contents/c1/chapters": { body: { revisions: [] } },
+    });
     const mounted = mountReader();
     const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
     scrollLikeABrowser(reader);
     await waitFor(() => expect(reader.querySelector("[data-segment-id='p2']")).not.toBeNull(), { timeout: 5_000 });
-    const expected: Typography = { fontSize: typography.fontSize, lineHeight: typography.lineHeight, turns: speakers && typography.showSpeakers };
+    const expected: Typography = {
+      fontSize: typography.fontSize,
+      lineHeight: typography.lineHeight,
+      turns: speakers && typography.showSpeakers,
+      face: fonts.drawn ?? typography.font ?? "default",
+    };
     await waitFor(() => expect(typographyOf(reader)).toEqual(expected), { timeout: 5_000 });
     return { ...mounted, reader };
   }
@@ -988,12 +1044,55 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       ["line height", "lineHeight", false],
       ["line height with speakers", "lineHeight", true],
       ["showing the speakers", "speakers", true],
+      ["font", "typeface", false],
+      ["font with speakers", "typeface", true],
     ])("puts the first visible row back at the same distance from the top after changing the %s", async (_label, kind, speakers) => {
       const { reader } = await openList(windowed, speakers);
       const before = await scrollToAnchor(reader);
       const heightBefore = rowHeight(reader);
       await change(kind);
       await expectKept(reader, before, heightBefore);
+    });
+
+    it("keeps the first visible row where it was when a stored face finishes loading after the rows are drawn", async () => {
+      let release = (): void => undefined;
+      const ready = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { reader } = await openList(windowed, true, { font: "serif" }, { ready, drawn: "default" });
+      const before = await scrollToAnchor(reader);
+      const heightBefore = rowHeight(reader);
+      // Meanwhile the checked segment shows the read.
+      const popover = await openPopover();
+      const loading = within(popover).getByRole("radio", { name: "宋体（加载中）" });
+      expect((loading as HTMLInputElement).checked).toBe(true);
+      expect(loading.closest("label")?.getAttribute("aria-busy")).toBe("true");
+      await act(async () => release());
+      await waitFor(() => expect(typographyOf(reader).face).toBe("serif"));
+      await expectKept(reader, before, heightBefore);
+      expect(within(popover).getByRole("radio", { name: "宋体" }).closest("label")?.hasAttribute("aria-busy")).toBe(false);
+    });
+
+    it("keeps the first visible row where it was when a stored face that failed is read again and drawn", async () => {
+      let reads = 0;
+      const routes = {
+        "GET /api/fonts/reader/serif": () => {
+          reads += 1;
+          return reads === 1
+            ? { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } }
+            : FONT_ROUTES["GET /api/fonts/reader/serif"];
+        },
+      };
+      const { reader } = await openList(windowed, false, { font: "serif" }, { routes, drawn: "default" });
+      const popover = await openPopover();
+      await within(popover).findByTestId("reader-font-failed");
+      const before = await scrollToAnchor(reader);
+      const heightBefore = rowHeight(reader);
+      fireEvent.click(within(popover).getByRole("radio", { name: "宋体" }));
+      await waitFor(() => expect(typographyOf(reader).face).toBe("serif"));
+      expect(reads).toBe(2);
+      await expectKept(reader, before, heightBefore);
+      expect(within(popover).queryByTestId("reader-font-failed")).toBeNull();
     });
 
     it("puts the first visible row back at the same distance from the top after 恢复默认", async () => {
@@ -1124,5 +1223,661 @@ describe("TranscriptTab version info and applying speakers", () => {
     expect(draftAt).toBeGreaterThanOrEqual(0);
     const afterDraft = calls.slice(draftAt).map((call) => call.path.split("?")[0]);
     expect(afterDraft).toContain("/api/transcript/revisions/r1/segments");
+  });
+});
+
+describe("TranscriptTab reading font", () => {
+  const fontCalls = (calls: Array<{ path: string }>) => calls.filter((call) => call.path.startsWith("/api/fonts/"));
+
+  async function openReader(stored?: Partial<ReaderTypography>, routes: Record<string, unknown> = FONT_ROUTES) {
+    if (stored !== undefined) localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, ...stored }));
+    const { calls } = mockApi({ ...speakerRoutes(), ...(routes as Parameters<typeof mockApi>[0]) });
+    mountReader();
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    await waitFor(() => expect(reader.querySelector("[data-segment-id='g1']")).not.toBeNull(), { timeout: 5_000 });
+    return { reader, calls };
+  }
+
+  it("reads no font and marks nothing in the default font", async () => {
+    stubFontFaces();
+    const { reader, calls } = await openReader();
+    fireEvent.click(screen.getByRole("button", { name: "Aa 阅读排版" }));
+    await screen.findByTestId("reader-typography-popover");
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(fontCalls(calls)).toEqual([]);
+    expect(reader.closest("[data-reader-font]")).toBeNull();
+    expect(reader.parentElement?.getAttribute("style")).toBeNull();
+  });
+
+  it("applies a stored bundled face once read, to the sentence paragraphs only", async () => {
+    const added = stubFontFaces();
+    const { reader, calls } = await openReader({ font: "kai" });
+    await waitFor(() => expect(reader.closest("[data-reader-font]")?.getAttribute("data-reader-font")).toBe("kai"));
+    expect(fontCalls(calls).map((call) => call.path)).toEqual(["/api/fonts/reader/kai"]);
+    expect(added).toEqual(["LXGW WenKai Lite"]);
+    // Every sentence sits in a paragraph that takes the reading font.
+    for (const sentence of reader.querySelectorAll("[data-segment-id]")) expect(sentence.closest("[data-reader-text]")).not.toBeNull();
+    // Chapter titles and turn headers (names, times) are outside those paragraphs.
+    expect(reader.querySelectorAll("[data-testid='transcript-chapter']").length).toBeGreaterThan(0);
+    for (const heading of reader.querySelectorAll("[data-testid='transcript-chapter'], [data-testid='turn-header']")) {
+      expect(heading.closest("[data-reader-text]")).toBeNull();
+      expect(heading.querySelector("[data-reader-text]")).toBeNull();
+    }
+    // A compact row's name is inside its paragraph, marked as UI text the style sheet sets back.
+    const compact = reader.querySelector("[data-turn-layout='compact'] [data-reader-text]");
+    expect(compact).not.toBeNull();
+    const name = compact?.querySelector("[data-testid='turn-speaker']");
+    expect(name?.closest("[data-reading-time]")?.closest("[data-reader-text]")).toBe(compact);
+  });
+
+  it("leaves the chapter titles in the page's font: no reading font rule reaches them", async () => {
+    stubFontFaces();
+    // The style sheet's own reading font rules, unlayered so the test DOM applies them.
+    const css = readFileSync(resolve(process.cwd(), "src/web/styles.css"), "utf8");
+    const rules = [...css.matchAll(/(\[data-reader-font\][^{}]*)\{([^{}]*)\}/g)].map((rule) => `${rule[1]}{${rule[2]}}`);
+    expect(rules.some((rule) => rule.includes("var(--reader-font)"))).toBe(true);
+    const sheet = document.createElement("style");
+    sheet.textContent = rules.join("\n");
+    document.head.append(sheet);
+    onTestFinished(() => sheet.remove());
+    const { reader } = await openReader({ font: "kai" });
+    await waitFor(() => expect(reader.closest("[data-reader-font]")?.getAttribute("data-reader-font")).toBe("kai"));
+    const family = (element: Element): string => getComputedStyle(element).fontFamily;
+    // The sentences take the reading font through the rule...
+    const paragraph = reader.querySelector("[data-reader-text]");
+    expect(paragraph).not.toBeNull();
+    expect(family(paragraph as Element)).toContain("--reader-font");
+    // ...which neither a chapter title, nor anything in it, nor anything above it up to the reader matches.
+    const titles = [...reader.querySelectorAll("[data-testid='transcript-chapter']")];
+    expect(titles.length).toBeGreaterThan(0);
+    const host = reader.closest("[data-reader-font]") as Element;
+    for (const title of titles) {
+      for (const element of [title, ...title.querySelectorAll("*")]) expect(family(element)).not.toContain("--reader-font");
+      for (let element = title.parentElement; element !== null && element !== host.parentElement; element = element.parentElement) {
+        expect(family(element)).not.toContain("--reader-font");
+      }
+    }
+  });
+
+  it("stays in the default font and says so when the stored face cannot be read", async () => {
+    stubFontFaces();
+    const { reader, calls } = await openReader({ font: "serif" }, {});
+    await waitFor(() => expect(fontCalls(calls)).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Aa 阅读排版" }));
+    expect((await screen.findByTestId("reader-font-failed")).textContent).toBe("字体加载失败");
+    expect(reader.closest("[data-reader-font]")).toBeNull();
+  });
+
+  it("writes a custom name into the reader's custom property", async () => {
+    stubFontFaces();
+    const { reader, calls } = await openReader({ font: "custom", customFont: "Kaiti SC" });
+    const host = reader.closest<HTMLElement>("[data-reader-font]");
+    expect(host?.getAttribute("data-reader-font")).toBe("custom");
+    expect(host?.style.getPropertyValue("--reader-custom-font")).toBe('"Kaiti SC"');
+    expect(fontCalls(calls)).toEqual([]);
+  });
+});
+
+describe("TranscriptTab reading in a stored bundled font", () => {
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges();
+  });
+
+  /** The full content page for the signed-in user whose stored typography reads in 楷体. */
+  async function openPage(search = "", routes: Parameters<typeof mockApi>[0] = {}) {
+    stubFontFaces();
+    localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" }));
+    const api = mockApi({
+      ...contentRoutes(),
+      ...FONT_ROUTES,
+      "GET /api/auth/me": { body: READER_ME },
+      "POST /api/contents/c1/notes": { status: 201, body: note("n9") },
+      ...routes,
+    });
+    renderApp(
+      <>
+        <ContentPage />
+        <LocationProbe />
+      </>,
+      { route: `/contents/c1?tab=transcript&revision=r1${search}`, path: "/contents/:id" },
+    );
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    await waitFor(() => expect(reader.closest("[data-reader-font]")?.getAttribute("data-reader-font")).toBe("kai"), { timeout: 5_000 });
+    const sentence = (id: string): HTMLElement => {
+      const element = reader.querySelector<HTMLElement>(`[data-segment-id='${id}']`);
+      expect(element).not.toBeNull();
+      expect(element?.closest("[data-reader-text]")).not.toBeNull();
+      return element as HTMLElement;
+    };
+    return { ...api, reader, sentence };
+  }
+
+  it("marks the search terms in the sentence text and selects the hit sentence", async () => {
+    const { reader, sentence } = await openPage(`&segment=${CITED_SEGMENT_ID}&search=${encodeURIComponent("重排")}`);
+    expect(sentence(CITED_SEGMENT_ID).getAttribute("aria-current")).toBe("true");
+    const marks = [...reader.querySelectorAll("mark")];
+    expect(marks.map((mark) => mark.textContent)).toEqual(["重排"]);
+    expect(marks[0]?.closest("[data-reader-text]")).not.toBeNull();
+  });
+
+  it("makes a note from a selection with the offsets of the stored text, and opens a placed note without seeking", async () => {
+    const { calls, reader, sentence } = await openPage("", {
+      "GET /api/contents/c1/notes": { body: { items: [note("n1", { startSegmentId: "s2", endSegmentId: "s2", view: placedOn("s2", 2, 4) })] } },
+    });
+    select(sentence("s1").firstChild as Text, 2, 4);
+    fireEvent.mouseUp(document);
+    fireEvent.click(await screen.findByTestId("selection-note-underline"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({
+      transcriptRevisionId: "r1",
+      startSegmentId: "s1",
+      startOffset: 2,
+      endSegmentId: "s1",
+      endOffset: 4,
+      mark: "underline",
+      color: "blue",
+    });
+
+    const run = await waitFor(() => within(sentence("s2")).getByTestId("note-run"));
+    expect(run.textContent).toBe("向量");
+    expect(sentence("s2").textContent).toBe("先看向量库。");
+    fireEvent.click(run);
+    expect(await screen.findByTestId("note-popover")).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).not.toContain("segment=");
+    expect(reader.querySelector("[aria-current]")).toBeNull();
+  });
+
+  it("puts a chapter picked in the outline at the top, and a chapter's time seeks to its first sentence", async () => {
+    const { reader, sentence } = await openPage();
+    const heading = within(reader).getAllByTestId("transcript-chapter")[1]?.closest("[data-row-index]") as HTMLElement;
+    reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 100, width: 400, height: 300 });
+    heading.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 340, width: 400, height: 30 });
+    fireEvent.click(screen.getByTestId("chapter-outline"));
+    fireEvent.click(screen.getAllByTestId("chapter-outline-item")[1] as HTMLElement);
+    expect(screen.queryByTestId("chapter-outline-list")).toBeNull();
+    expect(reader.scrollTop).toBe(240);
+
+    fireEvent.click(within(within(reader).getAllByTestId("transcript-chapter")[1] as HTMLElement).getByRole("button", { name: "1:00" }));
+    await waitFor(() => expect(sentence(CITED_SEGMENT_ID).getAttribute("aria-current")).toBe("true"));
+  });
+
+  it("follows playback with the current sentence in speaker turns", async () => {
+    stubFontFaces();
+    localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" }));
+    mockApi({ ...speakerRoutes(), ...FONT_ROUTES });
+    const { controller } = mountReader();
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    await waitFor(() => expect(reader.closest("[data-reader-font]")?.getAttribute("data-reader-font")).toBe("kai"), { timeout: 5_000 });
+    expect(reader.querySelector("[data-turn-key]")).not.toBeNull();
+    const current = (): Array<string | null> => [...reader.querySelectorAll("[data-testid='current-sentence']")].map((node) => node.getAttribute("data-segment-id"));
+    act(() => controller.reportTime(1_000));
+    expect(current()).toEqual(["g1"]);
+    act(() => controller.reportTime(8_500));
+    expect(current()).toEqual(["g3"]);
+    act(() => controller.reportTime(20_000));
+    expect(current()).toEqual(["g5"]);
+    expect(reader.querySelector("[data-testid='current-sentence']")?.closest("[data-reader-text]")).not.toBeNull();
+  });
+});
+
+/** The sentences a reader shows, in order. */
+const shownSentences = (reader: HTMLElement): Array<string | null> => [...reader.querySelectorAll("[data-segment-id]")].map((node) => node.getAttribute("data-segment-id"));
+
+/** The index of the reader row that holds a sentence. */
+const rowOf = (reader: HTMLElement, segmentId: string): number => Number(reader.querySelector(`[data-segment-id='${segmentId}']`)?.closest<HTMLElement>("[data-row-index]")?.dataset["rowIndex"]);
+
+/**
+ * Lays every reader row out 100px below the one before it, the list's own box at the top, so
+ * a scroll that puts a row at the top leaves `scrollTop` at that row's index × 100.
+ */
+function stubRowLayout(): void {
+  const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const index = this.dataset["rowIndex"];
+    return DOMRect.fromRect({ x: 0, y: index === undefined ? 0 : Number(index) * 100, width: 800, height: 100 });
+  });
+  onTestFinished(() => spy.mockRestore());
+}
+
+/** Records the elements centred by `scrollIntoView`, which jsdom does not implement. */
+function stubScrollIntoView(): Element[] {
+  const centred: Element[] = [];
+  const original = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function (this: Element) {
+    centred.push(this);
+  };
+  onTestFinished(() => {
+    Element.prototype.scrollIntoView = original;
+  });
+  return centred;
+}
+
+/** Only the transcript tab, with the address shown beside it (`location`). */
+function mountSpeakerReader(route = "/contents/c1?tab=transcript&revision=r1") {
+  const controller = new PlayerController();
+  controller.attach({ capabilities: CAPABILITIES.local, seek: () => undefined });
+  renderApp(
+    <PlayerControllerProvider controller={controller}>
+      <ContentPageProvider value={pageState()}>
+        <TranscriptTab />
+        <LocationProbe />
+      </ContentPageProvider>
+    </PlayerControllerProvider>,
+    { route, path: "/contents/:id" },
+  );
+}
+
+async function readerWith(id: string): Promise<HTMLElement> {
+  const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+  await waitFor(() => expect(reader.querySelector(`[data-segment-id='${id}']`)).not.toBeNull());
+  return reader;
+}
+
+const addressSpeakers = (): string[] => new URLSearchParams(screen.getByTestId("location").textContent ?? "").getAll("speaker");
+
+const REVIEW_PATH = "GET /api/transcript/revisions/r1/speaker-review";
+
+/** The review of the conversation in `SPEAKER_SEGMENTS`: 陈明 first, then speaker 2. */
+const SPEAKER_REVIEW = {
+  revisionId: "r1",
+  rosterDigest: "digest-1",
+  speakers: [
+    { id: "sp1", sentences: 5, assignedMs: 25_000 },
+    { id: "sp2", sentences: 1, assignedMs: 1_000 },
+  ],
+  unassigned: 1,
+  pendingNames: 0,
+};
+
+describe("TranscriptTab speaker review", () => {
+  beforeEach(() => {
+    stubResizeObserver();
+  });
+
+  /** Another vendor's recognition made to compare with, over the same moments. */
+  const comparisonRoutes = () => {
+    const current = revision("r1");
+    const other = recognition("r2", "scribe_v2", { comparison: true });
+    return {
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [current, other] } },
+      "GET /api/transcript/revisions/r2/segments": {
+        body: { revision: other, items: SPEAKER_SEGMENTS.map((item, index) => ({ ...item, id: `o${index}`, revisionId: "r2", speakerId: index === 2 ? "sp4" : "sp3" })) },
+      },
+    };
+  };
+
+  it("puts the review mark beside the version picker in speaker mode and opens the panel from it", async () => {
+    const { calls } = mockApi({ ...speakerRoutes(), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader();
+    await readerWith("g1");
+    const badge = await screen.findByTestId("speaker-review-badge");
+    expect(badge.previousElementSibling?.getAttribute("data-testid")).toBe("transcript-version");
+    await waitFor(() => expect(badge.textContent).toBe("发言人未核对"));
+    fireEvent.click(badge);
+    const panel = await screen.findByTestId("speaker-review-panel");
+    await within(panel).findByTestId("speaker-review-roster");
+    expect(within(panel).getAllByTestId("speaker-review-roster-row").map((row) => row.getAttribute("data-speaker-id"))).toEqual(["sp1", "sp2"]);
+    // Opening it only reads.
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("shows no review mark and reads no review outside speaker mode", async () => {
+    const { calls } = mockApi(contentRoutes());
+    mountSpeakerReader();
+    await readerWith("s1");
+    await act(async () => undefined);
+    expect(screen.queryByTestId("speaker-review-badge")).toBeNull();
+    expect(calls.some((call) => call.path.endsWith("/speaker-review"))).toBe(false);
+  });
+
+  it("opens the draft editor on the comparison from 「去编辑器查看」 under 辅助核对", async () => {
+    mockApi({ ...speakerRoutes(), ...comparisonRoutes(), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader();
+    await readerWith("g1");
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const panel = await screen.findByTestId("speaker-review-panel");
+    await within(panel).findByTestId("speaker-review-roster");
+    expect(within(panel).queryByTestId("comparison-summary")).toBeNull();
+    fireEvent.click(within(panel).getByTestId("speaker-review-assist-toggle"));
+    const summary = await within(panel).findByTestId("comparison-summary");
+    await waitFor(() => expect(within(summary).getByTestId("comparison-summary-line").textContent).toContain("与 scribe_v2 的识别相比"));
+    fireEvent.click(within(summary).getByTestId("comparison-summary-open"));
+    expect(await screen.findByTestId("comparison-panel", {}, { timeout: 5_000 })).toBeTruthy();
+    expect(screen.getByTestId("comparison-toggle").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("transcript-reader")).toBeNull();
+    expect((await screen.findByTestId("comparison-header")).textContent).toContain("对比模型：scribe_v2");
+  });
+
+  it("opens the editor without the comparison from 编辑", async () => {
+    mockApi({ ...speakerRoutes(), ...comparisonRoutes(), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader();
+    await readerWith("g1");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    expect(await screen.findByTestId("comparison-toggle", {}, { timeout: 5_000 })).toBeTruthy();
+    expect(screen.getByTestId("comparison-toggle").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByTestId("comparison-panel")).toBeNull();
+  });
+
+  it("offers no way to the editor from 辅助核对 on an archived revision, which cannot be edited", async () => {
+    const routes = comparisonRoutes();
+    const archived = revision("r1", { archived: true, archivedAt: 6 });
+    mockApi({
+      ...speakerRoutes({ revision: { archived: true, archivedAt: 6 } }),
+      ...routes,
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [archived, ...routes["GET /api/contents/c1/transcript/revisions"].body.revisions.slice(1)] } },
+      [REVIEW_PATH]: { body: SPEAKER_REVIEW },
+    });
+    mountSpeakerReader();
+    await readerWith("g1");
+    expect((screen.getByRole("button", { name: "编辑" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const panel = await screen.findByTestId("speaker-review-panel");
+    await within(panel).findByTestId("speaker-review-roster");
+    fireEvent.click(within(panel).getByTestId("speaker-review-assist-toggle"));
+    const summary = await within(panel).findByTestId("comparison-summary");
+    // The comparison itself still reads; only the way into the editor is gone.
+    await waitFor(() => expect(within(summary).getByTestId("comparison-summary-line").textContent).toContain("与 scribe_v2 的识别相比"));
+    expect(within(summary).queryByTestId("comparison-summary-open")).toBeNull();
+  });
+
+  it("brings back the whole text when the roster leads to a sentence the filter hides, and scrolls to it", async () => {
+    stubRowLayout();
+    mockApi({ ...speakerRoutes(), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp1");
+    const reader = await readerWith("g1");
+    expect(shownSentences(reader)).not.toContain("g3");
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const panel = await screen.findByTestId("speaker-review-panel");
+    const rows = await within(panel).findAllByTestId("speaker-review-roster-row");
+    fireEvent.click(within(rows[1] as HTMLElement).getByTestId("speaker-review-locate"));
+    await waitFor(() => expect(shownSentences(reader)).toContain("g3"));
+    expect(addressSpeakers()).toEqual([]);
+    expect(screen.queryByTestId("speaker-review-panel")).toBeNull();
+    expect(rowOf(reader, "g3")).toBeGreaterThan(0);
+    await waitFor(() => expect(reader.scrollTop).toBe(rowOf(reader, "g3") * 100));
+  });
+
+  it("scrolls to a sentence the filter shows without lifting it", async () => {
+    const centred = stubScrollIntoView();
+    mockApi({ ...speakerRoutes(), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp2");
+    const reader = await readerWith("g3");
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const panel = await screen.findByTestId("speaker-review-panel");
+    const rows = await within(panel).findAllByTestId("speaker-review-roster-row");
+    fireEvent.click(within(rows[1] as HTMLElement).getByTestId("speaker-review-locate"));
+    await waitFor(() => expect(centred.map((element) => element.getAttribute("data-row-index"))).toContain(String(rowOf(reader, "g3"))));
+    expect(addressSpeakers()).toEqual(["sp2"]);
+    expect(shownSentences(reader)).toEqual(["g3"]);
+  });
+});
+
+describe("TranscriptTab 只看", () => {
+  beforeEach(() => {
+    stubResizeObserver();
+  });
+
+  const THIRD = { id: "sp3", ordinal: 3, name: "王芳", colorIndex: 2, used: true };
+
+  it("writes the picked speakers into the address in order, then shows only their sentences with a bar", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader();
+    const reader = await readerWith("g1");
+    expect(screen.queryByTestId("speaker-filter-bar")).toBeNull();
+    fireEvent.click(screen.getByTestId("speaker-filter"));
+    const popover = await screen.findByTestId("speaker-filter-popover");
+    const option = (id: string) => within(popover).getAllByTestId("speaker-filter-option").find((item) => item.getAttribute("data-speaker-id") === id) as HTMLElement;
+    expect(within(popover).getAllByTestId("speaker-filter-option").map((item) => item.textContent)).toEqual(["陈陈明5 句", "2发言人 21 句"]);
+    // Each option reads avatar, name and count. Picked out of order, written by ordinal.
+    fireEvent.click(within(option("sp2")).getByRole("checkbox"));
+    await waitFor(() => expect(addressSpeakers()).toEqual(["sp2"]));
+    expect(shownSentences(reader)).toEqual(["g3"]);
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toBe("只看 发言人 2 · 1 轮清除");
+    fireEvent.click(within(option("sp1")).getByRole("checkbox"));
+    await waitFor(() => expect(addressSpeakers()).toEqual(["sp1", "sp2"]));
+    expect(screen.getByTestId("location").textContent).toBe("?tab=transcript&revision=r1&speaker=sp1&speaker=sp2");
+    expect(shownSentences(reader)).toEqual(["g1", "g2", "g3", "g4", "g5", "g7"]);
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toBe("只看 陈明、发言人 2 · 4 轮清除");
+    // The one unassigned sentence is skipped: one bar, ahead of the next chapter's heading.
+    expect(within(reader).getAllByTestId("speaker-gap").map((gap) => gap.textContent)).toEqual(["略过 53 秒"]);
+    fireEvent.click(screen.getByTestId("speaker-filter-clear"));
+    await waitFor(() => expect(addressSpeakers()).toEqual([]));
+    expect(shownSentences(reader)).toEqual(["g1", "g2", "g3", "g4", "g5", "g6", "g7"]);
+    expect(screen.queryByTestId("speaker-filter-bar")).toBeNull();
+  });
+
+  it("shows one speaker's turns with a bar over each skipped stretch, and the chapters over what is shown", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp1");
+    const reader = await readerWith("g1");
+    expect(shownSentences(reader)).toEqual(["g1", "g2", "g4", "g5", "g7"]);
+    expect(screen.getByTestId("speaker-filter-bar").textContent).toBe("只看 陈明 · 3 轮清除");
+    const rows = [...reader.querySelectorAll<HTMLElement>("[data-row-index]")].map((row) =>
+      row.querySelector("[data-testid='speaker-gap']") !== null ? `gap ${row.textContent}` : row.querySelector("[data-testid='transcript-chapter']") !== null ? "chapter" : "text",
+    );
+    expect(rows.filter((row) => row !== "text")).toEqual(["chapter", "gap 略过 2 秒", "gap 略过 53 秒", "chapter"]);
+    expect(screen.getByTestId("speaker-filter").getAttribute("aria-label")).toBe("只看某些发言人，已选 1 人");
+  });
+
+  it("clears the filter from a gap and keeps the reader at the first skipped sentence", async () => {
+    stubRowLayout();
+    mockApi(speakerRoutes());
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp1");
+    const reader = await readerWith("g1");
+    const gaps = within(reader).getAllByTestId("speaker-gap");
+    fireEvent.click(within(gaps[1] as HTMLElement).getByRole("button", { name: "略过 53 秒，回到完整原文的这个位置" }));
+    await waitFor(() => expect(shownSentences(reader)).toContain("g6"));
+    expect(addressSpeakers()).toEqual([]);
+    expect(screen.getByTestId("location").textContent).toBe("?tab=transcript&revision=r1");
+    expect(rowOf(reader, "g6")).toBeGreaterThan(0);
+    await waitFor(() => expect(reader.scrollTop).toBe(rowOf(reader, "g6") * 100));
+  });
+
+  /**
+   * The reader on `route` with a sentence selected (as a click on it leaves it), recording in
+   * order every scroll it makes: a row centred (`centre <sentence>`) or the list moved (`top <px>`).
+   */
+  async function readerWithSelection(route: string, segmentId: string, first: string): Promise<{ reader: HTMLElement; log: string[]; opened: string[] }> {
+    stubRowLayout();
+    const log: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      log.push(`centre ${this.querySelector("[data-segment-id]")?.getAttribute("data-segment-id") ?? ""}`);
+    };
+    onTestFinished(() => {
+      Element.prototype.scrollIntoView = original;
+    });
+    const controller = new PlayerController();
+    controller.attach({ capabilities: CAPABILITIES.local, seek: () => undefined });
+    renderApp(
+      <PlayerControllerProvider controller={controller}>
+        <ContentPageProvider value={{ ...pageState(), selection: { revisionId: "r1", segmentId } }}>
+          <TranscriptTab />
+          <LocationProbe />
+        </ContentPageProvider>
+      </PlayerControllerProvider>,
+      { route, path: "/contents/:id" },
+    );
+    const reader = await readerWith(first);
+    let top = 0;
+    Object.defineProperty(reader, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => {
+        top = value;
+        log.push(`top ${value}`);
+      },
+    });
+    await act(async () => undefined);
+    const opened = log.splice(0);
+    return { reader, log, opened };
+  }
+
+  it("stays at a gap's place when a selected sentence the filter hid comes back with the text", async () => {
+    mockApi(speakerRoutes());
+    const { reader, log } = await readerWithSelection("/contents/c1?tab=transcript&revision=r1&speaker=sp1", "g3", "g1");
+    expect(shownSentences(reader)).not.toContain("g3");
+    const gaps = within(reader).getAllByTestId("speaker-gap");
+    fireEvent.click(within(gaps[1] as HTMLElement).getByRole("button"));
+    await waitFor(() => expect(shownSentences(reader)).toContain("g6"));
+    await act(async () => undefined);
+    // Only the gap's own scroll: the selected g3, back at a row of its own, is not centred over it.
+    expect(log).toEqual([`top ${rowOf(reader, "g6") * 100}`]);
+    expect(reader.scrollTop).toBe(rowOf(reader, "g6") * 100);
+  });
+
+  it("stays at the turn the roster located when the selected sentence moves to another row", async () => {
+    // Speaker 2 answers over two paragraphs: one gap bar stands for two rows of the whole text,
+    // so every row after it moves when the filter is lifted.
+    const shift = 5_000;
+    const segments = [
+      ...SPEAKER_SEGMENTS.slice(0, 3),
+      segment("g3b", 3, 9_000 + PARAGRAPH_GAP_MS + 1_000, 9_000 + PARAGRAPH_GAP_MS + 2_000, "然后呢？", { speakerId: "sp2" }),
+      ...SPEAKER_SEGMENTS.slice(3).map((item) => ({ ...item, ordinal: item.ordinal + 1, startMs: item.startMs + shift, endMs: item.endMs + shift })),
+    ];
+    mockApi({ ...speakerRoutes({ segments }), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    const { reader, log, opened } = await readerWithSelection("/contents/c1?tab=transcript&revision=r1&speaker=sp1", "g7", "g7");
+    // Opened on a selection the filter shows: it is centred, as a deep link is.
+    expect(opened).toEqual(["centre g7"]);
+    const before = rowOf(reader, "g7");
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const rows = await within(await screen.findByTestId("speaker-review-panel")).findAllByTestId("speaker-review-roster-row");
+    fireEvent.click(within(rows[1] as HTMLElement).getByTestId("speaker-review-locate"));
+    await waitFor(() => expect(shownSentences(reader)).toContain("g3"));
+    await act(async () => undefined);
+    // g7 is shown before and after, at another row once the whole text is back.
+    expect(rowOf(reader, "g7")).not.toBe(before);
+    expect(log).toEqual([`top ${rowOf(reader, "g3") * 100}`]);
+  });
+
+  it("rewrites an address with unknown, repeated or unordered speakers, keeping the other parameters", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader("/contents/c1?tab=transcript&speaker=gone&speaker=sp2&revision=r1&speaker=sp1&speaker=sp2");
+    const reader = await readerWith("g1");
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("?tab=transcript&revision=r1&speaker=sp1&speaker=sp2"));
+    expect(shownSentences(reader)).toEqual(["g1", "g2", "g3", "g4", "g5", "g7"]);
+  });
+
+  it("drops an address of only unknown speakers and reads the whole text", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=gone");
+    const reader = await readerWith("g6");
+    await waitFor(() => expect(addressSpeakers()).toEqual([]));
+    expect(shownSentences(reader)).toHaveLength(7);
+    expect(screen.queryByTestId("speaker-filter-bar")).toBeNull();
+    expect(screen.queryByTestId("speaker-filter-empty")).toBeNull();
+  });
+
+  it("only marks a search, inside the filtered sentences", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader(`/contents/c1?tab=transcript&revision=r1&speaker=sp1&search=${encodeURIComponent("重排序")}`);
+    const reader = await readerWith("g1");
+    expect(shownSentences(reader)).toEqual(["g1", "g2", "g4", "g5", "g7"]);
+    expect([...reader.querySelectorAll("mark")].map((mark) => mark.closest("[data-segment-id]")?.getAttribute("data-segment-id"))).toEqual(["g4", "g7"]);
+    fireEvent.click(screen.getByTestId("speaker-filter-clear"));
+    await waitFor(() => expect(shownSentences(reader)).toHaveLength(7));
+    expect(new URLSearchParams(screen.getByTestId("location").textContent ?? "").get("search")).toBe("重排序");
+  });
+
+  it("says when the picked speakers have no sentence in this version, and 清除筛选 brings the text back", async () => {
+    mockApi(speakerRoutes({ speakers: [CHEN, UNNAMED, THIRD] }));
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp3");
+    const empty = await screen.findByTestId("speaker-filter-empty", {}, { timeout: 5_000 });
+    expect(empty.textContent).toBe("这份字幕稿里没有所选发言人的句子清除筛选");
+    expect(screen.queryByTestId("transcript-reader")).toBeNull();
+    expect(addressSpeakers()).toEqual(["sp3"]);
+    // Still listed in the picker (avatar, name, count) so it can be unticked, with no sentence.
+    fireEvent.click(screen.getByTestId("speaker-filter"));
+    const option = (await screen.findAllByTestId("speaker-filter-option")).find((item) => item.getAttribute("data-speaker-id") === "sp3");
+    expect(option?.textContent).toBe("王王芳0 句");
+    fireEvent.click(within(empty).getByRole("button", { name: "清除筛选" }));
+    const reader = await readerWith("g1");
+    expect(shownSentences(reader)).toHaveLength(7);
+    expect(addressSpeakers()).toEqual([]);
+  });
+
+  it("leaves the empty state for the whole text when the review panel locates a sentence", async () => {
+    stubRowLayout();
+    mockApi({ ...speakerRoutes({ speakers: [CHEN, UNNAMED, THIRD] }), [REVIEW_PATH]: { body: SPEAKER_REVIEW } });
+    mountSpeakerReader("/contents/c1?tab=transcript&revision=r1&speaker=sp3");
+    await screen.findByTestId("speaker-filter-empty", {}, { timeout: 5_000 });
+    fireEvent.click(await screen.findByTestId("speaker-review-badge"));
+    const rows = await within(await screen.findByTestId("speaker-review-panel")).findAllByTestId("speaker-review-roster-row");
+    fireEvent.click(within(rows[1] as HTMLElement).getByTestId("speaker-review-locate"));
+    const reader = await readerWith("g3");
+    expect(addressSpeakers()).toEqual([]);
+    expect(screen.queryByTestId("speaker-filter-empty")).toBeNull();
+    await waitFor(() => expect(reader.scrollTop).toBe(rowOf(reader, "g3") * 100));
+    expect(rowOf(reader, "g3")).toBeGreaterThan(0);
+  });
+
+  it("brings back the whole text when 定位原文 of a note leads to a sentence the filter hides", async () => {
+    stubRowLayout();
+    mockApi({
+      ...speakerRoutes(),
+      "GET /api/contents/c1/notes": { body: { items: [note("n1", { startSegmentId: "g3", endSegmentId: "g3", quote: "嗯", view: placedOn("g3", 0, 1) })] } },
+    });
+    renderApp(
+      <>
+        <ContentPage />
+        <LocationProbe />
+      </>,
+      { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" },
+    );
+    const reader = await readerWith("g3");
+    const run = await waitFor(() => within(reader.querySelector("[data-segment-id='g3']") as HTMLElement).getByTestId("note-run"));
+    fireEvent.click(run);
+    await screen.findByTestId("note-popover");
+    fireEvent.click(await screen.findByTestId("note-comment-edit"));
+    fireEvent.change(screen.getByTestId("note-comment-input"), { target: { value: "回头再看" } });
+    // Only 陈明: the note's sentence leaves the view and the unsaved note stays open on its own.
+    fireEvent.click(screen.getByTestId("speaker-filter"));
+    const option = (await screen.findAllByTestId("speaker-filter-option")).find((item) => item.getAttribute("data-speaker-id") === "sp1") as HTMLElement;
+    fireEvent.click(within(option).getByRole("checkbox"));
+    await waitFor(() => expect(shownSentences(reader)).not.toContain("g3"));
+    const detached = await screen.findByTestId("note-popover-detached");
+    fireEvent.click(within(detached).getByTestId("note-locate-anchor"));
+    await waitFor(() => expect(shownSentences(reader)).toContain("g3"));
+    expect(addressSpeakers()).toEqual([]);
+    await waitFor(() => expect(reader.scrollTop).toBe(rowOf(reader, "g3") * 100));
+    expect(rowOf(reader, "g3")).toBeGreaterThan(0);
+  });
+});
+
+describe("TranscriptTab proofread hint about speakers", () => {
+  const PROVIDERS = { "GET /api/providers": { body: { items: [{ id: "p1", name: "P", protocol: "openai_compatible", baseURL: "https://x", credentialStatus: "configured", hasCredential: true, models: [], createdAt: 1 }] } } };
+
+  it("says beside the proofread button that unreviewed speakers are not read", async () => {
+    mockApi({ ...speakerRoutes(), ...PROVIDERS });
+    mountSpeakerReader();
+    await readerWith("g1");
+    const hint = await screen.findByTestId("proofread-speakers-not-read");
+    expect(hint.textContent).toBe("发言人未核对，本次不读取");
+    expect(hint.previousElementSibling?.getAttribute("data-testid")).toBe("proofread");
+  });
+
+  it("says nothing once the speakers are reviewed", async () => {
+    mockApi({ ...speakerRoutes({ revision: { speakersConfirmedAt: 5 } }), ...PROVIDERS });
+    mountSpeakerReader();
+    await readerWith("g1");
+    await screen.findByTestId("proofread");
+    await act(async () => undefined);
+    expect(screen.queryByTestId("proofread-speakers-not-read")).toBeNull();
+  });
+
+  it("says nothing for a text without speakers", async () => {
+    mockApi({ ...contentRoutes(), ...PROVIDERS });
+    mountSpeakerReader();
+    await readerWith("s1");
+    await screen.findByTestId("proofread");
+    await act(async () => undefined);
+    expect(screen.queryByTestId("proofread-speakers-not-read")).toBeNull();
+  });
+
+  it("says nothing while no model is configured, the button being disabled", async () => {
+    mockApi(speakerRoutes());
+    mountSpeakerReader();
+    await readerWith("g1");
+    await act(async () => undefined);
+    expect(screen.queryByTestId("proofread-speakers-not-read")).toBeNull();
   });
 });

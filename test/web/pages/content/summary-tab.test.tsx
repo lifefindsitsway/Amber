@@ -24,7 +24,8 @@ describe("ChapterSection", () => {
     const body = [segment("b1", 5, 60_000, 64_000, "再看重排序"), segment(CITED_SEGMENT_ID, 6, 64_000, 68_000, "最后总结")];
     mockApi({ ...contentRoutes(), "GET /api/transcript/revisions/r1/segments": { body: { revision: revision("r1"), items: [...opening, ...body] } } });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
-    const section = await screen.findByTestId("chapter-section");
+    // The first test in this file also pays for loading the content page; under a full parallel run that alone can pass the default second.
+    const section = await screen.findByTestId("chapter-section", {}, { timeout: 5_000 });
     const toggles = await waitFor(() => {
       const buttons = within(section).getAllByRole("button", { expanded: false });
       expect(buttons).toHaveLength(2);
@@ -332,9 +333,14 @@ describe("summary copy and context menu", () => {
   it("explains a summary selection without the citation badge and without a quote", async () => {
     setup();
     const body = await screen.findByTestId("summary-body");
-    const badge = await within(body).findByRole("button", { name: "1:15" });
-    const before = badge.previousSibling as Text;
-    const after = badge.nextSibling as Text;
+    // A known cited sentence wraps its badge in the citation card's anchor.
+    const badge = await waitFor(() => {
+      const found = within(body).getByRole("button", { name: "1:15" });
+      expect(found.parentElement?.tagName).toBe("SPAN");
+      return found;
+    });
+    const before = badge.parentElement?.previousSibling as Text;
+    const after = badge.parentElement?.nextSibling as Text;
     selectAcross(before, after);
     expect(window.getSelection()?.toString()).toContain("1:15");
     fireEvent.mouseUp(document);
@@ -620,3 +626,94 @@ function taskStream() {
     },
   };
 }
+
+describe("speakers around the summary", () => {
+  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
+  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true };
+  // Two named speakers, so the primary is read by speakers; the cited sentence is 李华's.
+  const SPOKEN = [segment("s1", 0, 0, 4_000, "今天讲检索。", { speakerId: "sp1" }), segment(CITED_SEGMENT_ID, 2, 75_000, 80_000, "再看重排序。", { speakerId: "sp2" })];
+
+  function routes(options: { confirmed?: boolean; speakerContext?: Record<string, unknown>; stale?: boolean; chapterContext?: Record<string, unknown>; configured?: boolean } = {}) {
+    const base = contentRoutes();
+    const summaries = (base["GET /api/contents/c1/summaries"] as { body: ContentSummariesDto }).body;
+    const [core, ...others] = summaries.templates as [ContentSummariesDto["templates"][number], ...ContentSummariesDto["templates"]];
+    const current = { ...core.current, ...(options.speakerContext === undefined ? {} : { speakerContext: options.speakerContext }), ...(options.stale === true ? { stale: true, staleReason: "transcript_changed" } : {}) };
+    const chapters = (base["GET /api/contents/c1/chapters"] as { body: { current: Record<string, unknown> } }).body;
+    const primary = revision("r1", options.confirmed === true ? { speakersConfirmedAt: 5 } : {});
+    return {
+      ...base,
+      ...(options.configured === false ? {} : { "GET /api/providers": PROVIDERS }),
+      "GET /api/contents/c1/speakers": { body: { items: [CHEN, LI] } },
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [primary] } },
+      "GET /api/transcript/revisions/r1/segments": { body: { revision: primary, items: SPOKEN } },
+      "GET /api/contents/c1/summaries": { body: { templates: [{ ...core, current, stale: options.stale === true }, ...others] } },
+      "GET /api/contents/c1/chapters": {
+        body: {
+          ...chapters,
+          current: {
+            ...chapters.current,
+            origin: { kind: "ai", transcriptRevisionId: "r1" },
+            ...(options.chapterContext === undefined ? {} : { speakerContext: options.chapterContext }),
+          },
+        },
+      },
+    };
+  }
+
+  it("shows the summary's speaker basis notice and the chapters' own", async () => {
+    mockApi(
+      routes({
+        confirmed: true,
+        speakerContext: { state: "attribution_changed", speakers: [{ id: "sp1", label: "陈明" }], changedSentences: 4 },
+        chapterContext: { state: "names_changed", speakers: [{ id: "sp2", label: "发言人 2" }], renamed: [{ id: "sp2", was: "发言人 2", now: "李华" }] },
+      }),
+    );
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const line = await screen.findByTestId("summary-speaker-basis", {}, { timeout: 5_000 });
+    expect(line.textContent).toBe("生成后有 4 句改了发言人，其中的人物观点可能不再准确");
+    expect(line.getAttribute("role")).toBe("note");
+    expect((await screen.findByTestId("chapters-speaker-basis")).textContent).toBe("生成时为发言人 2，现为李华");
+    // Reviewed: nothing to say beside the entries.
+    expect(screen.queryByTestId("summary-speakers-not-read")).toBeNull();
+  });
+
+  it("suggests regenerating with speakers for a summary made without them once the primary is reviewed", async () => {
+    mockApi(routes({ confirmed: true }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    expect((await screen.findByTestId("summary-speaker-basis", {}, { timeout: 5_000 })).textContent).toBe("重新生成可带上发言人");
+    expect((await screen.findByTestId("chapters-speaker-basis")).getAttribute("data-state")).toBe("can_include");
+  });
+
+  it("says nothing about speakers on a stale summary", async () => {
+    mockApi(routes({ confirmed: true, stale: true, speakerContext: { state: "evidence_removed", speakers: [], removedCitations: 1 } }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    expect(await screen.findByTestId("summary-stale", {}, { timeout: 5_000 })).toBeTruthy();
+    await screen.findByTestId("summary-body");
+    expect(screen.queryByTestId("summary-speaker-basis")).toBeNull();
+  });
+
+  it("tells beside the summary and chapter entries that unreviewed speakers are not read, without asking anything", async () => {
+    const { calls } = mockApi({ ...routes(), "POST /api/contents/c1/summaries": { status: 202, body: { taskId: "t9" } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    expect((await screen.findByTestId("summary-speakers-not-read", {}, { timeout: 5_000 })).textContent).toBe("发言人未核对，本次不读取");
+    expect((await screen.findByTestId("chapters-speakers-not-read")).textContent).toBe("发言人未核对，本次不读取");
+    expect(screen.queryByTestId("summary-speaker-basis")).toBeNull();
+    fireEvent.click(screen.getByTestId("summary-generate"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/contents/c1/summaries")).toBe(true));
+  });
+
+  it("shows the cited sentence's speaker on the citation's card, with 跳到这句 for the embedded Bilibili player", async () => {
+    mockApi(routes({ confirmed: true }));
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const body = await screen.findByTestId("summary-body", {}, { timeout: 5_000 });
+    await waitFor(() => {
+      // The badge is wrapped once the cited sentence is known, so it is looked up each time.
+      fireEvent.pointerEnter(within(body).getByRole("button", { name: "1:15" }));
+      expect(screen.getByTestId("citation-card-speaker").textContent).toBe("李华");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "跳到这句" }));
+    const frame = screen.getByTestId("player-bilibili");
+    await waitFor(() => expect(new URL(frame.getAttribute("src") ?? "").searchParams.get("t")).toBe("75"));
+  });
+});

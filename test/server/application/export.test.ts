@@ -43,6 +43,7 @@ function refusal(run: () => unknown): { class: string; userMessage: string } {
 }
 
 const dialogues = (ass: string): string[] => ass.split("\n").filter((line) => line.startsWith("Dialogue: "));
+const styles = (ass: string): string[] => ass.split("\n").filter((line) => line.startsWith("Style: "));
 
 describe("ExportService", () => {
   it("ASS of non-exact_words revisions has no {\\k}; the exact_words revision is timed by its real words", async () => {
@@ -560,6 +561,39 @@ describe("ExportService with speakers", () => {
       burned += piece;
     }
     expect(names(burned)).toEqual(["", "", "", "", "", ""]);
+  });
+
+  it("draws label lines in a styled ASS download from the names as they are now, keeping the Name field rule", async () => {
+    const { exports, fixture } = setupSpeakers({ names: { [A]: "张三", [B]: "很".repeat(20) } });
+    const style = { appearance: { ...defaultSubtitleAppearance(), speaker: "change" as const }, placement: defaultSubtitlePlacement() };
+    const rows = (ass: string) => dialogues(ass).map((line) => line.slice(line.indexOf("}") + 1).split("\\N").map((row) => row.replace(/^\{\\r[A-Za-z]+\}/u, "")));
+    const ass = await exportText(exports, fixture, subtitle(fixture, "ass", { style }));
+    const long = `${"很".repeat(16)}…`;
+    // The pause before sentence 3 is longer than the repeat time, so its speaker is named again.
+    expect(rows(ass)).toEqual([["张三", "Hi world."], ["你好世界"], [long, "第二段｛＼b1｝开始"], [long, "九十九分"], ["一百分"], ["张三", "六小时"]]);
+    expect(styles(ass).map((line) => line.split(",")[0])).toContain("Style: Speaker");
+    const named = await exportText(exports, fixture, subtitle(fixture, "ass", { style, includeSpeakers: true }));
+    // The Name field keeps whole names: only the drawn label is cut.
+    expect(dialogues(named).map((line) => line.split(",")[4])).toEqual(["张三", "张三", "很".repeat(20), "很".repeat(20), "", "张三"]);
+  });
+
+  it("draws a video export's label lines from the labels frozen with it, never the names as they are now", async () => {
+    const { exports, fixture } = setupSpeakers();
+    const style = { appearance: { ...defaultSubtitleAppearance(), speaker: "every" as const }, placement: defaultSubtitlePlacement() };
+    let burned = "";
+    for await (const piece of exports.styledAssOf(LOCAL.userId, fixture.contentId, {
+      mode: "original",
+      revisionId: fixture.corrected.revision.id,
+      style,
+      playRes: { width: 1920, height: 1080 },
+      textOnly: false,
+      speakerLabels: { [A]: "旧名" },
+    })) {
+      burned += piece;
+    }
+    expect(dialogues(burned).map((line) => line.split(",")[3])).toEqual(["Speaker", "Speaker", "Default", "Default", "Default", "Speaker"]);
+    expect(burned).toContain("}旧名\\N{\\rDefault}Hi world.");
+    expect(burned).not.toContain("张三");
   });
 
   it("leaves Name empty for a styled slice that mixes speakers", async () => {

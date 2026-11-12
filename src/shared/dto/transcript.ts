@@ -94,10 +94,52 @@ export const draftCommitRequestSchema = z
      * never taken as confirmed silently.
      */
     speakerReview: z.enum(SPEAKER_REVIEW_RESOLUTIONS).exactOptional(),
+    /**
+     * Keep the base revision's "speakers reviewed" mark on the new revision although some
+     * sentences changed hands. It only has a say when the base is reviewed and the commit
+     * changes who said something: an unchanged attribution inherits the mark by itself, and
+     * a base that is not reviewed never yields a reviewed revision (`true` is refused then).
+     */
+    speakersConfirmed: z.boolean().exactOptional(),
   })
   .strict();
 export type DraftCommitRequest = z.infer<typeof draftCommitRequestSchema>;
 
+/**
+ * `GET /api/transcript/revisions/:rid/speaker-review`: what the review panel shows about one
+ * revision's speakers. Every number has a stored source; a revision keeps no per-sentence
+ * "unsure" state, so sentences still waiting in the draft are reported separately.
+ */
+export const speakerReviewDtoSchema = z.object({
+  revisionId: idSchema,
+  confirmedAt: msSchema.exactOptional(),
+  /** Digest of the speakers this revision names (id, ordinal, name, whether the name is confirmed); sent back when confirming. */
+  rosterDigest: z.string().min(1),
+  /** In order of first appearance: sentences and the summed duration of the sentences given to each speaker. */
+  speakers: z.array(z.object({ id: idSchema, sentences: z.number().int().nonnegative(), assignedMs: msSchema })),
+  unassigned: z.number().int().nonnegative(),
+  /** Named speakers of this revision whose name is not confirmed. */
+  pendingNames: z.number().int().nonnegative(),
+  /** Sentences committed with their suggested speaker accepted in bulk. */
+  acceptedSuggestions: z.number().int().positive().exactOptional(),
+  /** Sentences whose speaker differs from the parent revision's. */
+  changedFromParent: z.number().int().positive().exactOptional(),
+  /** Sentences of the Content's transcript draft still marked for review. */
+  draftNeedsReview: z.number().int().positive().exactOptional(),
+});
+export type SpeakerReviewDto = z.infer<typeof speakerReviewDtoSchema>;
+
+/**
+ * `PUT /api/transcript/revisions/:rid/speakers-confirmed`: marks the revision's speakers as
+ * reviewed, or takes the mark back. Confirming names the roster the client looked at; when
+ * the revision's speakers differ by now the request is refused with
+ * `conflict.speakers_changed`, so a stale window never confirms names it has not shown.
+ */
+export const speakersConfirmedRequestSchema = z
+  .object({ confirmed: z.boolean(), expectedRosterDigest: z.string().min(1).exactOptional() })
+  .strict()
+  .refine((body) => !body.confirmed || body.expectedRosterDigest !== undefined, { message: "expectedRosterDigest is required to confirm" });
+export type SpeakersConfirmedRequest = z.infer<typeof speakersConfirmedRequestSchema>;
 export const SEGMENT_MAP_METHODS = ["lineage", "overlap", "nearest", "none"] as const;
 export type SegmentMapMethod = (typeof SEGMENT_MAP_METHODS)[number];
 

@@ -72,3 +72,13 @@ describe("revisionBasis", () => {
     expect(revisionBasis(second, [second], t, i18n)).toBeUndefined();
   });
 });
+
+describe("revisionLabel of a comparison transcription", () => {
+  it("names it 对比稿 with its model, and an ordinary recognition as before", () => {
+    const t = i18n.t.bind(i18n);
+    const comparison = revision("c1", { kind: "asr", generation: { kind: "asr", modelId: "scribe_v2", purpose: "comparison" }, createdAt: at(12, 5) });
+    const ordinary = revision("a1", { kind: "asr", generation: { kind: "asr", modelId: "scribe_v2" }, createdAt: at(12, 5) });
+    expect(revisionLabel(comparison, undefined, t)).toBe("对比稿 · scribe_v2 · 10-04 12:05");
+    expect(revisionLabel(ordinary, undefined, t)).toBe("ASR 原稿 · scribe_v2 · 10-04 12:05");
+  });
+});

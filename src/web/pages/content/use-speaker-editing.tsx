@@ -239,11 +239,14 @@ export function useSpeakerEditing(args: {
   const used = useMemo(() => new Set(usedSignature === "" ? [] : usedSignature.split("\n")), [usedSignature]);
   const speakerMap = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers]);
   const drafted = useMemo(() => speakers.filter((speaker) => used.has(speaker.id)), [speakers, used]);
-  const rest = useMemo(() => speakers.filter((speaker) => !used.has(speaker.id)), [speakers, used]);
+  // Speakers only comparison transcriptions name belong to the comparison view: no picker or
+  // roster here offers them, unless the draft itself already names one.
+  const offered = useMemo(() => speakers.filter((speaker) => speaker.comparisonOnly !== true || used.has(speaker.id)), [speakers, used]);
+  const rest = useMemo(() => offered.filter((speaker) => !used.has(speaker.id)), [offered, used]);
   // The numbered speakers are those somebody uses (the draft or any version), so numbers stay
   // put when a speaker's last sentence moves; the unused ones are one step further away.
-  const current = useMemo(() => speakers.filter((speaker) => speaker.used || used.has(speaker.id)), [speakers, used]);
-  const others = useMemo(() => speakers.filter((speaker) => !speaker.used && !used.has(speaker.id)), [speakers, used]);
+  const current = useMemo(() => offered.filter((speaker) => speaker.used || used.has(speaker.id)), [offered, used]);
+  const others = useMemo(() => offered.filter((speaker) => !speaker.used && !used.has(speaker.id)), [offered, used]);
 
   const actions = useMemo<SpeakerEditingActions>(() => {
     const now = () => latest.current;

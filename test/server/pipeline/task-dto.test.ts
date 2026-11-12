@@ -25,4 +25,12 @@ describe("toTaskDto", () => {
     expect(toTaskDto({ ...base, kind: "reproofread" })).not.toHaveProperty("templateId");
     expect(toTaskDto({ ...base, kind: "translate", requestJson: JSON.stringify({ templateRef: { id: "x", version: 1 } }) })).not.toHaveProperty("templateId");
   });
+
+  it("marks a re-transcription made only to compare speakers with, from its frozen request", () => {
+    const base: Task = { ...task("failed"), kind: "retranscribe", requestJson: JSON.stringify({ requestSchemaVersion: 1, kind: "retranscribe", comparison: true }) };
+    expect(toTaskDto(base).comparison).toBe(true);
+    expect(toTaskDto({ ...base, requestJson: JSON.stringify({ requestSchemaVersion: 1, kind: "retranscribe" }) })).not.toHaveProperty("comparison");
+    // Only a re-transcription can be one.
+    expect(toTaskDto({ ...base, kind: "reproofread" })).not.toHaveProperty("comparison");
+  });
 });

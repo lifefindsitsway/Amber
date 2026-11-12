@@ -57,10 +57,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release download runtime-assets-2026.10.21 --repo lifefindsitsway/amber-runtime-assets --dir runtime-assets
+          gh release download runtime-assets-2026.11.11 --repo lifefindsitsway/amber-runtime-assets --dir runtime-assets
           --pattern SHA256SUMS --pattern ffmpeg-n9.0.2-3-ga5923073bf-linux64-gpl-9.0.tar.xz
           --pattern yt-dlp_linux --pattern deno-x86_64-unknown-linux-gnu.zip
           --pattern 18_NotoSansSC.zip --pattern OFL.txt
+          --pattern NotoSerifSC-Regular.otf --pattern LXGWWenKaiLite-Regular.ttf --pattern LXGWWenKaiLite-OFL.txt
       - run: pnpm setup:tools --assets runtime-assets
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"

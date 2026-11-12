@@ -136,15 +136,26 @@ describe("SpeakerEditForm", () => {
     expect((screen.getByTestId("speaker-edit-save") as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("keeps 「保存」 off until something changed, then sends only what changed, normalized", async () => {
+  it("offers 「保存」 for a name that is not confirmed yet and confirms it as it is", async () => {
     const calls = await openForm();
+    const save = screen.getByTestId("speaker-edit-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(calls.some(patched)).toBe(true));
+    expect(calls.find(patched)?.body).toEqual({ name: "陈明", nameConfirmed: true });
+  });
+
+  it("keeps 「保存」 off until something changed, then sends only what changed, normalized, a name as confirmed", async () => {
+    const calls = await openForm({ nameConfirmed: true });
+    // Saving a name is what lets AI use it, and the form says so.
+    expect(screen.getByTestId("speaker-name-confirm-hint").textContent).toBe("保存后 AI 将以此姓名称呼该发言人");
     const save = screen.getByTestId("speaker-edit-save") as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     fireEvent.change(screen.getByTestId("speaker-name-input"), { target: { value: "  新名字‮  " } });
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
     await waitFor(() => expect(calls.some(patched)).toBe(true));
-    expect(calls.find(patched)?.body).toEqual({ name: "新名字" });
+    expect(calls.find(patched)?.body).toEqual({ name: "新名字", nameConfirmed: true });
   });
 
   it("sends null for a blank name, which makes the speaker unnamed", async () => {
@@ -156,7 +167,7 @@ describe("SpeakerEditForm", () => {
   });
 
   it("offers the whole palette as named radio swatches and sends the chosen colour", async () => {
-    const calls = await openForm();
+    const calls = await openForm({ nameConfirmed: true });
     const group = screen.getByRole("radiogroup", { name: "颜色" });
     const swatches = within(group).getAllByRole("radio");
     expect(swatches).toHaveLength(SPEAKER_PALETTE_SIZE);
@@ -170,7 +181,7 @@ describe("SpeakerEditForm", () => {
   });
 
   it("removes the stored photo", async () => {
-    const calls = await openForm({ avatarVersion: 3 }, { "GET /api/contents/c1/speakers/s1/avatar": { status: 404, json: {} } });
+    const calls = await openForm({ avatarVersion: 3, nameConfirmed: true }, { "GET /api/contents/c1/speakers/s1/avatar": { status: 404, json: {} } });
     fireEvent.click(screen.getByTestId("speaker-photo-remove"));
     fireEvent.click(screen.getByTestId("speaker-edit-save"));
     await waitFor(() => expect(calls.some(patched)).toBe(true));
@@ -191,7 +202,7 @@ describe("SpeakerEditForm", () => {
     expect(option.textContent).toContain("上一期访谈");
     fireEvent.click(option);
     await waitFor(() => expect(calls.some(patched)).toBe(true));
-    expect(calls.find(patched)?.body).toEqual({ copyFrom: { contentId: "c9", speakerId: "z1" } });
+    expect(calls.find(patched)?.body).toEqual({ copyFrom: { contentId: "c9", speakerId: "z1" }, nameConfirmed: true });
     expect(await screen.findByTestId("speaker-card")).toBeTruthy();
   });
 
@@ -236,7 +247,7 @@ describe("photo choosing", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function (callback: BlobCallback, type?: string) {
       callback(new Blob([new Uint8Array([1, 2, 3, 4])], { type: type ?? "" }));
     } as never);
-    renderApp(card());
+    renderApp(card({ nameConfirmed: true }));
     fireEvent.click(screen.getByTestId("speaker-trigger"));
     fireEvent.click(await screen.findByTestId("speaker-card-edit"));
     const input = (await screen.findByTestId("speaker-photo-input")) as HTMLInputElement;

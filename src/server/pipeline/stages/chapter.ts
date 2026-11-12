@@ -11,13 +11,15 @@ import type { LlmRequest } from "../../domain/llm.ts";
 import type { ModelRef } from "../../domain/model-ref.ts";
 import { chapterWindowNote, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
 import type { PromptRef } from "../../domain/model-ref.ts";
+import { framingForRead, speakerContextDigest, type SpeakerContextSnapshot, type SpeakerFraming } from "../../domain/speaker-context.ts";
 import { processContentRequestSchema, regenerateChaptersRequestSchema } from "../../domain/task-request.ts";
 import { estimateTokens } from "../../domain/token-estimate.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../domain/transcript.ts";
 import type { Repository } from "../../ports/repository.ts";
 import { assertBaseRevisionExists, stageUnitFailure, type StageExecutionContext, type StageExecutor, type StageOutcome, type UnitIdentity } from "../executor.ts";
 import { taskContent } from "./platform-access.ts";
-import { planSentenceWindows, type SentenceWindow } from "./windows.ts";
+import { assertCarries } from "./rollup-runner.ts";
+import { assertWindowFits, planSentenceWindows, type SentenceWindow } from "./windows.ts";
 
 export interface ChapterStageDeps {
   repository: Repository;
@@ -64,6 +66,11 @@ const ALIAS = /^s([1-9][0-9]*)$/;
  * into one `ChapterRevision(origin = ai)`: every chapter starts at a sentence and its times
  * are projections of sentence timing. The new revision becomes current; usage of the calls
  * that produced it is attributed to it in the same transaction.
+ *
+ * A `regenerate_chapters` request with a frozen speaker context sends each window with its
+ * speakers: the `speaker.rules` fragment opens `{{transcript_with_aliases}}` and header lines
+ * mark the window's first speaker and every change; windows are planned with those lines
+ * priced in, and each is checked again as rendered before anything is sent.
  */
 export class ChapterStageExecutor implements StageExecutor {
   private readonly deps: ChapterStageDeps;
@@ -90,6 +97,7 @@ export class ChapterStageExecutor implements StageExecutor {
     if (segments.length === 0) {
       throw amberError("internal", "the base transcript has no sentences");
     }
+    const framing = framingForRead(base.speakerContext, segments);
     const modelRef = context.modelRef;
     if (modelRef === undefined) {
       throw amberError("llm_unconfigured", "no model for the chapter stage");
@@ -98,12 +106,29 @@ export class ChapterStageExecutor implements StageExecutor {
     const structured = description.capability.flags.structuredOutput === "supported";
     const prompt = context.prompt("chapter.ai");
     const template = renderPrompt(prompt.text, { output_language: outputLanguageName(outputLanguage) });
-    const windows = planWindows(segments, template, structured, description.capability.limits, modelRef);
+    const limits = description.capability.limits;
+    const windows = planWindows(segments, template, structured, limits, modelRef, framing);
+    const prompts = windows.map((window, index) => windowPrompt(template, window, index, windows.length, framing));
+    if (framing !== undefined) {
+      const schemaTokens = structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0;
+      prompts.forEach((rendered) => assertWindowFits(rendered, schemaTokens, limits));
+    }
 
     let finished = 0;
     const settled = await Promise.allSettled(
       windows.map(async (window, index) => {
-        const payload = await this.runWindow(context, { modelRef, promptRef: prompt.ref, revision, template, structured, outputLanguage, window, index, count: windows.length });
+        const payload = await this.runWindow(context, {
+          modelRef,
+          promptRef: prompt.ref,
+          revision,
+          prompt: prompts[index] as string,
+          structured,
+          outputLanguage,
+          window,
+          index,
+          count: windows.length,
+          framing,
+        });
         finished += 1;
         context.reportProgress(finished / windows.length);
         return payload;
@@ -130,8 +155,9 @@ export class ChapterStageExecutor implements StageExecutor {
           chapters,
           modelRef: description.snapshot,
           promptRef: prompt.ref,
-          promptRefs: [prompt.ref],
+          promptRefs: framing === undefined ? [prompt.ref] : [prompt.ref, framing.rules.ref],
           promptSnapshot: template,
+          ...(framing === undefined ? {} : { speakerContext: framing.snapshot }),
           quality: "normal",
           createdAt,
         });
@@ -146,14 +172,19 @@ export class ChapterStageExecutor implements StageExecutor {
    * at run time and the request's language; `regenerate_chapters` takes what was frozen at
    * submission. `undefined` when platform chapters make the stage a no-op.
    */
-  private baseOf(context: StageExecutionContext, content: Content): { revision: TranscriptRevision; outputLanguage: string } | undefined {
+  private baseOf(
+    context: StageExecutionContext,
+    content: Content,
+  ): { revision: TranscriptRevision; outputLanguage: string; speakerContext?: SpeakerContextSnapshot } | undefined {
     const owner = content.userId;
     let revisionId: string | undefined;
     let outputLanguage: string;
+    let speakerContext: SpeakerContextSnapshot | undefined;
     if (context.task.kind === "regenerate_chapters") {
       const request = regenerateChaptersRequestSchema.parse(context.request);
       revisionId = request.baseRevisionId;
       outputLanguage = request.outputLanguage;
+      speakerContext = request.speakerContext;
     } else {
       const request = processContentRequestSchema.parse(context.request);
       if (this.deps.repository.withTransaction((scope) => scope.chapters.hasPlatformChapters(owner, content.id))) {
@@ -170,7 +201,7 @@ export class ChapterStageExecutor implements StageExecutor {
     if (revision === undefined || revision.contentId !== content.id) {
       throw amberError("internal", "the base transcript revision is gone");
     }
-    return { revision, outputLanguage };
+    return { revision, outputLanguage, ...(speakerContext === undefined ? {} : { speakerContext }) };
   }
 
   private async runWindow(
@@ -179,19 +210,16 @@ export class ChapterStageExecutor implements StageExecutor {
       modelRef: ModelRef;
       promptRef: PromptRef;
       revision: TranscriptRevision;
-      template: string;
+      prompt: string;
       structured: boolean;
       outputLanguage: string;
       window: Window;
       index: number;
       count: number;
+      framing: SpeakerFraming | undefined;
     },
   ): Promise<WindowPayload> {
-    const { modelRef, promptRef, revision, template, structured, outputLanguage, window, index, count } = input;
-    const prompt = renderPrompt(template, {
-      window_note: chapterWindowNote(index + 1, count),
-      transcript_with_aliases: window.lines.join("\n"),
-    });
+    const { modelRef, promptRef, revision, prompt, structured, outputLanguage, window, index, count, framing } = input;
     const request: LlmRequest = {
       modelRef,
       system: "",
@@ -208,6 +236,7 @@ export class ChapterStageExecutor implements StageExecutor {
         modelRef,
         outputLanguage,
         structured,
+        ...(framing === undefined ? {} : { speakerContext: speakerContextDigest(framing.snapshot) }),
       }),
     );
     const value = await context.runUnit({
@@ -215,6 +244,7 @@ export class ChapterStageExecutor implements StageExecutor {
       inputDigest,
       billing: "llm",
       run: async (_signal: AbortSignal, unit: UnitIdentity): Promise<WindowPayload> => {
+        assertCarries(prompt, framing?.rules, "{{transcript_with_aliases}}");
         const completion = await context.llm.complete(request, { feature: "chapter", workUnitId: unit.id });
         return { chapters: parseWindow(completion.text, window), invocationId: completion.invocationId };
       },
@@ -239,11 +269,21 @@ function planWindows(
   structured: boolean,
   limits: { contextWindowTokens?: number; maxOutputTokens?: number },
   modelRef: ModelRef,
+  framing: SpeakerFraming | undefined,
 ): Window[] {
+  const emptyTranscript = framing === undefined ? "" : framing.slotValue("");
   const fixedTokens =
-    estimateTokens(renderPrompt(template, { window_note: chapterWindowNote(segments.length, segments.length), transcript_with_aliases: "" })) +
+    estimateTokens(renderPrompt(template, { window_note: chapterWindowNote(segments.length, segments.length), transcript_with_aliases: emptyTranscript })) +
     (structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0);
-  return planSentenceWindows(segments, { fixedTokens, limits, modelRef });
+  return planSentenceWindows(segments, { fixedTokens, limits, modelRef, ...(framing === undefined ? {} : { speakers: framing }) });
+}
+
+/** Window `index` of `count` as sent: with speakers, the rules fragment and header lines carry in its transcript. */
+function windowPrompt(template: string, window: Window, index: number, count: number, framing: SpeakerFraming | undefined): string {
+  return renderPrompt(template, {
+    window_note: chapterWindowNote(index + 1, count),
+    transcript_with_aliases: framing === undefined ? window.lines.join("\n") : framing.slotValue(framing.block(window.lines, window.offset).join("\n")),
+  });
 }
 
 /**

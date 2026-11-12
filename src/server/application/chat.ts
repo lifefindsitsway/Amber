@@ -1,5 +1,5 @@
 import { monotonicFactory } from "ulid";
-import { CHAT_RETRIEVAL_HITS_MAX, CHAT_SEARCH_PLAN_TURNS, CHAT_THREAD_TITLE_MAX_CHARS } from "../../shared/defaults.ts";
+import { CHAT_SEARCH_PLAN_TURNS, CHAT_THREAD_TITLE_MAX_CHARS } from "../../shared/defaults.ts";
 import type {
   ChatContextDto,
   ChatDto,
@@ -17,7 +17,20 @@ import type {
 } from "../../shared/dto/chat.ts";
 import type { WebSearchMode } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
-import { chatThreadTitle, effectiveAnswer, groupTurns, lastMessageOf, type ChatMessage, type ChatThread } from "../domain/chat.ts";
+import type { SpeakerContextState } from "../../shared/dto/speaker-context.ts";
+import {
+  chatThreadTitle,
+  effectiveAnswer,
+  groupTurns,
+  lastMessageOf,
+  type ChatCompaction,
+  type ChatContextUsed,
+  type ChatMessage,
+  type ChatSpeakerBasis,
+  type ChatThread,
+} from "../domain/chat.ts";
+import { mergedSpeakerBases } from "../domain/chat-speakers.ts";
+import type { SpeakerContextSnapshot } from "../domain/speaker-context.ts";
 import {
   beijingDate,
   chooseChatMode,
@@ -53,6 +66,18 @@ import { jsonRequestDigest } from "./idempotency.ts";
 import type { LlmGateway } from "./llm-gateway.ts";
 import { defaultSettings, defaultSummaryTemplateIdOf, outputLanguageFor } from "./settings.ts";
 import type { ChatWebSearcher } from "./web-search.ts";
+import {
+  answerBasis,
+  basisSpeakerState,
+  chatCandidates,
+  chatSpeakers,
+  chatSummary,
+  messageSpeakerContext,
+  type ChatAnswerBasis,
+  type ChatCandidates,
+  type ChatSpeakers,
+} from "./chat-speakers.ts";
+import { SpeakerLineageReader } from "./speaker-lineage.ts";
 
 export const CHAT_ROUTE = "POST /api/contents/:id/chat/messages";
 export const CHAT_RETRY_ROUTE = "POST /api/contents/:id/chat/messages/:mid/retry";
@@ -63,6 +88,8 @@ export interface ChatServiceOptions {
   logger: Logger;
   /** Absent: no search service at all, so `auto` is skipped and `force` refused. */
   webSearch?: ChatWebSearcher;
+  /** Compares the speakers older answers and summaries were given with now; one is made when absent. */
+  speakerLineage?: SpeakerLineageReader;
   newId?: () => string;
   now?: () => number;
 }
@@ -85,11 +112,17 @@ interface ThreadState {
   primaryRevisionId: string | undefined;
   input: Omit<ChatPlanInput, "contextWindowTokens" | "question" | "quote" | "positionMs">;
   thread: ChatThread | undefined;
-  /** Uncompacted turns with the id of their last message. */
-  turns: Array<ChatTurnText & { lastMessageId: string }>;
+  /** Uncompacted turns with the id of their last message and, when their answer read speakers, its basis. */
+  turns: HistoryTurn[];
   /** Every earlier question of the thread, oldest first, compacted or not. */
   questions: string[];
   startMs: Map<string, number>;
+  /** The speakers this answer reads, taken with the sentences; absent: none. */
+  speakers: ChatSpeakers | undefined;
+  /** The thread's current compaction, whose speaker bases a new compaction carries on. */
+  compaction: ChatCompaction | undefined;
+  /** The default summary was left out because its speakers no longer hold. */
+  summaryOmitted: boolean;
 }
 
 /** What `answer` needs of a request that passed every check and stored its messages. */
@@ -97,6 +130,8 @@ interface PreparedAnswer {
   state: ThreadState;
   /** The planning input without web material. */
   input: ChatPlanInput;
+  /** Every index query of the answer, made with the transcript; planning only chooses among them. */
+  candidates: ChatCandidates;
   thread: ChatThread;
   userMessageId: string;
   assistantMessageId: string;
@@ -123,11 +158,13 @@ export class ChatService {
   private readonly now: () => number;
   /** Streaming answers per owner, so an account can be quiesced before deletion. */
   private readonly inflight = new Map<string, Set<InflightAnswer>>();
+  private readonly lineage: SpeakerLineageReader;
 
   constructor(options: ChatServiceOptions) {
     this.options = options;
     this.newId = options.newId ?? monotonicFactory();
     this.now = options.now ?? Date.now;
+    this.lineage = options.speakerLineage ?? new SpeakerLineageReader();
   }
 
   /** `GET chat`: one thread (the newest unless `threadId` names another) with every message and attempt. */
@@ -137,9 +174,10 @@ export class ChatService {
       const content = this.requireContent(scope, owner, contentId);
       const thread = query.threadId === undefined ? scope.chat.latestThread(owner, contentId) : this.requireThread(scope, owner, contentId, query.threadId);
       const messages = thread === undefined ? [] : scope.chat.listMessages(owner, thread.id);
+      const shown = this.messagesDto(scope, owner, content, messages);
       return {
         thread: thread === undefined ? null : threadDto(thread),
-        messages: messages.map(messageDto),
+        messages: shown,
         context: this.context(scope, owner, content, thread, query),
       };
     });
@@ -278,7 +316,8 @@ export class ChatService {
       const now = this.now();
       const state = this.state(scope, owner, content, existing);
       const quote = body.quote === undefined ? undefined : this.quoteText(scope, owner, contentId, body.quote);
-      const input = planInput(state, description.snapshot, contextWindowTokens, body.text, quote, body.positionMs, now);
+      const candidates = candidatesOf(scope, owner, state, quote, body.text);
+      const input = planInput(state, description.snapshot, contextWindowTokens, body.text, quote, body.positionMs, now, candidates);
       // Only the checks that do not depend on web material; the real plan follows the search.
       planChatRequest(input);
 
@@ -295,7 +334,7 @@ export class ChatService {
         citations: body.quote === undefined ? [] : [{ transcriptRevisionId: body.quote.transcriptRevisionId, segmentId: body.quote.segmentId }],
         createdAt: now,
       };
-      const assistantMessage = this.newAttempt(thread.id, description.snapshot, state.primaryRevisionId, now);
+      const assistantMessage = this.newAttempt(thread.id, description.snapshot, state, now);
       scope.chat.insertMessage(owner, userMessage);
       scope.chat.insertMessage(owner, assistantMessage);
       this.remember(scope, owner, body.modelRef, body.webSearch, now);
@@ -303,6 +342,7 @@ export class ChatService {
       return {
         state,
         input,
+        candidates,
         thread,
         userMessageId: userMessage.id,
         assistantMessageId: assistantMessage.id,
@@ -359,11 +399,12 @@ export class ChatService {
       const state = this.state(scope, owner, content, thread, turn.user.id);
       const quoted = turn.user.citations[0];
       const quote = quoted === undefined ? undefined : this.storedQuote(scope, owner, contentId, quoted);
-      const input = planInput(state, description.snapshot, contextWindowTokens, turn.user.text, quote, body.positionMs, now);
+      const candidates = candidatesOf(scope, owner, state, quote, turn.user.text);
+      const input = planInput(state, description.snapshot, contextWindowTokens, turn.user.text, quote, body.positionMs, now, candidates);
       planChatRequest(input);
 
       const stale = turn.attempts.filter((attempt) => attempt.id !== replaced.id && (attempt.status === "failed" || attempt.status === "interrupted")).map((attempt) => attempt.id);
-      const attempt: ChatMessage = { ...this.newAttempt(thread.id, description.snapshot, state.primaryRevisionId, now), replacesMessageId: replaced.id };
+      const attempt: ChatMessage = { ...this.newAttempt(thread.id, description.snapshot, state, now), replacesMessageId: replaced.id };
       removeMessages(scope, owner, thread.id, stale);
       scope.chat.insertMessage(owner, attempt);
       // A replay of the key that made a removed attempt now shows the attempt that took its place.
@@ -373,6 +414,7 @@ export class ChatService {
       return {
         state,
         input,
+        candidates,
         thread,
         userMessageId: turn.user.id,
         assistantMessageId: attempt.id,
@@ -453,7 +495,8 @@ export class ChatService {
       if (message === undefined) {
         throw amberError("not_found", "the replayed answer was deleted", { code: "not_found.chat_answer_deleted" });
       }
-      return messageDto(message);
+      const content = this.requireContent(scope, owner, contentId);
+      return this.messagesDto(scope, owner, content, [message])[0] as ChatMessageDto;
     });
   }
 
@@ -485,7 +528,9 @@ export class ChatService {
     return { thread, turn, replaced };
   }
 
-  private newAttempt(threadId: string, snapshot: ModelRefSnapshot, primaryRevisionId: string | undefined, now: number): ChatMessage {
+  /** A new answer attempt; it keeps the speakers it reads from the start, so a failed or interrupted attempt keeps them too. */
+  private newAttempt(threadId: string, snapshot: ModelRefSnapshot, state: ThreadState, now: number): ChatMessage {
+    const speakerContext: SpeakerContextSnapshot | undefined = state.speakers?.snapshot;
     return {
       id: this.newId(),
       threadId,
@@ -493,7 +538,8 @@ export class ChatService {
       text: "",
       status: "streaming",
       modelRef: snapshot,
-      ...(primaryRevisionId === undefined ? {} : { contextTranscriptRevisionId: primaryRevisionId }),
+      ...(state.primaryRevisionId === undefined ? {} : { contextTranscriptRevisionId: state.primaryRevisionId }),
+      ...(speakerContext === undefined ? {} : { speakerContext: structuredClone(speakerContext) }),
       citations: [],
       createdAt: now,
     };
@@ -575,9 +621,19 @@ export class ChatService {
       webSearch = searched?.record;
       // Planned again with the web material in, which may change the mode, hits and budget.
       const input: ChatPlanInput = searched?.web === undefined ? prepared.input : { ...prepared.input, web: searched.web };
-      let plan = planChatRequest(input, this.hitsFor(owner, state, input));
+      const hits = prepared.candidates.hits;
+      let plan = planChatRequest(input, hits);
       if (plan.overBudget) {
-        plan = (await this.compact(owner, modelRef, snapshot, { state, input, thread }, signal)) ?? plan;
+        plan = (await this.compact(owner, modelRef, snapshot, { state, input, thread, hits }, signal)) ?? plan;
+      }
+      // Only now is it known what the answer actually reads: web material may have pushed
+      // the full text into retrieval, and retrieval may have taken a selection of someone's
+      // speech. The answer keeps it, so a reload shows the same; an answer that reads no
+      // speakers and lost no summary sends nothing, exactly as before speakers existed.
+      const used = contextUsed(state, plan);
+      if (used !== undefined) {
+        this.options.repository.withTransaction((scope) => scope.chat.recordContextUsed(owner, assistantMessageId, used));
+        yield { type: "context", data: { ...used } };
       }
       assembler = new ChatStreamAssembler(plan.table, (segmentId) => state.startMs.get(segmentId) ?? 0, input.web?.sources ?? []);
       const stream = this.options.llm.stream(
@@ -713,10 +769,10 @@ export class ChatService {
     owner: string,
     modelRef: ModelRef,
     snapshot: ModelRefSnapshot,
-    prepared: { state: ThreadState; input: ChatPlanInput; thread: ChatThread },
+    prepared: { state: ThreadState; input: ChatPlanInput; thread: ChatThread; hits: readonly string[] },
     signal: AbortSignal,
   ): Promise<ChatRequestPlan | undefined> {
-    const { state, input, thread } = prepared;
+    const { state, input, thread, hits } = prepared;
     const older = turnsToCompact(state.turns);
     const last = older.at(-1);
     if (last === undefined) {
@@ -738,6 +794,19 @@ export class ChatService {
         { signal },
       );
       const body = finalizeCitations(completion.text.trim(), table).body;
+      // What the new compaction was built from, kept with it: the answers it absorbs may be
+      // deleted later, and whether its text needs a speaker notice must not change then.
+      // A failed answer left no text in it, so its speakers do not count.
+      const absorbed = older.filter((turn) => turn.answer !== "");
+      const speakerBases = mergedSpeakerBases(
+        state.compaction?.speakerBases,
+        absorbed.flatMap((turn) => (turn.speakerBasis === undefined ? [] : [turn.speakerBasis])),
+      );
+      // Judged already with the turns; merging bases changes no notice (see mergedSpeakerBases).
+      const speakerStates = [
+        ...(input.compactionSpeakerStates ?? []),
+        ...absorbed.flatMap((turn) => (turn.speakerState === undefined ? [] : [turn.speakerState])),
+      ];
       this.options.repository.withTransaction((scope) => {
         const id = this.newId();
         scope.chat.insertCompaction(owner, {
@@ -748,12 +817,13 @@ export class ChatService {
           modelRef: snapshot,
           promptRef: { ...CHAT_COMPACTION_PROMPT.ref },
           promptSnapshot: prompt,
+          ...(speakerBases.length === 0 ? {} : { speakerBases }),
           createdAt: this.now(),
         });
         scope.tokenUsage.attach(owner, [completion.invocationId], id);
       });
       const remaining = state.turns.slice(older.length);
-      return planChatRequest({ ...input, compaction: body, turns: remaining }, this.hitsFor(owner, state, input));
+      return planChatRequest({ ...input, compaction: body, ...(speakerStates.length === 0 ? {} : { compactionSpeakerStates: speakerStates }), turns: remaining }, hits);
     } catch (thrown) {
       if (signal.aborted) {
         throw thrown;
@@ -761,15 +831,6 @@ export class ChatService {
       this.options.logger.warn("chat_compaction_failed", { code: toAppError(thrown).code });
       return undefined;
     }
-  }
-
-  private hitsFor(owner: string, state: ThreadState, input: ChatPlanInput): string[] {
-    if (chooseChatMode(input) !== "retrieval" || state.primaryRevisionId === undefined) {
-      return [];
-    }
-    const question = [input.quote?.text ?? "", input.question].join(" ").trim();
-    const revisionId = state.primaryRevisionId;
-    return this.options.repository.withTransaction((scope) => scope.search.matchSegments(owner, revisionId, question, CHAT_RETRIEVAL_HITS_MAX));
   }
 
   /** `context` of `GET chat`: the chosen model's mode and estimate for an empty question on this thread. */
@@ -790,12 +851,13 @@ export class ChatService {
     }
     const state = this.state(scope, owner, content, thread);
     const snapshot: ModelRefSnapshot = { ...modelRef, providerNameSnapshot: profile.name, modelDisplaySnapshot: modelRef.modelId, protocolSnapshot: profile.protocol };
-    const input = planInput(state, snapshot, contextWindowTokens, "", undefined, undefined, this.now());
+    const input = planInput(state, snapshot, contextWindowTokens, "", undefined, undefined, this.now(), { hits: [] });
+    const omitted = state.summaryOmitted ? { summaryOmitted: true as const } : {};
     try {
       const plan = planChatRequest(input);
-      return { mode: plan.mode, estimatedTokens: plan.estimatedTokens };
+      return { mode: plan.mode, estimatedTokens: plan.estimatedTokens, ...omitted };
     } catch {
-      return { mode: chooseChatMode(input) };
+      return { mode: chooseChatMode(input), ...omitted };
     }
   }
 
@@ -824,12 +886,23 @@ export class ChatService {
     const contentId = content.id;
     const primaryRevisionId = content.primaryTranscriptRevisionId;
     const segments = primaryRevisionId === undefined ? [] : scope.transcripts.listSegments(owner, primaryRevisionId);
+    // Taken with the sentences, in this transaction: a rename or another primary while the
+    // answer streams cannot reach it.
+    const speakers = primaryRevisionId === undefined ? undefined : chatSpeakers(scope, owner, contentId, primaryRevisionId, segments);
     const templateId = defaultSummaryTemplateIdOf(scope, owner) ?? DEFAULT_SUMMARY_TEMPLATE_ID;
     const artifact = scope.summaries.findArtifact(owner, contentId, templateId);
-    const summary = artifact?.currentRevisionId === undefined ? undefined : scope.summaries.getRevision(owner, artifact.currentRevisionId)?.body;
+    const revision = artifact?.currentRevisionId === undefined ? undefined : scope.summaries.getRevision(owner, artifact.currentRevisionId);
+    const carried = revision === undefined ? undefined : chatSummary(scope, owner, this.lineage, contentId, revision);
+    const summary = carried?.kind === "carried" ? carried.text : undefined;
     const chapters = (scope.chapters.getCurrent(owner, contentId)?.chapters ?? []).map(({ startMs, endMs, title }) => ({ startMs, endMs, title }));
     const current = thread === undefined ? undefined : scope.chat.getThread(owner, thread.id);
     const compaction = current?.currentCompactionId === undefined ? undefined : scope.chat.getCompaction(owner, current.currentCompactionId);
+    // How older chat text that read speakers compares with now, judged in this transaction
+    // like every stored result. When this answer reads no speakers, any of it that did is
+    // read against a transcript whose speakers are not confirmed: `unconfirmed`.
+    const judge = (basis: ChatAnswerBasis): SpeakerContextState =>
+      speakers === undefined ? "unconfirmed" : basisSpeakerState(scope, owner, this.lineage, contentId, basis).state;
+    const compactionStates = (compaction?.speakerBases ?? []).map(judge);
     const all = thread === undefined ? [] : scope.chat.listMessages(owner, thread.id);
     const end = before === undefined ? -1 : all.findIndex((message) => message.id === before);
     const messages = end < 0 ? all : all.slice(0, end);
@@ -844,6 +917,8 @@ export class ChatService {
         ...(summary === undefined ? {} : { summary }),
         chapters,
         ...(compaction === undefined ? {} : { compaction: compaction.body }),
+        ...(compactionStates.length === 0 ? {} : { compactionSpeakerStates: compactionStates }),
+        ...(speakers === undefined ? {} : { speakers: speakers.reading }),
         turns: [],
         // Answers are not Tasks: each question reads the prompts in effect now, nothing is frozen.
         prompts: {
@@ -852,10 +927,21 @@ export class ChatService {
         },
       },
       thread,
-      turns: turnsOf(messages.slice(Math.min(after, messages.length)), (segmentId) => scope.transcripts.getSegment(owner, segmentId)?.text),
+      turns: turnsOf(messages.slice(Math.min(after, messages.length)), (segmentId) => scope.transcripts.getSegment(owner, segmentId)?.text, judge),
       questions: groupTurns(messages).map((turn) => turn.user.text),
       startMs: new Map(segments.map((segment) => [segment.id as string, segment.startMs])),
+      speakers,
+      compaction,
+      summaryOmitted: carried?.kind === "omitted",
     };
+  }
+
+  /** Messages as shown; an answer whose speakers no longer match now says so. */
+  private messagesDto(scope: RepositoryScope, owner: string, content: Content, messages: readonly ChatMessage[]): ChatMessageDto[] {
+    return messages.map((message) => {
+      const speakerContext = messageSpeakerContext(scope, owner, this.lineage, content.id, message);
+      return speakerContext === undefined ? messageDto(message) : { ...messageDto(message), speakerContext };
+    });
   }
 
   /** The quoted sentence, which must belong to a revision of this Content; its text comes from the store. */
@@ -886,6 +972,15 @@ function readQuote(scope: RepositoryScope, owner: string, contentId: string, quo
   return { segmentId: segment.id, text: segment.text };
 }
 
+/**
+ * The retrieval candidates of one question, read in the transaction that read the thread
+ * state: from the revision and the quoted text plus question only.
+ */
+function candidatesOf(scope: RepositoryScope, owner: string, state: ThreadState, quote: ChatQuoteText | undefined, question: string): ChatCandidates {
+  const query = [quote?.text ?? "", question].join(" ").trim();
+  return chatCandidates(scope, owner, state.primaryRevisionId, query, state.speakers);
+}
+
 /** The planning input of one question; web material is added once the search has run. */
 function planInput(
   state: ThreadState,
@@ -895,14 +990,17 @@ function planInput(
   quote: ChatQuoteText | undefined,
   positionMs: number | undefined,
   now: number,
+  candidates: ChatCandidates,
 ): ChatPlanInput {
   const model: ChatModelIdentity = {
     profileName: snapshot.providerNameSnapshot,
     modelId: snapshot.modelId,
     ...(snapshot.protocolSnapshot === undefined ? {} : { protocol: snapshot.protocolSnapshot }),
   };
+  const speakers = state.input.speakers;
   return {
     ...state.input,
+    ...(speakers === undefined || candidates.person === undefined ? {} : { speakers: { ...speakers, person: candidates.person } }),
     contextWindowTokens,
     turns: state.turns,
     question,
@@ -949,22 +1047,41 @@ function removeMessages(scope: RepositoryScope, owner: string, threadId: string,
   scope.chat.deleteMessages(owner, messageIds);
 }
 
+/** A history turn as planned, with what a compaction absorbing it must keep. */
+type HistoryTurn = ChatTurnText & {
+  lastMessageId: string;
+  /** The basis of its answer when that read speakers and has text; absent otherwise. */
+  speakerBasis?: ChatSpeakerBasis;
+};
+
 /**
  * The turns of the history, each with its effective answer. A turn with an attempt still
- * streaming (another request in flight) is left out; a failed answer counts as empty.
+ * streaming (another request in flight) is left out; a failed answer counts as empty. An
+ * answer that read speakers and has text is judged by `judge`.
  */
-function turnsOf(messages: readonly ChatMessage[], textOf: (segmentId: string) => string | undefined): Array<ChatTurnText & { lastMessageId: string }> {
+function turnsOf(
+  messages: readonly ChatMessage[],
+  textOf: (segmentId: string) => string | undefined,
+  judge: (basis: ChatAnswerBasis) => SpeakerContextState,
+): HistoryTurn[] {
   return groupTurns(messages)
     .filter((turn) => !turn.attempts.some((attempt) => attempt.status === "streaming"))
     .map((turn) => {
       const answer = effectiveAnswer(turn);
       const quoted = turn.user.citations[0];
       const quoteText = quoted === undefined ? undefined : textOf(quoted.segmentId);
+      const text = answer === undefined || answer.status === "failed" ? "" : answer.text;
+      const basis = answer === undefined || text === "" ? undefined : answerBasis(answer);
+      const revisionId = basis?.transcriptRevisionId;
       return {
         question: turn.user.text,
         ...(quoted === undefined || quoteText === undefined ? {} : { quote: { segmentId: quoted.segmentId, text: quoteText } }),
-        answer: answer === undefined || answer.status === "failed" ? "" : answer.text,
+        answer: text,
+        ...(basis === undefined ? {} : { speakerState: judge(basis) }),
         lastMessageId: lastMessageOf(turn).id,
+        ...(basis === undefined || revisionId === undefined
+          ? {}
+          : { speakerBasis: { transcriptRevisionId: revisionId, speakerContext: basis.speakerContext, citedSegmentIds: [...basis.citedSegmentIds] } }),
       };
     });
 }
@@ -1004,6 +1121,7 @@ function messageDto(message: ChatMessage): ChatMessageDto {
     status: message.status,
     ...(message.modelRef === undefined ? {} : { modelRef: { ...message.modelRef } }),
     ...(message.contextTranscriptRevisionId === undefined ? {} : { contextTranscriptRevisionId: message.contextTranscriptRevisionId }),
+    ...(message.contextUsed === undefined ? {} : { contextUsed: { ...message.contextUsed } }),
     citations: message.role === "user" ? [] : message.citations.map((citation) => ({ ...citation })),
     ...(message.suggestions === undefined ? {} : { suggestions: [...message.suggestions] }),
     ...(quote === undefined ? {} : { quote: { ...quote } }),
@@ -1012,6 +1130,22 @@ function messageDto(message: ChatMessage): ChatMessageDto {
     ...(message.error === undefined ? {} : { error: structuredClone(message.error) }),
     createdAt: message.createdAt,
     ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
+  };
+}
+
+/**
+ * What an answer reports and keeps about the material it was finally planned with: only when
+ * it reads speakers or the default summary was left out, which the estimate shown before
+ * asking cannot tell; otherwise nothing, as before speakers existed.
+ */
+function contextUsed(state: ThreadState, plan: ChatRequestPlan): ChatContextUsed | undefined {
+  if (state.speakers === undefined && !state.summaryOmitted) {
+    return undefined;
+  }
+  return {
+    mode: plan.mode,
+    ...(plan.speakerClips === true ? { speakerClips: true as const } : {}),
+    ...(state.summaryOmitted ? { summaryOmitted: true as const } : {}),
   };
 }
 

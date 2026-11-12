@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatMessageDto } from "../../../src/shared/dto/chat.ts";
-import { effectiveAnswer, groupTurns, latestThread, readStoredThread, storeThread, threadStorageKey, turnDisplay } from "../../../src/web/chat/chat-data.ts";
+import { chatContextMarker, effectiveAnswer, groupTurns, latestThread, readStoredThread, storeThread, threadStorageKey, turnDisplay } from "../../../src/web/chat/chat-data.ts";
 
 const message = (id: string, role: "user" | "assistant", status: ChatMessageDto["status"] = "complete"): ChatMessageDto => ({
   id,
@@ -59,5 +59,26 @@ describe("latestThread", () => {
     expect(latestThread([pinned, { id: "01C", createdAt: 5 }, { id: "01B", createdAt: 3 }])?.id).toBe("01C");
     expect(latestThread([pinned, { id: "01B", createdAt: 5 }, { id: "01D", createdAt: 5 }])?.id).toBe("01D");
     expect(latestThread([])).toBeUndefined();
+  });
+});
+
+describe("chat context marker", () => {
+  const estimate = { mode: "full" as const, estimatedTokens: 100 };
+  const used = (contextUsed: ChatMessageDto["contextUsed"]): ChatMessageDto => ({ ...message("a2", "assistant"), ...(contextUsed === undefined ? {} : { contextUsed }) });
+
+  it("shows the estimate until an answer recorded what it used", () => {
+    expect(chatContextMarker(estimate, [], { running: false, used: undefined })).toEqual({ mode: "full", speakerClips: false, summaryOmitted: false });
+    expect(chatContextMarker({ ...estimate, summaryOmitted: true }, [], { running: false, used: undefined }).summaryOmitted).toBe(true);
+    // Only the last answer speaks: an earlier one's record does not.
+    expect(chatContextMarker(estimate, [used({ mode: "retrieval", speakerClips: true }), used(undefined)], { running: false, used: undefined }).mode).toBe("full");
+  });
+
+  it("follows the streamed event, else the last answer's record when nothing is under way", () => {
+    const stored = [message("u1", "user"), used({ mode: "retrieval", speakerClips: true, summaryOmitted: true })];
+    expect(chatContextMarker(estimate, stored, { running: false, used: undefined })).toEqual({ mode: "retrieval", speakerClips: true, summaryOmitted: true });
+    // A new question is under way without an event yet: the estimate, not the previous answer.
+    expect(chatContextMarker(estimate, stored, { running: true, used: undefined })).toEqual({ mode: "full", speakerClips: false, summaryOmitted: false });
+    expect(chatContextMarker(estimate, stored, { running: true, used: { mode: "retrieval" } })).toEqual({ mode: "retrieval", speakerClips: false, summaryOmitted: false });
+    expect(chatContextMarker(estimate, [message("u1", "user")], { running: false, used: { mode: "full", summaryOmitted: true } })).toEqual({ mode: "full", speakerClips: false, summaryOmitted: true });
   });
 });

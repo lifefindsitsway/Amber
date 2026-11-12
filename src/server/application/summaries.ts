@@ -6,6 +6,7 @@ import type {
   SummaryRevisionDto,
   SummaryRevisionListDto,
 } from "../../shared/dto/summary.ts";
+import type { SpeakerContextDto } from "../../shared/dto/speaker-context.ts";
 import type { TaskAcceptedDto } from "../../shared/dto/task.ts";
 import type { ArtifactRevisionBase, SummaryArtifact, SummaryRevision, SummaryTemplate } from "../domain/artifact.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
@@ -25,6 +26,9 @@ import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
 import { freezePromptRefs } from "./prompts.ts";
+import { summarySpeakerContext } from "./artifact-speakers.ts";
+import { freezeSpeakerContext } from "./speaker-context.ts";
+import { SpeakerLineageReader } from "./speaker-lineage.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import { outputLanguageFor } from "./settings.ts";
 import { resolveTemplateRef, summaryTemplateDto } from "./summary-templates.ts";
@@ -38,6 +42,8 @@ export interface SummaryServiceOptions {
   control: Pick<TaskControl, "kick">;
   disk: DiskUsageProbe;
   settings: InstanceSettingsSource;
+  /** Shared with the other readers of speaker states, so a revision pair is compared once. */
+  speakerLineage?: SpeakerLineageReader;
   now?: () => number;
   newId?: () => string;
 }
@@ -60,8 +66,9 @@ function summaryFreshness(scope: RepositoryScope, content: Content, revision: Su
 /**
  * A summary revision as shown. Each run of citations is cut to `CITATION_RUN_MAX` on the way
  * out, so a revision stored before new ones were cut reads like them; storage is untouched.
+ * `speakerContext` is the revision's speaker state, when it has one to show.
  */
-export function summaryRevisionDto(revision: SummaryRevision, freshness: Freshness): SummaryRevisionDto {
+export function summaryRevisionDto(revision: SummaryRevision, freshness: Freshness, speakerContext?: SpeakerContextDto): SummaryRevisionDto {
   const { provenance } = revision;
   const transcript = provenance.inputs.find((input) => input.kind === "transcriptRevision");
   if (transcript === undefined) {
@@ -81,6 +88,7 @@ export function summaryRevisionDto(revision: SummaryRevision, freshness: Freshne
     quality: revision.quality,
     qualityReasons: qualityReasonsOf(revision.quality),
     ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
+    ...(speakerContext === undefined ? {} : { speakerContext }),
     createdAt: provenance.createdAt,
   };
 }
@@ -89,17 +97,20 @@ export function summaryRevisionDto(revision: SummaryRevision, freshness: Freshne
  * A Content's summaries, one artifact per template, and the explicit "generate summary"
  * action. Generating creates a `regenerate_summary` Task
  * that freezes the template version, the primary transcript and the output language at
- * submission; the page shows only what each artifact's `currentRevisionId` names.
+ * submission — and the transcript's speakers when they were reviewed; the page shows only
+ * what each artifact's `currentRevisionId` names.
  */
 export class SummaryService {
   private readonly options: SummaryServiceOptions;
   private readonly now: () => number;
   private readonly newId: () => string;
+  private readonly lineage: SpeakerLineageReader;
 
   constructor(options: SummaryServiceOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
+    this.lineage = options.speakerLineage ?? new SpeakerLineageReader();
   }
 
   /**
@@ -135,7 +146,7 @@ export class SummaryService {
           return {
             template: summaryTemplateDto(template),
             ...(artifact === undefined ? {} : { artifactId: artifact.id }),
-            ...(current === undefined ? {} : { current: summaryRevisionDto(current, freshness) }),
+            ...(current === undefined ? {} : { current: this.revisionDto(scope, content, current, freshness) }),
             ...(freshness.stale ? { stale: true, staleReason: freshness.staleReason } : { stale: false }),
             ...(active === undefined ? {} : { activeTaskId: active.task.id }),
           };
@@ -170,15 +181,17 @@ export class SummaryService {
         if (baseRevisionId === undefined) {
           throw amberError("invalid_request", "the content has no primary transcript yet", { params: { detail: "primaryTranscriptRevisionId" } });
         }
+        const promptRefs = freezePromptRefs(scope, owner, "regenerate_summary");
         const requestJson = canonicalJson(
           regenerateSummaryRequestSchema.parse({
             requestSchemaVersion: 1,
             kind: "regenerate_summary",
-            promptRefs: freezePromptRefs(scope, owner, "regenerate_summary"),
+            promptRefs,
             ...(body.modelRef === undefined ? {} : { modelRef: body.modelRef }),
             outputLanguage: outputLanguageFor(scope, owner, body.outputLanguage),
             templateRef,
             baseRevisionId,
+            ...freezeSpeakerContext(scope, owner, { kind: "regenerate_summary", contentId, revisionId: baseRevisionId, promptRefs }, "transcript"),
           }),
         );
         const candidate = { id: "", kind: "regenerate_summary" as const, requestJson };
@@ -257,13 +270,17 @@ export class SummaryService {
     });
   }
 
+  private revisionDto(scope: RepositoryScope, content: Content, revision: SummaryRevision, freshness: Freshness): SummaryRevisionDto {
+    return summaryRevisionDto(revision, freshness, summarySpeakerContext(scope, content.userId, this.lineage, content.id, revision));
+  }
+
   private revisionList(scope: RepositoryScope, owner: string, artifact: SummaryArtifact): SummaryRevisionListDto {
     const content = ownedContent(scope, owner, artifact.contentId);
     const revisions = scope.summaries.listRevisions(owner, artifact.id);
     return {
       artifactId: artifact.id,
       ...(artifact.currentRevisionId === undefined ? {} : { currentRevisionId: artifact.currentRevisionId }),
-      items: revisions.map((revision) => summaryRevisionDto(revision, summaryFreshness(scope, content, revision))),
+      items: revisions.map((revision) => this.revisionDto(scope, content, revision, summaryFreshness(scope, content, revision))),
       frozenRevisionIds: revisions
         .filter((revision) => revision.id !== artifact.currentRevisionId && scope.revisionReferences.historyArtifact(owner, "summary", revision.id) === undefined)
         .map((revision) => revision.id),

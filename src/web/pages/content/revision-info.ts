@@ -1,6 +1,7 @@
 import type { i18n as I18n, TFunction } from "i18next";
 import type { TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import { asrDiarizationRecordSchema } from "../../../shared/dto/speaker.ts";
+import { isComparisonGeneration } from "../../../shared/speaker-comparison.ts";
 import { revisionBasis } from "./labels.ts";
 
 /**
@@ -31,6 +32,7 @@ export function acceptedSuggestionsText(revision: TranscriptRevisionDto, t: TFun
  * its speakers came about. One line each; `undefined` when there is nothing to say.
  */
 export function revisionInfo(revision: TranscriptRevisionDto, among: readonly TranscriptRevisionDto[], t: TFunction, i18n?: Pick<I18n, "exists">): string | undefined {
-  const lines = [revisionBasis(revision, among, t, i18n), diarizationStatusText(revision, t), acceptedSuggestionsText(revision, t)].filter((line): line is string => line !== undefined);
+  const comparison = isComparisonGeneration(revision.generation) ? t("speakerCompare.revisionInfo") : undefined;
+  const lines = [comparison, revisionBasis(revision, among, t, i18n), diarizationStatusText(revision, t), acceptedSuggestionsText(revision, t)].filter((line): line is string => line !== undefined);
   return lines.length === 0 ? undefined : lines.join("\n");
 }

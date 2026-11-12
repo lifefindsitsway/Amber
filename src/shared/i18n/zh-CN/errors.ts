@@ -86,6 +86,8 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "conflict.primary_changed": "当前稿已变化，请重新载入后再提交",
   "conflict.translation_changed": "该语言的当前译文已变化，请确认后再提交",
   "conflict.draft_changed": "草稿已在其他窗口修改",
+  "conflict.speakers_changed": "发言人名单已在其他窗口修改，请刷新后重新核对",
+  "conflict.speaker_capacity": "这个内容的发言人名额不足，无法再做一次对比识别；可先删除不再需要的对比稿",
   "conflict.cache_inspection_expired": "缓存核对结果已过期，正在重新核对",
   "conflict.last_admin": "至少保留一个管理员",
   "conflict.username_taken": "用户名已被使用",

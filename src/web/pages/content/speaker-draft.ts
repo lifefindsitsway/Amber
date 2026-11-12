@@ -1,5 +1,6 @@
 import type { TranscriptDraftRequest } from "../../../shared/dto/transcript.ts";
 import type { AlignedSentence } from "../../../shared/speaker-align.ts";
+import type { AttributionDifferenceKind } from "../../../shared/speaker-compare.ts";
 
 /** One sentence of the transcript draft, as the draft API stores it. */
 export type DraftSegment = TranscriptDraftRequest["segments"][number];
@@ -148,11 +149,14 @@ export type SpeakerFilter =
   | { kind: "speaker"; speakerId: string }
   | { kind: "review" }
   | { kind: "unassigned" }
-  | { kind: "changed" };
+  | { kind: "changed" }
+  /** The rows a cross-recognition category lists, by row key; `category` names it. */
+  | { kind: "keys"; keys: ReadonlySet<string>; category: AttributionDifferenceKind };
 
 export const FILTER_ALL: SpeakerFilter = { kind: "all" };
 
-export const sameFilter = (a: SpeakerFilter, b: SpeakerFilter): boolean => a.kind === b.kind && (a.kind !== "speaker" || (b.kind === "speaker" && a.speakerId === b.speakerId));
+export const sameFilter = (a: SpeakerFilter, b: SpeakerFilter): boolean =>
+  a.kind === b.kind && (a.kind !== "speaker" || (b.kind === "speaker" && a.speakerId === b.speakerId)) && (a.kind !== "keys" || (b.kind === "keys" && a.keys === b.keys));
 
 function matches(filter: SpeakerFilter, segment: DraftSegment, speakerId: string | null, key: string, changed: ReadonlySet<string>): boolean {
   switch (filter.kind) {
@@ -166,6 +170,8 @@ function matches(filter: SpeakerFilter, segment: DraftSegment, speakerId: string
       return speakerId === null;
     case "changed":
       return changed.has(key);
+    case "keys":
+      return filter.keys.has(key);
   }
 }
 

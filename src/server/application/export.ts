@@ -76,6 +76,11 @@ export interface StyledAssRequest {
   style: SubtitleStyle;
   playRes: AssPlayRes;
   textOnly: boolean;
+  /**
+   * Each speaker's label, frozen when the export was requested; drawn as label lines when
+   * the style's appearance asks for them. Absent = no label lines.
+   */
+  speakerLabels?: Readonly<Record<string, string>>;
 }
 
 /** A downloaded styled ASS does not know its video, so it uses a 16:9 reference canvas. */
@@ -147,7 +152,8 @@ export class ExportService {
           });
         }
       }
-      return this.styledAss(owner, request.mode, request.mode === "translation" ? undefined : revision.id, translation?.id, request);
+      const labels = request.speakerLabels === undefined ? undefined : new Map(Object.entries(request.speakerLabels));
+      return this.styledAss(owner, request.mode, request.mode === "translation" ? undefined : revision.id, translation?.id, request, undefined, labels);
     });
   }
 
@@ -190,7 +196,12 @@ export class ExportService {
       // A single-language ASS of a translation shows it in the translation's appearance.
       const mode: BurnMode = translation !== undefined ? "bilingual" : revision.kind === "translated" ? "translation" : "original";
       const options = { style: body.style, playRes: FILE_PLAY_RES, textOnly: false };
-      const lines = mode === "translation" ? this.styledAss(owner, mode, undefined, revision.id, options, speakers?.names) : this.styledAss(owner, mode, revision.id, translation?.id, options, speakers?.names);
+      // A downloaded file is made now, so its label lines carry the names as they are now.
+      const labels = body.style.appearance.speaker === undefined ? undefined : (speakers?.names ?? speakerLabels(scope.speakers.list(owner, content.id)));
+      const lines =
+        mode === "translation"
+          ? this.styledAss(owner, mode, undefined, revision.id, options, speakers?.names, labels)
+          : this.styledAss(owner, mode, revision.id, translation?.id, options, speakers?.names, labels);
       return { filename, contentType: file.contentType, body: lines };
     }
     const cues = this.cuesOf(owner, revision.id, translation?.id);
@@ -220,6 +231,8 @@ export class ExportService {
   /**
    * Styled cues need the whole timeline at once — overlapping sentences are cut into
    * slices — so the revisions are read fully, page by page, when the body is consumed.
+   * `speakerNames` fill the events' `Name` field; `labelLines` are the speaker labels drawn
+   * above the cues when the style asks for them.
    */
   private async *styledAss(
     owner: string,
@@ -228,6 +241,7 @@ export class ExportService {
     translationId: string | undefined,
     options: Pick<StyledAssRequest, "style" | "playRes" | "textOnly">,
     speakerNames?: ReadonlyMap<string, string>,
+    labelLines?: ReadonlyMap<string, string>,
   ): AsyncGenerator<string> {
     const read = async (revisionId: string | undefined): Promise<TranscriptSegment[]> => {
       const segments: TranscriptSegment[] = [];
@@ -243,10 +257,14 @@ export class ExportService {
     const cues = subtitleCues(mode, original, translation);
     // One cue per sentence of the revision the mode shows, in that order.
     const shown = mode === "translation" ? translation : original;
+    const ofCue = shown.map((segment) => segment.speakerId);
     yield styledAssDocument(cues, {
-      ...options,
+      style: options.style,
+      playRes: options.playRes,
+      textOnly: options.textOnly,
       mode,
-      ...(speakerNames === undefined ? {} : { speakers: { ofCue: shown.map((segment) => segment.speakerId), names: speakerNames } }),
+      ...(speakerNames === undefined ? {} : { speakers: { ofCue, names: speakerNames } }),
+      ...(labelLines === undefined ? {} : { speakerLines: { ofCue, labels: labelLines } }),
     });
   }
 

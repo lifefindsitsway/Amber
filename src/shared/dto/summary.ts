@@ -4,6 +4,7 @@ import { STALE_REASONS } from "./chapter.ts";
 import { citationDtoSchema } from "./citation.ts";
 import { languageTagSchema } from "./import.ts";
 import { modelRefSchema } from "./model-ref.ts";
+import { speakerContextDtoSchema } from "./speaker-context.ts";
 import { modelRefSnapshotDtoSchema } from "./usage.ts";
 
 const idSchema = z.string().min(1);
@@ -73,6 +74,8 @@ export const summaryRevisionDtoSchema = z.object({
   qualityReasons: z.array(z.enum(QUALITY_REASONS)),
   stale: z.boolean(),
   staleReason: z.enum(STALE_REASONS).exactOptional(),
+  /** Present when the revision was generated with speakers, and only while the transcript it read is the primary or one of its ancestors. */
+  speakerContext: speakerContextDtoSchema.exactOptional(),
   createdAt: msSchema,
 });
 export type SummaryRevisionDto = z.infer<typeof summaryRevisionDtoSchema>;

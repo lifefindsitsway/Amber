@@ -17,6 +17,9 @@ import { useContentPage } from "./content-context.tsx";
 import { contentKeys, useHighlights } from "./content-data.ts";
 import { visibleHighlights } from "./highlight-items.ts";
 import { useSentenceMenu } from "./sentence-menu.tsx";
+import { SpeakerBasisLine, SpeakersNotReadHint, useTranscriptSpeakerState } from "./speaker-basis-notice.tsx";
+import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
+import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 
 /**
  * AI 高光 tab: colour timeline, score threshold, explicit (re)generation
@@ -71,6 +74,7 @@ export function HighlightsTab() {
             {t("common.action.goConfigure")}
           </Link>
         )}
+        {configured && hasTranscript ? <SpeakersNotReadHint contentId={contentId} revisionId={page.primaryRevisionId} testId="highlights-speakers-not-read" /> : null}
         <ThresholdSlider />
       </div>
       {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
@@ -82,6 +86,15 @@ export function HighlightsTab() {
           {t(`contentView.stale.${current.staleReason ?? "transcript_changed"}`)}
         </div>
       ) : null}
+      {current === undefined ? null : (
+        <SpeakerBasisLine
+          contentId={contentId}
+          primaryRevisionId={page.primaryRevisionId}
+          stale={current.stale}
+          speakerContext={current.speakerContext}
+          testId="highlights-speaker-basis"
+        />
+      )}
       {current === undefined ? (
         <EmptyState title={t("contentView.highlights.empty")} hint={t("contentView.highlights.emptyHint")} />
       ) : (
@@ -117,6 +130,12 @@ function HighlightList(props: { revision: HighlightRevisionDto }) {
   const page = useContentPage();
   const { revision } = props;
   const visible = visibleHighlights(revision.items, page.highlightThreshold);
+  // A card names the sentence's speaker only while the revision it came from is read by speakers.
+  const named = revision.items.some((item) => item.speakerId !== undefined);
+  const speakers = useSpeakers(page.content.id, named);
+  const revisionState = useTranscriptSpeakerState(page.content.id, named ? revision.transcriptRevisionId : undefined);
+  const speakerOf = (speakerId: string | undefined) =>
+    speakerId === undefined || revisionState?.speakerMode !== true ? undefined : speakers.data?.items.find((speaker) => speaker.id === speakerId);
   const duration = page.content.durationMs ?? revision.items.reduce((end, item) => Math.max(end, item.endMs), 0);
   // The menu copies and explains the highlighted sentence itself, not the model's reason for it.
   const menuTarget = useSentenceMenu<HTMLOListElement>((segmentId) => {
@@ -131,27 +150,38 @@ function HighlightList(props: { revision: HighlightRevisionDto }) {
         <p className="text-sm text-muted">{t("contentView.highlights.noneAboveThreshold")}</p>
       ) : (
         <ol ref={menuTarget} className="flex flex-col gap-1" data-testid="highlight-items" data-revision-id={revision.transcriptRevisionId}>
-          {visible.map((item) => (
-            <li key={item.segmentId}>
-              <button
-                type="button"
-                data-testid="highlight-item"
-                data-segment-id={item.segmentId}
-                data-segment-text={item.segmentText}
-                data-score={item.score}
-                className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-sunken"
-                onClick={() => page.select({ revisionId: revision.transcriptRevisionId, segmentId: item.segmentId }, item.startMs)}
-              >
-                <span className={`mt-1.5 size-2 shrink-0 rounded-full ${highlightTone(item.score)}`} aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm">{item.text}</span>
-                  <span className="block text-xs text-muted">{item.segmentText}</span>
-                </span>
-                <span className="shrink-0 text-xs text-muted">{t("contentView.highlights.score", { score: item.score })}</span>
-                <span className="w-14 shrink-0 text-right font-mono text-xs text-accent">{formatDuration(item.startMs)}</span>
-              </button>
-            </li>
-          ))}
+          {visible.map((item) => {
+            const speaker = speakerOf(item.speakerId);
+            return (
+              <li key={item.segmentId}>
+                <button
+                  type="button"
+                  data-testid="highlight-item"
+                  data-segment-id={item.segmentId}
+                  data-segment-text={item.segmentText}
+                  data-score={item.score}
+                  className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-sunken"
+                  onClick={() => page.select({ revisionId: revision.transcriptRevisionId, segmentId: item.segmentId }, item.startMs)}
+                >
+                  <span className={`mt-1.5 size-2 shrink-0 rounded-full ${highlightTone(item.score)}`} aria-hidden />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm">{item.text}</span>
+                    <span className="block text-xs text-muted">
+                      {speaker === undefined ? null : (
+                        <span className="mr-1.5 inline-flex items-center gap-1 align-middle text-ink" data-testid="highlight-speaker" data-speaker-id={speaker.id}>
+                          <SpeakerAvatar contentId={page.content.id} speaker={speaker} size={16} decorative />
+                          <span className="font-medium">{speakerLabel(t, speaker)}</span>
+                        </span>
+                      )}
+                      {item.segmentText}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs text-muted">{t("contentView.highlights.score", { score: item.score })}</span>
+                  <span className="w-14 shrink-0 text-right font-mono text-xs text-accent">{formatDuration(item.startMs)}</span>
+                </button>
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>

@@ -10,6 +10,7 @@ import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment } fro
 import { fakeShell } from "../../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
+import { stubResizeObserver } from "../../../fixtures/web/speaker-fetch.ts";
 
 vi.mock("../../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -26,7 +27,8 @@ describe("SubtitlesTab with a search query", () => {
   it("prefills the subtitle filter with the query", async () => {
     mockApi(contentRoutes());
     renderApp(<ContentPage />, { route: `/contents/c1?tab=subtitles&search=${encodeURIComponent("向量")}`, path: "/contents/:id" });
-    const filter = (await screen.findByLabelText("筛选字幕", { exact: false })) as HTMLInputElement;
+    // The first test in this file also pays for loading the content page; under a full parallel run that alone can pass the default second.
+    const filter = (await screen.findByLabelText("筛选字幕", { exact: false }, { timeout: 5_000 })) as HTMLInputElement;
     expect(filter.value).toBe("向量");
     const rows = await screen.findByTestId("subtitle-rows");
     await waitFor(() => expect(rows.querySelectorAll("[data-segment-id]")).toHaveLength(1));
@@ -567,6 +569,68 @@ describe("SubtitlesTab speakers", () => {
     renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
     const version = (await screen.findByTestId("subtitles-version")) as HTMLSelectElement;
     expect(version.title).toBe("发言人识别：已识别发言人");
+  });
+
+  describe("picking speakers beside the keyword box", () => {
+    const shown = (list: HTMLElement): Array<string | null> => [...list.querySelectorAll("[data-segment-id]")].map((row) => row.getAttribute("data-segment-id"));
+    const keyword = (): HTMLInputElement => screen.getByLabelText("筛选字幕") as HTMLInputElement;
+
+    async function open(routes: Parameters<typeof mockApi>[0] = speakerRoutes()) {
+      stubResizeObserver();
+      const api = mockApi(routes);
+      renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+      const list = await screen.findByTestId("subtitle-rows", {}, { timeout: 5_000 });
+      await waitFor(() => expect(list.querySelectorAll("[data-segment-id]").length).toBeGreaterThan(0));
+      return { ...api, list };
+    }
+
+    async function pick(id: string) {
+      if (screen.queryByTestId("speaker-filter-popover") === null) fireEvent.click(screen.getByTestId("speaker-filter"));
+      const popover = await screen.findByTestId("speaker-filter-popover");
+      const option = within(popover).getAllByTestId("speaker-filter-option").find((item) => item.getAttribute("data-speaker-id") === id) as HTMLElement;
+      fireEvent.click(within(option).getByRole("checkbox"));
+    }
+
+    it("sits right after the keyword box in speaker mode", async () => {
+      await open();
+      const trigger = await screen.findByTestId("speaker-filter");
+      expect(trigger.previousElementSibling).toBe(keyword());
+      expect(trigger.getAttribute("aria-label")).toBe("只看某些发言人");
+    });
+
+    it("is not offered for a version without speakers or with a single anonymous one", async () => {
+      const { list } = await open(contentRoutes());
+      await waitFor(() => expect(list.querySelectorAll("[data-segment-id]")).toHaveLength(3));
+      expect(screen.queryByTestId("speaker-filter")).toBeNull();
+      cleanup();
+      const single = await open({
+        ...speakerRoutes(),
+        "GET /api/contents/c1/speakers": { body: { items: [speakers[1]] } },
+        "GET /api/transcript/revisions/r1/segments": { body: { revision: asrRevision, items: [segment("s1", 0, 0, 4_000, "只有一人。", { speakerId: "p2" }), segment("s2", 1, 4_000, 8_000, "没有归属。")] } },
+      });
+      await waitFor(() => expect(single.list.querySelector("[data-testid=subtitle-turn-tag]")).not.toBeNull());
+      expect(screen.queryByTestId("speaker-filter")).toBeNull();
+    });
+
+    it("narrows the rows together with the keyword, and leaves them alone while nobody is picked", async () => {
+      const { list, calls } = await open();
+      await waitFor(() => expect(shown(list)).toEqual(["s1", "s2", "s3", "s4", "s5"]));
+      fireEvent.change(keyword(), { target: { value: "看" } });
+      await waitFor(() => expect(shown(list)).toEqual(["s2", "s4"]));
+      await pick("p2");
+      await waitFor(() => expect(shown(list)).toEqual([]));
+      await pick("p1");
+      await waitFor(() => expect(shown(list)).toEqual(["s2", "s4"]));
+      fireEvent.change(keyword(), { target: { value: "" } });
+      // Both speakers: every assigned row, the unassigned one left out.
+      await waitFor(() => expect(shown(list)).toEqual(["s1", "s2", "s3", "s4"]));
+      await pick("p1");
+      await waitFor(() => expect(shown(list)).toEqual(["s3"]));
+      await pick("p2");
+      await waitFor(() => expect(shown(list)).toEqual(["s1", "s2", "s3", "s4", "s5"]));
+      // Filtering is done on the page; nothing is asked of the server for it.
+      expect(calls.every((call) => call.method === "GET" && !call.path.includes("speaker="))).toBe(true);
+    });
   });
 });
 

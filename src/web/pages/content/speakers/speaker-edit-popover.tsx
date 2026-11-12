@@ -74,9 +74,12 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
   const name = normalized === "too_long" ? undefined : normalized;
   const count = speakerNameLength(draft);
   const nameChanged = !tooLong && name !== speaker.name;
+  // A name kept as it is but never confirmed (written before confirmation existed, or by another
+  // caller) is confirmed by saving it here, so saving is offered for it too.
+  const confirmsName = !tooLong && name !== undefined && (nameChanged || speaker.nameConfirmed !== true);
   const hasStoredPhoto = speaker.avatarVersion !== undefined;
   const showsPhoto = photo.kind === "new" || (photo.kind === "keep" && hasStoredPhoto);
-  const changed = nameChanged || colorIndex !== speaker.colorIndex || photo.kind !== "keep";
+  const changed = nameChanged || confirmsName || colorIndex !== speaker.colorIndex || photo.kind !== "keep";
 
   const suggestionQuery = useDebounced(tooLong ? "" : (name ?? ""), SUGGESTION_DEBOUNCE_MS);
   const suggestions = useSpeakerSuggestions(suggestionQuery, props.contentId);
@@ -102,8 +105,10 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
 
   const save = (): void => {
     if (!changed || tooLong || patch.isPending) return;
+    // A name saved here is the user's own word for who this is, so it is saved as confirmed:
+    // that is what lets AI requests use it (the hint under the field says so).
     const request: Exclude<SpeakerPatchRequest, { copyFrom: unknown }> = {
-      ...(nameChanged ? { name: name ?? null } : {}),
+      ...(nameChanged || confirmsName ? { name: name ?? null, ...(name === undefined ? {} : { nameConfirmed: true }) } : {}),
       ...(colorIndex === speaker.colorIndex ? {} : { colorIndex }),
       ...(photo.kind === "remove" ? { avatar: null } : photo.kind === "new" ? { avatar: { data: photo.avatar.data, mime: photo.avatar.mime } } : {}),
     };
@@ -148,6 +153,9 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
             <span role={tooLong ? "alert" : undefined}>{tooLong ? t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES }) : ""}</span>
             <span data-testid="speaker-name-counter">{t("speakerIdentity.edit.nameCounter", { count, max: SPEAKER_NAME_MAX_GRAPHEMES })}</span>
           </p>
+          <p className="text-xs text-muted" data-testid="speaker-name-confirm-hint">
+            {t("speakerIdentity.edit.nameConfirmHint")}
+          </p>
         </div>
       </div>
 
@@ -161,7 +169,12 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
                   type="button"
                   disabled={patch.isPending}
                   className="flex w-full min-w-0 items-center gap-2.5 px-2.5 py-1.5 text-left text-sm outline-none hover:bg-sunken focus-visible:bg-sunken focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent disabled:opacity-50"
-                  onClick={() => patch.mutate({ speakerId: speaker.id, patch: { copyFrom: { contentId: item.contentId, speakerId: item.speakerId } } }, { onSuccess: props.onDone })}
+                  onClick={() =>
+                    patch.mutate(
+                      { speakerId: speaker.id, patch: { copyFrom: { contentId: item.contentId, speakerId: item.speakerId }, nameConfirmed: true } },
+                      { onSuccess: props.onDone },
+                    )
+                  }
                   data-testid="speaker-suggestion"
                 >
                   <SpeakerAvatar contentId={item.contentId} speaker={{ id: item.speakerId, ordinal: 1, name: item.name, colorIndex: item.colorIndex, ...(item.avatarVersion === undefined ? {} : { avatarVersion: item.avatarVersion }) }} size={24} decorative />

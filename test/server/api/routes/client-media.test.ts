@@ -25,6 +25,7 @@ import { amberError } from "../../../../src/server/domain/errors.ts";
 import type { LocalMediaIngest, MediaProbe } from "../../../../src/server/ports/local-media-ingest.ts";
 import { FILE_GRANT_TTL_MS } from "../../../../src/shared/defaults.ts";
 import type { FileGrant } from "../../../../src/shared/dto/local-media.ts";
+import { defaultSubtitleAppearance, defaultSubtitlePlacement } from "../../../../src/shared/subtitle-style.ts";
 import { BOB, createHarness, createLocalContent, createTaskOfKind, LOCAL, LOCAL_TOKEN, silentLogger, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
@@ -330,6 +331,14 @@ describe("POST /api/contents/:id/cache-media and /burn [client] request validati
       { mode: "original" },
       // A source pick belongs to the styled export; the legacy burn-in chooses its own source.
       { revisionId: "r", mode: "original", sourceAssetId: "a" },
+      // An MP4 subtitle track keeps no layout for speaker label lines.
+      {
+        revisionId: "r",
+        mode: "original",
+        delivery: "soft",
+        container: "mp4",
+        style: { appearance: { ...defaultSubtitleAppearance(), speaker: "every" }, placement: defaultSubtitlePlacement() },
+      },
     ]) {
       const response = await app.inject({ method: "POST", url: `/api/contents/${contentId}/burn`, headers: auth, payload });
       expect(response.statusCode, JSON.stringify(payload)).toBe(400);

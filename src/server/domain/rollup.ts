@@ -42,7 +42,7 @@ function contextLength(message: string): never {
 
 /**
  * A complete prompt must fit the model: otherwise `llm_capability.context_length` and no
- * further splitting (6.9: a collection group, a carry or a final over budget). Nothing is
+ * further splitting (a collection group, a carry or a final over budget). Nothing is
  * checked when the window is unknown.
  */
 export function assertFits(limits: ModelLimits, prompt: string): void {
@@ -80,15 +80,27 @@ export type SummaryPlan = { mode: "single" } | { mode: "rolling"; byChapters: bo
  *
  * `singleFixed` and `partialFixed` are the single-call and partial prompts without
  * transcript; the latter already includes the largest carry.
+ *
+ * `cost` prices a sentence by its place: whether it opens its call's block of sentences (the
+ * single call has one block). Without it a sentence costs its line wherever it is; with
+ * speakers it adds the header line the sentence carries at a change of speaker or at the
+ * start of a block, so a cut that makes a sentence a group's first is paid for.
+ *
+ * `chapterHeadings` are the texts a group of each chapter opens with (its title line): every
+ * group cut by chapter, each run of a split chapter included, is sent with its chapter's
+ * heading, so the heading is priced with the group's first sentence.
  */
 export function planSummary(input: {
   sentences: readonly PlannedSentence[];
   /** Start times of the current chapters, ascending; absent or empty without chapters. */
   chapterStarts?: readonly number[];
+  /** What each group of chapter `i` opens with, index-aligned with `chapterStarts`. */
+  chapterHeadings?: readonly string[];
   singleFixed: string;
   partialFixed: string;
   limits: ModelLimits;
   modelRef: ModelRef;
+  cost?: SentenceCost;
 }): SummaryPlan {
   const { sentences, limits, modelRef } = input;
   const chapters = input.chapterStarts ?? [];
@@ -105,8 +117,15 @@ export function planSummary(input: {
   if (singleBudget <= 0) {
     contextLength("no room for any transcript in the model's budget");
   }
-  const costs = sentences.map((sentence) => estimateTokens(`${sentence.line}\n`));
-  const total = costs.reduce((sum, cost) => sum + cost, 0);
+  const price = input.cost;
+  const costs: Costs =
+    price === undefined
+      ? uniformCosts(sentences.map((sentence) => estimateTokens(`${sentence.line}\n`)))
+      : {
+          opening: sentences.map((sentence, position) => price(sentence.line, position, true)),
+          following: sentences.map((sentence, position) => price(sentence.line, position, false)),
+        };
+  const total = costs.opening.reduce((sum, cost, position) => sum + (position === 0 ? cost : (costs.following[position] as number)), 0);
   if (total <= singleBudget) {
     return { mode: "single" };
   }
@@ -114,14 +133,34 @@ export function planSummary(input: {
   if (budget <= 0) {
     contextLength("no room for any transcript in the model's budget");
   }
-  if (costs.some((cost) => cost > budget)) {
+  if (costs.opening.some((cost) => cost > budget)) {
     contextLength("a single sentence exceeds the model's budget");
   }
   if (chapters.length === 0) {
-    return { mode: "rolling", byChapters: false, groups: greedy(costs, 0, costs.length, budget) };
+    return { mode: "rolling", byChapters: false, groups: greedy(costs, 0, sentences.length, budget) };
   }
-  const groups = chapterGroups(sentences, chapters).flatMap((group) => splitEvenly(costs, group, budget));
+  const byChapter = chapterGroups(sentences, chapters);
+  const headed = withHeadings(costs, byChapter, input.chapterHeadings ?? []);
+  if (headed.opening.some((cost) => cost > budget)) {
+    contextLength("a single sentence and its chapter heading exceed the model's budget");
+  }
+  const groups = byChapter.flatMap((group) => splitEvenly(headed, group, budget));
   return { mode: "rolling", byChapters: true, groups };
+}
+
+/** `costs` with each sentence's opening cost raised by the heading of the chapter it belongs to. */
+function withHeadings(costs: Costs, byChapter: readonly SentenceGroup[], headings: readonly string[]): Costs {
+  if (headings.length === 0) {
+    return costs;
+  }
+  const opening = [...costs.opening];
+  for (const group of byChapter) {
+    const heading = estimateTokens(headings[group.chapterIndex as number] ?? "");
+    for (let position = group.first; position < group.first + group.count; position += 1) {
+      opening[position] = (opening[position] as number) + heading;
+    }
+  }
+  return { opening, following: costs.following };
 }
 
 /**
@@ -148,8 +187,24 @@ function chapterGroups(sentences: readonly PlannedSentence[], starts: readonly n
   return groups;
 }
 
+/**
+ * The price of sentence `position` (shown as `line`) in a call's block of sentences, by
+ * whether it is the block's first.
+ */
+export type SentenceCost = (line: string, position: number, blockStart: boolean) => number;
+
+/** Each sentence's cost as the first of a block and anywhere after it. */
+interface Costs {
+  opening: readonly number[];
+  following: readonly number[];
+}
+
+function uniformCosts(costs: readonly number[]): Costs {
+  return { opening: costs, following: costs };
+}
+
 /** The fewest equal-count runs of one chapter that each fit the budget. */
-function splitEvenly(costs: readonly number[], group: SentenceGroup, budget: number): SentenceGroup[] {
+function splitEvenly(costs: Costs, group: SentenceGroup, budget: number): SentenceGroup[] {
   for (let parts = 1; parts <= group.count; parts += 1) {
     const size = Math.ceil(group.count / parts);
     const runs: SentenceGroup[] = [];
@@ -165,27 +220,27 @@ function splitEvenly(costs: readonly number[], group: SentenceGroup, budget: num
   return [];
 }
 
-function greedy(costs: readonly number[], first: number, end: number, budget: number): SentenceGroup[] {
+function greedy(costs: Costs, first: number, end: number, budget: number): SentenceGroup[] {
   const groups: SentenceGroup[] = [];
   let used = 0;
   for (let position = first; position < end; position += 1) {
-    const cost = costs[position] as number;
     const current = groups.at(-1);
-    if (current === undefined || used + cost > budget) {
+    const following = costs.following[position] as number;
+    if (current === undefined || used + following > budget) {
       groups.push({ first: position, count: 1 });
-      used = cost;
+      used = costs.opening[position] as number;
     } else {
       current.count += 1;
-      used += cost;
+      used += following;
     }
   }
   return groups;
 }
 
-function sum(costs: readonly number[], group: SentenceGroup): number {
+function sum(costs: Costs, group: SentenceGroup): number {
   let total = 0;
   for (let position = group.first; position < group.first + group.count; position += 1) {
-    total += costs[position] as number;
+    total += (position === group.first ? costs.opening[position] : costs.following[position]) as number;
   }
   return total;
 }

@@ -9,6 +9,13 @@ export interface PlayerCapabilities {
    * only for a player that can be placed at it and whose playback the user controls (the local one).
    */
   remembersPosition: boolean;
+  /**
+   * What 「播放一段」 does here: `play` jumps, plays and pauses at the end (a player that can be
+   * started, paused and read by script); `jump` only moves to the start, because the player
+   * can neither be paused nor tell its time (entry points then read 「跳到」 instead of 「播放」);
+   * `unsupported` when there is nothing to move.
+   */
+  rangePlayback: "play" | "jump" | "unsupported";
 }
 
 export type PlayerSource =
@@ -18,11 +25,12 @@ export type PlayerSource =
   | { kind: "none" };
 
 export const CAPABILITIES: Readonly<Record<PlayerSource["kind"], PlayerCapabilities>> = {
-  youtube: { seekMode: "direct", timeTracking: "supported", remembersPosition: false },
+  // The IFrame API plays, pauses and reports the time.
+  youtube: { seekMode: "direct", timeTracking: "supported", remembersPosition: false, rangePlayback: "play" },
   // The embedded Bilibili player has URL parameters only: no postMessage or JS API.
-  bilibili: { seekMode: "reload", timeTracking: "unsupported", remembersPosition: false },
-  local: { seekMode: "direct", timeTracking: "supported", remembersPosition: true },
-  none: { seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false },
+  bilibili: { seekMode: "reload", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "jump" },
+  local: { seekMode: "direct", timeTracking: "supported", remembersPosition: true, rangePlayback: "play" },
+  none: { seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "unsupported" },
 };
 
 /** Which player a Content plays in, from its source identifiers. */

@@ -7,8 +7,9 @@ import { readZip } from "./zip-reader.ts";
 
 /**
  * Installs the external tools the tests and `pnpm dev` run into `.amber-tools/bin/`, and
- * the burn-in fonts into `.amber-tools/fonts/` beside it, from the Amber Runtime Assets
- * working copy or from a directory the CI binaries job downloaded the same release into.
+ * the bundled fonts (burn-in and reading) into `.amber-tools/fonts/` beside it, from the
+ * Amber Runtime Assets working copy or from a directory the CI binaries job downloaded the
+ * same release into.
  * A test that misses a tool fails rather than being skipped. The directory's `SHA256SUMS` must
  * be the pinned one (its own SHA256 is compiled in), and every archive is checked against it
  * before extraction; nothing comes from the system package manager.
@@ -149,7 +150,10 @@ export function setupTools(
   return installed;
 }
 
-/** The fonts do not depend on the host platform; they are re-placed when either asset's digest changes. */
+/**
+ * The fonts do not depend on the host platform. The stamp records the digest of every font
+ * asset, so they are all re-placed when any of them changes or a font asset is added.
+ */
 function installFonts(root: string, sourceDir: string, sums: Map<string, string>, stamp: Record<string, string>, stampPath: string): void {
   const fontsDir = join(root, TOOLS_FONTS_DIR);
   const expected = FONT_ASSETS.map((file) => sums.get(file) ?? fail(`${file} is not listed in SHA256SUMS`)).join(" ");

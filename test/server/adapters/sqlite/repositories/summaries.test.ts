@@ -1,5 +1,6 @@
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
+import { openDatabase, type SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import type { SummaryRevision } from "../../../../../src/server/domain/artifact.ts";
 import type { SegmentId } from "../../../../../src/shared/ids.ts";
@@ -121,5 +122,50 @@ describe("summary repository", () => {
     expect(countRows(db, "summary_artifact")).toBe(0);
     expect(countRows(db, "summary_revision")).toBe(0);
     expect(countRows(db, "rollup_partial")).toBe(0);
+  });
+});
+
+describe("summary repository: speaker context", () => {
+  const speakerContext = {
+    version: 1 as const,
+    rules: { id: "speaker.rules", version: 1 },
+    attributionDigest: "a".repeat(64),
+    speakers: [
+      { id: "s1", ordinal: 1, name: "蒋炎岩", label: "蒋炎岩" },
+      { id: "s2", ordinal: 2, label: "发言人 2" },
+    ],
+  };
+
+  it("stores the snapshot with the provenance and reads it back field for field, also after the database is reopened", () => {
+    const opened = openTempDatabase();
+    const value = revision("r1", T0);
+    const withSpeakers = { ...value, provenance: { ...value.provenance, speakerContext } };
+    const own = new SqliteRepository(opened.db);
+    insertRow(opened.db, "user", { id: "alice", role: "user", status: "active", created_at: T0 });
+    insertRow(opened.db, "content", { id: "c", user_id: "alice", source_kind: "local", processing_status: "queued", created_at: T0, updated_at: T0 });
+    own.withTransaction((scope) => scope.summaryTemplates.syncBuiltin([{ id: "summary.core", name: "summaryTemplate.core", versions: [{ version: 1, prompt: "core" }] }], T0));
+    own.withTransaction((scope) => scope.summaries.insertRevision("alice", { contentId: "c", templateId: "summary.core", artifactId: "a1", revision: withSpeakers }));
+    expect(own.withTransaction((scope) => scope.summaries.getRevision("alice", "r1"))).toEqual({ ...withSpeakers, artifactId: "a1" });
+    opened.db.close();
+    const reopened = openDatabase(opened.file, { backupDir: join(opened.dir, "backups") });
+    try {
+      const read = new SqliteRepository(reopened.db).withTransaction((scope) => scope.summaries.getRevision("alice", "r1"));
+      expect(read?.provenance.speakerContext).toEqual(speakerContext);
+    } finally {
+      reopened.db.close();
+    }
+  });
+
+  it("reads a row without the column, or with a value of another shape, as having no snapshot", () => {
+    insert("alice", "c", "summary.core", "a1", revision("r1", T0));
+    // Rows are immutable once written: the odd value is written as a restored backup would.
+    insertRow(db, "summary_revision", {
+      id: "r2", artifact_id: "a1", inputs_json: "[]", quality: "normal", body: "b", citations_json: "[]", created_at: T0 + 1,
+      speaker_context_json: JSON.stringify({ version: 2, speakers: "x" }),
+    });
+    for (const id of ["r1", "r2"]) {
+      const read = repository.withTransaction((scope) => scope.summaries.getRevision("alice", id));
+      expect(read && "speakerContext" in read.provenance).toBe(false);
+    }
   });
 });

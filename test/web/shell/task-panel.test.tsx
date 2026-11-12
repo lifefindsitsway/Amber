@@ -347,6 +347,29 @@ describe("TaskPanel and the trash", () => {
     act(() => bus?.publish({ type: "restored", contentId: "c2" }));
     expect(await screen.findByText("第二讲")).toBeTruthy();
   });
+
+  it("does not read the lists again for speaker changes or speaker reviews, which change no task", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "GET /api/tasks?unfinished=1": { body: { items: [task("t1", { targetTitle: "第一讲", contentId: "c1" })], eventSeq: 0 } },
+      [HISTORY]: { body: { items: [], eventSeq: 0 } },
+      "GET /api/tasks/t1": { body: taskDetail("t1", [], { targetTitle: "第一讲", contentId: "c1" }) },
+    });
+    let bus: ContentEventBus | undefined;
+    renderApp(
+      <>
+        <BusProbe onBus={(value) => (bus = value)} />
+        <TaskPanel open onOpenChange={() => undefined} />
+      </>,
+    );
+    expect(await screen.findByText("第一讲")).toBeTruthy();
+    const reads = () => calls.filter((call) => call.path === "/api/tasks?unfinished=1" || call.path === HISTORY_PATH).length;
+    const before = reads();
+    act(() => bus?.publish({ type: "speakersChanged", contentId: "c1" }));
+    act(() => bus?.publish({ type: "speakerReviewChanged", contentId: "c1" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reads()).toBe(before);
+  });
 });
 
 describe("task history", () => {
@@ -406,6 +429,28 @@ describe("task history", () => {
     expect(screen.queryByTestId("task-active")).toBeNull();
     expect(screen.queryByText("进行中")).toBeNull();
     expect(screen.queryByText("没有进行中的任务")).toBeNull();
+  });
+
+  it("names a transcription made only to compare speakers with apart from the Content's re-transcription", async () => {
+    mockApi({
+      ...baseRoutes(),
+      "GET /api/tasks?unfinished=1": { body: { items: [], eventSeq: 0 } },
+      [HISTORY]: {
+        body: {
+          items: [
+            task("h1", { kind: "retranscribe", comparison: true, targetTitle: "第一讲", statusProjection: "failed", finishedAt: 2 }),
+            task("h2", { kind: "retranscribe", targetTitle: "第一讲", statusProjection: "succeeded", finishedAt: 2 }),
+          ],
+          eventSeq: 0,
+        },
+      },
+    });
+    renderApp(<TaskPanel open onOpenChange={() => undefined} />);
+    await screen.findAllByTestId("task-history-card");
+    const cards = screen.getAllByTestId("task-history-card");
+    expect(cards[0]?.textContent).toContain("对比转录 · 失败");
+    expect(cards[0]?.textContent).not.toContain("重新转录");
+    expect(cards[1]?.textContent).toContain("重新转录 · 已完成");
   });
 
   it("loads the next page after the last one's cursor on request", async () => {

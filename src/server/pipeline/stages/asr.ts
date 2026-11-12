@@ -165,7 +165,9 @@ const CJK_EDGE_START = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p
  * (`exact_words`) when the provider returned usable words and sentence timing only
  * (`segment_only`) otherwise; words are assigned to sentences by their midpoint. It becomes
  * primary only when there is no primary yet or the current primary is itself a root revision
- * (`platform` or `asr`), so manual, imported and corrected revisions stay.
+ * (`platform` or `asr`), so manual, imported and corrected revisions stay. A transcription
+ * requested only for comparison is marked so in its generation and never does: it registers
+ * its speakers and leaves the primary, the original language and the search alone.
  */
 export class AsrStageExecutor implements StageExecutor {
   private readonly deps: AsrStageDeps;
@@ -205,7 +207,9 @@ export class AsrStageExecutor implements StageExecutor {
     // was submitted under, whatever the terminology or language became since.
     const anchored = isAsrJobProvider(provider) ? this.submittedUnit(owner, context) : undefined;
     const audio = this.audioOnDemand(context);
-    const requested = taskRequestView(context.task.requestJson).diarization;
+    const view = taskRequestView(context.task.requestJson);
+    const requested = view.diarization;
+    const comparison = view.comparison === true;
     let diarization: DiarizationDecision | undefined;
     if (anchored === undefined) {
       const { asset, audioMs } = await audio();
@@ -250,7 +254,9 @@ export class AsrStageExecutor implements StageExecutor {
       : { result: await this.transcribeAtOnce(provider, submission, digestOf(canonicalJson(digestBase))), diarization };
     const { result } = transcribed;
 
-    const { revision, segments, merged, droppedWords } = this.buildRevision(content, profile, modelId, result, requested, transcribed.diarization);
+    const built = this.buildRevision(content, profile, modelId, result, requested, transcribed.diarization);
+    const { segments, merged, droppedWords } = built;
+    const revision = comparison ? asComparison(built.revision) : built.revision;
     if (merged > 0) {
       reasons.push("asr_segment_merged");
     }
@@ -274,6 +280,11 @@ export class AsrStageExecutor implements StageExecutor {
           reasons.push("speakers_truncated");
         }
         scope.transcripts.insertRevision(owner, finalRevision(revision, published.segments), published.segments);
+        // A transcription made only to compare speakers with is stored with its speakers and
+        // nothing else: the primary, the original language and the search stay as they are.
+        if (comparison) {
+          return;
+        }
         const current = scope.contents.getIncludingTrashed(owner, content.id);
         const primary =
           current?.primaryTranscriptRevisionId === undefined ? undefined : scope.transcripts.getRevision(owner, current.primaryTranscriptRevisionId);
@@ -669,6 +680,12 @@ export class AsrStageExecutor implements StageExecutor {
       scope.contents.setMetadata(content.userId, content.id, { rawLanguage: language }, this.now());
     }
   }
+}
+
+/** The revision marked, in its immutable generation, as made only for comparison. */
+function asComparison(revision: TranscriptRevision): TranscriptRevision {
+  const { generation } = revision;
+  return generation.kind === "asr" ? { ...revision, generation: { ...generation, purpose: "comparison" } } : revision;
 }
 
 /** The result with every speaker label removed, from segments and words alike. */

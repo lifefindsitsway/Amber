@@ -1,5 +1,5 @@
 import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, type ReactNode, type Ref } from "react";
 import { captureAnchor, restoreAnchor as restoreDomAnchor, ROW_KEY_ATTRIBUTE, TOLERANCE_PX, type ScrollAnchor } from "./scroll-anchor.ts";
 
 /** Below this many rows everything renders; long transcripts switch to windowing. */
@@ -96,12 +96,21 @@ export function VirtualRows<T>(props: {
     },
     [],
   );
+  // Whether the handle scrolled while the current commit was being laid out. The caller's
+  // layout effects run after this list's own and before its passive effects: a scroll they make
+  // (back from a filter to a sentence, a kept anchor) answers the very change that also moved
+  // `scrollToIndex` (the same row at a new index), and centring that row afterwards would undo it.
+  const scrolledInCommit = useRef(false);
+  useLayoutEffect(() => {
+    scrolledInCommit.current = false;
+  });
   // Windowed rows go through the virtualizer: its scroll methods keep correcting the target
   // as rows are measured, so a jump lands on the real position rather than the estimate.
   useImperativeHandle(
     props.ref,
     () => ({
       scrollToIndex(index, align = "center") {
+        scrolledInCommit.current = true;
         if (windowed) {
           virtualizer.scrollToIndex(index, { align });
           return;
@@ -116,10 +125,12 @@ export function VirtualRows<T>(props: {
         }
       },
       scrollToTop() {
+        scrolledInCommit.current = true;
         if (windowed) virtualizer.scrollToOffset(0);
         else if (parent.current !== null) parent.current.scrollTop = 0;
       },
       scrollToBottom() {
+        scrolledInCommit.current = true;
         if (windowed) virtualizer.scrollToEnd();
         else if (parent.current !== null) parent.current.scrollTop = parent.current.scrollHeight;
       },
@@ -131,6 +142,7 @@ export function VirtualRows<T>(props: {
       restoreAnchor(anchor) {
         const list = parent.current;
         if (list === null) return;
+        scrolledInCommit.current = true;
         if (restoreFrame.current !== undefined) cancelAnimationFrame(restoreFrame.current);
         restoreFrame.current = undefined;
         if (!windowed) {
@@ -179,7 +191,7 @@ export function VirtualRows<T>(props: {
   );
 
   useEffect(() => {
-    if (target === undefined || target < 0) return;
+    if (target === undefined || target < 0 || scrolledInCommit.current) return;
     if (windowed) {
       virtualizer.scrollToIndex(target, { align: "center" });
       return;

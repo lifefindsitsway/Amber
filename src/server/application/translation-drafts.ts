@@ -242,12 +242,19 @@ function sameSentences(base: readonly TranscriptSegment[], drafted: ReadonlyArra
 
 /**
  * Where a hand edit of `base` comes from: the machine translation itself, or the origin a
- * hand-edited base already carries; none when the base has neither.
+ * hand-edited base already carries; none when the base has neither. The speakers the
+ * machine translation was given travel with it, so the hand edit still says what it was
+ * built on after that translation is cleaned up.
  */
 function originOf(base: TranscriptRevision): ManualTranslationOrigin | undefined {
   const generation = base.generation;
   if (generation.kind === "llm") {
-    return { revisionId: base.id, modelRef: generation.modelRef, promptRef: generation.promptRef };
+    return {
+      revisionId: base.id,
+      modelRef: generation.modelRef,
+      promptRef: generation.promptRef,
+      ...(generation.speakerContext === undefined ? {} : { speakerContext: generation.speakerContext }),
+    };
   }
   return generation.kind === "manual" ? generation.origin : undefined;
 }

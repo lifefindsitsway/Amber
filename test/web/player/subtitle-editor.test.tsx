@@ -11,6 +11,7 @@ import {
   readDefaultPlacement,
   readPlacement,
   resetSubtitlePrefsMemory,
+  subtitlePrefKeys,
   useSubtitlePrefs,
   type SubtitleDisplayMode,
 } from "../../../src/web/player/subtitle-prefs.ts";
@@ -104,6 +105,32 @@ describe("SubtitleEditor", () => {
     expect(readAppearance("u1").background).toEqual({ ...defaultSubtitleAppearance().background, enabled: true, padding: 20, scope: "translation" });
     expect([scope("both").checked, scope("translation").checked]).toEqual([false, true]);
     expect(scope("translation").closest("label")?.textContent).toBe("仅译文");
+  });
+
+  it("offers speaker labels as a group of its own, storing the mode and dropping the key altogether when off", () => {
+    render(<Panel mode="original" />);
+    const group = screen.getByTestId("subtitle-speaker-section");
+    expect(group.querySelector("legend")?.textContent).toBe("发言人");
+    expect([...group.querySelectorAll("label")].map((label) => label.textContent)).toEqual(["不显示", "换人时", "每条"]);
+    expect((screen.getByTestId("subtitle-speaker-off") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("subtitle-speaker-change"));
+    expect(readAppearance("u1").speaker).toBe("change");
+    fireEvent.click(screen.getByTestId("subtitle-speaker-every"));
+    expect(readAppearance("u1").speaker).toBe("every");
+    expect((screen.getByTestId("subtitle-speaker-every") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("subtitle-speaker-off"));
+    expect("speaker" in readAppearance("u1")).toBe(false);
+    // Stored exactly as an appearance from before speaker labels existed.
+    expect(JSON.parse(localStorage.getItem(subtitlePrefKeys.appearance("u1")) as string)).toEqual(defaultSubtitleAppearance());
+  });
+
+  it("puts the speaker group seventh, after the position", () => {
+    render(<Panel mode="bilingual" />);
+    const legends = [...document.querySelectorAll("fieldset > legend")].map((legend) => legend.textContent);
+    expect(legends).toHaveLength(7);
+    expect(legends[5]).toBe("位置");
+    expect(legends[6]).toBe("发言人");
+    expect(screen.getByTestId("subtitle-speaker-section").querySelector("legend")?.textContent).toBe(legends[6]);
   });
 
   it("places by preset and by typed percentages, with the anchor each preset implies", () => {

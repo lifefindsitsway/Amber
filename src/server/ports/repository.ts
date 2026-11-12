@@ -29,8 +29,9 @@ import type { AsrJobOutcome, AsrUsage, TokenUsage } from "../domain/usage.ts";
 import type { IdempotencyRecord, InstanceSettings, NetworkAllowlistEntry, PendingFileDelete, Session, UserSettings } from "../domain/runtime-support.ts";
 import type { StageRun, Task, WorkUnit, WorkUnitResult } from "../domain/task.ts";
 import type { ModelRefSnapshot, PromptRef } from "../domain/model-ref.ts";
+import type { SpeakerContextSnapshot } from "../domain/speaker-context.ts";
 import type { HistoryArtifactRef, ReferenceText, RevisionReference, TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
-import type { ChatCompaction, ChatMessage, ChatThread } from "../domain/chat.ts";
+import type { ChatCompaction, ChatContextUsed, ChatMessage, ChatThread } from "../domain/chat.ts";
 import type { User, UserCredential } from "../domain/user.ts";
 import type { WebSearchProfile } from "../domain/web-search.ts";
 import type { SecretEnvelopeStore } from "./secret-store.ts";
@@ -342,6 +343,8 @@ export interface TranscriptRepository {
 /** A change to a speaker: `null` clears the name or the photo; absent fields stay. */
 export interface SpeakerPatch {
   name?: string | null;
+  /** When the name was confirmed; `null` withdraws the confirmation. */
+  nameConfirmedAt?: number | null;
   colorIndex?: number;
   avatar?: SpeakerAvatar | null;
 }
@@ -361,7 +364,12 @@ export interface SpeakerRepository {
    * `defaultSpeakerColorIndex(ordinal)`. Throws unless the Content is the owner's and every id
    * is new to it. The caller enforces `SPEAKERS_PER_CONTENT_MAX`.
    */
-  insert(ownerUserId: string, contentId: string, speakers: ReadonlyArray<{ id: string; name?: string; colorIndex?: number }>, now: number): ContentSpeaker[];
+  insert(
+    ownerUserId: string,
+    contentId: string,
+    speakers: ReadonlyArray<{ id: string; name?: string; nameConfirmedAt?: number; colorIndex?: number }>,
+    now: number,
+  ): ContentSpeaker[];
   /** Applies the patch; a new photo raises the photo version. `undefined` when there is no such speaker. */
   update(ownerUserId: string, contentId: string, speakerId: string, patch: SpeakerPatch, now: number): ContentSpeaker | undefined;
   /** The stored photo with its version, when the speaker has one. */
@@ -371,11 +379,39 @@ export interface SpeakerRepository {
   /** Ids named by a sentence of an unarchived revision of the Content or by its transcript draft. */
   usedIds(ownerUserId: string, contentId: string): Set<string>;
   /**
+   * Ids named only by comparison transcriptions: by a sentence of at least one `asr` revision
+   * marked for comparison that is not the primary, and by no other revision (archived ones
+   * included) and no draft. Such speakers are left out of rosters, pickers and suggestions.
+   */
+  comparisonOnlyIds(ownerUserId: string, contentId: string): Set<string>;
+  /** Those of `speakerIds` still named by a sentence of any revision of the Content, or by any of its drafts. */
+  referencedAmong(ownerUserId: string, contentId: string, speakerIds: readonly string[]): Set<string>;
+  /** Deletes the given speakers of the Content; the caller makes sure nothing names them. Returns how many went. */
+  delete(ownerUserId: string, contentId: string, speakerIds: readonly string[]): number;
+  /**
    * Named speakers of the owner's Contents other than `excludeContentId` whose name contains
    * `query` (case-insensitive; every named one when blank), most recently changed first, at
-   * most `limit`, with the title of their Content.
+   * most `limit`, with the title of their Content. Speakers named only by comparison
+   * transcriptions (see `comparisonOnlyIds`) are left out.
    */
   suggestions(ownerUserId: string, query: string, excludeContentId: string | undefined, limit: number): Array<ContentSpeaker & { contentTitle?: string }>;
+}
+
+/**
+ * Which transcript revisions the user has reviewed for who said each sentence. The mark
+ * belongs to one revision and is never inherited by reading another; it goes with the
+ * revision, its Content or its owner.
+ */
+export interface SpeakerConfirmationRepository {
+  /** When the revision's speakers were confirmed; `undefined` = not reviewed (or not the owner's). */
+  confirmedAt(ownerUserId: string, revisionId: string): number | undefined;
+  /** The confirmed ones among `revisionIds`, with the time each was confirmed. */
+  confirmedAmong(ownerUserId: string, revisionIds: readonly string[]): Map<string, number>;
+  /**
+   * Confirms the revision at `confirmedAt`, or withdraws the mark when it is `undefined`;
+   * idempotent either way. Throws unless the revision belongs to the owner's Content.
+   */
+  set(ownerUserId: string, contentId: string, revisionId: string, confirmedAt: number | undefined): void;
 }
 
 /**
@@ -803,6 +839,8 @@ export interface ChapterRepository {
       promptRef: PromptRef;
       promptRefs?: PromptRef[];
       promptSnapshot: string;
+      /** The speakers the chapters were generated with; absent when none were read. */
+      speakerContext?: SpeakerContextSnapshot;
       quality: ChapterRevision["quality"];
       createdAt: number;
     },
@@ -855,12 +893,34 @@ export interface SearchIndexQuery {
   likeLimit: number;
 }
 
+/**
+ * Who a matched sentence is given to, joined when the query runs (names are never indexed).
+ * `confirmed`: the user reviewed the speakers of the revision the sentence belongs to.
+ */
+export interface SearchHitSpeaker {
+  id: string;
+  ordinal: number;
+  name?: string;
+  colorIndex: number;
+  confirmed: boolean;
+}
+
 /** One matched projection row, best first within its kind; the indexed text is returned whole. */
 export type SearchIndexHit =
   | { kind: "title" | "reference"; contentId: string; text: string }
-  | { kind: "segment"; contentId: string; transcriptRevisionId: string; segmentId: string; startMs: number; text: string }
+  | { kind: "segment"; contentId: string; transcriptRevisionId: string; segmentId: string; startMs: number; text: string; speaker?: SearchHitSpeaker }
   | { kind: "summary"; contentId: string; artifactId: string; templateId: string; summaryRevisionId: string; text: string }
   | { kind: "collection"; collectionId: string; text: string };
+
+/** A speaker whose name matches a search, with the sentences the Content's primary gives them. */
+export interface SearchSpeakerMatch {
+  contentId: string;
+  speakerId: string;
+  ordinal: number;
+  name: string;
+  colorIndex: number;
+  sentences: number;
+}
 
 /**
  * The FTS5 search projection. It is never a source of truth: every write that
@@ -881,9 +941,17 @@ export interface SearchIndexRepository {
   /**
    * Chat retrieval when the transcript does not fit the model's budget: segments of one
    * revision of the owner ranked by `bm25()` against the OR of the question's character
-   * trigrams; ids best first.
+   * trigrams; ids best first. `speakerIds` keeps only sentences of those speakers, in the
+   * query itself, so the limit counts their sentences only.
    */
-  matchSegments(ownerUserId: string, transcriptRevisionId: string, question: string, limit: number): string[];
+  matchSegments(ownerUserId: string, transcriptRevisionId: string, question: string, limit: number, options?: { speakerIds?: readonly string[] }): string[];
+  /**
+   * Speakers of the owner whose name contains every term, matched literally in the business
+   * tables (names are not in the projection), in Contents that are not in the trash and whose
+   * primary revision gives them at least one sentence. One entry per speaker of a Content —
+   * the same name in two Contents is two entries. Most sentences first.
+   */
+  matchSpeakers(ownerUserId: string, terms: readonly string[], limit: number): SearchSpeakerMatch[];
   /** Drops and re-derives the projection of every user. */
   rebuild(): void;
   /** False when the FTS integrity check fails or the projection is missing while data exists. */
@@ -925,6 +993,12 @@ export interface ChatRepository {
   /** Writes the outcome of a streamed answer. */
   finishMessage(ownerUserId: string, message: ChatMessageOutcome): void;
   /**
+   * Records the material an answer was finally planned with, before it streams, so a failed
+   * or interrupted answer keeps it too; `false` when the owner has no such answer (it may
+   * have gone with its thread meanwhile).
+   */
+  recordContextUsed(ownerUserId: string, messageId: string, contextUsed: ChatContextUsed): boolean;
+  /**
    * Deletes the owner's messages among `messageIds`; usage rows that named them keep their
    * snapshot. No compaction may still end on one of them. Returns how many went.
    */
@@ -962,6 +1036,8 @@ export interface HighlightRepository {
       promptRef: PromptRef;
       promptRefs?: PromptRef[];
       promptSnapshot: string;
+      /** The speakers the highlights were picked with; absent when none were read. */
+      speakerContext?: SpeakerContextSnapshot;
       quality: HighlightRevision["quality"];
       createdAt: number;
     },
@@ -1047,6 +1123,7 @@ export interface RepositoryScope {
   mediaAssets: MediaAssetRepository;
   transcripts: TranscriptRepository;
   speakers: SpeakerRepository;
+  speakerConfirmations: SpeakerConfirmationRepository;
   revisionReferences: RevisionReferenceRepository;
   secretEnvelopes: SecretEnvelopeStore;
   importBatches: ImportBatchRepository;
