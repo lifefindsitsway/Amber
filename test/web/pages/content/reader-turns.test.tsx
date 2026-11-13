@@ -2,6 +2,8 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN } from "../../../../src/shared/defaults.ts";
 import { MARKER_FADE_MS } from "../../../../src/web/pages/content/reader-sticky.ts";
+import { READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS } from "../../../../src/web/pages/content/reader-sentences.tsx";
+import { READER_GUTTER } from "../../../../src/web/pages/content/reader-turns.tsx";
 import { segment } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
 import { CHEN, mountReader, SPEAKER_SEGMENTS, speakerRoutes, TYPOGRAPHY_KEY, UNNAMED } from "../../../fixtures/web/reader-speakers.tsx";
@@ -231,7 +233,19 @@ describe("typography", () => {
     expect(wide.style.paddingBottom).toBe("1.5em");
     expect(wide.style.getPropertyValue("--reader-avatar")).toBe("clamp(28px, 1.75em, 48px)");
     const grid = wide.lastElementChild as HTMLElement;
-    expect(grid.style.gridTemplateColumns).toBe("calc(var(--reader-avatar) + 0.75em) minmax(0, 40em)");
+    expect(grid.style.gridTemplateColumns).toBe("calc(var(--reader-avatar) + 0.75em) minmax(0, 1fr)");
+    // The measure belongs to the centred reading column around the row, sized from the reading size plus the gutter.
+    const column = wide.closest("[data-row-index] > div") as HTMLElement;
+    expect(column.className).toBe(READER_COLUMN_CLASS);
+    const host = reader.parentElement as HTMLElement;
+    expect(host.style.getPropertyValue("--reader-font-size")).toBe(`${size}px`);
+    expect(host.style.getPropertyValue("--reader-gutter")).toBe(READER_GUTTER);
+    expect(reader.className).toContain(READER_SCROLLER_CLASS);
+    // A chapter heading indents by the gutter, to the edge the names and the text share.
+    const chapterColumn = (within(reader).getAllByTestId("transcript-chapter")[0] as HTMLElement).parentElement as HTMLElement;
+    expect(chapterColumn.className).toBe(READER_COLUMN_CLASS);
+    expect(chapterColumn.hasAttribute(READER_INDENT_ATTRIBUTE)).toBe(true);
+    expect(column.hasAttribute(READER_INDENT_ATTRIBUTE)).toBe(false);
     // The timestamp and the avatar are separate boxes in the header row; the text column starts after the gutter.
     const header = within(wide).getByTestId("turn-header");
     expect(header.style.minHeight).toBe("var(--reader-avatar)");
@@ -250,7 +264,12 @@ describe("typography", () => {
     const paragraph = reader.querySelector("[data-segment-id='g1']")?.closest("p") as HTMLElement;
     expect(paragraph.style.fontSize).toBe("24px");
     expect(paragraph.style.lineHeight).toBe("1.6");
-    expect(paragraph.style.maxWidth).toBe("40em");
+    // No measure of its own and no gutter: the reading column carries the measure.
+    expect(paragraph.style.maxWidth).toBe("");
+    expect(paragraph.parentElement?.className).toBe(READER_COLUMN_CLASS);
+    const host = reader.parentElement as HTMLElement;
+    expect(host.style.getPropertyValue("--reader-gutter")).toBe("0px");
+    expect(host.style.getPropertyValue("--reader-font-size")).toBe("24px");
     expect(paragraph.style.paddingBottom).toBe("0.75em");
   });
 
@@ -382,6 +401,9 @@ describe("sticky marker", () => {
     await waitFor(() => expect(marker.getAttribute("data-visible")).toBe("true"));
     expect(marker.querySelector("[data-speaker-id]")?.getAttribute("data-speaker-id")).toBe("sp1");
     expect(host.contains(marker)).toBe(true);
+    // Its horizontal place comes from a still copy of the scroller and its reading column.
+    expect(marker.parentElement?.className).toContain(READER_COLUMN_CLASS);
+    expect(marker.parentElement?.parentElement?.className).toContain(READER_SCROLLER_CLASS);
     // The marker takes no pointer input and is not a control.
     expect(marker.querySelector("button")).toBeNull();
   });

@@ -341,6 +341,14 @@ export const READER_FONT_SIZE_DEFAULT = 16;
 export const READER_LINE_HEIGHTS = "1.5 1.6 1.7 1.8 2.0";
 /** Line height the reading view starts with; one of `READER_LINE_HEIGHTS`. */
 export const READER_LINE_HEIGHT_DEFAULT = 1.7;
+/** Smallest space between the reading view's edges and its text, on either side, in px. */
+export const READER_MARGIN_MIN = 16;
+/** Largest space between the reading view's edges and its text, on either side, in px. */
+export const READER_MARGIN_MAX = 200;
+/** Step of the reading view's side margin control, in px. */
+export const READER_MARGIN_STEP = 4;
+/** Side margin the reading view starts with, in px: just clear of the floating jump buttons. */
+export const READER_MARGIN_DEFAULT = 56;
 /** Longest name of a reading font the user types in, in characters. */
 export const READER_FONT_NAME_MAX_CHARS = 64;
 

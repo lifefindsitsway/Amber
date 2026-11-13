@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
@@ -42,11 +42,11 @@ import { DraftEditor } from "./draft-editor.tsx";
 import { revisionLabel } from "./labels.ts";
 import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
-import { PARAGRAPH_GAP_EM, READER_MEASURE_EM, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
+import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
 import { useStickyTurn } from "./reader-sticky.ts";
-import { StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
+import { READER_GUTTER, StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
 import { ReaderTypographyPopover } from "./reader-typography-popover.tsx";
-import { READER_TYPOGRAPHY_DEFAULTS, useReaderTypography, type ReaderTypography, type ReaderTypographyChange } from "./reader-typography.ts";
+import { READER_TYPOGRAPHY_DEFAULTS, readerSideMargin, useReaderTypography, type ReaderTypography, type ReaderTypographyChange } from "./reader-typography.ts";
 import { RevisionActions } from "./revision-actions-dialog.tsx";
 import { revisionInfo } from "./revision-info.ts";
 import { useLocatedSegment } from "./same-sentence.ts";
@@ -401,7 +401,8 @@ function TranscriptReader(props: {
       next.lineHeight === typography.lineHeight &&
       next.showSpeakers === typography.showSpeakers &&
       next.font === typography.font &&
-      next.customFont === typography.customFont
+      next.customFont === typography.customFont &&
+      readerSideMargin(next) === readerSideMargin(typography)
     ) {
       return;
     }
@@ -414,14 +415,15 @@ function TranscriptReader(props: {
       typography.lineHeight === READER_TYPOGRAPHY_DEFAULTS.lineHeight &&
       typography.showSpeakers === READER_TYPOGRAPHY_DEFAULTS.showSpeakers &&
       typography.font === undefined &&
-      typography.customFont === undefined;
+      typography.customFont === undefined &&
+      readerSideMargin(typography) === readerSideMargin(READER_TYPOGRAPHY_DEFAULTS);
     if (!unchanged) rememberAnchor();
     resetTypography();
   };
   // Every commit consumes the anchor, but only one that really resized the rows puts it back: re-measuring
   // a windowed list for a commit that changed nothing would only make it jump.
   // The font drawn, not the one stored: a bundled face only resizes the rows once it is registered.
-  const layoutKey = `${typography.fontSize} ${typography.lineHeight} ${showTurns} ${readerFont.key}`;
+  const layoutKey = `${typography.fontSize} ${typography.lineHeight} ${readerSideMargin(typography)} ${showTurns} ${readerFont.key}`;
   const committedLayout = useRef(layoutKey);
   useLayoutEffect(() => {
     const anchor = anchorBeforeChange.current;
@@ -493,6 +495,40 @@ function TranscriptReader(props: {
     },
     ...(speakerMode ? { speakerPrefixOf: (segmentId: string) => speakerPrefix(segments.data?.find((segment) => segment.id === segmentId)?.speakerId) } : {}),
   });
+
+  /** One row of the reader, before it is set in the reading column. */
+  const renderRow = (row: (typeof shownRows)[number], index: number): ReactNode => {
+    if (row.kind === "gap")
+      return (
+        <SpeakerGap
+          gap={row}
+          onReturn={(segmentId) => {
+            filter.clear();
+            returnTo(segmentId);
+          }}
+        />
+      );
+    if (row.kind === "chapter") return <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />;
+    const sentences: SentenceViewProps = {
+      selectedId: located.segmentId,
+      currentId: current?.id,
+      overlapIds,
+      changes,
+      search: props.search,
+      notes: placed,
+      onOpenNotes,
+      onSentence,
+    };
+    const onSeekParagraph = (): void => {
+      const first = row.paragraph.segments[0];
+      if (first !== undefined) onSentence(first);
+    };
+    return row.turn === undefined ? (
+      <ParagraphView {...sentences} paragraph={row.paragraph} typography={typography} onSeekParagraph={onSeekParagraph} />
+    ) : (
+      <TurnParagraph {...sentences} context={turnContext} paragraph={row.paragraph} turn={row.turn} onSeekParagraph={onSeekParagraph} />
+    );
+  };
 
   return (
     <div ref={menuTarget} className="flex h-full min-h-0 flex-col" data-revision-id={revision.id} data-explainable data-notes>
@@ -636,49 +672,34 @@ function TranscriptReader(props: {
       ) : filtered !== undefined && filtered.sentences === 0 ? (
         <SpeakerFilterEmpty onClear={filter.clear} />
       ) : (
-        <div ref={setHost} className="relative min-h-0 flex-1" onMouseDown={pinned.start} {...readerFont.hostProps}>
+        <div
+          ref={setHost}
+          className="relative min-h-0 flex-1"
+          onMouseDown={pinned.start}
+          {...readerFont.hostProps}
+          style={{
+            ...readerFont.hostProps.style,
+            // Read by the reading column and by the sticky marker's copy of it.
+            "--reader-font-size": `${typography.fontSize}px`,
+            "--reader-gutter": showTurns && !narrow ? READER_GUTTER : "0px",
+            "--reader-margin": `${readerSideMargin(typography)}px`,
+          } as CSSProperties}
+        >
           <VirtualRows
             ref={reader}
-            // The right padding keeps the text clear of the floating jump buttons at any font size.
-            className="absolute inset-0 py-2 pr-14 pl-4"
+            className={`absolute inset-0 ${READER_SCROLLER_CLASS}`}
             testId="transcript-reader"
             items={shownRows}
             keyOf={(row) => filteredRowKey(row, viewRowKey)}
             estimateSize={96}
             scrollToIndex={targetIndex}
             pinnedIndex={pinned.index}
-            render={(row, index) => {
-              if (row.kind === "gap")
-                return (
-                  <SpeakerGap
-                    gap={row}
-                    onReturn={(segmentId) => {
-                      filter.clear();
-                      returnTo(segmentId);
-                    }}
-                  />
-                );
-              if (row.kind === "chapter") return <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />;
-              const sentences: SentenceViewProps = {
-                selectedId: located.segmentId,
-                currentId: current?.id,
-                overlapIds,
-                changes,
-                search: props.search,
-                notes: placed,
-                onOpenNotes,
-                onSentence,
-              };
-              const onSeekParagraph = (): void => {
-                const first = row.paragraph.segments[0];
-                if (first !== undefined) onSentence(first);
-              };
-              return row.turn === undefined ? (
-                <ParagraphView {...sentences} paragraph={row.paragraph} typography={typography} onSeekParagraph={onSeekParagraph} />
-              ) : (
-                <TurnParagraph {...sentences} context={turnContext} paragraph={row.paragraph} turn={row.turn} onSeekParagraph={onSeekParagraph} />
-              );
-            }}
+            render={(row, index) => (
+              // Every row sits in the reading column; a chapter heading indents to the text's edge.
+              <div className={READER_COLUMN_CLASS} {...(row.kind === "chapter" ? { [READER_INDENT_ATTRIBUTE]: "" } : {})}>
+                {renderRow(row, index)}
+              </div>
+            )}
           />
           {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
           {shownRows.length > 0 ? (
@@ -731,7 +752,7 @@ function ParagraphView(props: SentenceViewProps & { paragraph: Paragraph; typogr
     <p
       className="break-words"
       {...{ [READER_TEXT_ATTRIBUTE]: "" }}
-      style={{ ...readerBodyStyle(props.typography), maxWidth: `${READER_MEASURE_EM}em`, paddingBottom: `${PARAGRAPH_GAP_EM}em` }}
+      style={{ ...readerBodyStyle(props.typography), paddingBottom: `${PARAGRAPH_GAP_EM}em` }}
     >
       <button type="button" className="mr-2 font-mono text-xs text-accent hover:underline" data-reading-time onClick={props.onSeekParagraph}>
         {formatDuration(props.paragraph.startMs)}

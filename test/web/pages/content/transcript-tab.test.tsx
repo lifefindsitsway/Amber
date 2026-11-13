@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useLocation } from "react-router";
-import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT, READER_MARGIN_DEFAULT, READER_MARGIN_MAX } from "../../../../src/shared/defaults.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../src/shared/reader-typography.ts";
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
@@ -849,9 +849,9 @@ const FONT_ROUTES = {
 };
 
 describe("TranscriptTab keeps the reading position when the typography changes", () => {
-  type Change = "font" | "lineHeight" | "speakers" | "typeface";
+  type Change = "font" | "lineHeight" | "speakers" | "typeface" | "margin";
 
-  type Typography = { fontSize: number; lineHeight: number; turns: boolean; face: string };
+  type Typography = { fontSize: number; lineHeight: number; turns: boolean; face: string; margin: number };
 
   /** Where the list sits on screen: its top edge, the height it shows and the padding above its first row. */
   const LIST_TOP = 100;
@@ -872,6 +872,7 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       lineHeight: Number.parseFloat(holder?.style.lineHeight || String(READER_LINE_HEIGHT_DEFAULT)),
       turns: reader.querySelector("[data-turn-key]") !== null,
       face: reader.closest("[data-reader-font]")?.getAttribute("data-reader-font") ?? "default",
+      margin: Number.parseFloat(reader.parentElement?.style.getPropertyValue("--reader-margin") || String(READER_MARGIN_DEFAULT)),
     };
   }
 
@@ -958,6 +959,7 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       if (kind === "font") fireEvent.click(within(popover).getByRole("button", { name: "增大字号" }));
       else if (kind === "lineHeight") fireEvent.click(within(popover).getByRole("radio", { name: "2.0" }));
       else if (kind === "typeface") fireEvent.click(within(popover).getByRole("radio", { name: /^宋体/u }));
+      else if (kind === "margin") fireEvent.change(within(popover).getByRole("slider", { name: "左右间距" }), { target: { value: String(READER_MARGIN_MAX) } });
       else fireEvent.click(within(popover).getByRole("switch", { name: "显示发言人" }));
       expect(localStorage.getItem(TYPOGRAPHY_KEY)).not.toBeNull();
     });
@@ -983,10 +985,12 @@ describe("TranscriptTab keeps the reading position when the typography changes",
     const windowedBase = (turns: boolean): number => (turns || !speakers ? 400 : 360);
     // The serif face sets a little wider, so its rows wrap into more lines.
     const faceFactor = (face: string): number => (face === "default" ? 1 : 1.25);
-    layOut(({ fontSize, lineHeight, turns, face }) =>
+    // Wider margins leave a narrower column, so the rows wrap into more lines.
+    const marginFactor = (margin: number): number => 1 + (margin - READER_MARGIN_DEFAULT) / 400;
+    layOut(({ fontSize, lineHeight, turns, face, margin }) =>
       windowed
-        ? windowedBase(turns) * (fontSize / READER_FONT_SIZE_DEFAULT) * (lineHeight / READER_LINE_HEIGHT_DEFAULT) * faceFactor(face)
-        : (fontSize * lineHeight * 3 + (turns ? 40 : 0)) * faceFactor(face),
+        ? windowedBase(turns) * (fontSize / READER_FONT_SIZE_DEFAULT) * (lineHeight / READER_LINE_HEIGHT_DEFAULT) * faceFactor(face) * marginFactor(margin)
+        : (fontSize * lineHeight * 3 + (turns ? 40 : 0)) * faceFactor(face) * marginFactor(margin),
     );
     stubFontFaces(fonts.ready);
     const typography = { ...READER_TYPOGRAPHY_DEFAULTS, ...stored };
@@ -1005,6 +1009,7 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       lineHeight: typography.lineHeight,
       turns: speakers && typography.showSpeakers,
       face: fonts.drawn ?? typography.font ?? "default",
+      margin: typography.sideMargin ?? READER_MARGIN_DEFAULT,
     };
     await waitFor(() => expect(typographyOf(reader)).toEqual(expected), { timeout: 5_000 });
     return { ...mounted, reader };
@@ -1046,6 +1051,8 @@ describe("TranscriptTab keeps the reading position when the typography changes",
       ["showing the speakers", "speakers", true],
       ["font", "typeface", false],
       ["font with speakers", "typeface", true],
+      ["side margin", "margin", false],
+      ["side margin with speakers", "margin", true],
     ])("puts the first visible row back at the same distance from the top after changing the %s", async (_label, kind, speakers) => {
       const { reader } = await openList(windowed, speakers);
       const before = await scrollToAnchor(reader);
@@ -1246,7 +1253,21 @@ describe("TranscriptTab reading font", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
     expect(fontCalls(calls)).toEqual([]);
     expect(reader.closest("[data-reader-font]")).toBeNull();
-    expect(reader.parentElement?.getAttribute("style")).toBeNull();
+    // The host carries only the reading column's size variables, no font of any kind.
+    const host = reader.parentElement as HTMLElement;
+    expect([...host.style].sort()).toEqual(["--reader-font-size", "--reader-gutter", "--reader-margin"]);
+  });
+
+  it("gives the reading column the default side margin in px when none is stored", async () => {
+    stubFontFaces();
+    const { reader } = await openReader();
+    expect((reader.parentElement as HTMLElement).style.getPropertyValue("--reader-margin")).toBe(`${READER_MARGIN_DEFAULT}px`);
+  });
+
+  it("gives the reading column the stored side margin in px", async () => {
+    stubFontFaces();
+    const { reader } = await openReader({ sideMargin: 120 });
+    expect((reader.parentElement as HTMLElement).style.getPropertyValue("--reader-margin")).toBe("120px");
   });
 
   it("applies a stored bundled face once read, to the sentence paragraphs only", async () => {

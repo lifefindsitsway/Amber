@@ -108,8 +108,11 @@ describe("filterUiPreferences", () => {
 
   it("drops a reader typography with an invalid value or an unsafe user id, and leaves other keys alone", () => {
     const valid = JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true });
+    const withMargin = JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, sideMargin: 120 });
     const { accepted, dropped } = filterUiPreferences({
       "amber.reader.typography.ok": valid,
+      "amber.reader.typography.margin": withMargin,
+      "amber.reader.typography.badmargin": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, sideMargin: 4 }),
       "amber.reader.typography.fontsize": JSON.stringify({ version: 1, fontSize: 33, lineHeight: 1.7, showSpeakers: true }),
       "amber.reader.typography.lineheight": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.75, showSpeakers: true }),
       "amber.reader.typography.extra": JSON.stringify({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true, color: "red" }),
@@ -118,10 +121,11 @@ describe("filterUiPreferences", () => {
       "amber.reader.typography.a.b": valid,
       "amber.player.muted": "1",
     });
-    expect(accepted).toEqual({ "amber.reader.typography.ok": valid, "amber.player.muted": "1" });
+    expect(accepted).toEqual({ "amber.reader.typography.ok": valid, "amber.reader.typography.margin": withMargin, "amber.player.muted": "1" });
     expect(dropped).toEqual([
       { key: "amber.reader.typography.", reason: "not_allowed" },
       { key: "amber.reader.typography.a.b", reason: "not_allowed" },
+      { key: "amber.reader.typography.badmargin", reason: "invalid_value" },
       { key: "amber.reader.typography.broken", reason: "invalid_value" },
       { key: "amber.reader.typography.extra", reason: "invalid_value" },
       { key: "amber.reader.typography.fontsize", reason: "invalid_value" },

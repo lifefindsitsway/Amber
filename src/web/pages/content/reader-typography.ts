@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef } from "react";
 import {
   READER_TYPOGRAPHY_DEFAULTS,
+  readerSideMargin,
   readerTypographyKey,
   readerTypographySchema,
   type ReaderFont,
@@ -9,15 +10,17 @@ import {
 import { useMe } from "../../api/queries.ts";
 import { useStoredValue } from "../../use-stored-value.ts";
 
-export { READER_TYPOGRAPHY_DEFAULTS, readerTypographyKey, readerTypographySchema, type ReaderTypography };
+export { READER_TYPOGRAPHY_DEFAULTS, readerSideMargin, readerTypographyKey, readerTypographySchema, type ReaderTypography };
 
 /**
- * A change to the typography. `font` and `customFont` may be set to `undefined` to remove
- * them: no `font` is the default font, and no `customFont` means no name has been typed.
+ * A change to the typography. `font`, `customFont` and `sideMargin` may be set to `undefined`
+ * to remove them: no `font` is the default font, no `customFont` means no name has been typed,
+ * and no `sideMargin` is the default margin.
  */
-export type ReaderTypographyChange = Partial<Omit<ReaderTypography, "version" | "font" | "customFont">> & {
+export type ReaderTypographyChange = Partial<Omit<ReaderTypography, "version" | "font" | "customFont" | "sideMargin">> & {
   font?: ReaderFont | undefined;
   customFont?: string | undefined;
+  sideMargin?: number | undefined;
 };
 
 /** Writes made before the current user is known have no key to go to and are dropped. */
@@ -37,13 +40,14 @@ export function parseReaderTypography(raw: string | undefined): ReaderTypography
   }
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return { ...READER_TYPOGRAPHY_DEFAULTS };
   const fields = stored as Record<string, unknown>;
-  const { fontSize, lineHeight, showSpeakers, font, customFont } = readerTypographySchema.shape;
+  const { fontSize, lineHeight, showSpeakers, font, customFont, sideMargin } = readerTypographySchema.shape;
   const fontSizeResult = fontSize.safeParse(fields.fontSize);
   const lineHeightResult = lineHeight.safeParse(fields.lineHeight);
   const showSpeakersResult = showSpeakers.safeParse(fields.showSpeakers);
-  // Both are optional: absent (as in every value stored before fonts could be chosen) or damaged reads as absent.
+  // These are optional: absent (as in every value stored before they could be chosen) or damaged reads as absent.
   const fontResult = font.unwrap().safeParse(fields.font);
   const customFontResult = customFont.unwrap().safeParse(fields.customFont);
+  const sideMarginResult = sideMargin.unwrap().safeParse(fields.sideMargin);
   return {
     version: 1,
     fontSize: fontSizeResult.success ? fontSizeResult.data : READER_TYPOGRAPHY_DEFAULTS.fontSize,
@@ -51,6 +55,7 @@ export function parseReaderTypography(raw: string | undefined): ReaderTypography
     showSpeakers: showSpeakersResult.success ? showSpeakersResult.data : READER_TYPOGRAPHY_DEFAULTS.showSpeakers,
     ...(fontResult.success ? { font: fontResult.data } : {}),
     ...(customFontResult.success ? { customFont: customFontResult.data } : {}),
+    ...(sideMarginResult.success ? { sideMargin: sideMarginResult.data } : {}),
   };
 }
 

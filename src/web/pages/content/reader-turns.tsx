@@ -5,7 +5,7 @@ import type { SpeakerShare } from "../../../shared/speaker-turns.ts";
 import { formatDuration } from "../../format.ts";
 import type { Paragraph } from "./content-data.ts";
 import { READER_TEXT_ATTRIBUTE } from "./reader-font.ts";
-import { PARAGRAPH_GAP_EM, READER_MEASURE_EM, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
+import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_SCROLLER_CLASS, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
 import { MARKER_FADE_MS, TURN_HEADER_ATTRIBUTE, TURN_KEY_ATTRIBUTE, TURN_SPEAKER_ATTRIBUTE, useFadedTurn, type StickyTurn } from "./reader-sticky.ts";
 import type { TurnPlace } from "./reader-rows.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
@@ -19,6 +19,11 @@ export const READER_NARROW_MAX_PX = 520;
 
 /** Space between the avatar and the name, and so the gutter's width beyond the avatar, in em. */
 const GUTTER_GAP_EM = 0.75;
+/**
+ * The gutter's width in a wide speaker layout: the avatar and the gap after it. Rows without a
+ * gutter of their own (chapter headings) indent by it so they line up with the names and the text.
+ */
+export const READER_GUTTER = `calc(${AVATAR_EM_SIZE} + ${GUTTER_GAP_EM}em)`;
 /** The same gap as a class, for the avatar that is followed by its name. */
 const GUTTER_GAP_CLASS = "mr-[0.75em]";
 
@@ -42,7 +47,8 @@ const rowStyle = (context: TurnContext, turn: TurnPlace): CSSProperties =>
     paddingBottom: `${turn.last ? TURN_GAP_EM : PARAGRAPH_GAP_EM}em`,
   }) as CSSProperties;
 
-const GRID_COLUMNS: CSSProperties = { gridTemplateColumns: [`calc(var(${AVATAR_VAR}) + ${GUTTER_GAP_EM}em)`, `minmax(0, ${READER_MEASURE_EM}em)`].join(" ") };
+// The text column takes what the reading column leaves after the gutter.
+const GRID_COLUMNS: CSSProperties = { gridTemplateColumns: [`calc(var(${AVATAR_VAR}) + ${GUTTER_GAP_EM}em)`, `minmax(${["0", "1fr"].join(", ")})`].join(" ") };
 
 /** Marks a turn's paragraph as sentence text, which takes the reading font; the header around it keeps the UI font. */
 const READER_TEXT = { [READER_TEXT_ATTRIBUTE]: "" };
@@ -145,7 +151,6 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
   const marker = { [TURN_KEY_ATTRIBUTE]: turn.key, [TURN_SPEAKER_ATTRIBUTE]: turn.speakerId ?? "" };
   const runs = <SentenceRuns {...props} segments={paragraph.segments} />;
   const style = rowStyle(context, turn);
-  const measure: CSSProperties = { maxWidth: `${READER_MEASURE_EM}em` };
   const time = <TimeButton ms={paragraph.startMs} onSeek={props.onSeekParagraph} className="mr-2" />;
 
   if (turn.compact && !context.narrow) {
@@ -175,7 +180,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
       data-reading-time
       data-testid="turn-header"
       className="flex min-w-0 items-center gap-2"
-      style={{ minHeight: `var(${AVATAR_VAR})`, maxWidth: context.narrow ? `${READER_MEASURE_EM}em` : `calc(var(${AVATAR_VAR}) + ${GUTTER_GAP_EM}em + ${READER_MEASURE_EM}em)` }}
+      style={{ minHeight: `var(${AVATAR_VAR})` }}
     >
       <SpeakerTag context={context} speakerId={turn.speakerId} />
       <TimeButton ms={turn.startMs} onSeek={props.onSeekParagraph} className="shrink-0" />
@@ -186,7 +191,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
     return (
       <div {...marker} data-turn-layout="narrow" style={style}>
         {header}
-        <p className="break-words" {...READER_TEXT} style={{ ...measure, ...(header === null ? {} : { marginTop: "0.25em" }) }}>
+        <p className="break-words" {...READER_TEXT} style={header === null ? undefined : { marginTop: "0.25em" }}>
           {turn.first ? null : time}
           {runs}
         </p>
@@ -221,23 +226,30 @@ export function StickyTurnMarker(props: {
   const { shown, visible } = useFadedTurn(props.turn);
   const speaker = shown?.speakerId === undefined ? undefined : props.speakers.get(shown.speakerId);
   return (
-    <div
-      aria-hidden="true"
-      data-testid="turn-marker"
-      data-visible={visible ? "true" : "false"}
-      // The reader's scroller pads 1rem on the left and 0.5rem on top; the marker sits in its gutter.
-      className={`pointer-events-none absolute z-10 flex justify-center transition-opacity motion-reduce:transition-none ${visible ? "opacity-100" : "opacity-0"}`}
-      style={{ left: "1rem", top: "0.5rem", width: AVATAR_EM_SIZE, fontSize: `${props.typography.fontSize}px`, transitionDuration: `${MARKER_FADE_MS}ms` }}
-    >
-      {shown === undefined ? null : (
-        <span className="rounded-full bg-surface" data-speaker-id={shown.speakerId ?? ""}>
-          {speaker === undefined ? (
-            <SpeakerAvatar unassigned size="em" variant="muted" decorative />
-          ) : (
-            <SpeakerAvatar contentId={props.contentId} speaker={speaker} size="em" variant="muted" decorative />
+    // A still copy of the reader's box: the same scrollbar gutters and reading column (with its
+    // margin) as the scroller, so the marker's column starts exactly where the rows' avatars do at any
+    // width and font size, without measuring the rows.
+    <div aria-hidden="true" className={`${READER_SCROLLER_CLASS} pointer-events-none absolute inset-0 z-10 overflow-hidden`}>
+      <div className={`${READER_COLUMN_CLASS} relative`}>
+        <div
+          aria-hidden="true"
+          data-testid="turn-marker"
+          data-visible={visible ? "true" : "false"}
+          className={`absolute top-0 flex justify-center transition-opacity motion-reduce:transition-none ${visible ? "opacity-100" : "opacity-0"}`}
+          // The column's margin is its padding, which an absolute box does not respect: start where the rows' avatars do.
+          style={{ insetInlineStart: "var(--reader-inset)", width: AVATAR_EM_SIZE, fontSize: `${props.typography.fontSize}px`, transitionDuration: `${MARKER_FADE_MS}ms` }}
+        >
+          {shown === undefined ? null : (
+            <span className="rounded-full bg-surface" data-speaker-id={shown.speakerId ?? ""}>
+              {speaker === undefined ? (
+                <SpeakerAvatar unassigned size="em" variant="muted" decorative />
+              ) : (
+                <SpeakerAvatar contentId={props.contentId} speaker={speaker} size="em" variant="muted" decorative />
+              )}
+            </span>
           )}
-        </span>
-      )}
+        </div>
+      </div>
     </div>
   );
 }

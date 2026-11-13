@@ -7,6 +7,10 @@ import {
   READER_FONT_SIZE_MAX,
   READER_FONT_SIZE_MIN,
   READER_LINE_HEIGHT_DEFAULT,
+  READER_MARGIN_DEFAULT,
+  READER_MARGIN_MAX,
+  READER_MARGIN_MIN,
+  READER_MARGIN_STEP,
 } from "../../../../src/shared/defaults.ts";
 import type { BundledFontFace } from "../../../../src/web/bundled-fonts.ts";
 import { READER_LINE_HEIGHT_OPTIONS, READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../src/shared/reader-typography.ts";
@@ -97,11 +101,11 @@ describe("ReaderTypographyPopover", () => {
     expect(onChange).toHaveBeenLastCalledWith({ fontSize: READER_FONT_SIZE_DEFAULT + 1 });
     fireEvent.click(within(popover).getByRole("button", { name: "减小字号" }));
     expect(onChange).toHaveBeenLastCalledWith({ fontSize: READER_FONT_SIZE_DEFAULT });
-    fireEvent.change(within(popover).getByRole("slider"), { target: { value: "24" } });
+    fireEvent.change(within(popover).getByRole("slider", { name: "字号" }), { target: { value: "24" } });
     expect(onChange).toHaveBeenLastCalledWith({ fontSize: 24 });
     expect(within(popover).getByTestId("reader-font-size-value").textContent).toBe("24 px");
     // Out-of-range input from the control is clamped before it reaches the preference.
-    fireEvent.change(within(popover).getByRole("slider"), { target: { value: "99" } });
+    fireEvent.change(within(popover).getByRole("slider", { name: "字号" }), { target: { value: "99" } });
     expect(onChange).toHaveBeenLastCalledWith({ fontSize: READER_FONT_SIZE_MAX });
   });
 
@@ -126,6 +130,54 @@ describe("ReaderTypographyPopover", () => {
     fireEvent.click(radios[4] as HTMLInputElement);
     expect(onChange).toHaveBeenLastCalledWith({ lineHeight: 2 });
     expect((within(within(popover).getByTestId("reader-line-heights")).getAllByRole("radio") as HTMLInputElement[]).find((radio) => radio.checked)?.value).toBe("2");
+  });
+
+  it("offers the side margin right under the line heights, at the default, in px", async () => {
+    const popover = await open();
+    const slider = within(popover).getByRole("slider", { name: "左右间距" }) as HTMLInputElement;
+    expect([slider.min, slider.max, slider.step, slider.value]).toEqual([READER_MARGIN_MIN, READER_MARGIN_MAX, READER_MARGIN_STEP, READER_MARGIN_DEFAULT].map(String));
+    expect(slider.getAttribute("aria-valuetext")).toBe(`${READER_MARGIN_DEFAULT} px`);
+    expect(within(popover).getByTestId("reader-margin-value").textContent).toBe(`${READER_MARGIN_DEFAULT} px`);
+    // Document order: line heights, then the margin, then the speaker switch.
+    const lineHeights = within(popover).getByTestId("reader-line-heights");
+    const toggle = within(popover).getByRole("switch", { name: "显示发言人" });
+    expect(lineHeights.compareDocumentPosition(slider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slider.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("steps the margin with − and + and the slider, snapped to a step and kept inside the bounds", async () => {
+    const onChange = vi.fn();
+    const popover = await open({ onChange });
+    fireEvent.click(within(popover).getByRole("button", { name: "增大间距" }));
+    expect(onChange).toHaveBeenLastCalledWith({ sideMargin: READER_MARGIN_DEFAULT + READER_MARGIN_STEP });
+    fireEvent.click(within(popover).getByRole("button", { name: "减小间距" }));
+    expect(onChange).toHaveBeenLastCalledWith({ sideMargin: READER_MARGIN_DEFAULT });
+    const slider = within(popover).getByRole("slider", { name: "左右间距" });
+    fireEvent.change(slider, { target: { value: "121" } });
+    expect(onChange).toHaveBeenLastCalledWith({ sideMargin: 120 });
+    expect(within(popover).getByTestId("reader-margin-value").textContent).toBe("120 px");
+    fireEvent.change(slider, { target: { value: "999" } });
+    expect(onChange).toHaveBeenLastCalledWith({ sideMargin: READER_MARGIN_MAX });
+    fireEvent.change(slider, { target: { value: "0" } });
+    expect(onChange).toHaveBeenLastCalledWith({ sideMargin: READER_MARGIN_MIN });
+  });
+
+  it("disables − at the smallest margin and + at the largest", async () => {
+    const narrow = await open({ initial: { sideMargin: READER_MARGIN_MIN } });
+    expect((within(narrow).getByRole("button", { name: "减小间距" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(narrow).getByRole("button", { name: "增大间距" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("disables + at the largest margin and shows a stored margin", async () => {
+    const wide = await open({ initial: { sideMargin: READER_MARGIN_MAX } });
+    expect((within(wide).getByRole("button", { name: "增大间距" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(wide).getByTestId("reader-margin-value").textContent).toBe(`${READER_MARGIN_MAX} px`);
+  });
+
+  it("puts the margin back to the default on 恢复默认", async () => {
+    const popover = await open({ initial: { sideMargin: 120 } });
+    fireEvent.click(within(popover).getByRole("button", { name: "恢复默认" }));
+    expect(within(popover).getByTestId("reader-margin-value").textContent).toBe(`${READER_MARGIN_DEFAULT} px`);
   });
 
   it("offers the speaker switch only in speaker mode, and flips it", async () => {

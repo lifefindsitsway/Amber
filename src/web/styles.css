@@ -312,6 +312,35 @@ body {
   }
 }
 
+/*
+ * The reading column of the transcript reader (pages/content/transcript-tab.tsx). The text block
+ * (the speaker gutter, when the avatars sit beside the text, and the text) keeps the user's side
+ * margin, `--reader-margin` in px, on both sides at every font size, and widens with the pane. A
+ * pane too narrow for that margin narrows both sides alike so the text keeps 20rem; the margin
+ * returns as the pane widens, with no jump anywhere. The scroller reserves scrollbar gutters on
+ * both edges, so the two sides stay equal whether or not a scrollbar shows.
+ *
+ * The margin is the column's own padding: a percentage padding resolves against the width inside
+ * the scroller's gutters, so the 20rem floor holds whatever the scrollbar takes. The column sets
+ * the reading size so that `em` inside it is the reader's.
+ */
+@layer components {
+  .reader-scroller {
+    scrollbar-gutter: stable both-edges;
+    padding-block: 0.5rem;
+  }
+
+  .reader-column {
+    --reader-inset: min(var(--reader-margin), max(0.5rem, calc((100% - 20rem) / 2)));
+    font-size: var(--reader-font-size, 1rem);
+    padding-inline: var(--reader-inset);
+  }
+
+  .reader-column[data-reader-indent] {
+    padding-inline-start: calc(var(--reader-inset) + var(--reader-gutter, 0px));
+  }
+}
+
 /* Local player control bar (player/local-player.tsx): white icon buttons over the dark picture. */
 @layer components {
   .player-button {

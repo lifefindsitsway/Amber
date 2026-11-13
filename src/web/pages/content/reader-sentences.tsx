@@ -21,8 +21,19 @@ export interface SentenceViewProps {
   onSentence: (segment: TranscriptSegmentDto) => void;
 }
 
-/** The reading body's measure in em: about 40 CJK characters, whatever the font size. */
-export const READER_MEASURE_EM = 40;
+/**
+ * The reader's scroll box: scrollbar gutters reserved on both edges, so the column inside keeps
+ * the same middle whether or not a scrollbar shows. Defined in the style sheet with the column.
+ */
+export const READER_SCROLLER_CLASS = "reader-scroller";
+/**
+ * The reading column every row is set in. It holds the user's side margin (`--reader-margin`) as
+ * equal padding on both sides, narrowed alike only when the pane is too narrow for it, and sets
+ * the reading size from `--reader-font-size`.
+ */
+export const READER_COLUMN_CLASS = "reader-column";
+/** Marks a reading-column row that has no gutter of its own and indents to the text's edge. */
+export const READER_INDENT_ATTRIBUTE = "data-reader-indent";
 /** Space between paragraphs and between turns, in em so both follow the font size. */
 export const PARAGRAPH_GAP_EM = 0.75;
 export const TURN_GAP_EM = 1.5;

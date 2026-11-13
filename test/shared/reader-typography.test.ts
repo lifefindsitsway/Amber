@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { READER_FONT_NAME_MAX_CHARS, READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN, READER_LINE_HEIGHT_DEFAULT } from "../../src/shared/defaults.ts";
+import {
+  READER_FONT_NAME_MAX_CHARS,
+  READER_FONT_SIZE_DEFAULT,
+  READER_FONT_SIZE_MAX,
+  READER_FONT_SIZE_MIN,
+  READER_LINE_HEIGHT_DEFAULT,
+  READER_MARGIN_DEFAULT,
+  READER_MARGIN_MAX,
+  READER_MARGIN_MIN,
+} from "../../src/shared/defaults.ts";
 import {
   READER_FONTS,
   READER_LINE_HEIGHT_OPTIONS,
   READER_TYPOGRAPHY_DEFAULTS,
   readerCustomFontSchema,
+  readerSideMargin,
   readerTypographyKey,
   readerTypographySchema,
 } from "../../src/shared/reader-typography.ts";
@@ -57,6 +67,26 @@ describe("readerTypographySchema fonts", () => {
       { ...READER_TYPOGRAPHY_DEFAULTS, customFont: null },
     ];
     for (const value of bad) expect(readerTypographySchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("readerTypographySchema side margin", () => {
+  it("is optional, so values saved before it existed stay valid, and takes whole px within the bounds", () => {
+    expect(readerTypographySchema.safeParse({ version: 1, fontSize: 16, lineHeight: 1.7, showSpeakers: true }).success).toBe(true);
+    for (const sideMargin of [READER_MARGIN_MIN, READER_MARGIN_DEFAULT, 57, READER_MARGIN_MAX]) {
+      expect(readerTypographySchema.safeParse({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin }).success, String(sideMargin)).toBe(true);
+    }
+  });
+
+  it("rejects a margin outside the bounds, fractional, not a number or explicitly undefined", () => {
+    for (const sideMargin of [READER_MARGIN_MIN - 1, READER_MARGIN_MAX + 1, 56.5, "56", null, undefined]) {
+      expect(readerTypographySchema.safeParse({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin }).success, String(sideMargin)).toBe(false);
+    }
+  });
+
+  it("reads the stored margin, or the default when none is stored", () => {
+    expect(readerSideMargin(READER_TYPOGRAPHY_DEFAULTS)).toBe(READER_MARGIN_DEFAULT);
+    expect(readerSideMargin({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin: 120 })).toBe(120);
   });
 });
 

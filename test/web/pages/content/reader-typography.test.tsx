@@ -81,6 +81,14 @@ describe("parseReaderTypography", () => {
     expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom", customFont: "a;}b" }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "custom" });
     expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, font: null, customFont: 7 }))).toEqual(READER_TYPOGRAPHY_DEFAULTS);
   });
+
+  it("keeps a stored side margin and drops only a damaged one, the other fields staying", () => {
+    expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin: 120 }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin: 120 });
+    for (const sideMargin of [8, 400, 56.5, "56", null]) {
+      expect(parseReaderTypography(JSON.stringify({ ...READER_TYPOGRAPHY_DEFAULTS, fontSize: 20, font: "kai", sideMargin }))).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, fontSize: 20, font: "kai" });
+    }
+    expect("sideMargin" in parseReaderTypography(JSON.stringify({ version: 1, fontSize: 20, lineHeight: 1.8, showSpeakers: false }))).toBe(false);
+  });
 });
 
 describe("useReaderTypography", () => {
@@ -148,6 +156,20 @@ describe("useReaderTypography", () => {
     expect(current()).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, customFont: "Kaiti" });
     act(() => api?.[1]({ font: "kai", customFont: undefined }));
     expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, font: "kai" });
+    act(() => api?.[2]());
+    expect(current()).toEqual(READER_TYPOGRAPHY_DEFAULTS);
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("stores a side margin, removes it when changed to undefined, refuses one out of bounds, and 恢复默认 clears it", async () => {
+    await mountSignedIn();
+    act(() => api?.[1]({ sideMargin: 120 }));
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin: 120 });
+    act(() => api?.[1]({ sideMargin: 999 }));
+    expect(current()).toEqual({ ...READER_TYPOGRAPHY_DEFAULTS, sideMargin: 120 });
+    act(() => api?.[1]({ sideMargin: undefined }));
+    expect(JSON.parse(localStorage.getItem(KEY) as string)).toEqual(READER_TYPOGRAPHY_DEFAULTS);
+    act(() => api?.[1]({ sideMargin: 32 }));
     act(() => api?.[2]());
     expect(current()).toEqual(READER_TYPOGRAPHY_DEFAULTS);
     expect(localStorage.getItem(KEY)).toBeNull();

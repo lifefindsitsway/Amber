@@ -6,6 +6,9 @@ import {
   READER_FONT_SIZE_MIN,
   READER_LINE_HEIGHT_DEFAULT,
   READER_LINE_HEIGHTS,
+  READER_MARGIN_DEFAULT,
+  READER_MARGIN_MAX,
+  READER_MARGIN_MIN,
 } from "./defaults.ts";
 
 /**
@@ -49,6 +52,8 @@ export const readerTypographySchema = z
     font: z.enum(READER_FONTS).exactOptional(),
     /** Kept while another font is selected, so switching back to `custom` restores it. */
     customFont: readerCustomFontSchema.exactOptional(),
+    /** Space between the reading view's edges and its text on either side, in px; absent is `READER_MARGIN_DEFAULT`. */
+    sideMargin: z.number().int().min(READER_MARGIN_MIN).max(READER_MARGIN_MAX).exactOptional(),
   })
   .strict();
 export type ReaderTypography = z.output<typeof readerTypographySchema>;
@@ -59,6 +64,11 @@ export const READER_TYPOGRAPHY_DEFAULTS: Readonly<ReaderTypography> = Object.fre
   lineHeight: READER_LINE_HEIGHT_DEFAULT,
   showSpeakers: true,
 });
+
+/** The side margin a typography reads with: the stored one, or the default when none is stored. */
+export function readerSideMargin(typography: { readonly sideMargin?: number | undefined }): number {
+  return typography.sideMargin ?? READER_MARGIN_DEFAULT;
+}
 
 export function readerTypographyKey(userId: string): string {
   return `amber.reader.typography.${userId}`;

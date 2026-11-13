@@ -2,8 +2,15 @@ import { LoaderCircle, Minus, Plus } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { READER_FONT_NAME_MAX_CHARS, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN } from "../../../shared/defaults.ts";
-import { READER_LINE_HEIGHT_OPTIONS, readerCustomFontSchema, type ReaderFont, type ReaderTypography } from "../../../shared/reader-typography.ts";
+import {
+  READER_FONT_NAME_MAX_CHARS,
+  READER_FONT_SIZE_MAX,
+  READER_FONT_SIZE_MIN,
+  READER_MARGIN_MAX,
+  READER_MARGIN_MIN,
+  READER_MARGIN_STEP,
+} from "../../../shared/defaults.ts";
+import { READER_LINE_HEIGHT_OPTIONS, readerCustomFontSchema, readerSideMargin, type ReaderFont, type ReaderTypography } from "../../../shared/reader-typography.ts";
 import type { BundledFontFace } from "../../bundled-fonts.ts";
 import { Button } from "../../ui/button.tsx";
 import { bundledFaceOf, isLocalFontAvailable, READER_FONT_CHOICES, type ReaderFontChoice } from "./reader-font.ts";
@@ -24,8 +31,8 @@ const SEGMENT =
 const choiceOf = (font: ReaderFont | undefined): ReaderFontChoice => font ?? "default";
 
 /**
- * The 「Aa」 control of the reading view: font, font size, line height and, when the text is
- * read by speakers, whether the turns show. Non-modal so the text stays readable and scrollable
+ * The 「Aa」 control of the reading view: font, font size, line height, the side margin and,
+ * when the text is read by speakers, whether the turns show. Non-modal so the text stays readable and scrollable
  * while it is adjusted (the change shows at once); Esc or a press outside closes it. Every
  * control is a native input, so the keyboard works without extra wiring.
  */
@@ -46,10 +53,11 @@ export function ReaderTypographyPopover(props: {
 }) {
   const { t } = useTranslation();
   const { value } = props;
-  const sizeId = useId();
+  const groupId = useId();
   const sizeText = t("speakerReader.typography.fontSizeValue", { px: value.fontSize });
+  const sideMargin = readerSideMargin(value);
+  const marginText = t("speakerReader.typography.sideMarginValue", { px: sideMargin });
   const fontPick = useFontPick(props.loadFont, props.onChange);
-  const setSize = (size: number): void => props.onChange({ fontSize: Math.min(READER_FONT_SIZE_MAX, Math.max(READER_FONT_SIZE_MIN, Math.round(size))) });
   return (
     <Popover.Root modal={false}>
       <Popover.Trigger asChild>
@@ -70,54 +78,20 @@ export function ReaderTypographyPopover(props: {
           data-testid="reader-typography-popover"
         >
           <div className="flex flex-col gap-4">
-            <FontGroup value={value} name={`${sizeId}-font`} pick={fontPick} fontUnavailable={props.fontUnavailable === true} fontLoading={props.fontLoading === true} onRetry={props.onRetryFont} onChange={props.onChange} />
+            <FontGroup value={value} name={`${groupId}-font`} pick={fontPick} fontUnavailable={props.fontUnavailable === true} fontLoading={props.fontLoading === true} onRetry={props.onRetryFont} onChange={props.onChange} />
 
-            <div>
-              <div className="mb-2 flex items-baseline justify-between gap-3">
-                <label htmlFor={sizeId} className="font-medium">
-                  {t("speakerReader.typography.fontSize")}
-                </label>
-                <output htmlFor={sizeId} className="text-muted tabular-nums" data-testid="reader-font-size-value">
-                  {sizeText}
-                </output>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className={STEP_BUTTON}
-                  aria-label={t("speakerReader.typography.smaller")}
-                  title={t("speakerReader.typography.smaller")}
-                  disabled={value.fontSize <= READER_FONT_SIZE_MIN}
-                  onClick={() => setSize(value.fontSize - 1)}
-                  data-testid="reader-font-smaller"
-                >
-                  <Minus size={14} aria-hidden="true" />
-                </button>
-                <input
-                  id={sizeId}
-                  type="range"
-                  min={READER_FONT_SIZE_MIN}
-                  max={READER_FONT_SIZE_MAX}
-                  step={1}
-                  value={value.fontSize}
-                  aria-valuetext={sizeText}
-                  className="min-w-0 flex-1 cursor-pointer accent-accent"
-                  onChange={(event) => setSize(Number(event.target.value))}
-                  data-testid="reader-font-size"
-                />
-                <button
-                  type="button"
-                  className={STEP_BUTTON}
-                  aria-label={t("speakerReader.typography.larger")}
-                  title={t("speakerReader.typography.larger")}
-                  disabled={value.fontSize >= READER_FONT_SIZE_MAX}
-                  onClick={() => setSize(value.fontSize + 1)}
-                  data-testid="reader-font-larger"
-                >
-                  <Plus size={14} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
+            <SteppedSlider
+              label={t("speakerReader.typography.fontSize")}
+              valueText={sizeText}
+              value={value.fontSize}
+              min={READER_FONT_SIZE_MIN}
+              max={READER_FONT_SIZE_MAX}
+              step={1}
+              lessLabel={t("speakerReader.typography.smaller")}
+              moreLabel={t("speakerReader.typography.larger")}
+              testIds={{ slider: "reader-font-size", value: "reader-font-size-value", less: "reader-font-smaller", more: "reader-font-larger" }}
+              onSet={(size) => props.onChange({ fontSize: size })}
+            />
 
             <fieldset className="min-w-0">
               <legend className="mb-2 font-medium">{t("speakerReader.typography.lineHeight")}</legend>
@@ -126,7 +100,7 @@ export function ReaderTypographyPopover(props: {
                   <label key={option} className={`${SEGMENT} tabular-nums`}>
                     <input
                       type="radio"
-                      name={`${sizeId}-line-height`}
+                      name={`${groupId}-line-height`}
                       className="sr-only"
                       value={option}
                       checked={value.lineHeight === option}
@@ -137,6 +111,19 @@ export function ReaderTypographyPopover(props: {
                 ))}
               </div>
             </fieldset>
+
+            <SteppedSlider
+              label={t("speakerReader.typography.sideMargin")}
+              valueText={marginText}
+              value={sideMargin}
+              min={READER_MARGIN_MIN}
+              max={READER_MARGIN_MAX}
+              step={READER_MARGIN_STEP}
+              lessLabel={t("speakerReader.typography.narrower")}
+              moreLabel={t("speakerReader.typography.wider")}
+              testIds={{ slider: "reader-margin", value: "reader-margin-value", less: "reader-margin-narrower", more: "reader-margin-wider" }}
+              onSet={(margin) => props.onChange({ sideMargin: margin })}
+            />
 
             {props.speakerMode ? (
               <label className="flex cursor-pointer items-center justify-between gap-3">
@@ -165,6 +152,75 @@ export function ReaderTypographyPopover(props: {
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+/**
+ * A labelled range with 「−」 and 「+」 beside it, for a number that moves in steps (the font
+ * size, the side margin). Whatever is set is snapped to a step and kept within the range.
+ */
+function SteppedSlider(props: {
+  label: string;
+  valueText: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  lessLabel: string;
+  moreLabel: string;
+  testIds: { slider: string; value: string; less: string; more: string };
+  onSet: (value: number) => void;
+}) {
+  const id = useId();
+  const { min, max, step } = props;
+  const set = (next: number): void => props.onSet(Math.min(max, Math.max(min, min + Math.round((next - min) / step) * step)));
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <label htmlFor={id} className="font-medium">
+          {props.label}
+        </label>
+        <output htmlFor={id} className="text-muted tabular-nums" data-testid={props.testIds.value}>
+          {props.valueText}
+        </output>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className={STEP_BUTTON}
+          aria-label={props.lessLabel}
+          title={props.lessLabel}
+          disabled={props.value <= min}
+          onClick={() => set(props.value - step)}
+          data-testid={props.testIds.less}
+        >
+          <Minus size={14} aria-hidden="true" />
+        </button>
+        <input
+          id={id}
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={props.value}
+          aria-valuetext={props.valueText}
+          className="min-w-0 flex-1 cursor-pointer accent-accent"
+          onChange={(event) => set(Number(event.target.value))}
+          data-testid={props.testIds.slider}
+        />
+        <button
+          type="button"
+          className={STEP_BUTTON}
+          aria-label={props.moreLabel}
+          title={props.moreLabel}
+          disabled={props.value >= max}
+          onClick={() => set(props.value + step)}
+          data-testid={props.testIds.more}
+        >
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
   );
 }
 
