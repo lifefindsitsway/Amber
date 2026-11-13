@@ -348,7 +348,7 @@ describe("TaskPanel and the trash", () => {
     expect(await screen.findByText("第二讲")).toBeTruthy();
   });
 
-  it("does not read the lists again for speaker changes or speaker reviews, which change no task", async () => {
+  it("does not read the lists again for speaker changes, speaker reviews or chapter switches, which change no task", async () => {
     const { calls } = mockApi({
       ...baseRoutes(),
       "GET /api/tasks?unfinished=1": { body: { items: [task("t1", { targetTitle: "第一讲", contentId: "c1" })], eventSeq: 0 } },
@@ -367,6 +367,7 @@ describe("TaskPanel and the trash", () => {
     const before = reads();
     act(() => bus?.publish({ type: "speakersChanged", contentId: "c1" }));
     act(() => bus?.publish({ type: "speakerReviewChanged", contentId: "c1" }));
+    act(() => bus?.publish({ type: "chaptersChanged", contentId: "c1" }));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(reads()).toBe(before);
   });

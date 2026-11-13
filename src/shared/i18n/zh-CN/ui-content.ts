@@ -321,6 +321,10 @@ export const contentView = {
     showReason: "查看原因",
     hideReason: "收起原因",
     reasonUnavailable: "暂时读不到失败原因，可直接重试",
+    platformTag: "视频自带",
+    restorePlatform: "恢复视频自带章节",
+    restorePlatformBusyHint: "章节生成结束后才能恢复视频自带章节",
+    restorePlatformBusy: "章节正在生成，生成结束后才能恢复视频自带章节",
   },
   playbackResume: {
     resumed: "已从 {{time}} 继续播放",

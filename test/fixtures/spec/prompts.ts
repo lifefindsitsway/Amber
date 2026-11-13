@@ -120,21 +120,39 @@ export const EXPECTED_PROMPTS: ReadonlyArray<{ id: string; version: number; text
   },
   {
     id: "chapter.ai",
-    version: 2,
-    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+    version: 3,
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}如果视频中自己分了章节，就采用视频自带的章节；如果没有，请按内容主题把它切成不超过 7 个章节。输出 JSON 对象：
 { "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
 规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
 【逐字稿】
 {{transcript_with_aliases}}`,
   },
   {
+    id: "chapter.merge",
+    version: 1,
+    text: `下面是为一段音视频切出的候选章节，按时间顺序排列，每条以起始句标记 [[s<n>]] 开头，后面是起始时间、标题与概要。候选可能多于需要的数量，分段处理的交界处也可能把同一个主题切成了两章。请把相邻且主题相同或相近的候选合并，整理成不超过 {{max_chapters}} 个章节，输出 JSON 对象：
+{ "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
+规则：startAlias 只能取候选里出现过的起始句标记；第一章必须从第一条候选开始；只合并相邻的候选，不调换顺序；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
+【候选章节】
+{{candidates}}`,
+  },
+  {
     id: "highlight.default",
-    version: 2,
-    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+    version: 3,
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出不超过 10 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
 输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
 评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
 【逐字稿】
 {{transcript_with_aliases}}`,
+  },
+  {
+    id: "highlight.select",
+    version: 1,
+    text: `下面是从一段音视频全文中分段挑出的候选片段，按时间顺序排列，每条以句标记 [[s<n>]] 开头，后面是时间、原句与入选理由。各段的评分标准可能不一致。请在全部候选中统一比较，选出不超过 {{max_highlights}} 处最值得回看的片段：优先信息密度高、对理解全文重要的；内容相近的只留一处；质量相当时兼顾开头、中段与结尾；不必凑满，也不必每段都选。
+输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数 }, …] }
+评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子，按同一标准重新评分。alias 只能取候选里出现过的句标记。只输出 JSON。
+【候选片段】
+{{candidates}}`,
   },
   {
     id: "rollup.partial",
@@ -410,6 +428,24 @@ export const EXPECTED_PROMPT_HISTORY: ReadonlyArray<{ id: string; version: numbe
     id: "highlight.default",
     version: 1,
     text: `下面是一段课程逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
+评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    id: "chapter.ai",
+    version: 2,
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+{ "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
+规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    id: "highlight.default",
+    version: 2,
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
 输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
 评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
 【逐字稿】

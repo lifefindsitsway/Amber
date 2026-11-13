@@ -3,13 +3,14 @@ import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import type { ChapterRevisionDto } from "../../../shared/dto/chapter.ts";
+import { chaptersDtoSchema, type ChapterRevisionDto, type ChaptersDto } from "../../../shared/dto/chapter.ts";
 import { summaryRevisionListDtoSchema, type ContentSummariesDto, type SummaryRevisionDto } from "../../../shared/dto/summary.ts";
 import { taskAcceptedDtoSchema, type TaskDetailDto } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { isMarked, joinReading, readingParagraphs } from "../../../shared/reading.ts";
 import { z } from "zod";
-import { useApi, useTask, useTaskHub } from "../../api/context.tsx";
+import { publishChaptersChanged } from "../../api/content-events.ts";
+import { useApi, useContentEvents, useTask, useTaskHub } from "../../api/context.tsx";
 import { useOptionalChatComposer } from "../../chat/chat-composer.tsx";
 import { useProviders, useSettings } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
@@ -407,7 +408,8 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
  * (`activeStage`) and stays off meanwhile. A failed last attempt gets a line that opens the
  * reason. Only the summary's own header carries the Task's stage flow, so it never shows twice.
  * With chapters: title, one-line gist, timestamp, original text. Regenerating writes AI chapters
- * from the current primary transcript, also over platform chapters.
+ * from the current primary transcript, also over platform chapters; a quieter 「恢复视频自带章节」
+ * beside it switches back to the newest platform chapters without calling a model.
  */
 function ChapterSection(props: { onSeek: (ms: number) => void }) {
   const { t } = useTranslation();
@@ -423,6 +425,15 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
   const loaded = chapters.data !== undefined;
   const list = chapters.data?.current?.chapters ?? [];
   const explainEntries = useExplainEntries();
+  const contentEvents = useContentEvents();
+  const platformRevision = chapters.data === undefined ? undefined : restorablePlatformRevision(chapters.data);
+  // No optimistic switch: the server refuses while chapter work is unfinished, and the page
+  // must keep showing the chapters that are actually current until it answers.
+  const restore = useMutation({
+    mutationFn: (revisionId: string) =>
+      client.put(`/api/contents/${encodeURIComponent(contentId)}/chapters/current`, chaptersDtoSchema, { body: { revisionId } }),
+    onSuccess: (answer) => publishChaptersChanged(contentEvents, queryClient, contentId, answer),
+  });
   const regenerate = useMutation({
     mutationFn: () =>
       client.post(`/api/contents/${encodeURIComponent(contentId)}/chapters/regenerate`, taskAcceptedDtoSchema, {
@@ -467,26 +478,49 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
   return (
     <section ref={menuTarget} className="mt-2 border-t border-line pt-3" data-testid="chapter-section" data-explainable>
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">{t("contentView.chapters.title")}</h2>
-        {showConfigure ? (
-          <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="chapters-configure">
-            {t("common.action.goConfigure")}
-          </Link>
-        ) : (
-          // A disabled button shows no tooltip of its own, so the wrapper carries it.
-          <span title={activeStage === "waiting" ? t("contentView.chapters.waitingHint") : undefined}>
-            <Button
-              size="sm"
-              variant={hasChapters || !hasTranscript ? "ghost" : "secondary"}
-              disabled={!loaded || busy || !hasTranscript}
-              onClick={() => regenerate.mutate()}
-              data-testid="chapters-regenerate"
-            >
-              {busy ? <Spinner size={14} /> : <RefreshCw size={14} />}
-              {label}
-            </Button>
-          </span>
-        )}
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 className="text-sm font-semibold">{t("contentView.chapters.title")}</h2>
+          {chapters.data?.current?.origin.kind === "platform" ? (
+            <span className="text-xs text-muted" data-testid="chapters-platform-tag">
+              {t("contentView.chapters.platformTag")}
+            </span>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {platformRevision === undefined ? null : (
+            // As beside 「重新生成」, the tooltip sits on a wrapper because a disabled button shows none.
+            <span title={activeStage === undefined ? undefined : t("contentView.chapters.restorePlatformBusyHint")}>
+              <button
+                type="button"
+                className="inline-flex h-7 items-center whitespace-nowrap rounded-md px-1.5 text-xs text-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted"
+                disabled={busy || restore.isPending}
+                onClick={() => restore.mutate(platformRevision.id)}
+                data-testid="chapters-restore-platform"
+              >
+                {t("contentView.chapters.restorePlatform")}
+              </button>
+            </span>
+          )}
+          {showConfigure ? (
+            <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="chapters-configure">
+              {t("common.action.goConfigure")}
+            </Link>
+          ) : (
+            // A disabled button shows no tooltip of its own, so the wrapper carries it.
+            <span title={activeStage === "waiting" ? t("contentView.chapters.waitingHint") : undefined}>
+              <Button
+                size="sm"
+                variant={hasChapters || !hasTranscript ? "ghost" : "secondary"}
+                disabled={!loaded || busy || !hasTranscript}
+                onClick={() => regenerate.mutate()}
+                data-testid="chapters-regenerate"
+              >
+                {busy ? <Spinner size={14} /> : <RefreshCw size={14} />}
+                {label}
+              </Button>
+            </span>
+          )}
+        </div>
       </div>
       {showConfigure || !hasTranscript ? null : (
         <SpeakersNotReadHint className="mb-2 block text-right" contentId={contentId} revisionId={page.primaryRevisionId} testId="chapters-speakers-not-read" />
@@ -502,6 +536,20 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
         <div className="mb-2">
           <ErrorView error={regenerate.error.error} />
         </div>
+      ) : null}
+      {restore.error instanceof ApiError ? (
+        restore.error.error.code === "conflict.tasks_unfinished" ? (
+          // Chapter work started elsewhere (another tab, a processing run) after this page last
+          // read the chapters: the generic wording of this code is about deleting, so say what
+          // it means here; the chapters re-read on their own when that work ends.
+          <p className="mb-2 text-xs text-muted" role="status" data-testid="chapters-restore-busy">
+            {t("contentView.chapters.restorePlatformBusy")}
+          </p>
+        ) : (
+          <div className="mb-2">
+            <ErrorView error={restore.error.error} />
+          </div>
+        )
       ) : null}
       {chapters.error instanceof ApiError ? (
         <div className="mb-2">
@@ -534,6 +582,20 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
       ) : null}
     </section>
   );
+}
+
+/**
+ * The platform chapters 「恢复视频自带章节」 switches back to: offered only while AI chapters
+ * are current, and then the newest platform revision (a later re-fetch of the platform's
+ * chapters supersedes an earlier one; revisions arrive oldest first, so a tie keeps the later).
+ */
+export function restorablePlatformRevision(chapters: ChaptersDto): ChapterRevisionDto | undefined {
+  if (chapters.current?.origin.kind !== "ai") return undefined;
+  let newest: ChapterRevisionDto | undefined;
+  for (const revision of chapters.revisions) {
+    if (revision.origin.kind === "platform" && (newest === undefined || revision.createdAt >= newest.createdAt)) newest = revision;
+  }
+  return newest;
 }
 
 /**

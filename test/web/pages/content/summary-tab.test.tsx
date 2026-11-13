@@ -1,9 +1,10 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BREAKPOINT_DRAWER_PX, PARAGRAPH_MAX_CHARS } from "../../../../src/shared/defaults.ts";
+import type { ChapterRevisionDto, ChaptersDto } from "../../../../src/shared/dto/chapter.ts";
 import type { ContentSummariesDto } from "../../../../src/shared/dto/summary.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
-import { statusOf } from "../../../../src/web/pages/content/summary-tab.tsx";
+import { restorablePlatformRevision, statusOf } from "../../../../src/web/pages/content/summary-tab.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, SEGMENTS, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -715,5 +716,144 @@ describe("speakers around the summary", () => {
     fireEvent.click(screen.getByRole("button", { name: "跳到这句" }));
     const frame = screen.getByTestId("player-bilibili");
     await waitFor(() => expect(new URL(frame.getAttribute("src") ?? "").searchParams.get("t")).toBe("75"));
+  });
+});
+
+describe("restoring the video's own chapters", () => {
+  const chapterRevision = (id: string, origin: ChapterRevisionDto["origin"], createdAt: number, titles: string[]): ChapterRevisionDto => ({
+    id,
+    artifactId: "a-ch",
+    origin,
+    chapters: titles.map((title, index) => ({ startMs: index * 60_000, endMs: (index + 1) * 60_000, title })),
+    quality: "normal",
+    qualityReasons: [],
+    stale: false,
+    createdAt,
+  });
+  const ai = chapterRevision("ch-ai", { kind: "ai", transcriptRevisionId: "r1" }, 30, ["AI 开场", "AI 正文"]);
+  const olderPlatform = chapterRevision("ch-p1", { kind: "platform" }, 10, ["旧开场"]);
+  const newerPlatform = chapterRevision("ch-p2", { kind: "platform" }, 20, ["开场", "正文"]);
+  /** AI chapters current over two platform fetches; the newer one is listed first on purpose. */
+  const aiOverPlatform: ChaptersDto = { artifactId: "a-ch", current: ai, revisions: [newerPlatform, olderPlatform, ai] };
+
+  it("offers only the newest platform revision, and only while AI chapters are current", () => {
+    expect(restorablePlatformRevision(aiOverPlatform)?.id).toBe("ch-p2");
+    expect(restorablePlatformRevision({ ...aiOverPlatform, revisions: [olderPlatform, newerPlatform, ai] })?.id).toBe("ch-p2");
+    expect(restorablePlatformRevision({ ...aiOverPlatform, revisions: [ai] })).toBeUndefined();
+    expect(restorablePlatformRevision({ ...aiOverPlatform, current: newerPlatform })).toBeUndefined();
+    expect(restorablePlatformRevision({ artifactId: "a-ch", revisions: [olderPlatform] })).toBeUndefined();
+  });
+
+  it("marks platform chapters as the video's own and offers no way back to them", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/providers": PROVIDERS });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    expect((await within(section).findByTestId("chapters-platform-tag")).textContent).toBe("视频自带");
+    await within(section).findByTestId("chapters-regenerate");
+    expect(within(section).queryByTestId("chapters-restore-platform")).toBeNull();
+  });
+
+  it("offers nothing for AI chapters of a Content without platform chapters", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/providers": PROVIDERS, "GET /api/contents/c1/chapters": { body: { artifactId: "a-ch", current: ai, revisions: [ai] } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    await within(section).findByRole("button", { name: /^AI 开场/ });
+    expect(within(section).queryByTestId("chapters-restore-platform")).toBeNull();
+    expect(within(section).queryByTestId("chapters-platform-tag")).toBeNull();
+  });
+
+  it("sits beside 重新生成 over AI chapters, and is off with a reason while chapter work is unfinished", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: { ...aiOverPlatform, activeTaskId: "t5", activeStage: "queued" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const button = (await within(section).findByTestId("chapters-restore-platform")) as HTMLButtonElement;
+    expect(button.textContent).toBe("恢复视频自带章节");
+    expect(button.disabled).toBe(true);
+    expect(button.parentElement?.getAttribute("title")).toBe("章节生成结束后才能恢复视频自带章节");
+    expect(button.parentElement?.parentElement?.contains(within(section).getByTestId("chapters-regenerate"))).toBe(true);
+  });
+
+  it("switches to the newest platform chapters on the server's answer, re-reads the summaries and tells the other tabs", async () => {
+    const posted: unknown[] = [];
+    vi.stubGlobal(
+      "BroadcastChannel",
+      class {
+        onmessage: unknown = null;
+        postMessage(data: unknown): void {
+          posted.push(data);
+        }
+        close(): void {}
+      },
+    );
+    const restored: ChaptersDto = { ...aiOverPlatform, current: newerPlatform };
+    const api = mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: aiOverPlatform },
+      "PUT /api/contents/c1/chapters/current": { body: restored },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    const button = (await within(section).findByTestId("chapters-restore-platform")) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(within(section).queryByTestId("chapters-platform-tag")).toBeNull();
+    const reads = (path: string): number => api.calls.filter((call) => call.method === "GET" && call.path === path).length;
+    await waitFor(() => expect(reads("/api/contents/c1/summaries")).toBeGreaterThan(0));
+    const summaryReads = reads("/api/contents/c1/summaries");
+    const chapterReads = reads("/api/contents/c1/chapters");
+    fireEvent.click(button);
+    expect((await within(section).findByTestId("chapters-platform-tag")).textContent).toBe("视频自带");
+    const put = api.calls.filter((call) => call.method === "PUT");
+    expect(put.map((call) => [call.path, call.body])).toEqual([["/api/contents/c1/chapters/current", { revisionId: "ch-p2" }]]);
+    expect(within(section).getByRole("button", { name: /^开场/ })).toBeTruthy();
+    expect(within(section).queryByRole("button", { name: /^AI 开场/ })).toBeNull();
+    expect(within(section).queryByTestId("chapters-restore-platform")).toBeNull();
+    await waitFor(() => expect(reads("/api/contents/c1/summaries")).toBe(summaryReads + 1));
+    // The answer is the chapters as they now are: no further read of them is needed.
+    expect(reads("/api/contents/c1/chapters")).toBe(chapterReads);
+    expect(posted).toEqual([{ type: "chaptersChanged", contentId: "c1" }]);
+  });
+
+  it("says chapter work is under way when the server refuses for it, and keeps the current chapters", async () => {
+    const api = mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: aiOverPlatform },
+      "PUT /api/contents/c1/chapters/current": {
+        status: 409,
+        body: { error: { class: "conflict", code: "conflict.tasks_unfinished", retryDisposition: "never", userMessage: "还有未完成的任务" } },
+      },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    fireEvent.click(await within(section).findByTestId("chapters-restore-platform"));
+    // Not the code's generic wording, which is about deleting.
+    expect((await within(section).findByTestId("chapters-restore-busy")).textContent).toBe("章节正在生成，生成结束后才能恢复视频自带章节");
+    expect(within(section).queryByText(/还有未完成的任务/)).toBeNull();
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(within(section).getByRole("button", { name: /^AI 开场/ })).toBeTruthy();
+    expect(within(section).queryByTestId("chapters-platform-tag")).toBeNull();
+    expect(((await within(section).findByTestId("chapters-restore-platform")) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows any other refusal as an error and keeps the current chapters", async () => {
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": PROVIDERS,
+      "GET /api/contents/c1/chapters": { body: aiOverPlatform },
+      "PUT /api/contents/c1/chapters/current": {
+        status: 404,
+        body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "找不到这份章节" } },
+      },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const section = await screen.findByTestId("chapter-section");
+    fireEvent.click(await within(section).findByTestId("chapters-restore-platform"));
+    expect((await within(section).findByRole("alert")).textContent).toContain("找不到这份章节");
+    expect(within(section).getByRole("button", { name: /^AI 开场/ })).toBeTruthy();
   });
 });

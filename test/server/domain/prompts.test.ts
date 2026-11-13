@@ -4,13 +4,18 @@ import {
   BUILTIN_PROMPT_HISTORY,
   BUILTIN_SUMMARY_TEMPLATES,
   builtinPromptOf,
+  candidateClock,
   CHAPTER_AI_PROMPT,
+  CHAPTER_MERGE_PROMPT,
   chapterWindowNote,
   composeProofreadAudioPrompt,
   CUSTOMIZABLE_PROMPTS,
   customizablePrompt,
   customPromptIdOf,
   customPromptRef,
+  HIGHLIGHT_DEFAULT_PROMPT,
+  HIGHLIGHT_SELECT_PROMPT,
+  isBuiltinVersion,
   PROOFREAD_AUDIO_PROMPT,
   PROOFREAD_TEXT_PROMPT,
   promptIdsOf,
@@ -22,7 +27,7 @@ import {
   type BuiltinPrompt,
   type CustomizablePrompt,
 } from "../../../src/server/domain/prompts.ts";
-import { PROMPT_CUSTOM_MAX_CHARS } from "../../../src/shared/defaults.ts";
+import { CHAPTER_COUNT_MAX, HIGHLIGHT_COUNT_MAX, PROMPT_CUSTOM_MAX_CHARS } from "../../../src/shared/defaults.ts";
 import { LLM_PROTOCOLS, TASK_KINDS } from "../../../src/shared/enums.ts";
 import {
   EXPECTED_CUSTOMIZABLE_PROMPTS,
@@ -37,7 +42,7 @@ const builtin = Object.values(prompts).filter(
 
 describe("builtin prompts", () => {
   it("are exactly the expected prompts", () => {
-    expect(EXPECTED_PROMPTS).toHaveLength(22);
+    expect(EXPECTED_PROMPTS).toHaveLength(24);
     expect(builtin.map((prompt) => prompt.ref.id).sort()).toEqual(EXPECTED_PROMPTS.map((prompt) => prompt.id).sort());
   });
 
@@ -48,7 +53,7 @@ describe("builtin prompts", () => {
   });
 
   it("keeps the replaced builtin versions verbatim and resolvable by id and version", () => {
-    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(14);
+    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(16);
     expect(BUILTIN_PROMPT_HISTORY.map((prompt) => ({ ...prompt.ref, text: prompt.text }))).toEqual(EXPECTED_PROMPT_HISTORY);
     for (const { id, version, text } of EXPECTED_PROMPTS) {
       if (customizablePrompt(id) !== undefined) {
@@ -117,6 +122,38 @@ describe("builtin prompts", () => {
     expect(renderPrompt(CHAPTER_AI_PROMPT.text, { output_language: "en" })).toContain("标题与概要使用 en");
   });
 
+  it("states the chapter and highlight caps in the capped versions, and only there", () => {
+    expect(CHAPTER_AI_PROMPT.ref).toEqual({ id: "chapter.ai", version: 3 });
+    expect(HIGHLIGHT_DEFAULT_PROMPT.ref).toEqual({ id: "highlight.default", version: 3 });
+    expect(CHAPTER_AI_PROMPT.text).toContain(`不超过 ${String(CHAPTER_COUNT_MAX)} 个章节`);
+    expect(HIGHLIGHT_DEFAULT_PROMPT.text).toContain(`不超过 ${String(HIGHLIGHT_COUNT_MAX)} 处`);
+    // The previous versions differ only in the sentence that states how many, and stay resolvable.
+    const chapterV2 = builtinPromptOf({ id: "chapter.ai", version: 2 })?.text;
+    const highlightV2 = builtinPromptOf({ id: "highlight.default", version: 2 })?.text;
+    expect(chapterV2).toBe(
+      CHAPTER_AI_PROMPT.text.replace("如果视频中自己分了章节，就采用视频自带的章节；如果没有，请按内容主题把它切成不超过 7 个章节。", "请按内容主题把它切成 5–12 个章节，"),
+    );
+    expect(highlightV2).toBe(HIGHLIGHT_DEFAULT_PROMPT.text.replace("请挑出不超过 10 处", "请挑出 8–20 处"));
+    // The mechanism prompts take the cap through a slot rather than a written number.
+    expect(promptSlots(CHAPTER_MERGE_PROMPT.text)).toEqual(["{{max_chapters}}", "{{output_language}}", "{{candidates}}"]);
+    expect(promptSlots(HIGHLIGHT_SELECT_PROMPT.text)).toEqual(["{{max_highlights}}", "{{candidates}}"]);
+  });
+
+  it("recognizes exactly one builtin version, never a custom ref", () => {
+    expect(isBuiltinVersion({ id: "chapter.ai", version: 3 }, CHAPTER_AI_PROMPT)).toBe(true);
+    expect(isBuiltinVersion({ id: "chapter.ai", version: 2 }, CHAPTER_AI_PROMPT)).toBe(false);
+    expect(isBuiltinVersion(customPromptRef("chapter.ai", 3), CHAPTER_AI_PROMPT)).toBe(false);
+    expect(isBuiltinVersion({ id: "highlight.default", version: 3 }, CHAPTER_AI_PROMPT)).toBe(false);
+  });
+
+  it("writes candidate times as mm:ss, and h:mm:ss from one hour on", () => {
+    expect(candidateClock(0)).toBe("00:00");
+    expect(candidateClock(65_999)).toBe("01:05");
+    expect(candidateClock(3_599_999)).toBe("59:59");
+    expect(candidateClock(3_600_000)).toBe("1:00:00");
+    expect(candidateClock(37_230_000)).toBe("10:20:30");
+  });
+
   it("notes the window only when the transcript is split", () => {
     expect(chapterWindowNote(1, 1)).toBe("");
     expect(chapterWindowNote(2, 3)).toBe("这是全文的第 2/3 段。");
@@ -162,7 +199,7 @@ describe("customizable prompts", () => {
     expect(entry("proofread.audio").slots).toEqual(["{{proofread_text}}"]);
     expect(entry("rollup.goal.collection").builtin).toBe(ROLLUP_GOAL_COLLECTION_PROMPT);
     expect(entry("rollup.goal.collection").slots).toEqual([]);
-    for (const id of ["citation.rules", "citation.none", "citation.repair", "chat.compaction", "chat.search.plan", "speaker.rules", "speaker.lines", "speaker.caution", "speaker.unverified"]) {
+    for (const id of ["citation.rules", "citation.none", "citation.repair", "chapter.merge", "highlight.select", "chat.compaction", "chat.search.plan", "speaker.rules", "speaker.lines", "speaker.caution", "speaker.unverified"]) {
       expect(customizablePrompt(id)).toBeUndefined();
     }
   });

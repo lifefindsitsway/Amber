@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { StageRun, Task } from "../../../src/server/domain/task.ts";
 import type { StageStatus } from "../../../src/shared/enums.ts";
-import { createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { isAmberError } from "../../../src/server/domain/errors.ts";
+import { BOB, BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../fixtures/pipeline/harness.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -144,5 +145,78 @@ describe("chapter section: lastFailedTaskId", () => {
     // Unrelated Tasks after it do not hide nor surface anything.
     later.addTask("regenerate_summary", "failed", 400, { summary: { status: "failed", finishedAt: 401 } });
     expect(later.read()).not.toHaveProperty("lastFailedTaskId");
+  });
+});
+
+describe("choosing the current chapter revision", () => {
+  /** A second revision beside the current one: newer platform chapters with other titles. */
+  function withOther(h: Harness, contentId: string): string {
+    return h.repository.withTransaction(
+      (scope) =>
+        scope.chapters.insertPlatformRevision(LOCAL.userId, contentId, {
+          id: h.newId(),
+          artifactId: h.newId(),
+          chapters: [{ startMs: 0, endMs: 2000, title: "另一份" }],
+          createdAt: CURRENT_AT + 1,
+        }).revisionId,
+    );
+  }
+  const conflictOf = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      return isAmberError(error) ? { class: error.appError.class, code: error.appError.code } : error;
+    }
+    return undefined;
+  };
+
+  it.each([
+    ["a queued chapter regeneration", "regenerate_chapters", "queued", { chapter: "pending" }],
+    ["a running chapter regeneration", "regenerate_chapters", "running", { chapter: "running" }],
+    ["a regeneration waiting for configuration", "regenerate_chapters", "waiting", { chapter: "waiting_configuration" }],
+    ["a processing Task before its chapter stage", "process_content", "running", { asr: "running", chapter: "pending" }],
+    ["a processing Task in its chapter stage", "process_content", "running", { asr: "succeeded", chapter: "running" }],
+  ] as const)("is refused with conflict.tasks_unfinished during %s, leaving the current revision", (_case, kind, projection, stages) => {
+    const { h, contentId, addTask, read } = setup();
+    const before = read().current?.id;
+    const other = withOther(h, contentId);
+    addTask(kind, projection, 1, stages);
+    expect(read().activeStage).toBeDefined();
+    expect(conflictOf(() => h.chapters.setCurrent(LOCAL, contentId, other))).toEqual({ class: "conflict", code: "conflict.tasks_unfinished" });
+    expect(read().current?.id).toBe(before);
+  });
+
+  it("succeeds without an unfinished chapter Task, also beside finished ones and unrelated unfinished ones", () => {
+    const { h, contentId, addTask, read } = setup();
+    const other = withOther(h, contentId);
+    addTask("regenerate_chapters", "succeeded", 1, { chapter: "succeeded" });
+    addTask("regenerate_chapters", "failed", 2, { chapter: "failed" });
+    addTask("regenerate_summary", "running", 3, { summary: "running" });
+    expect(read()).not.toHaveProperty("activeStage");
+    expect(h.chapters.setCurrent(LOCAL, contentId, other).current?.id).toBe(other);
+    expect(read().current?.id).toBe(other);
+  });
+
+  it("answers 409 over HTTP while the chapter stage is unfinished, 200 once it is not, and 404 to another owner", async () => {
+    const { h, contentId, addTask, read } = setup();
+    const before = read().current?.id as string;
+    const other = withOther(h, contentId);
+    const { app } = await h.app();
+    const put = (token: string) =>
+      app.inject({ method: "PUT", url: `/api/contents/${contentId}/chapters/current`, headers: { authorization: `Bearer ${token}` }, payload: { revisionId: other } });
+
+    const taskId = addTask("regenerate_chapters", "running", 1, { chapter: "running" });
+    const refused = await put(LOCAL_TOKEN);
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe("conflict.tasks_unfinished");
+    expect(read().current?.id).toBe(before);
+
+    h.repository.withTransaction((scope) => scope.tasks.setProjection(LOCAL.userId, taskId, "succeeded", 5));
+    expect((await put(BOB_TOKEN)).statusCode).toBe(404);
+    expect(() => h.chapters.setCurrent(BOB, contentId, other)).toThrow();
+    expect(read().current?.id).toBe(before);
+    const switched = await put(LOCAL_TOKEN);
+    expect(switched.statusCode).toBe(200);
+    expect(switched.json().current.id).toBe(other);
   });
 });

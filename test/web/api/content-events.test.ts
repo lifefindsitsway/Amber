@@ -1,6 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { ContentEventBus, publishSpeakerReviewChanged, publishSpeakersChanged, type ContentEvent, type ContentEventOrigin } from "../../../src/web/api/content-events.ts";
+import {
+  ContentEventBus,
+  publishChaptersChanged,
+  publishSpeakerReviewChanged,
+  publishSpeakersChanged,
+  type ContentEvent,
+  type ContentEventOrigin,
+} from "../../../src/web/api/content-events.ts";
 import { queryKeys } from "../../../src/web/api/queries.ts";
 import { contentKeys } from "../../../src/web/pages/content/content-data.ts";
 import { searchKeys } from "../../../src/web/search/search.ts";
@@ -192,6 +199,51 @@ describe("publishSpeakersChanged", () => {
     expect(heard).toEqual([]);
     deliver({ type: "speakersChanged", contentId: "c9" });
     expect(heard).toEqual([[{ type: "speakersChanged", contentId: "c9" }, { remote: true }]]);
+    bus.close();
+  });
+});
+
+describe("publishChaptersChanged", () => {
+  const answer = { artifactId: "a-ch", revisions: [] };
+
+  it("keeps the server's answer as the chapters, reads the summaries built on them again here, and tells the other tab", () => {
+    const { open } = fakeBroadcastChannel();
+    const here = new ContentEventBus();
+    const there = new ContentEventBus();
+    const heard = record(here);
+    const elsewhere = record(there);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(contentKeys.chapters("c1"), { revisions: [{ id: "old" }] });
+    queryClient.setQueryData(contentKeys.summaries("c1"), {});
+    queryClient.setQueryData(["summary-revisions", "a1"], {});
+    queryClient.setQueryData(contentKeys.summaries("c2"), {});
+    queryClient.setQueryData(contentKeys.highlights("c1"), {});
+    queryClient.setQueryData(contentKeys.speakers("c1"), {});
+    queryClient.setQueryData(queryKeys.contentsAll, {});
+    publishChaptersChanged(here, queryClient, "c1", answer);
+    expect(queryClient.getQueryData(contentKeys.chapters("c1"))).toEqual(answer);
+    // The answer is what a read would return, so the chapters are not read again here.
+    expect(queryClient.getQueryState(contentKeys.chapters("c1"))?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(contentKeys.summaries("c1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["summary-revisions", "a1"])?.isInvalidated).toBe(true);
+    for (const key of [contentKeys.summaries("c2"), contentKeys.highlights("c1"), contentKeys.speakers("c1"), queryKeys.contentsAll]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(false);
+    }
+    expect(heard).toEqual([[{ type: "chaptersChanged", contentId: "c1" }, { remote: false }]]);
+    expect(elsewhere).toEqual([[{ type: "chaptersChanged", contentId: "c1" }, { remote: true }]]);
+    here.close();
+    there.close();
+    expect(open.size).toBe(0);
+  });
+
+  it("is accepted from another tab only with a content id", () => {
+    const { deliver } = fakeBroadcastChannel();
+    const bus = new ContentEventBus();
+    const heard = record(bus);
+    deliver({ type: "chaptersChanged", contentId: "" });
+    expect(heard).toEqual([]);
+    deliver({ type: "chaptersChanged", contentId: "c9" });
+    expect(heard).toEqual([[{ type: "chaptersChanged", contentId: "c9" }, { remote: true }]]);
     bus.close();
   });
 });

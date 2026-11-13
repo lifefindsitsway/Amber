@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { monotonicFactory } from "ulid";
 import { z } from "zod";
-import { UI_LANGUAGE_DEFAULT } from "../../../shared/defaults.ts";
+import { CHAPTER_COUNT_MAX, UI_LANGUAGE_DEFAULT } from "../../../shared/defaults.ts";
 import type { SegmentId } from "../../../shared/ids.ts";
 import type { ChapterRevision } from "../../domain/artifact.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
@@ -9,7 +9,15 @@ import type { Content } from "../../domain/content.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { LlmRequest } from "../../domain/llm.ts";
 import type { ModelRef } from "../../domain/model-ref.ts";
-import { chapterWindowNote, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
+import {
+  candidateClock,
+  CHAPTER_AI_PROMPT,
+  CHAPTER_MERGE_PROMPT,
+  chapterWindowNote,
+  isBuiltinVersion,
+  outputLanguageName,
+  renderPrompt,
+} from "../../domain/prompts.ts";
 import type { PromptRef } from "../../domain/model-ref.ts";
 import { framingForRead, speakerContextDigest, type SpeakerContextSnapshot, type SpeakerFraming } from "../../domain/speaker-context.ts";
 import { processContentRequestSchema, regenerateChaptersRequestSchema } from "../../domain/task-request.ts";
@@ -71,6 +79,13 @@ const ALIAS = /^s([1-9][0-9]*)$/;
  * speakers: the `speaker.rules` fragment opens `{{transcript_with_aliases}}` and header lines
  * mark the window's first speaker and every change; windows are planned with those lines
  * priced in, and each is checked again as rendered before anything is sent.
+ *
+ * Only the current builtin `chapter.ai` states `CHAPTER_COUNT_MAX` in its text, so only a
+ * Task frozen on exactly that version is capped: when the transcript took several windows,
+ * or its one window gave more chapters than the cap, every window's chapters become
+ * candidates of one more call (`chapter.merge`, its own `chapter:merge` WorkUnit) that merges
+ * neighbours — across window borders too — into at most the cap. A custom version or an
+ * older builtin one is sent, digested and published exactly as before the cap existed.
  */
 export class ChapterStageExecutor implements StageExecutor {
   private readonly deps: ChapterStageDeps;
@@ -114,6 +129,9 @@ export class ChapterStageExecutor implements StageExecutor {
       prompts.forEach((rendered) => assertWindowFits(rendered, schemaTokens, limits));
     }
 
+    const capped = isBuiltinVersion(prompt.ref, CHAPTER_AI_PROMPT);
+    // A merge is certain up front only with several windows; one window over the cap adds it late.
+    const steps = windows.length + (capped && windows.length > 1 ? 1 : 0);
     let finished = 0;
     const settled = await Promise.allSettled(
       windows.map(async (window, index) => {
@@ -130,7 +148,7 @@ export class ChapterStageExecutor implements StageExecutor {
           framing,
         });
         finished += 1;
-        context.reportProgress(finished / windows.length);
+        context.reportProgress(finished / steps);
         return payload;
       }),
     );
@@ -139,13 +157,19 @@ export class ChapterStageExecutor implements StageExecutor {
       throw failure;
     }
     const payloads = settled.map((result) => (result as PromiseFulfilledResult<WindowPayload>).value);
-    const chapters = mergeWindows(segments, payloads);
-    const invocationIds = payloads.map((payload) => payload.invocationId);
+    const candidates = payloads.flatMap((payload) => payload.chapters);
+    const merged =
+      capped && (windows.length > 1 || candidates.length > CHAPTER_COUNT_MAX)
+        ? await this.runMerge(context, { modelRef, revision, segments, payloads, structured, outputLanguage, limits })
+        : undefined;
+    const chapters = chaptersOf(segments, merged === undefined ? candidates : merged.chapters);
+    const invocationIds = [...payloads.map((payload) => payload.invocationId), ...(merged === undefined ? [] : [merged.invocationId])];
+    const promptRefs = [prompt.ref, ...(framing === undefined ? [] : [framing.rules.ref]), ...(merged === undefined ? [] : [CHAPTER_MERGE_PROMPT.ref])];
     const revisionId = this.newId();
     const artifactId = this.newId();
     const createdAt = this.now();
     return {
-      resultJson: { revisionId, windows: windows.length, reasons: [] },
+      resultJson: { revisionId, windows: windows.length, ...(merged === undefined ? {} : { merged: { candidates: candidates.length } }), reasons: [] },
       publish: (scope) => {
         assertBaseRevisionExists(scope, owner, content.id, revision.id);
         scope.chapters.insertAiRevision(owner, content.id, {
@@ -155,7 +179,7 @@ export class ChapterStageExecutor implements StageExecutor {
           chapters,
           modelRef: description.snapshot,
           promptRef: prompt.ref,
-          promptRefs: framing === undefined ? [prompt.ref] : [prompt.ref, framing.rules.ref],
+          promptRefs,
           promptSnapshot: template,
           ...(framing === undefined ? {} : { speakerContext: framing.snapshot }),
           quality: "normal",
@@ -255,6 +279,79 @@ export class ChapterStageExecutor implements StageExecutor {
     }
     return parsed.data;
   }
+
+  /**
+   * The `chapter.merge` call over every window's chapters, as one paid DB-only WorkUnit. Its
+   * digest covers the windows' results rather than the transcript: after a crash the
+   * finished windows are reused, so an unchanged digest reuses a finished merge as well.
+   * The request is checked against the budget as rendered; there is no further level of
+   * merging, so a candidate list that does not fit fails the stage.
+   */
+  private async runMerge(
+    context: StageExecutionContext,
+    input: {
+      modelRef: ModelRef;
+      revision: TranscriptRevision;
+      segments: readonly TranscriptSegment[];
+      payloads: readonly WindowPayload[];
+      structured: boolean;
+      outputLanguage: string;
+      limits: { contextWindowTokens?: number; maxOutputTokens?: number };
+    },
+  ): Promise<WindowPayload> {
+    const { modelRef, revision, segments, payloads, structured, outputLanguage, limits } = input;
+    const position = new Map(segments.map((segment, index) => [segment.id as string, index]));
+    const candidates = payloads.flatMap((payload) => payload.chapters);
+    const starts = candidates.map((chapter) => {
+      const at = position.get(chapter.startSegmentId);
+      if (at === undefined) {
+        throw amberError("internal", "a stored chapter starts at a sentence outside the base transcript");
+      }
+      return at;
+    });
+    const lines = candidates.map((chapter, index) => {
+      const at = starts[index] as number;
+      const head = `[[s${at + 1}]] ${candidateClock((segments[at] as TranscriptSegment).startMs)} ${oneLine(chapter.title)}`;
+      return chapter.summary === undefined ? head : `${head}｜${oneLine(chapter.summary)}`;
+    });
+    const prompt = renderPrompt(CHAPTER_MERGE_PROMPT.text, {
+      max_chapters: String(CHAPTER_COUNT_MAX),
+      output_language: outputLanguageName(outputLanguage),
+      candidates: lines.join("\n"),
+    });
+    assertWindowFits(prompt, structured ? estimateTokens(JSON.stringify(RESPONSE_SCHEMA)) : 0, limits);
+    const request: LlmRequest = {
+      modelRef,
+      system: "",
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      ...(structured ? { responseFormat: { type: "json_schema" as const, schema: RESPONSE_SCHEMA } } : {}),
+    };
+    const inputDigest = digestOf(
+      canonicalJson({
+        baseRevisionId: revision.id,
+        windows: payloads.map((payload) => digestOf(canonicalJson(payload.chapters))),
+        promptRef: CHAPTER_MERGE_PROMPT.ref,
+        maxChapters: CHAPTER_COUNT_MAX,
+        modelRef,
+        outputLanguage,
+        structured,
+      }),
+    );
+    const value = await context.runUnit({
+      key: "chapter:merge",
+      inputDigest,
+      billing: "llm",
+      run: async (_signal: AbortSignal, unit: UnitIdentity): Promise<WindowPayload> => {
+        const completion = await context.llm.complete(request, { feature: "chapter", workUnitId: unit.id });
+        return { chapters: parseMerge(completion.text, segments, starts), invocationId: completion.invocationId };
+      },
+    });
+    const parsed = windowPayloadSchema.safeParse(value);
+    if (!parsed.success) {
+      throw amberError("internal", "a stored chapter merge does not match its shape");
+    }
+    return parsed.data;
+  }
 }
 
 type Window = SentenceWindow;
@@ -289,9 +386,39 @@ function windowPrompt(template: string, window: Window, index: number, count: nu
 /**
  * The chapters of one window, checked by the rules of the `chapter.ai` prompt: the first
  * chapter starts at the window's first sentence, aliases name sentences of this window in
- * strictly increasing order and titles are not blank. The count is not enforced. Anything else is `output_mismatch`.
+ * strictly increasing order and titles are not blank. The count is not enforced here. Anything else is `output_mismatch`.
  */
 function parseWindow(text: string, window: Window): WindowPayload["chapters"] {
+  return checkedChapters(
+    chapterEntries(text),
+    (position) => window.segments[position - window.offset],
+    window.offset,
+    "chapter aliases are invalid, out of order or do not start the window",
+  );
+}
+
+/**
+ * The merged chapters, checked by the rules of the `chapter.merge` prompt: 1 to
+ * `CHAPTER_COUNT_MAX` chapters, each starting at a candidate's start, the first at the first
+ * candidate (the transcript's first sentence), in strictly increasing order, titles not
+ * blank. Anything else is `output_mismatch`, so the merge is asked again.
+ */
+function parseMerge(text: string, segments: readonly TranscriptSegment[], starts: readonly number[]): WindowPayload["chapters"] {
+  const chapters = chapterEntries(text);
+  if (chapters.length > CHAPTER_COUNT_MAX) {
+    throw amberError("output_mismatch", "the merge kept more chapters than the cap");
+  }
+  const allowed = new Set(starts);
+  return checkedChapters(
+    chapters,
+    (position) => (allowed.has(position) ? segments[position] : undefined),
+    starts[0] as number,
+    "merged chapters do not start at candidates, are out of order or do not start the transcript",
+  );
+}
+
+/** The chapter entries of a JSON answer, possibly wrapped in prose or a code fence; none is `output_mismatch`. */
+function chapterEntries(text: string): z.infer<typeof outputSchema>["chapters"] {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end < start) {
@@ -307,13 +434,26 @@ function parseWindow(text: string, window: Window): WindowPayload["chapters"] {
   if (!parsed.success || parsed.data.chapters.length === 0) {
     throw amberError("output_mismatch", "chapter output does not match the expected shape");
   }
+  return parsed.data.chapters;
+}
+
+/**
+ * Chapters whose start aliases resolve through `segmentAt` (by position in the revision),
+ * the first at `first`, strictly increasing, with a title.
+ */
+function checkedChapters(
+  chapters: z.infer<typeof outputSchema>["chapters"],
+  segmentAt: (position: number) => TranscriptSegment | undefined,
+  first: number,
+  invalid: string,
+): WindowPayload["chapters"] {
   let previous = -1;
-  return parsed.data.chapters.map((chapter, index) => {
+  return chapters.map((chapter, index) => {
     const match = ALIAS.exec(chapter.startAlias.trim());
-    const position = match === null ? Number.NaN : Number(match[1]) - 1 - window.offset;
-    const segment = window.segments[position];
-    if (segment === undefined || position <= previous || (index === 0 && position !== 0)) {
-      throw amberError("output_mismatch", "chapter aliases are invalid, out of order or do not start the window");
+    const position = match === null ? Number.NaN : Number(match[1]) - 1;
+    const segment = Number.isNaN(position) ? undefined : segmentAt(position);
+    if (segment === undefined || position <= previous || (index === 0 && position !== first)) {
+      throw amberError("output_mismatch", invalid);
     }
     previous = position;
     const title = chapter.title.trim();
@@ -325,10 +465,14 @@ function parseWindow(text: string, window: Window): WindowPayload["chapters"] {
   });
 }
 
+/** A model-written title or summary on one candidate line. */
+function oneLine(text: string): string {
+  return text.replace(/\r\n|\r|\n/g, " ");
+}
+
 /** Chapter times are projections of sentence timing: each ends where the next starts, the last with the last sentence. */
-function mergeWindows(segments: readonly TranscriptSegment[], payloads: readonly WindowPayload[]): ChapterRevision["chapters"] {
+function chaptersOf(segments: readonly TranscriptSegment[], starts: WindowPayload["chapters"]): ChapterRevision["chapters"] {
   const byId = new Map(segments.map((segment) => [segment.id as string, segment]));
-  const starts = payloads.flatMap((payload) => payload.chapters);
   const last = segments[segments.length - 1] as TranscriptSegment;
   return starts.map((chapter, index) => {
     const segment = byId.get(chapter.startSegmentId);

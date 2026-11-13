@@ -72,15 +72,17 @@ function windowBudget(contextWindowTokens: number, maxOutputTokens: number | und
 }
 
 /**
- * The second check of a window that reads speakers: the request as it will be sent (its
- * prompt and `extraTokens`, e.g. the JSON schema) must fit the same budget planning used, or
- * the stage fails with `llm_capability.context_length` — nothing is cut and nothing is sent.
+ * The check of a request as it will be sent (its prompt and `extraTokens`, e.g. the JSON
+ * schema) against the same budget planning used: a window that reads speakers, whose header
+ * lines planning only estimated, and a merge or selection over candidates, which is never
+ * planned at all. Over budget, the stage fails with `llm_capability.context_length` —
+ * nothing is cut and nothing is sent.
  */
 export function assertWindowFits(prompt: string, extraTokens: number, limits: { contextWindowTokens?: number; maxOutputTokens?: number }): void {
   if (limits.contextWindowTokens === undefined) {
     return;
   }
   if (estimateTokens(prompt) + extraTokens > windowBudget(limits.contextWindowTokens, limits.maxOutputTokens)) {
-    throw amberError("llm_capability", "a window with its speaker lines exceeds the model's budget", { code: "llm_capability.context_length" });
+    throw amberError("llm_capability", "a request as rendered exceeds the model's budget", { code: "llm_capability.context_length" });
   }
 }

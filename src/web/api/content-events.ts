@@ -1,16 +1,18 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { ChaptersDto } from "../../shared/dto/chapter.ts";
 import { contentKeys } from "../pages/content/content-data.ts";
 import { noteKeys } from "../notes/note-keys.ts";
 import { searchKeys } from "../search/search.ts";
 import { queryKeys } from "./queries.ts";
 
 /**
- * A Content moved into the trash, out of it, or purged for good, had its speakers changed, or
- * had a revision's speaker review confirmed or withdrawn. Other tabs of the same user show the
- * same lists and pages, so the change is broadcast to them as well.
+ * A Content moved into the trash, out of it, or purged for good, had its speakers changed,
+ * had a revision's speaker review confirmed or withdrawn, or had its current chapters switched.
+ * Other tabs of the same user show the same lists and pages, so the change is broadcast to them
+ * as well.
  */
 export interface ContentEvent {
-  type: "trashed" | "restored" | "purged" | "speakersChanged" | "speakerReviewChanged";
+  type: "trashed" | "restored" | "purged" | "speakersChanged" | "speakerReviewChanged" | "chaptersChanged";
   contentId: string;
 }
 
@@ -22,7 +24,14 @@ export interface ContentEventOrigin {
 type Listener = (event: ContentEvent, origin: ContentEventOrigin) => void;
 
 const CONTENT_CHANNEL = "amber-content";
-const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>(["trashed", "restored", "purged", "speakersChanged", "speakerReviewChanged"]);
+const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>([
+  "trashed",
+  "restored",
+  "purged",
+  "speakersChanged",
+  "speakerReviewChanged",
+  "chaptersChanged",
+]);
 
 /** Messages from other tabs are untrusted input in shape: anything else is ignored. */
 function contentEventOf(data: unknown): ContentEvent | undefined {
@@ -154,4 +163,35 @@ export async function refreshSpeakerReviewViews(queryClient: QueryClient, conten
 export function publishSpeakerReviewChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string): void {
   void refreshSpeakerReviewViews(queryClient, contentId);
   bus.publish({ type: "speakerReviewChanged", contentId });
+}
+
+/**
+ * Re-reads what derives from a Content's current chapters: its summaries (a summary written on
+ * other chapters turns stale) and the open summary revision lists, whose items carry the same
+ * freshness. Revision lists are keyed by artifact, not Content, so all of them are read again.
+ */
+export async function refreshChapterDependents(queryClient: QueryClient, contentId: string): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: contentKeys.summaries(contentId) }),
+    queryClient.invalidateQueries({ queryKey: ["summary-revisions"] }),
+  ]);
+}
+
+/**
+ * Re-reads a Content's chapters and what derives from them. The chapter query is shared by the
+ * chapter area, the player's timeline and the reading headings, so one key covers all three.
+ */
+export async function refreshChapterViews(queryClient: QueryClient, contentId: string): Promise<void> {
+  await Promise.all([queryClient.invalidateQueries({ queryKey: contentKeys.chapters(contentId) }), refreshChapterDependents(queryClient, contentId)]);
+}
+
+/**
+ * A Content's current chapters were switched in this tab: the server's answer replaces the
+ * cached chapters (it is exactly what a fresh read returns, so none is made), what derives from
+ * them is read again, and other tabs are told to read both.
+ */
+export function publishChaptersChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string, chapters: ChaptersDto): void {
+  queryClient.setQueryData(contentKeys.chapters(contentId), chapters);
+  void refreshChapterDependents(queryClient, contentId);
+  bus.publish({ type: "chaptersChanged", contentId });
 }

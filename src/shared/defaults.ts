@@ -46,6 +46,16 @@ export const CITATION_INVALID_RATIO_MAX = 0.05;
 export const CITATION_RUN_MAX = 2;
 /** Default AI highlight score threshold (0–100). */
 export const HIGHLIGHT_THRESHOLD_DEFAULT = 80;
+/**
+ * Most AI highlights kept under the builtin highlight prompt that states this number in its
+ * text; a custom prompt or an older builtin version is not capped.
+ */
+export const HIGHLIGHT_COUNT_MAX = 10;
+/**
+ * Most AI chapters kept under the builtin chapter prompt that states this number in its
+ * text; platform chapters, a custom prompt and an older builtin version are not capped.
+ */
+export const CHAPTER_COUNT_MAX = 7;
 /** Lectures per group in collection rollup. */
 export const COLLECTION_PARTIAL_SIZE = 5;
 

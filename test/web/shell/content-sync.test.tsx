@@ -167,3 +167,40 @@ describe("useContentEventSync on speaker changes", () => {
     expect(client.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(false);
   });
 });
+
+describe("useContentEventSync on chapter switches", () => {
+  it("reads that Content's chapters and the summaries built on them again when another tab switched them, and nothing else", async () => {
+    mockApi({});
+    let client: QueryClient | undefined;
+    let bus: ContentEventBus | undefined;
+    renderApp(<Harness onReady={(c, b) => ((client = c), (bus = b))} />);
+    await waitFor(() => expect(screen.getByTestId("open").textContent).toBe("c-open"));
+    if (client === undefined || bus === undefined) throw new Error("not ready");
+    seed(client);
+    client.setQueryData(contentKeys.chapters("c1"), { revisions: [] });
+    client.setQueryData(contentKeys.summaries("c1"), { templates: [] });
+    client.setQueryData(["summary-revisions", "a1"], { items: [] });
+    client.setQueryData(contentKeys.chapters("c2"), { revisions: [] });
+    client.setQueryData(contentKeys.speakers("c1"), { items: [] });
+    remote({ type: "chaptersChanged", contentId: "c1" });
+    expect(client.getQueryState(contentKeys.chapters("c1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.summaries("c1"))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["summary-revisions", "a1"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(contentKeys.chapters("c2"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(contentKeys.speakers("c1"))?.isInvalidated).toBe(false);
+    for (const key of SHOWN) expect(client.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(false);
+    expect(client.getQueryData(queryKeys.content("c1"))).toEqual({ id: "c1" });
+  });
+
+  it("leaves a chapter switch of this tab to whoever published it", async () => {
+    mockApi({});
+    let client: QueryClient | undefined;
+    let bus: ContentEventBus | undefined;
+    renderApp(<Harness onReady={(c, b) => ((client = c), (bus = b))} />);
+    await waitFor(() => expect(screen.getByTestId("open").textContent).toBe("c-open"));
+    if (client === undefined || bus === undefined) throw new Error("not ready");
+    client.setQueryData(contentKeys.chapters("c1"), { revisions: [] });
+    act(() => bus?.publish({ type: "chaptersChanged", contentId: "c1" }));
+    expect(client.getQueryState(contentKeys.chapters("c1"))?.isInvalidated).toBe(false);
+  });
+});

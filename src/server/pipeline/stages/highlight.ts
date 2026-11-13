@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { monotonicFactory } from "ulid";
 import { z } from "zod";
-import { CITATION_INVALID_RATIO_MAX } from "../../../shared/defaults.ts";
+import { CITATION_INVALID_RATIO_MAX, HIGHLIGHT_COUNT_MAX } from "../../../shared/defaults.ts";
 import type { SegmentId } from "../../../shared/ids.ts";
 import type { HighlightRevision } from "../../domain/artifact.ts";
 import { canonicalJson } from "../../domain/canonical-json.ts";
@@ -9,7 +9,15 @@ import type { Content } from "../../domain/content.ts";
 import { amberError } from "../../domain/errors.ts";
 import type { LlmRequest } from "../../domain/llm.ts";
 import type { ModelRef, PromptRef } from "../../domain/model-ref.ts";
-import { chapterWindowNote, outputLanguageName, renderPrompt } from "../../domain/prompts.ts";
+import {
+  candidateClock,
+  chapterWindowNote,
+  HIGHLIGHT_DEFAULT_PROMPT,
+  HIGHLIGHT_SELECT_PROMPT,
+  isBuiltinVersion,
+  outputLanguageName,
+  renderPrompt,
+} from "../../domain/prompts.ts";
 import { framingForRead, speakerContextDigest, type SpeakerFraming } from "../../domain/speaker-context.ts";
 import { recomputeHighlightsRequestSchema } from "../../domain/task-request.ts";
 import { estimateTokens } from "../../domain/token-estimate.ts";
@@ -36,6 +44,24 @@ const RESPONSE_SCHEMA = {
         type: "object",
         properties: { alias: { type: "string" }, score: { type: "integer" }, text: { type: "string" } },
         required: ["alias", "score", "text"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["highlights"],
+  additionalProperties: false,
+} as const;
+
+/** The JSON object the `highlight.select` prompt asks for: aliases and new scores only, the reasons stay the candidates'. */
+const SELECT_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    highlights: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { alias: { type: "string" }, score: { type: "integer" } },
+        required: ["alias", "score"],
         additionalProperties: false,
       },
     },
@@ -72,6 +98,14 @@ const MAX_SCORE = 100;
  *
  * A request with a frozen speaker context sends each window with its speakers, planned and
  * checked like the chapter stage's windows.
+ *
+ * Only the current builtin `highlight.default` states `HIGHLIGHT_COUNT_MAX` in its text, so
+ * only a Task frozen on exactly that version is capped. One window over the cap keeps its
+ * best-scored items without another call. Several windows scored on scales of their own, so
+ * their items become candidates of one more call (`highlight.select`, its own
+ * `highlight:select` WorkUnit) that rescores them together; reasons stay the windows'. A
+ * custom version or an older builtin one is sent, digested and published exactly as before
+ * the cap existed.
  */
 export class HighlightStageExecutor implements StageExecutor {
   private readonly deps: HighlightStageDeps;
@@ -120,6 +154,9 @@ export class HighlightStageExecutor implements StageExecutor {
       prompts.forEach((rendered) => assertWindowFits(rendered, schemaTokens, limits));
     }
 
+    const capped = isBuiltinVersion(prompt.ref, HIGHLIGHT_DEFAULT_PROMPT);
+    const selecting = capped && windows.length > 1;
+    const steps = windows.length + (selecting ? 1 : 0);
     let finished = 0;
     const settled = await Promise.allSettled(
       windows.map(async (window, index) => {
@@ -136,7 +173,7 @@ export class HighlightStageExecutor implements StageExecutor {
           framing,
         });
         finished += 1;
-        context.reportProgress(finished / windows.length);
+        context.reportProgress(finished / steps);
         return payload;
       }),
     );
@@ -145,14 +182,38 @@ export class HighlightStageExecutor implements StageExecutor {
       throw failure;
     }
     const payloads = settled.map((result) => (result as PromiseFulfilledResult<WindowPayload>).value);
-    const items = mergeWindows(segments, payloads);
-    const invocationIds = payloads.map((payload) => payload.invocationId);
+    const position = new Map(segments.map((segment, index) => [segment.id as string, index]));
     const dropped = payloads.reduce((sum, payload) => sum + payload.dropped, 0);
+    let items: HighlightItem[];
+    let selected: WindowPayload | undefined;
+    let candidateCount: number | undefined;
+    if (!capped) {
+      items = mergeWindows(position, payloads);
+    } else if (!selecting) {
+      items = cappedItems(mergeWindows(position, payloads), position);
+    } else {
+      const candidates = candidatesOf(position, payloads);
+      candidateCount = candidates.length;
+      // Nothing to choose from: the selection would cost a call to return nothing.
+      selected =
+        candidates.length === 0
+          ? undefined
+          : await this.runSelect(context, { modelRef, revision, segments, position, candidates, payloads, structured, outputLanguage, limits });
+      items = selected === undefined ? [] : cappedItems(selected.items as HighlightItem[], position);
+    }
+    const invocationIds = [...payloads.map((payload) => payload.invocationId), ...(selected === undefined ? [] : [selected.invocationId])];
+    const promptRefs = [prompt.ref, ...(framing === undefined ? [] : [framing.rules.ref]), ...(selected === undefined ? [] : [HIGHLIGHT_SELECT_PROMPT.ref])];
     const revisionId = this.newId();
     const artifactId = this.newId();
     const createdAt = this.now();
     return {
-      resultJson: { revisionId, windows: windows.length, dropped, reasons: [] },
+      resultJson: {
+        revisionId,
+        windows: windows.length,
+        dropped,
+        ...(candidateCount === undefined ? {} : { selected: { candidates: candidateCount, dropped: selected?.dropped ?? 0 } }),
+        reasons: [],
+      },
       publish: (scope) => {
         assertBaseRevisionExists(scope, owner, content.id, revision.id);
         scope.highlights.insertRevision(owner, content.id, {
@@ -162,7 +223,7 @@ export class HighlightStageExecutor implements StageExecutor {
           items,
           modelRef: description.snapshot,
           promptRef: prompt.ref,
-          promptRefs: framing === undefined ? [prompt.ref] : [prompt.ref, framing.rules.ref],
+          promptRefs,
           promptSnapshot: template,
           ...(framing === undefined ? {} : { speakerContext: framing.snapshot }),
           quality: "normal",
@@ -234,15 +295,113 @@ export class HighlightStageExecutor implements StageExecutor {
     }
     return parsed.data;
   }
+
+  /**
+   * The `highlight.select` call over every window's items, as one paid DB-only WorkUnit
+   * whose digest covers the windows' results (so after a crash a finished selection is
+   * reused with the finished windows). The request is checked against the budget as
+   * rendered; a candidate list that does not fit fails the stage.
+   */
+  private async runSelect(
+    context: StageExecutionContext,
+    input: {
+      modelRef: ModelRef;
+      revision: TranscriptRevision;
+      segments: readonly TranscriptSegment[];
+      position: ReadonlyMap<string, number>;
+      candidates: readonly HighlightItem[];
+      payloads: readonly WindowPayload[];
+      structured: boolean;
+      outputLanguage: string;
+      limits: { contextWindowTokens?: number; maxOutputTokens?: number };
+    },
+  ): Promise<WindowPayload> {
+    const { modelRef, revision, segments, position, candidates, payloads, structured, outputLanguage, limits } = input;
+    const lines = candidates.map((item) => {
+      const at = position.get(item.segmentId) as number;
+      const segment = segments[at] as TranscriptSegment;
+      const head = `[[s${at + 1}]] ${candidateClock(segment.startMs)} ${oneLine(segment.text)}`;
+      return item.text === "" ? head : `${head}｜${oneLine(item.text)}`;
+    });
+    const prompt = renderPrompt(HIGHLIGHT_SELECT_PROMPT.text, { max_highlights: String(HIGHLIGHT_COUNT_MAX), candidates: lines.join("\n") });
+    assertWindowFits(prompt, structured ? estimateTokens(JSON.stringify(SELECT_RESPONSE_SCHEMA)) : 0, limits);
+    const request: LlmRequest = {
+      modelRef,
+      system: "",
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      ...(structured ? { responseFormat: { type: "json_schema" as const, schema: SELECT_RESPONSE_SCHEMA } } : {}),
+    };
+    const inputDigest = digestOf(
+      canonicalJson({
+        baseRevisionId: revision.id,
+        windows: payloads.map((payload) => digestOf(canonicalJson(payload.items))),
+        promptRef: HIGHLIGHT_SELECT_PROMPT.ref,
+        maxHighlights: HIGHLIGHT_COUNT_MAX,
+        modelRef,
+        outputLanguage,
+        structured,
+      }),
+    );
+    const value = await context.runUnit({
+      key: "highlight:select",
+      inputDigest,
+      billing: "llm",
+      run: async (_signal: AbortSignal, unit: UnitIdentity): Promise<WindowPayload> => {
+        const completion = await context.llm.complete(request, { feature: "highlight", workUnitId: unit.id });
+        return { ...parseSelect(completion.text, segments, candidates), invocationId: completion.invocationId };
+      },
+    });
+    const parsed = windowPayloadSchema.safeParse(value);
+    if (!parsed.success) {
+      throw amberError("internal", "a stored highlight selection does not match its shape");
+    }
+    return parsed.data;
+  }
 }
 
 /**
  * The highlights of one window, checked by the rules of the `highlight.default` prompt: an
  * entry whose alias names no sentence of this window or whose score is not a number is dropped; when the dropped share exceeds
  * `CITATION_INVALID_RATIO_MAX` the whole window is `output_mismatch`. A repeated alias keeps
- * its first entry. Scores are rounded and clamped to 0–100; the count is not enforced.
+ * its first entry. Scores are rounded and clamped to 0–100; the count is not enforced here.
  */
 function parseWindow(text: string, window: SentenceWindow): { items: HighlightItem[]; dropped: number } {
+  return judgedEntries(
+    text,
+    (position) => window.segments[position - window.offset],
+    (_segment, entry) => entry.text?.trim() ?? "",
+    "too many highlights name no sentence of their window",
+  );
+}
+
+/**
+ * The selection, checked by the rules of the `highlight.select` prompt like a window's
+ * answer: an entry naming no candidate is dropped, too many dropped is `output_mismatch`,
+ * scores are rounded and clamped, and each kept entry takes its candidate's reason.
+ */
+function parseSelect(text: string, segments: readonly TranscriptSegment[], candidates: readonly HighlightItem[]): { items: HighlightItem[]; dropped: number } {
+  const reasons = new Map(candidates.map((item) => [item.segmentId as string, item.text]));
+  return judgedEntries(
+    text,
+    (position) => {
+      const segment = segments[position];
+      return segment !== undefined && reasons.has(segment.id) ? segment : undefined;
+    },
+    (segment) => reasons.get(segment.id) as string,
+    "too many selected highlights name no candidate",
+  );
+}
+
+/**
+ * The entries of a highlight answer whose alias resolves through `segmentAt` (by position
+ * in the revision), each with the reason `reasonOf` gives it.
+ */
+function judgedEntries(
+  text: string,
+  segmentAt: (position: number) => TranscriptSegment | undefined,
+  reasonOf: (segment: TranscriptSegment, entry: z.infer<typeof entrySchema>) => string,
+  tooMany: string,
+): { items: HighlightItem[]; dropped: number } {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end < start) {
@@ -265,7 +424,7 @@ function parseWindow(text: string, window: SentenceWindow): { items: HighlightIt
   for (const raw of entries) {
     const entry = entrySchema.safeParse(raw);
     const match = entry.success ? ALIAS.exec(entry.data.alias.trim()) : null;
-    const segment = match === null ? undefined : window.segments[Number(match[1]) - 1 - window.offset];
+    const segment = match === null ? undefined : segmentAt(Number(match[1]) - 1);
     if (!entry.success || segment === undefined) {
       dropped += 1;
       continue;
@@ -277,18 +436,17 @@ function parseWindow(text: string, window: SentenceWindow): { items: HighlightIt
     items.push({
       segmentId: segment.id as SegmentId,
       score: Math.min(MAX_SCORE, Math.max(0, Math.round(entry.data.score))),
-      text: entry.data.text?.trim() ?? "",
+      text: reasonOf(segment, entry.data),
     });
   }
   if (entries.length > 0 && dropped / entries.length > CITATION_INVALID_RATIO_MAX) {
-    throw amberError("output_mismatch", "too many highlights name no sentence of their window");
+    throw amberError("output_mismatch", tooMany);
   }
   return { items, dropped };
 }
 
 /** Items of all windows in sentence order; a sentence appears once. */
-function mergeWindows(segments: readonly TranscriptSegment[], payloads: readonly WindowPayload[]): HighlightItem[] {
-  const position = new Map(segments.map((segment, index) => [segment.id as string, index]));
+function mergeWindows(position: ReadonlyMap<string, number>, payloads: readonly WindowPayload[]): HighlightItem[] {
   const byId = new Map<string, HighlightItem>();
   for (const item of payloads.flatMap((payload) => payload.items)) {
     if (!position.has(item.segmentId)) {
@@ -298,7 +456,38 @@ function mergeWindows(segments: readonly TranscriptSegment[], payloads: readonly
       byId.set(item.segmentId, { segmentId: item.segmentId as SegmentId, score: item.score, text: item.text });
     }
   }
-  return [...byId.values()].sort((a, b) => (position.get(a.segmentId) as number) - (position.get(b.segmentId) as number));
+  return inTimeOrder([...byId.values()], position);
+}
+
+/** The candidates of a selection: every window's items in sentence order, a sentence once with its best score. */
+function candidatesOf(position: ReadonlyMap<string, number>, payloads: readonly WindowPayload[]): HighlightItem[] {
+  const byId = new Map<string, HighlightItem>();
+  for (const item of payloads.flatMap((payload) => payload.items)) {
+    if (!position.has(item.segmentId)) {
+      throw amberError("internal", "a stored highlight points outside the base transcript");
+    }
+    const kept = byId.get(item.segmentId);
+    if (kept === undefined || item.score > kept.score) {
+      byId.set(item.segmentId, { segmentId: item.segmentId as SegmentId, score: item.score, text: item.text });
+    }
+  }
+  return inTimeOrder([...byId.values()], position);
+}
+
+/** At most `HIGHLIGHT_COUNT_MAX` items, the best scores first (the earlier on a tie), shown in time order. */
+function cappedItems(items: readonly HighlightItem[], position: ReadonlyMap<string, number>): HighlightItem[] {
+  const at = (item: HighlightItem) => position.get(item.segmentId) as number;
+  const best = [...items].sort((a, b) => b.score - a.score || at(a) - at(b)).slice(0, HIGHLIGHT_COUNT_MAX);
+  return inTimeOrder(best, position);
+}
+
+function inTimeOrder(items: HighlightItem[], position: ReadonlyMap<string, number>): HighlightItem[] {
+  return items.sort((a, b) => (position.get(a.segmentId) as number) - (position.get(b.segmentId) as number));
+}
+
+/** A sentence or a model-written reason on one candidate line. */
+function oneLine(text: string): string {
+  return text.replace(/\r\n|\r|\n/g, " ");
 }
 
 function digestOf(text: string): string {

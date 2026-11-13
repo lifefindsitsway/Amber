@@ -85,7 +85,7 @@ describe("/api/prompts", () => {
 
     const restored = await app.inject({ method: "DELETE", url: "/api/prompts/chapter.ai", headers: auth });
     expect(restored.statusCode).toBe(200);
-    expect(restored.json()).toMatchObject({ customized: false, builtin: { version: 2, text: CHAPTER } });
+    expect(restored.json()).toMatchObject({ customized: false, builtin: { version: 3, text: CHAPTER } });
     expect(restored.json()).not.toHaveProperty("current");
     // Restoring twice is harmless.
     expect((await app.inject({ method: "DELETE", url: "/api/prompts/chapter.ai", headers: auth })).statusCode).toBe(200);

@@ -1,14 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useContentEvents } from "../api/context.tsx";
-import { forgetContent, refreshContentViews, refreshSpeakerReviewViews, refreshSpeakerViews } from "../api/content-events.ts";
+import { forgetContent, refreshChapterViews, refreshContentViews, refreshSpeakerReviewViews, refreshSpeakerViews } from "../api/content-events.ts";
 import { queryKeys } from "../api/queries.ts";
 
 /**
  * Follows changes made in the user's other tabs. After a trash change this tab's lists,
  * collections, notes, search and trash are read again, and a Content that is no longer
  * readable is forgotten; after a speaker change only that Content's speaker list is, and after
- * a speaker review that Content's speaker views and revision list.
+ * a speaker review that Content's speaker views and revision list, and after a chapter switch
+ * that Content's chapters and the summaries built on them.
  * Changes made in this tab were refreshed by whoever made them.
  */
 export function useContentEventSync(): void {
@@ -25,6 +26,11 @@ export function useContentEventSync(): void {
         }
         if (event.type === "speakerReviewChanged") {
           void refreshSpeakerReviewViews(queryClient, event.contentId);
+          return;
+        }
+        if (event.type === "chaptersChanged") {
+          // Switching chapters touches no list, only that Content's page.
+          void refreshChapterViews(queryClient, event.contentId);
           return;
         }
         if (event.type === "trashed" || event.type === "purged") {

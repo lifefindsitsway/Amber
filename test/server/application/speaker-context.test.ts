@@ -60,8 +60,8 @@ async function submit(h: Harness, scenario: Scenario, contentId: string, modelRe
 }
 
 /** A Task queued before speakers were read: its request has no `speakerContext`, whatever the transcript's state now. */
-function submitLegacy(h: Harness, scenario: Scenario, contentId: string, modelRef: ModelRef): string {
-  const base = { modelRef, baseRevisionId: FIXED_REVISION_ID, outputLanguage: "zh-CN" };
+function submitLegacy(h: Harness, scenario: Scenario, contentId: string, modelRef: ModelRef, frozen?: Record<string, { id: string; version: number }>): string {
+  const base = { modelRef, baseRevisionId: FIXED_REVISION_ID, outputLanguage: "zh-CN", ...(frozen === undefined ? {} : { promptRefs: frozen }) };
   switch (scenario) {
     case "summary_single":
     case "summary_rolling":
@@ -87,7 +87,7 @@ interface Variant {
 async function run(
   scenario: Scenario,
   seed: SeedOptions,
-  how: "service" | "legacy" = "service",
+  how: "service" | "legacy" | "v2" = "service",
   variant: Variant = {},
 ): Promise<{ hash: string; fake: FakeLlmProvider; requests: string[] }> {
   const fake = scriptedProvider(variant.answer);
@@ -95,12 +95,18 @@ async function run(
   open.push(h);
   const { contentId } = seedContent(h, seed);
   variant.setup?.(h);
-  const taskId = how === "service" ? await submit(h, scenario, contentId, modelRef) : submitLegacy(h, scenario, contentId, modelRef);
+  const taskId = how === "service" ? await submit(h, scenario, contentId, modelRef) : submitLegacy(h, scenario, contentId, modelRef, how === "v2" ? V2_PROMPTS : undefined);
   h.scheduler.kick();
   expect(await settle(h, taskId, STAGES[scenario])).toBe("succeeded");
   const sent = traffic(h, fake, taskId);
   return { hash: sha256(JSON.stringify(sent)), fake, requests: sent.requests };
 }
+
+/**
+ * The chapter and highlight prompts as they were before their counts were capped: a Task that
+ * froze them must send exactly what it always did, so their old traffic stays pinned below.
+ */
+const V2_PROMPTS = { "chapter.ai": { id: "chapter.ai", version: 2 }, "highlight.default": { id: "highlight.default", version: 2 } };
 
 const NONE: SeedOptions = {};
 /** Two named speakers (one name confirmed) and unassigned sentences, never reviewed. */
@@ -120,6 +126,12 @@ const REVIEWED: SeedOptions = { ...UNREVIEWED, reviewed: true };
 const BASELINE: Record<Scenario, string> = {
   summary_single: "52179be9deb09b8d93352323e47e443f721ec859a7ca28bab67b2a4bfd36c0d2",
   summary_rolling: "6692027f6154624e9eef08c7a310065ac8c3a075c5db2b907dbb7ba7bc077d55",
+  chapters: "573cf23d3d750f7a205220863d7cd2e33ca3f4e553348b7d709814165678ce29",
+  highlights: "21be89339100534524481e9bb276a841b00b5f5b98e3946b6cdcc2bc91d2041c",
+};
+
+/** The same traffic for chapters and highlights frozen on their earlier prompts, captured before the counts were capped. */
+const V2_BASELINE: Partial<Record<Scenario, string>> = {
   chapters: "832beeda1324080ed437ffd28192d6dd1634dcb24a8c9016b72f6fc09bf44253",
   highlights: "253319a2ecc7f9d3523be60790d80f2103c78f7ebc0693e903e23a3fe448c814",
 };
@@ -133,12 +145,16 @@ describe("requests that read no speakers", () => {
       }
       if (scenario === "chapters" || scenario === "highlights") {
         expect(none.requests.length).toBeGreaterThan(1);
+        // Several windows under the capped prompts end in one merge or selection over the candidates.
+        expect(none.requests.filter((request) => request.includes(scenario === "chapters" ? "【候选章节】" : "【候选片段】"))).toHaveLength(1);
       }
       expect(none.requests.join("\n")).not.toContain("【发言人");
       expect((await run(scenario, UNREVIEWED)).hash).toBe(none.hash);
       expect((await run(scenario, REVIEWED_NOT_SPEAKER_MODE)).hash).toBe(none.hash);
       expect((await run(scenario, REVIEWED, "legacy")).hash).toBe(none.hash);
       expect(none.hash).toBe(BASELINE[scenario]);
+      const v2 = V2_BASELINE[scenario];
+      if (v2 !== undefined) expect((await run(scenario, NONE, "v2")).hash).toBe(v2);
     });
   }
 });
@@ -218,13 +234,19 @@ const EXTRA: Record<ExtraScenario, { scenario: Scenario; variant: Variant }> = {
  * stay byte-identical, units digests included.
  */
 const EXTRA_BASELINE: Record<ExtraScenario, string> = {
-  chapters_structured: "b6b97183094c5ddbf171c8ba7cb6f273d74b424b7b940f8612a7ccfebccb7026",
-  highlights_structured: "020c04c231ef2859f38aa12949e33840484fb04ac856836b387866acfb0f8c7a",
+  chapters_structured: "fe3e7db4cc72207dfa740d9a9131b7b6ecade36a5f7dbb173ee3a9045d14f886",
+  highlights_structured: "a6dbf39f125adec2b293223b8849621462d8f3ee90838a7be39832f11cc9bafe",
   summary_rolling_by_chapters: "db821ceb77da39f7898d72045669a0590d1399033bfdfacc59061e2bf86c8c6a",
   summary_single_repaired: "d39f5d4b2d3065a3f632253c03262b5c533b93a7f786f740b53d64a23b8160e5",
   summary_rolling_repaired: "3325cb5cabe56c55ce2cdfe26656697ad7d90a9170238d13575d0ff278477706",
   summary_rolling_long_titles_tight: "ea2a0e82893466aaab82eef6617853c3b84a0644e3d65460ec017d420760236f",
   summary_rolling_long_titles_edge: "10880aef03537961c3e999970ef3b6b9353398c36111a14b8252c9af09a819fe",
+};
+
+/** Structured chapters and highlights frozen on their earlier prompts, captured before the counts were capped. */
+const V2_EXTRA_BASELINE: Partial<Record<ExtraScenario, string>> = {
+  chapters_structured: "b6b97183094c5ddbf171c8ba7cb6f273d74b424b7b940f8612a7ccfebccb7026",
+  highlights_structured: "020c04c231ef2859f38aa12949e33840484fb04ac856836b387866acfb0f8c7a",
 };
 
 describe("more requests that read no speakers", () => {
@@ -247,6 +269,8 @@ describe("more requests that read no speakers", () => {
       expect((await run(scenario, REVIEWED_NOT_SPEAKER_MODE, "service", variant)).hash).toBe(none.hash);
       expect((await run(scenario, REVIEWED, "legacy", variant)).hash).toBe(none.hash);
       expect(none.hash).toBe(EXTRA_BASELINE[name]);
+      const v2 = V2_EXTRA_BASELINE[name];
+      if (v2 !== undefined) expect((await run(scenario, NONE, "v2", variant)).hash).toBe(v2);
     });
   }
 });
@@ -597,7 +621,9 @@ describe("every request as sent fits the budget", () => {
       for (const call of fake.calls) {
         const prompt = promptOf(call.request);
         expect(estimateTokens(prompt)).toBeLessThanOrEqual(budget);
-        if (snapshot !== undefined && /^\[\[s\d+\]\] /m.test(prompt) && kindOf(call.request) !== "repair") {
+        // A repair, a chapter merge and a highlight selection carry candidates, not the transcript, and so no speaker lines.
+        const candidates = prompt.includes("【候选章节】") || prompt.includes("【候选片段】");
+        if (snapshot !== undefined && /^\[\[s\d+\]\] /m.test(prompt) && kindOf(call.request) !== "repair" && !candidates) {
           expect(prompt).toContain(SPEAKER_RULES_FRAGMENT.text);
           expect(prompt).toMatch(/^【发言人】/m);
         }

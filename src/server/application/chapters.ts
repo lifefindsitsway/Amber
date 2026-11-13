@@ -73,6 +73,11 @@ export class ChapterService {
     return this.options.repository.withTransaction((scope) => this.snapshot(scope, principal.userId, ownedContent(scope, principal.userId, contentId)));
   }
 
+  /**
+   * Makes another of the Content's revisions current, e.g. back to platform chapters. Refused
+   * with `conflict.tasks_unfinished` while a Task holding the chapter lane is unfinished (the
+   * section then shows an `activeStage`): its chapter stage would publish over the choice.
+   */
   setCurrent(principal: RequestPrincipal, contentId: string, revisionId: string): ChaptersDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
@@ -81,6 +86,9 @@ export class ChapterService {
       const revision = scope.chapters.getRevision(owner, revisionId);
       if (artifact === undefined || revision === undefined || revision.artifactId !== artifact.id) {
         throw amberError("not_found", "chapter revision not found");
+      }
+      if (activeChapterTask(scope, owner, content) !== undefined) {
+        throw amberError("conflict", "a task's chapter stage has not finished", { code: "conflict.tasks_unfinished" });
       }
       scope.chapters.setCurrent(owner, contentId, revisionId);
       return this.snapshot(scope, owner, content);
@@ -93,7 +101,7 @@ export class ChapterService {
     const current = revisions.find((revision) => revision.id === artifact?.currentRevisionId);
     const ancestors = transcriptAncestors(content.primaryTranscriptRevisionId, scope.transcripts.listRevisions(owner, content.id));
     const tasks = scope.tasks.listByContent(owner, content.id);
-    const active = tasks.find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
+    const active = activeChapterTask(scope, owner, content, tasks);
     const activeStage = active === undefined ? undefined : activeStageOf(active, chapterRun(scope, owner, active));
     const failed = lastFailedTask(scope, owner, tasks, current?.provenance.createdAt);
     const dto = (revision: ChapterRevision): ChapterRevisionDto =>
@@ -107,6 +115,11 @@ export class ChapterService {
       ...(failed === undefined ? {} : { lastFailedTaskId: failed.id }),
     };
   }
+}
+
+/** The unfinished Task holding the Content's chapter lane, if any: while it exists the section has an `activeStage`. */
+function activeChapterTask(scope: RepositoryScope, owner: string, content: Content, tasks = scope.tasks.listByContent(owner, content.id)): Task | undefined {
+  return tasks.find((task) => !isTerminalProjection(task.statusProjection) && laneKeys(task, content.source.kind).includes("chapter"));
 }
 
 /** Task kinds whose graph has a chapter stage. */

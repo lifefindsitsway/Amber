@@ -69,14 +69,31 @@ export function composeProofreadAudioPrompt(audioText: string, proofreadText: st
   return audioText.replace(/\{\{proofread_text\}\}/g, () => proofreadText);
 }
 
-/** The `chapter.ai` prompt, v2. */
+/**
+ * The `chapter.ai` prompt, v3. The chapter count it states is `CHAPTER_COUNT_MAX`, which the
+ * stage enforces only for this exact version: changing the cap means a new version.
+ */
 export const CHAPTER_AI_PROMPT: BuiltinPrompt = {
-  ref: { id: "chapter.ai", version: 2 },
-  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+  ref: { id: "chapter.ai", version: 3 },
+  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}如果视频中自己分了章节，就采用视频自带的章节；如果没有，请按内容主题把它切成不超过 7 个章节。输出 JSON 对象：
 { "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
 规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
 【逐字稿】
 {{transcript_with_aliases}}`,
+};
+
+/**
+ * The `chapter.merge` prompt, v1: a mechanism prompt users cannot rewrite. It merges the
+ * candidate chapters of the windows (or of one window over the cap) into at most
+ * `{{max_chapters}}`, sending only each candidate's start, time, title and summary.
+ */
+export const CHAPTER_MERGE_PROMPT: BuiltinPrompt = {
+  ref: { id: "chapter.merge", version: 1 },
+  text: `下面是为一段音视频切出的候选章节，按时间顺序排列，每条以起始句标记 [[s<n>]] 开头，后面是起始时间、标题与概要。候选可能多于需要的数量，分段处理的交界处也可能把同一个主题切成了两章。请把相邻且主题相同或相近的候选合并，整理成不超过 {{max_chapters}} 个章节，输出 JSON 对象：
+{ "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
+规则：startAlias 只能取候选里出现过的起始句标记；第一章必须从第一条候选开始；只合并相邻的候选，不调换顺序；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
+【候选章节】
+{{candidates}}`,
 };
 
 /** The `translate.subtitles` prompt, v1: one numbered batch of subtitle lines. */
@@ -98,14 +115,31 @@ export const TRANSLATE_SUBTITLES_PROMPT: BuiltinPrompt = {
 {{subtitles}}`,
 };
 
-/** The `highlight.default` prompt, v2; `{{window_note}}` is filled like the `chapter.ai` prompt's. */
+/**
+ * The `highlight.default` prompt, v3; `{{window_note}}` is filled like the `chapter.ai`
+ * prompt's. The count it states is `HIGHLIGHT_COUNT_MAX`, enforced only for this exact version.
+ */
 export const HIGHLIGHT_DEFAULT_PROMPT: BuiltinPrompt = {
-  ref: { id: "highlight.default", version: 2 },
-  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+  ref: { id: "highlight.default", version: 3 },
+  text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出不超过 10 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
 输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
 评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
 【逐字稿】
 {{transcript_with_aliases}}`,
+};
+
+/**
+ * The `highlight.select` prompt, v1: a mechanism prompt users cannot rewrite. It rescores the
+ * candidates of every window on one scale and keeps at most `{{max_highlights}}`; it is sent
+ * only each candidate's sentence, time, text and reason, and answers aliases and scores only.
+ */
+export const HIGHLIGHT_SELECT_PROMPT: BuiltinPrompt = {
+  ref: { id: "highlight.select", version: 1 },
+  text: `下面是从一段音视频全文中分段挑出的候选片段，按时间顺序排列，每条以句标记 [[s<n>]] 开头，后面是时间、原句与入选理由。各段的评分标准可能不一致。请在全部候选中统一比较，选出不超过 {{max_highlights}} 处最值得回看的片段：优先信息密度高、对理解全文重要的；内容相近的只留一处；质量相当时兼顾开头、中段与结尾；不必凑满，也不必每段都选。
+输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数 }, …] }
+评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子，按同一标准重新评分。alias 只能取候选里出现过的句标记。只输出 JSON。
+【候选片段】
+{{candidates}}`,
 };
 
 /**
@@ -467,6 +501,18 @@ export function chapterWindowNote(k: number, n: number): string {
 }
 
 /**
+ * The time of a candidate line in the `chapter.merge` and `highlight.select` prompts:
+ * `mm:ss`, or `h:mm:ss` from one hour on.
+ */
+export function candidateClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
+  const seconds = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+/**
  * The language a prompt's `{{output_language}}` names: the zh-CN display name of a BCP-47
  * tag from the shared language table, by full tag then primary subtag; an unlisted tag
  * is passed through as it is.
@@ -593,6 +639,22 @@ export const BUILTIN_PROMPT_HISTORY: readonly BuiltinPrompt[] = [
 {{transcript_with_aliases}}`,
   },
   {
+    ref: { id: "chapter.ai", version: 2 },
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请按内容主题把它切成 5–12 个章节，输出 JSON 对象：
+{ "chapters": [{ "startAlias": "s1", "title": "简短标题", "summary": "一句概要" }, …] }
+规则：第一章必须从本段第一句开始；章节按顺序覆盖全文不重叠；标题不超过 20 字；标题与概要使用 {{output_language}}；只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
+    ref: { id: "highlight.default", version: 2 },
+    text: `下面是一段音视频的逐字稿，每句以 [[s<n>]] 标记。{{window_note}}请挑出 8–20 处最值得回看的片段，覆盖开头、中段与结尾，依据是信息密度与对理解全文的重要性。
+输出 JSON 对象：{ "highlights": [{ "alias": "s<n>", "score": 0–100 的整数, "text": "一句话说明为什么重要" }, …] }
+评分依据：核心结论 / 关键定义 / 反直觉观点 / 贯穿全文的例子。说明使用 {{output_language}}。只输出 JSON。
+【逐字稿】
+{{transcript_with_aliases}}`,
+  },
+  {
     ref: { id: "summary.envelope", version: 1 },
     text: `下面是一段课程音视频的逐字稿，每句以 [[s<n>]] 标记（n 为句号）。请按「任务」的要求写作。
 
@@ -655,7 +717,7 @@ ${CITATION_RULES_V1_TEXT}
   },
 ];
 
-/** The ids of the builtin prompts a user may rewrite; the mechanism prompts (citations, compaction, search planning) stay fixed. */
+/** The ids of the builtin prompts a user may rewrite; the mechanism prompts (citations, chapter merging, highlight selection, compaction, search planning, speakers) stay fixed. */
 export const CUSTOMIZABLE_PROMPT_IDS = [
   "proofread.text",
   "proofread.audio",
@@ -766,6 +828,11 @@ export function builtinPromptOf(ref: PromptRef): BuiltinPrompt | undefined {
     return current;
   }
   return BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === ref.id && prompt.ref.version === ref.version);
+}
+
+/** Whether `ref` names exactly this builtin version (a custom ref never does). */
+export function isBuiltinVersion(ref: PromptRef, prompt: BuiltinPrompt): boolean {
+  return ref.id === prompt.ref.id && ref.version === prompt.ref.version;
 }
 
 /** The customizable prompts a Task of `kind` uses, frozen into its request at submission. */

@@ -6,7 +6,9 @@ import { FakeLlmProvider, reply } from "./fake-llm.ts";
 export type PipelinePromptKind =
   | "proofread"
   | "chapter"
+  | "chapter_merge"
   | "highlight"
+  | "highlight_select"
   | "translate"
   | "envelope"
   | "partial"
@@ -34,6 +36,8 @@ export function pipelinePromptKind(request: LlmRequest): PipelinePromptKind {
   // Chapters, highlights and the summary envelope open alike; their bodies tell them apart.
   if (text.startsWith("下面是一段音视频的逐字稿") && text.includes("最值得回看")) return "highlight";
   if (text.startsWith("下面是一段音视频的逐字稿") && text.includes('"startAlias"')) return "chapter";
+  if (text.startsWith("下面是为一段音视频切出的候选章节") && text.includes("【候选章节】")) return "chapter_merge";
+  if (text.startsWith("下面是从一段音视频全文中分段挑出的候选片段") && text.includes("【候选片段】")) return "highlight_select";
   if (text.startsWith("请将以下字幕翻译成")) return "translate";
   if (text.startsWith("下面是一段音视频的逐字稿")) return "envelope";
   if (text.startsWith("你在为一个合集或一段长内容做连贯的归纳")) return "partial";
@@ -57,8 +61,9 @@ const cite = (aliases: readonly number[]): string => aliases.map((alias) => `[[s
 
 /**
  * A well-formed answer to every prompt of the processing pipeline: proofreading echoes the
- * target lines, chapters start one chapter at the window's first sentence, highlights pick
- * the window's first, middle and last sentences, translation tags every numbered line with
+ * target lines, chapters start one chapter at the window's first sentence (a merge keeps one
+ * chapter from the first candidate), highlights pick the window's first, middle and last
+ * sentences (a selection keeps every candidate), translation tags every numbered line with
  * its target language, and every
  * summary-like output (chat answers included, with their control section) cites the aliases
  * it was given — so the pipeline's checks pass and its citations stay resolvable, without
@@ -87,6 +92,16 @@ export function pipelineAnswer(request: LlmRequest): string {
       return JSON.stringify({
         highlights: picks.map((alias, index) => ({ alias: `s${alias}`, score: scores[index], text: `第 ${alias} 句是本段的关键` })),
       });
+    }
+    case "chapter_merge": {
+      // One chapter over everything, from the first candidate.
+      const [first] = aliasesIn(text, "【候选章节】");
+      return JSON.stringify({ chapters: [{ startAlias: `s${first}`, title: "全部内容", summary: "全文的全部内容" }] });
+    }
+    case "highlight_select": {
+      // Every candidate, rescored on one falling scale.
+      const aliases = aliasesIn(text, "【候选片段】");
+      return JSON.stringify({ highlights: aliases.map((alias, index) => ({ alias: `s${alias}`, score: Math.max(0, 95 - 5 * index) })) });
     }
     case "translate": {
       const language = /翻译成 (.+?)。/.exec(text)?.[1] ?? "";
