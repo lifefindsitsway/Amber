@@ -228,3 +228,43 @@ describe("ExportDialog speakers", () => {
     expect(screen.queryByTestId("export-speaker-labels")).toBeNull();
   });
 });
+
+describe("ExportDialog Amber subtitle package", () => {
+  it("notes under each subtitle format what it carries, reading the note as the button's description", async () => {
+    mockApi(contentRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    const formats = await screen.findByTestId("export-formats");
+    expect([...formats.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["SRT", "双语 SRT", "VTT", "TXT", "ASS", "双语 ASS", "Amber 字幕包"]);
+    const ambersub = screen.getByTestId("export-format-ambersub");
+    const note = document.getElementById(ambersub.getAttribute("aria-describedby") ?? "");
+    expect(note?.textContent).toBe("在另一台设备上完整还原字幕、发言人与译文，需要 Amber 0.7.0 或更高版本");
+    expect(screen.getByTestId("export-note-srt").textContent).toContain("再导入时需确认哪些名字是发言人");
+  });
+
+  it("exports the chosen original as a package, without speaker or translation options", async () => {
+    const saved = captureDownloads();
+    const { calls } = mockApi({ ...contentRoutes(), "POST /api/contents/c1/export": { file: { filename: "第一讲.ambersub", text: "{}" } } });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    fireEvent.click(await screen.findByTestId("export-format-ambersub"));
+    await waitFor(() => expect(saved).toEqual([{ download: "第一讲.ambersub" }]));
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ format: "ambersub", revisionId: "r1" });
+  });
+
+  it("is disabled for a translation, saying the package comes from its original", async () => {
+    const translated = revision("t1", { kind: "translated", language: "en", parentRevisionId: "r1" });
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), translated] } },
+      "GET /api/transcript/revisions/t1/segments": { body: { revision: translated, items: [] } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    const ambersub = (await screen.findByTestId("export-format-ambersub")) as HTMLButtonElement;
+    expect(ambersub.disabled).toBe(false);
+    fireEvent.change(screen.getByTestId("export-subtitle-revision"), { target: { value: "t1" } });
+    await waitFor(() => expect(ambersub.disabled).toBe(true));
+    expect(screen.getByTestId("export-ambersub-translated").textContent).toContain("请在上方选择原文版本");
+  });
+});

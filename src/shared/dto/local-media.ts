@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { appErrorSchema } from "../errors.ts";
 import { importSettingsSchema, languageTagSchema } from "./import.ts";
+import { subtitleImportOptionsSchema } from "./subtitle-import.ts";
 
 /** Paths handed over by the desktop shell; long Windows paths stay well below this. */
 const localPathSchema = z.string().min(1).max(4096);
@@ -51,10 +52,19 @@ export const localFileRequestSchema = z
     grant: fileGrantSchema,
     settings: importSettingsSchema.default({ autoProofread: true }),
     allowDuplicate: z.boolean().default(false),
-    initialSubtitle: z.object({ path: localPathSchema, grant: fileGrantSchema, language: languageTagSchema }).strict().exactOptional(),
+    initialSubtitle: z
+      .object({ path: localPathSchema, grant: fileGrantSchema, language: languageTagSchema, options: subtitleImportOptionsSchema.exactOptional() })
+      .strict()
+      .exactOptional(),
   })
   .strict();
 export type LocalFileRequest = z.infer<typeof localFileRequestSchema>;
+
+/** `POST /api/subtitles/inspect-local` (local mode): preview a subtitle file the user picked, under its file grant. */
+export const subtitleInspectLocalRequestSchema = z
+  .object({ path: localPathSchema, grant: fileGrantSchema, contentId: z.string().min(1).exactOptional() })
+  .strict();
+export type SubtitleInspectLocalRequest = z.infer<typeof subtitleInspectLocalRequestSchema>;
 
 /** `PUT /api/media/:assetId/relink` [client]: the file the user picked to replace a missing `external_local` original. */
 export const relinkRequestSchema = z.object({ path: localPathSchema, grant: fileGrantSchema }).strict();

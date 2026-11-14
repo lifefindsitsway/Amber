@@ -1,0 +1,48 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans SC,56,&H008AE0FF,&H008AE0FF,&H00202020,&HFF000000,0,0,0,0,100,100,0,0,1,3,0,8,192,192,0,1
+Style: Translation,Noto Sans SC,40,&H00FFD09A,&H00FFD09A,&H00202020,&HFF000000,0,0,0,0,100,100,0,0,1,3,0,8,192,192,0,1
+Style: SpeakerTranslation,Noto Sans SC,28,&H00FFD09A,&H00FFD09A,&H00202020,&HFF000000,0,0,0,0,100,100,0,0,1,3,0,8,192,192,0,1
+Style: Box,Noto Sans SC,56,&HFF000000,&HFF000000,&HFF000000,&H66201810,0,0,0,0,100,100,0,0,4,16,0,8,192,192,0,1
+Style: BoxTranslation,Noto Sans SC,40,&HFF000000,&HFF000000,&HFF000000,&H66201810,0,0,0,0,100,100,0,0,4,16,0,8,192,192,0,1
+Style: BoxSpeakerTranslation,Noto Sans SC,28,&HFF000000,&HFF000000,&HFF000000,&H66201810,0,0,0,0,100,100,0,0,4,16,0,8,192,192,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.50,BoxSpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Hello everyone, welcome to today's session.\N{\rBox}大家好，欢迎来到今天的分享。
+Dialogue: 1,0:00:00.00,0:00:02.50,SpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Hello everyone, welcome to today's session.\N{\rDefault}大家好，欢迎来到今天的分享。
+Dialogue: 0,0:00:02.50,0:00:05.00,BoxSpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Let's first briefly review last week.\N{\rBox}我们先简单回顾一下上周的内容。
+Dialogue: 1,0:00:02.50,0:00:05.00,SpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Let's first briefly review last week.\N{\rDefault}我们先简单回顾一下上周的内容。
+Dialogue: 0,0:00:05.00,0:00:08.20,BoxSpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Last week we covered three key concepts.\N{\rBox}上周我们讲了三个关键概念。
+Dialogue: 1,0:00:05.00,0:00:08.20,SpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Last week we covered three key concepts.\N{\rDefault}上周我们讲了三个关键概念。
+Dialogue: 0,0:00:08.20,0:00:11.00,BoxSpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rBoxTranslation}They're "ok" with the plan, I think.\N{\rBox}They're "ok" with the plan, I think.
+Dialogue: 1,0:00:08.20,0:00:11.00,SpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rTranslation}They're "ok" with the plan, I think.\N{\rDefault}They're "ok" with the plan, I think.
+Dialogue: 0,0:00:11.00,0:00:13.50,BoxSpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rBoxTranslation}Let me show the formula: a ＼ b = ｛x｝.\N{\rBox}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 1,0:00:11.00,0:00:13.50,SpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rTranslation}Let me show the formula: a ＼ b = ｛x｝.\N{\rDefault}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 0,0:00:13.50,0:00:16.00,BoxTranslation,,0,0,0,,{\an8\pos(960,86)}(Applause)\N{\rBox}（掌声）
+Dialogue: 1,0:00:13.50,0:00:16.00,Translation,,0,0,0,,{\an8\pos(960,86)}(Applause)\N{\rDefault}（掌声）
+Dialogue: 0,0:00:16.00,0:00:19.00,BoxSpeakerTranslation,发言人 3,0,0,0,,{\an8\pos(960,86)}发言人 3\N{\rBoxTranslation}One more point: keep the <b>key</b> & hard parts apart.\N{\rBox}我想补充一点：<b>重点</b> & 难点要分开看。
+Dialogue: 1,0:00:16.00,0:00:19.00,SpeakerTranslation,发言人 3,0,0,0,,{\an8\pos(960,86)}发言人 3\N{\rTranslation}One more point: keep the <b>key</b> & hard parts apart.\N{\rDefault}我想补充一点：<b>重点</b> & 难点要分开看。
+Dialogue: 0,0:00:19.00,0:00:21.50,BoxSpeakerTranslation,张伟,0,0,0,,{\an8\pos(960,86)}张伟\N{\rBoxTranslation}Right, I agree with that.\N{\rBox}对，我同意这个看法。
+Dialogue: 1,0:00:19.00,0:00:21.50,SpeakerTranslation,张伟,0,0,0,,{\an8\pos(960,86)}张伟\N{\rTranslation}Right, I agree with that.\N{\rDefault}对，我同意这个看法。
+Dialogue: 0,0:00:21.50,0:00:24.00,BoxSpeakerTranslation,张伟,0,0,0,,{\an8\pos(960,86)}张伟\N{\rBoxTranslation}I agree too, but I have a question.\N{\rBox}我也同意，不过有个问题。
+Dialogue: 1,0:00:21.50,0:00:24.00,SpeakerTranslation,张伟,0,0,0,,{\an8\pos(960,86)}张伟\N{\rTranslation}I agree too, but I have a question.\N{\rDefault}我也同意，不过有个问题。
+Dialogue: 0,0:00:24.00,0:00:26.00,Box,,0,0,0,,{\an8\pos(960,86)}嗯。
+Dialogue: 1,0:00:24.00,0:00:26.00,Default,,0,0,0,,{\an8\pos(960,86)}嗯。
+Dialogue: 0,0:00:26.00,0:00:29.00,BoxSpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Let's leave that question for the end.\N{\rBox}这个问题我们留到最后再讨论。
+Dialogue: 1,0:00:26.00,0:00:29.00,SpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Let's leave that question for the end.\N{\rDefault}这个问题我们留到最后再讨论。
+Dialogue: 0,0:00:29.00,0:00:30.00,BoxSpeakerTranslation,,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Let's leave that question for the end.\N{\rBox}这个问题我们留到最后再讨论。\N{\rBoxSpeakerTranslation}Alice Smith-John…\N{\rBoxTranslation}Sure, sounds good.\N{\rBox}Sure, sounds good.
+Dialogue: 1,0:00:29.00,0:00:30.00,SpeakerTranslation,,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Let's leave that question for the end.\N{\rDefault}这个问题我们留到最后再讨论。\N{\rSpeakerTranslation}Alice Smith-John…\N{\rTranslation}Sure, sounds good.\N{\rDefault}Sure, sounds good.
+Dialogue: 0,0:00:30.00,0:00:32.00,BoxSpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rBoxTranslation}Sure, sounds good.\N{\rBox}Sure, sounds good.
+Dialogue: 1,0:00:30.00,0:00:32.00,SpeakerTranslation,Alice Smith-Johnson， PhD,0,0,0,,{\an8\pos(960,86)}Alice Smith-John…\N{\rTranslation}Sure, sounds good.\N{\rDefault}Sure, sounds good.
+Dialogue: 0,0:00:32.00,0:00:40.00,BoxSpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rBoxTranslation}Next comes a very long sentence with a great deal of content, meant to be too wide for one\Nline on screen so that styled subtitles break it in advance and no line runs past the picture.\N{\rBox}接下来我们要讨论的是一个非常长的句子，它包含了很多很\N多的内容，目的是让字幕在画面上放不下一行，从而触发带\N样式字幕的预先折行，确保每一行都不会超出画面的宽度。
+Dialogue: 1,0:00:32.00,0:00:40.00,SpeakerTranslation,林晓,0,0,0,,{\an8\pos(960,86)}林晓\N{\rTranslation}Next comes a very long sentence with a great deal of content, meant to be too wide for one\Nline on screen so that styled subtitles break it in advance and no line runs past the picture.\N{\rDefault}接下来我们要讨论的是一个非常长的句子，它包含了很多很\N多的内容，目的是让字幕在画面上放不下一行，从而触发带\N样式字幕的预先折行，确保每一行都不会超出画面的宽度。
+Dialogue: 0,0:00:40.00,0:00:43.00,BoxSpeakerTranslation,发言人 3,0,0,0,,{\an8\pos(960,86)}发言人 3\N{\rBoxTranslation}Thanks, everyone. See you next time.\N{\rBox}谢谢大家，我们下次见。
+Dialogue: 1,0:00:40.00,0:00:43.00,SpeakerTranslation,发言人 3,0,0,0,,{\an8\pos(960,86)}发言人 3\N{\rTranslation}Thanks, everyone. See you next time.\N{\rDefault}谢谢大家，我们下次见。

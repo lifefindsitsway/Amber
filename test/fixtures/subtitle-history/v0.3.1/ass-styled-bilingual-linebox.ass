@@ -1,0 +1,47 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans SC,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,5,192,192,0,1
+Style: Translation,Noto Sans SC,44,&H0000FFFF,&H0000FFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,5,192,192,0,1
+Style: Line,Noto Sans SC,48,&HFF000000,&HFF000000,&H40000000,&HFF000000,0,0,0,0,100,100,0,0,3,10,0,5,192,192,0,1
+Style: LineTranslation,Noto Sans SC,44,&HFF000000,&HFF000000,&H40000000,&HFF000000,0,0,0,0,100,100,0,0,3,10,0,5,192,192,0,1
+Style: Ghost,Noto Sans SC,48,&HFF000000,&HFF000000,&HFF000000,&HFF000000,0,0,0,0,100,100,0,0,1,0,0,5,192,192,0,1
+Style: GhostTranslation,Noto Sans SC,44,&HFF000000,&HFF000000,&HFF000000,&HFF000000,0,0,0,0,100,100,0,0,1,0,0,5,192,192,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.50,Ghost,,0,0,0,,{\an5\pos(960,540)}大家好，欢迎来到今天的分享。\N{\rLineTranslation}Hello everyone, welcome to today's session.
+Dialogue: 1,0:00:00.00,0:00:02.50,Default,,0,0,0,,{\an5\pos(960,540)}大家好，欢迎来到今天的分享。\N{\rTranslation}Hello everyone, welcome to today's session.
+Dialogue: 0,0:00:02.50,0:00:05.00,Ghost,,0,0,0,,{\an5\pos(960,540)}我们先简单回顾一下上周的内容。\N{\rLineTranslation}Let's first briefly review last week.
+Dialogue: 1,0:00:02.50,0:00:05.00,Default,,0,0,0,,{\an5\pos(960,540)}我们先简单回顾一下上周的内容。\N{\rTranslation}Let's first briefly review last week.
+Dialogue: 0,0:00:05.00,0:00:08.20,Ghost,,0,0,0,,{\an5\pos(960,540)}上周我们讲了三个关键概念。\N{\rLineTranslation}Last week we covered three key concepts.
+Dialogue: 1,0:00:05.00,0:00:08.20,Default,,0,0,0,,{\an5\pos(960,540)}上周我们讲了三个关键概念。\N{\rTranslation}Last week we covered three key concepts.
+Dialogue: 0,0:00:08.20,0:00:11.00,Ghost,,0,0,0,,{\an5\pos(960,540)}They’re “ok” with the plan, I think.\N{\rLineTranslation}They’re “ok” with the plan, I think.
+Dialogue: 1,0:00:08.20,0:00:11.00,Default,,0,0,0,,{\an5\pos(960,540)}They’re “ok” with the plan, I think.\N{\rTranslation}They’re “ok” with the plan, I think.
+Dialogue: 0,0:00:11.00,0:00:13.50,Ghost,,0,0,0,,{\an5\pos(960,540)}Let me show the formula: a ＼ b = ｛x｝.\N{\rLineTranslation}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 1,0:00:11.00,0:00:13.50,Default,,0,0,0,,{\an5\pos(960,540)}Let me show the formula: a ＼ b = ｛x｝.\N{\rTranslation}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 0,0:00:13.50,0:00:16.00,Ghost,,0,0,0,,{\an5\pos(960,540)}（掌声）\N{\rLineTranslation}(Applause)
+Dialogue: 1,0:00:13.50,0:00:16.00,Default,,0,0,0,,{\an5\pos(960,540)}（掌声）\N{\rTranslation}(Applause)
+Dialogue: 0,0:00:16.00,0:00:19.00,Ghost,,0,0,0,,{\an5\pos(960,540)}我想补充一点：<b>重点</b> & 难点要分开看。\N{\rLineTranslation}One more point: keep the <b>key</b> & hard parts apart.
+Dialogue: 1,0:00:16.00,0:00:19.00,Default,,0,0,0,,{\an5\pos(960,540)}我想补充一点：<b>重点</b> & 难点要分开看。\N{\rTranslation}One more point: keep the <b>key</b> & hard parts apart.
+Dialogue: 0,0:00:19.00,0:00:21.50,Ghost,,0,0,0,,{\an5\pos(960,540)}对，我同意这个看法。\N{\rLineTranslation}Right, I agree with that.
+Dialogue: 1,0:00:19.00,0:00:21.50,Default,,0,0,0,,{\an5\pos(960,540)}对，我同意这个看法。\N{\rTranslation}Right, I agree with that.
+Dialogue: 0,0:00:21.50,0:00:24.00,Ghost,,0,0,0,,{\an5\pos(960,540)}我也同意，不过有个问题。\N{\rLineTranslation}I agree too, but I have a question.
+Dialogue: 1,0:00:21.50,0:00:24.00,Default,,0,0,0,,{\an5\pos(960,540)}我也同意，不过有个问题。\N{\rTranslation}I agree too, but I have a question.
+Dialogue: 1,0:00:24.00,0:00:26.00,Default,,0,0,0,,{\an5\pos(960,540)}嗯。
+Dialogue: 0,0:00:26.00,0:00:29.00,Ghost,,0,0,0,,{\an5\pos(960,540)}这个问题我们留到最后再讨论。\N{\rLineTranslation}Let's leave that question for the end.
+Dialogue: 1,0:00:26.00,0:00:29.00,Default,,0,0,0,,{\an5\pos(960,540)}这个问题我们留到最后再讨论。\N{\rTranslation}Let's leave that question for the end.
+Dialogue: 0,0:00:29.00,0:00:30.00,Ghost,,0,0,0,,{\an5\pos(960,540)}这个问题我们留到最后再讨论。\NSure, sounds good.\N{\rLineTranslation}Let's leave that question for the end.\NSure, sounds good.
+Dialogue: 1,0:00:29.00,0:00:30.00,Default,,0,0,0,,{\an5\pos(960,540)}这个问题我们留到最后再讨论。\NSure, sounds good.\N{\rTranslation}Let's leave that question for the end.\NSure, sounds good.
+Dialogue: 0,0:00:30.00,0:00:32.00,Ghost,,0,0,0,,{\an5\pos(960,540)}Sure, sounds good.\N{\rLineTranslation}Sure, sounds good.
+Dialogue: 1,0:00:30.00,0:00:32.00,Default,,0,0,0,,{\an5\pos(960,540)}Sure, sounds good.\N{\rTranslation}Sure, sounds good.
+Dialogue: 0,0:00:32.00,0:00:40.00,Ghost,,0,0,0,,{\an5\pos(960,540)}接下来我们要讨论的是一个非常长的句子，它包含了很多很多的内容，目的是让字幕在画面上放不下一行，从而触发带样式字幕的预先折行，确保每一行都不会超出画面的宽度。\N{\rLineTranslation}Next comes a very long sentence with a great deal of content, meant to be too wide for one line on screen so that styled subtitles break it in advance and no line runs past the picture.
+Dialogue: 1,0:00:32.00,0:00:40.00,Default,,0,0,0,,{\an5\pos(960,540)}接下来我们要讨论的是一个非常长的句子，它包含了很多很多的内容，目的是让字幕在画面上放不下一行，从而触发带样式字幕的预先折行，确保每一行都不会超出画面的宽度。\N{\rTranslation}Next comes a very long sentence with a great deal of content, meant to be too wide for one line on screen so that styled subtitles break it in advance and no line runs past the picture.
+Dialogue: 0,0:00:40.00,0:00:43.00,Ghost,,0,0,0,,{\an5\pos(960,540)}谢谢大家，我们下次见。\N{\rLineTranslation}Thanks, everyone. See you next time.
+Dialogue: 1,0:00:40.00,0:00:43.00,Default,,0,0,0,,{\an5\pos(960,540)}谢谢大家，我们下次见。\N{\rTranslation}Thanks, everyone. See you next time.

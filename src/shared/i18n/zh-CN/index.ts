@@ -23,6 +23,7 @@ import { speakerContext } from "./ui-speaker-context.ts";
 import { speakerReader } from "./ui-speaker-reader.ts";
 import { speakerReview } from "./ui-speaker-review.ts";
 import { speakerTools } from "./ui-speaker-tools.ts";
+import { subtitleImport } from "./ui-subtitle-import.ts";
 import { subtitleSpeaker } from "./ui-subtitle-speaker.ts";
 import { trash } from "./ui-trash.ts";
 import { usage } from "./ui-usage.ts";
@@ -59,4 +60,5 @@ export const zhCN = {
   speakerContext,
   readerFont,
   subtitleSpeaker,
+  subtitleImport,
 } as const;

@@ -150,6 +150,8 @@ function ExportForm(props: { templateId?: string }) {
   const summaryTemplate = templateId !== undefined && generated.some((entry) => entry.template.id === templateId) ? templateId : generated[0]?.template.id;
   const subtitleChoices = visibleRevisions(all, primaryId, { include: [subtitleRevision] });
   const pairs = translationsOf(subtitleRevision, all);
+  // A package is made from an original; a translation travels inside its original's package.
+  const subtitleIsTranslation = all.find((revision) => revision.id === subtitleRevision)?.kind === "translated";
   const track = me.data === undefined ? undefined : upgradeTrackPref(prefs.track, all);
   const translation =
     pairs.find((revision) => revision.id === translationId)?.id ??
@@ -295,30 +297,56 @@ function ExportForm(props: { templateId?: string }) {
                 {t("speakerTools.export.labelsHint")}
               </p>
             ) : null}
-            <div className="flex flex-wrap gap-2">
+            {/* One row per format: the button and what the file carries, so the choice is made knowing what a re-import brings back. */}
+            <ul className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2" data-testid="export-formats">
               {SUBTITLE_EXPORT_FORMATS.map((format) => {
                 const bilingual = BILINGUAL_EXPORT_FORMATS.has(format);
                 return (
-                  <Button
+                  <FormatRow
                     key={format}
-                    size="sm"
+                    format={format}
                     disabled={subtitleRevision === undefined || (bilingual && translation === undefined) || exportFile.isPending}
-                    onClick={() => {
+                    onExport={() => {
                       if (subtitleRevision === undefined) return;
                       exportFile.mutate({ body: subtitleExportBody(format, subtitleRevision, translation, speakerChoice) });
                     }}
-                    data-testid={`export-format-${format}`}
-                  >
-                    {t(`contentView.export.format.${format}`)}
-                  </Button>
+                  />
                 );
               })}
-            </div>
+              <FormatRow
+                format="ambersub"
+                disabled={subtitleRevision === undefined || subtitleIsTranslation || exportFile.isPending}
+                onExport={() => {
+                  if (subtitleRevision !== undefined) exportFile.mutate({ body: { format: "ambersub", revisionId: subtitleRevision } });
+                }}
+              />
+            </ul>
+            {subtitleIsTranslation ? (
+              <p className="text-xs text-muted" data-testid="export-ambersub-translated">
+                {t("contentView.export.ambersubTranslated")}
+              </p>
+            ) : null}
             {pairs.length === 0 ? <p className="text-xs text-muted">{t("contentView.export.noTranslation")}</p> : null}
           </div>
           {exportFile.error instanceof ApiError ? <ErrorView error={exportFile.error.error} /> : null}
         </div>
       </div>
     </div>
+  );
+}
+
+/** A subtitle file button with its one-line note, the note read as the button's description. */
+function FormatRow(props: { format: SubtitleExportFormat | "ambersub"; disabled: boolean; onExport: () => void }) {
+  const { t } = useTranslation();
+  const noteId = useId();
+  return (
+    <li className="col-span-2 grid grid-cols-subgrid items-center">
+      <Button size="sm" className="justify-self-start" disabled={props.disabled} onClick={props.onExport} aria-describedby={noteId} data-testid={`export-format-${props.format}`}>
+        {t(`contentView.export.format.${props.format}`)}
+      </Button>
+      <span id={noteId} className="text-xs text-muted" data-testid={`export-note-${props.format}`}>
+        {t(`contentView.export.formatNote.${props.format}`)}
+      </span>
+    </li>
   );
 }

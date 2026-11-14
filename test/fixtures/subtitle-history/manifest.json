@@ -1,0 +1,827 @@
+{
+  "description": "Subtitle files written by the export code of past Amber releases from source.json. Each release's own ExportService produced them; nothing was edited by hand.",
+  "releases": {
+    "v0.3.1": {
+      "sameOutputAs": [
+        "v0.1.0",
+        "v0.2.0",
+        "v0.3.0"
+      ],
+      "speakersInExports": false,
+      "quotesStraightenedInAss": false,
+      "styledAssPrewrap": false
+    },
+    "v0.5.0": {
+      "sameOutputAs": [
+        "v0.4.0"
+      ],
+      "speakersInExports": false,
+      "quotesStraightenedInAss": true,
+      "styledAssPrewrap": false
+    },
+    "v0.6.1": {
+      "sameOutputAs": [
+        "v0.6.0"
+      ],
+      "speakersInExports": true,
+      "quotesStraightenedInAss": true,
+      "styledAssPrewrap": true
+    }
+  },
+  "expectKeys": {
+    "speakers": "where speaker names can be read back: prefix = SRT first-line `名字：`; voice = VTT `<v 名字>`; name = ASS `Name` field; none = no speaker information",
+    "translation": "the file carries translation lines (bilingual)",
+    "timingPrecisionMs": "precision of the time stamps; null = no timing",
+    "overlapRebuilt": "overlapping sentences were cut into non-overlapping slices on export and must be rebuilt from the slices",
+    "restoreData": "the file carries Amber restore data (none of these releases wrote any)",
+    "backgroundLayer": "layer-0 background-box events (Box*/Line*/Ghost* styles) that must be dropped",
+    "speakerLabelRows": "speaker label rows (Speaker* styles) stacked above the text",
+    "prewrapped": "lines wider than the wrap width were broken in advance with \\N and must be merged back",
+    "textIsTranslation": "the exported revision was the translation itself, drawn in the Translation style",
+    "quotesStraightened": "curly quotes and apostrophes were written as straight ones",
+    "referenceTextOnly": "no timeline; imports only as reference text"
+  },
+  "files": [
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-fixed-bilingual.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": null,
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-fixed.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": null
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-styled-bilingual-box-tfirst.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "custom A",
+          "anchor": "top",
+          "fontSize": {
+            "original": 56,
+            "translation": 40
+          },
+          "colors": {
+            "original": "#FFE08A",
+            "translation": "#9AD0FF",
+            "outline": "#202020"
+          },
+          "background": {
+            "enabled": true,
+            "scope": "both",
+            "opacityPct": 60,
+            "padding": 16
+          },
+          "bilingualOrder": "translation_first",
+          "speakerLabelRows": null
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-styled-bilingual-linebox.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "custom B",
+          "anchor": "center",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": true,
+            "scope": "translation",
+            "opacityPct": 75,
+            "padding": 10
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-styled-default.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        }
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/ass-styled-translation.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        },
+        "exportedRevision": "translation"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "textIsTranslation": true,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/srt-bilingual.srt",
+      "format": "srt-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/srt.srt",
+      "format": "srt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/txt.txt",
+      "format": "txt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": null,
+        "overlapRebuilt": false,
+        "referenceTextOnly": true,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.3.1",
+      "file": "v0.3.1/vtt.vtt",
+      "format": "vtt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-fixed-bilingual.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": null,
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-fixed.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": null
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-styled-bilingual-box-tfirst.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "custom A",
+          "anchor": "top",
+          "fontSize": {
+            "original": 56,
+            "translation": 40
+          },
+          "colors": {
+            "original": "#FFE08A",
+            "translation": "#9AD0FF",
+            "outline": "#202020"
+          },
+          "background": {
+            "enabled": true,
+            "scope": "both",
+            "opacityPct": 60,
+            "padding": 16
+          },
+          "bilingualOrder": "translation_first",
+          "speakerLabelRows": null
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-styled-bilingual-linebox.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "custom B",
+          "anchor": "center",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": true,
+            "scope": "translation",
+            "opacityPct": 75,
+            "padding": 10
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-styled-default.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        }
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/ass-styled-translation.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": false,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        },
+        "exportedRevision": "translation"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": false,
+        "textIsTranslation": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/srt-bilingual.srt",
+      "format": "srt-bilingual",
+      "options": {
+        "includeSpeakers": false,
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": true,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/srt.srt",
+      "format": "srt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/txt.txt",
+      "format": "txt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": null,
+        "overlapRebuilt": false,
+        "referenceTextOnly": true,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.5.0",
+      "file": "v0.5.0/vtt.vtt",
+      "format": "vtt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-fixed-bilingual.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": true,
+        "style": null,
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-fixed.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": true,
+        "style": null
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": false,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-styled-bilingual-box-tfirst.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": true,
+        "style": {
+          "name": "custom A",
+          "anchor": "top",
+          "fontSize": {
+            "original": 56,
+            "translation": 40
+          },
+          "colors": {
+            "original": "#FFE08A",
+            "translation": "#9AD0FF",
+            "outline": "#202020"
+          },
+          "background": {
+            "enabled": true,
+            "scope": "both",
+            "opacityPct": 60,
+            "padding": 16
+          },
+          "bilingualOrder": "translation_first",
+          "speakerLabelRows": "every"
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": true,
+        "prewrapped": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-styled-bilingual-linebox.ass",
+      "format": "ass-bilingual",
+      "options": {
+        "includeSpeakers": true,
+        "style": {
+          "name": "custom B",
+          "anchor": "center",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": true,
+            "scope": "translation",
+            "opacityPct": 75,
+            "padding": 10
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": "change"
+        },
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": true,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": true,
+        "prewrapped": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-styled-default.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": true,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        }
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-styled-speaker-change-box.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": true,
+        "style": {
+          "name": "default + block box",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": true,
+            "scope": "both"
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": "change"
+        }
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": true,
+        "speakerLabelRows": true,
+        "prewrapped": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/ass-styled-translation.ass",
+      "format": "ass",
+      "options": {
+        "includeSpeakers": true,
+        "style": {
+          "name": "default",
+          "anchor": "bottom",
+          "fontSize": {
+            "original": 48,
+            "translation": 44
+          },
+          "background": {
+            "enabled": false
+          },
+          "bilingualOrder": "original_first",
+          "speakerLabelRows": null
+        },
+        "exportedRevision": "translation"
+      },
+      "expect": {
+        "speakers": "name",
+        "translation": false,
+        "timingPrecisionMs": 10,
+        "overlapRebuilt": true,
+        "restoreData": false,
+        "backgroundLayer": false,
+        "speakerLabelRows": false,
+        "prewrapped": true,
+        "textIsTranslation": true,
+        "quotesStraightened": true
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/srt-bilingual.srt",
+      "format": "srt-bilingual",
+      "options": {
+        "includeSpeakers": true,
+        "speakerLabels": "turn",
+        "translationLanguage": "en"
+      },
+      "expect": {
+        "speakers": "prefix",
+        "translation": true,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/srt-every.srt",
+      "format": "srt",
+      "options": {
+        "includeSpeakers": true,
+        "speakerLabels": "every"
+      },
+      "expect": {
+        "speakers": "prefix",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/srt-nospeakers.srt",
+      "format": "srt",
+      "options": {
+        "includeSpeakers": false
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/srt.srt",
+      "format": "srt",
+      "options": {
+        "includeSpeakers": true,
+        "speakerLabels": "turn"
+      },
+      "expect": {
+        "speakers": "prefix",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/txt.txt",
+      "format": "txt",
+      "options": {
+        "includeSpeakers": true,
+        "speakerLabels": "turn"
+      },
+      "expect": {
+        "speakers": "none",
+        "translation": false,
+        "timingPrecisionMs": null,
+        "overlapRebuilt": false,
+        "referenceTextOnly": true,
+        "quotesStraightened": false
+      }
+    },
+    {
+      "tag": "v0.6.1",
+      "file": "v0.6.1/vtt.vtt",
+      "format": "vtt",
+      "options": {
+        "includeSpeakers": true
+      },
+      "expect": {
+        "speakers": "voice",
+        "translation": false,
+        "timingPrecisionMs": 1,
+        "overlapRebuilt": false,
+        "quotesStraightened": false
+      }
+    }
+  ]
+}

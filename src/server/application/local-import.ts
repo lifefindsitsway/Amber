@@ -1,17 +1,18 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, constants, readFile, stat } from "node:fs/promises";
-import { basename, isAbsolute } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { monotonicFactory } from "ulid";
 import { DISPLAY_NAME_MAX_CHARS, MAX_UPLOAD_GB, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import { importSettingsSchema, type ImportResponse, type ImportSettings } from "../../shared/dto/import.ts";
 import type { LocalFileRequest } from "../../shared/dto/local-media.ts";
+import { subtitleImportOptionsSchema, type SubtitleImportOptions } from "../../shared/dto/subtitle-import.ts";
 import { BYTES_PER_GB, BYTES_PER_MB } from "../../shared/units.ts";
 import type { Content } from "../domain/content.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import { defaultRetentionPolicy } from "../domain/media-asset.ts";
-import { canonicalLanguageTag, decodeSubtitleText, importedTranscript, parseTimedSubtitle, type ParsedSubtitle } from "../domain/subtitle-file.ts";
+import { canonicalLanguageTag, decodeSubtitleText } from "../domain/subtitle-file.ts";
 import type { ProcessContentRequest } from "../domain/task-request.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
@@ -27,10 +28,12 @@ import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { assetRef, isOriginalMedia } from "../pipeline/stages/source-media.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { readableFileSize, verifyFileGrant } from "./local-file-access.ts";
 import { freezePromptRefs } from "./prompts.ts";
 import { jsonRequestDigest, multipartRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { QuotaReservation, StorageQuota } from "./storage-quota.ts";
 import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
+import { prepareInitialSubtitle, writeInitialSubtitle, type InitialSubtitle } from "./subtitle-import.ts";
 import { resolveTemplateRef } from "./summary-templates.ts";
 import type { TaskControl } from "./tasks.ts";
 
@@ -42,8 +45,11 @@ export type UploadPart =
   | { kind: "field"; name: string; value: string }
   | { kind: "file"; name: string; filename: string | undefined; stream: AsyncIterable<Uint8Array> };
 
-/** Fixed part order of `POST /contents/upload`; `file` is required and last. */
-const UPLOAD_PART_ORDER = ["settings", "allowDuplicate", "subtitleLanguage", "subtitle", "file"] as const;
+/**
+ * Fixed part order of `POST /contents/upload`; `file` is required and last. `subtitleOptions`
+ * (JSON text) is how the subtitle is to be read, as previewed.
+ */
+const UPLOAD_PART_ORDER = ["settings", "allowDuplicate", "subtitleLanguage", "subtitleOptions", "subtitle", "file"] as const;
 type UploadPartName = (typeof UPLOAD_PART_ORDER)[number];
 const FILE_PARTS: ReadonlySet<UploadPartName> = new Set(["subtitle", "file"]);
 
@@ -70,11 +76,6 @@ export interface LocalImportServiceOptions {
   heavy?: Pick<FairSemaphore, "run">;
   now?: () => number;
   newId?: () => string;
-}
-
-interface InitialSubtitle {
-  subtitle: ParsedSubtitle;
-  language: string;
 }
 
 interface LocalContentInput {
@@ -108,10 +109,6 @@ function canonicalLanguage(tag: string, detail: string): string {
 function displayNameOf(filename: string | undefined): string | undefined {
   const name = filename === undefined ? "" : basename(filename.replace(/\\/g, "/")).trim();
   return name === "" ? undefined : name.slice(0, DISPLAY_NAME_MAX_CHARS);
-}
-
-function parseSubtitle(bytes: Uint8Array, language: string): InitialSubtitle {
-  return { subtitle: parseTimedSubtitle(decodeSubtitleText(bytes)), language };
 }
 
 async function readLimited(stream: AsyncIterable<Uint8Array>, limitBytes: number): Promise<Buffer> {
@@ -187,6 +184,7 @@ export class LocalImportService {
     let settings: ImportSettings = importSettingsSchema.parse({});
     let allowDuplicate = false;
     let subtitleLanguage: string | undefined;
+    let subtitleOptions: SubtitleImportOptions | undefined;
     let subtitleBytes: Buffer | undefined;
     let initialSubtitle: InitialSubtitle | undefined;
     let written: { ref: string; asset: MediaAsset } | undefined;
@@ -207,6 +205,8 @@ export class LocalImportService {
               throw invalid("allowDuplicate");
             }
             allowDuplicate = part.value === "true";
+          } else if (name === "subtitleOptions") {
+            subtitleOptions = this.parseSubtitleOptions(part.value);
           } else {
             subtitleLanguage = canonicalLanguage(part.value, "subtitleLanguage");
           }
@@ -217,13 +217,21 @@ export class LocalImportService {
             throw invalid("subtitleLanguage", "a subtitle needs its language");
           }
           subtitleBytes = await this.readPart(part.stream, SUBTITLE_IMPORT_MAX_BYTES);
-          initialSubtitle = parseSubtitle(subtitleBytes, subtitleLanguage);
+          initialSubtitle = prepareInitialSubtitle(decodeSubtitleText(subtitleBytes), {
+            language: subtitleLanguage,
+            languageDetail: "subtitleLanguage",
+            filename: part.filename,
+            options: subtitleOptions,
+          });
           continue;
         }
         written = await this.receiveMedia(owner, part.filename, reservation === undefined ? part.stream : reservation.meter(part.stream));
       }
       if (written === undefined) {
         throw invalid("file", "the media part is missing");
+      }
+      if (subtitleOptions !== undefined && subtitleBytes === undefined) {
+        throw invalid("subtitleOptions", "subtitle options need a subtitle");
       }
     } catch (error) {
       if (written !== undefined) {
@@ -236,7 +244,13 @@ export class LocalImportService {
     const requestDigest = multipartRequestDigest({
       mediaSha256: media.asset.fingerprint as string,
       ...(subtitleBytes === undefined ? {} : { subtitleSha256: `sha256:${createHash("sha256").update(subtitleBytes).digest("hex")}` }),
-      metadata: { settings, allowDuplicate, ...(subtitleLanguage === undefined ? {} : { subtitleLanguage }) },
+      // Options join the digest only when sent, so a request without them digests as it always did.
+      metadata: {
+        settings,
+        allowDuplicate,
+        ...(subtitleLanguage === undefined ? {} : { subtitleLanguage }),
+        ...(subtitleOptions === undefined ? {} : { subtitleOptions }),
+      },
     });
     return this.commit(owner, { route: UPLOAD_ROUTE, key: idempotencyKey, requestDigest }, media.ref, {
       owner,
@@ -259,20 +273,25 @@ export class LocalImportService {
     if (grants === undefined) {
       throw new TypeError("local file import needs a file grant verifier");
     }
-    this.checkGrant(grants, body.grant, body.path);
+    verifyFileGrant(grants, body.grant, body.path);
     if (body.initialSubtitle !== undefined) {
-      this.checkGrant(grants, body.initialSubtitle.grant, body.initialSubtitle.path);
+      verifyFileGrant(grants, body.initialSubtitle.grant, body.initialSubtitle.path);
     }
     const settings = body.settings;
-    const sizeBytes = await this.checkReadableFile(body.path, "path");
+    const sizeBytes = await readableFileSize(body.path, "path");
     let initialSubtitle: InitialSubtitle | undefined;
     if (body.initialSubtitle !== undefined) {
-      const subtitleSize = await this.checkReadableFile(body.initialSubtitle.path, "initialSubtitle.path");
+      const subtitleSize = await readableFileSize(body.initialSubtitle.path, "initialSubtitle.path");
       if (subtitleSize > SUBTITLE_IMPORT_MAX_BYTES) {
         throw tooLarge(SUBTITLE_IMPORT_MAX_BYTES);
       }
       const language = canonicalLanguage(body.initialSubtitle.language, "initialSubtitle.language");
-      initialSubtitle = parseSubtitle(await readFile(body.initialSubtitle.path), language);
+      initialSubtitle = prepareInitialSubtitle(decodeSubtitleText(await readFile(body.initialSubtitle.path)), {
+        language,
+        languageDetail: "initialSubtitle.language",
+        filename: body.initialSubtitle.path,
+        options: body.initialSubtitle.options,
+      });
     }
     await this.checkDiskUnlessReplay(owner, LOCAL_FILE_ROUTE, idempotencyKey);
     const fingerprint = await sha256File(body.path);
@@ -316,6 +335,20 @@ export class LocalImportService {
     const parsed = importSettingsSchema.safeParse(json);
     if (!parsed.success) {
       throw invalid("settings");
+    }
+    return parsed.data;
+  }
+
+  private parseSubtitleOptions(value: string): SubtitleImportOptions {
+    let json: unknown;
+    try {
+      json = JSON.parse(value);
+    } catch {
+      throw invalid("subtitleOptions");
+    }
+    const parsed = subtitleImportOptionsSchema.safeParse(json);
+    if (!parsed.success) {
+      throw invalid("subtitleOptions");
     }
     return parsed.data;
   }
@@ -377,32 +410,6 @@ export class LocalImportService {
     const work = (): Promise<MediaProbe> => this.options.ingest.probe(path, signal);
     const heavy = this.options.heavy;
     return heavy === undefined ? work() : heavy.run({ key: `foreground:${owner}`, createdAt: this.now() }, signal, work);
-  }
-
-  private checkGrant(grants: FileGrantVerifier, grant: LocalFileRequest["grant"], path: string): void {
-    if (!grants.verify(grant, { path, purpose: "local_file" })) {
-      throw amberError("unauthenticated", "file grant is missing, forged or expired", { code: "unauthenticated.file_grant" });
-    }
-  }
-
-  /** Absolute path of an existing, readable regular file; returns its size. */
-  private async checkReadableFile(path: string, detail: string): Promise<number> {
-    if (!isAbsolute(path)) {
-      throw invalid(detail, "path is not absolute");
-    }
-    try {
-      const stats = await stat(path);
-      if (!stats.isFile()) {
-        throw invalid(detail, "path is not a regular file");
-      }
-      await access(path, constants.R_OK);
-      return stats.size;
-    } catch (error) {
-      if (error instanceof AmberError) {
-        throw error;
-      }
-      throw invalid(detail, "path does not name a readable file");
-    }
   }
 
   /** Returns whether the request replays a stored one. */
@@ -492,18 +499,9 @@ export class LocalImportService {
 
     let initialSubtitleRevisionId: string | undefined;
     if (input.initialSubtitle !== undefined) {
-      initialSubtitleRevisionId = this.newId();
-      const { revision, segments } = importedTranscript({
-        revisionId: initialSubtitleRevisionId,
-        contentId,
-        language: input.initialSubtitle.language,
-        subtitle: input.initialSubtitle.subtitle,
-        newId: this.newId,
-        createdAt: now,
-      });
-      scope.transcripts.insertRevision(owner, revision, segments);
-      scope.contents.setPrimaryTranscript(owner, contentId, revision.id, now);
-      created.push(revision.id);
+      const written = writeInitialSubtitle(scope, owner, { contentId, subtitle: input.initialSubtitle, newId: this.newId, now });
+      initialSubtitleRevisionId = written.revisionId;
+      created.push(...written.createdIds);
     }
     scope.search.syncContent(owner, contentId);
     const request: ProcessContentRequest = {

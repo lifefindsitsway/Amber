@@ -9,7 +9,6 @@ import { platformContentKey, trashPurgeAt, type Content, type ContentSource } fr
 import type { AsrModelRef, PromptRef } from "../domain/model-ref.ts";
 import { promptIdsOf } from "../domain/prompts.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
-import { canonicalLanguageTag, importedTranscript, parseTimedSubtitle, type ParsedSubtitle } from "../domain/subtitle-file.ts";
 import type { Task } from "../domain/task.ts";
 import {
   intentDifferences,
@@ -35,6 +34,7 @@ import { freezeSpeakerContext } from "./speaker-context.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
 import type { PlatformRegistry } from "./platforms.ts";
 import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
+import { prepareInitialSubtitle, writeInitialSubtitle, type InitialSubtitle } from "./subtitle-import.ts";
 import { resolveTemplateRef } from "./summary-templates.ts";
 import type { TaskControl } from "./tasks.ts";
 import { restoreTrashed } from "./trash.ts";
@@ -98,11 +98,6 @@ export interface ImportContentServiceOptions {
   newId?: () => string;
 }
 
-interface InitialSubtitle {
-  subtitle: ParsedSubtitle;
-  language: string;
-}
-
 /**
  * One Content-to-be after URL recognition, part selection and collection expansion.
  * `direct` items were named by the request itself, `expanded` ones came from listing a
@@ -129,7 +124,7 @@ function batchTooLarge(itemCount: number): AmberError {
   });
 }
 
-/** An initial subtitle given as text: UTF-8 by construction, format decided by content. */
+/** An initial subtitle given as text: UTF-8 by construction, format decided by content unless declared. */
 function parseInitialSubtitle(item: ImportItem, index: number): InitialSubtitle | undefined {
   const given = item.initialSubtitle;
   if (given === undefined) {
@@ -138,15 +133,12 @@ function parseInitialSubtitle(item: ImportItem, index: number): InitialSubtitle 
   if (Buffer.byteLength(given.text, "utf8") > SUBTITLE_IMPORT_MAX_BYTES) {
     throw amberError("media_too_large", "initial subtitle is too large", { params: { limit: `${SUBTITLE_IMPORT_MAX_BYTES / BYTES_PER_MB} MB` } });
   }
-  const language = canonicalLanguageTag(given.language);
-  if (language === undefined) {
-    throw invalid(`items[${index}].initialSubtitle.language`);
-  }
-  const subtitle = parseTimedSubtitle(given.text);
-  if (given.format !== undefined && given.format !== subtitle.format) {
-    throw amberError("invalid_request", "subtitle content does not match its declared format", { code: "invalid_request.subtitle_format" });
-  }
-  return { subtitle, language };
+  return prepareInitialSubtitle(given.text, {
+    language: given.language,
+    languageDetail: `items[${index}].initialSubtitle.language`,
+    format: given.format,
+    options: given.options,
+  });
 }
 
 /**
@@ -550,18 +542,9 @@ export class ImportContentService {
     scope.contents.insert(content);
     createdIds.push(content.id);
     if (item.initialSubtitle !== undefined) {
-      const { revision, segments } = importedTranscript({
-        revisionId: this.newId(),
-        contentId: content.id,
-        language: item.initialSubtitle.language,
-        subtitle: item.initialSubtitle.subtitle,
-        newId: this.newId,
-        createdAt: now,
-      });
-      scope.transcripts.insertRevision(owner, revision, segments);
-      scope.contents.setPrimaryTranscript(owner, content.id, revision.id, now);
-      request.initialSubtitleRevisionId = revision.id;
-      createdIds.push(revision.id);
+      const written = writeInitialSubtitle(scope, owner, { contentId: content.id, subtitle: item.initialSubtitle, newId: this.newId, now });
+      request.initialSubtitleRevisionId = written.revisionId;
+      createdIds.push(...written.createdIds);
     }
     scope.search.syncContent(owner, content.id);
     const task = createTask(scope, outbox, {

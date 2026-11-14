@@ -1,0 +1,191 @@
+{
+  "description": "Synthetic content exported by past Amber releases to produce the files in this directory. No real user content.",
+  "title": "合成字幕样例",
+  "original": {
+    "language": "zh",
+    "kind": "corrected",
+    "timingFidelity": "segment_only"
+  },
+  "translation": {
+    "language": "en",
+    "kind": "translated",
+    "missingTranslationFor": [
+      10
+    ]
+  },
+  "speakers": [
+    {
+      "key": "lin",
+      "ordinal": 1,
+      "name": "林晓",
+      "exportedName": "林晓"
+    },
+    {
+      "key": "alice",
+      "ordinal": 2,
+      "name": "Alice Smith-Johnson, PhD",
+      "exportedName": "Alice Smith-Johnson, PhD"
+    },
+    {
+      "key": "unnamed3",
+      "ordinal": 3,
+      "exportedName": "发言人 3"
+    },
+    {
+      "key": "zhangA",
+      "ordinal": 4,
+      "name": "张伟",
+      "exportedName": "张伟"
+    },
+    {
+      "key": "zhangB",
+      "ordinal": 5,
+      "name": "张伟",
+      "exportedName": "张伟"
+    }
+  ],
+  "sentences": [
+    {
+      "ordinal": 1,
+      "startMs": 0,
+      "endMs": 2500,
+      "speaker": "lin",
+      "paragraphStart": true,
+      "text": "大家好，欢迎来到今天的分享。",
+      "translation": "Hello everyone, welcome to today's session."
+    },
+    {
+      "ordinal": 2,
+      "startMs": 2500,
+      "endMs": 5000,
+      "speaker": "lin",
+      "paragraphStart": false,
+      "text": "我们先简单回顾一下上周的内容。",
+      "translation": "Let's first briefly review last week."
+    },
+    {
+      "ordinal": 3,
+      "startMs": 5000,
+      "endMs": 8200,
+      "speaker": "lin",
+      "paragraphStart": false,
+      "text": "上周我们讲了三个关键概念。",
+      "translation": "Last week we covered three key concepts."
+    },
+    {
+      "ordinal": 4,
+      "startMs": 8200,
+      "endMs": 11000,
+      "speaker": "alice",
+      "paragraphStart": true,
+      "text": "They’re “ok” with the plan, I think.",
+      "translation": "They’re “ok” with the plan, I think."
+    },
+    {
+      "ordinal": 5,
+      "startMs": 11000,
+      "endMs": 13500,
+      "speaker": "alice",
+      "paragraphStart": false,
+      "text": "Let me show the formula: a \\ b = {x}.",
+      "translation": "Let me show the formula: a \\ b = {x}."
+    },
+    {
+      "ordinal": 6,
+      "startMs": 13500,
+      "endMs": 16000,
+      "paragraphStart": true,
+      "text": "（掌声）",
+      "translation": "(Applause)"
+    },
+    {
+      "ordinal": 7,
+      "startMs": 16000,
+      "endMs": 19000,
+      "speaker": "unnamed3",
+      "paragraphStart": true,
+      "text": "我想补充一点：<b>重点</b> & 难点要分开看。",
+      "translation": "One more point: keep the <b>key</b> & hard parts apart."
+    },
+    {
+      "ordinal": 8,
+      "startMs": 19000,
+      "endMs": 21500,
+      "speaker": "zhangA",
+      "paragraphStart": true,
+      "text": "对，我同意这个看法。",
+      "translation": "Right, I agree with that."
+    },
+    {
+      "ordinal": 9,
+      "startMs": 21500,
+      "endMs": 24000,
+      "speaker": "zhangB",
+      "paragraphStart": true,
+      "text": "我也同意，不过有个问题。",
+      "translation": "I agree too, but I have a question."
+    },
+    {
+      "ordinal": 10,
+      "startMs": 24000,
+      "endMs": 26000,
+      "paragraphStart": false,
+      "text": "嗯。"
+    },
+    {
+      "ordinal": 11,
+      "startMs": 26000,
+      "endMs": 30000,
+      "speaker": "lin",
+      "paragraphStart": true,
+      "text": "这个问题我们留到最后再讨论。",
+      "translation": "Let's leave that question for the end."
+    },
+    {
+      "ordinal": 12,
+      "startMs": 29000,
+      "endMs": 32000,
+      "speaker": "alice",
+      "paragraphStart": false,
+      "text": "Sure, sounds good.",
+      "translation": "Sure, sounds good."
+    },
+    {
+      "ordinal": 13,
+      "startMs": 32000,
+      "endMs": 40000,
+      "speaker": "lin",
+      "paragraphStart": true,
+      "text": "接下来我们要讨论的是一个非常长的句子，它包含了很多很多的内容，目的是让字幕在画面上放不下一行，从而触发带样式字幕的预先折行，确保每一行都不会超出画面的宽度。",
+      "translation": "Next comes a very long sentence with a great deal of content, meant to be too wide for one line on screen so that styled subtitles break it in advance and no line runs past the picture."
+    },
+    {
+      "ordinal": 14,
+      "startMs": 40000,
+      "endMs": 43000,
+      "speaker": "unnamed3",
+      "paragraphStart": true,
+      "text": "谢谢大家，我们下次见。",
+      "translation": "Thanks, everyone. See you next time."
+    }
+  ],
+  "overlaps": [
+    {
+      "ordinals": [
+        11,
+        12
+      ],
+      "fromMs": 29000,
+      "toMs": 30000,
+      "note": "different speakers"
+    }
+  ],
+  "notes": [
+    "Sentences 1-3 are one turn of 林晓 and 4-5 one turn of Alice: `turn` labelling names only the first sentence of each.",
+    "Sentences 8 and 9 are two different speakers who share the name 张伟.",
+    "Speaker unnamed3 has no name and is exported as 「发言人 3」.",
+    "Sentences 6 and 10 are unassigned; sentence 10 has no translation.",
+    "Sentence 13 is wide enough for styled ASS (0.6.0+) to break it in advance with \\N.",
+    "Releases before 0.6.0 had no speakers: their files were exported from the same sentences without speakers."
+  ]
+}

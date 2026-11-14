@@ -1,0 +1,28 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans SC,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,2,192,192,0,1
+Style: Translation,Noto Sans SC,44,&H0000FFFF,&H0000FFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,2,192,192,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,0:00:00.00,0:00:02.50,Translation,,0,0,0,,{\an2\pos(960,994)}Hello everyone, welcome to today's session.
+Dialogue: 1,0:00:02.50,0:00:05.00,Translation,,0,0,0,,{\an2\pos(960,994)}Let's first briefly review last week.
+Dialogue: 1,0:00:05.00,0:00:08.20,Translation,,0,0,0,,{\an2\pos(960,994)}Last week we covered three key concepts.
+Dialogue: 1,0:00:08.20,0:00:11.00,Translation,,0,0,0,,{\an2\pos(960,994)}They’re “ok” with the plan, I think.
+Dialogue: 1,0:00:11.00,0:00:13.50,Translation,,0,0,0,,{\an2\pos(960,994)}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 1,0:00:13.50,0:00:16.00,Translation,,0,0,0,,{\an2\pos(960,994)}(Applause)
+Dialogue: 1,0:00:16.00,0:00:19.00,Translation,,0,0,0,,{\an2\pos(960,994)}One more point: keep the <b>key</b> & hard parts apart.
+Dialogue: 1,0:00:19.00,0:00:21.50,Translation,,0,0,0,,{\an2\pos(960,994)}Right, I agree with that.
+Dialogue: 1,0:00:21.50,0:00:24.00,Translation,,0,0,0,,{\an2\pos(960,994)}I agree too, but I have a question.
+Dialogue: 1,0:00:26.00,0:00:29.00,Translation,,0,0,0,,{\an2\pos(960,994)}Let's leave that question for the end.
+Dialogue: 1,0:00:29.00,0:00:30.00,Translation,,0,0,0,,{\an2\pos(960,994)}Let's leave that question for the end.\NSure, sounds good.
+Dialogue: 1,0:00:30.00,0:00:32.00,Translation,,0,0,0,,{\an2\pos(960,994)}Sure, sounds good.
+Dialogue: 1,0:00:32.00,0:00:40.00,Translation,,0,0,0,,{\an2\pos(960,994)}Next comes a very long sentence with a great deal of content, meant to be too wide for one line on screen so that styled subtitles break it in advance and no line runs past the picture.
+Dialogue: 1,0:00:40.00,0:00:43.00,Translation,,0,0,0,,{\an2\pos(960,994)}Thanks, everyone. See you next time.

@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Download, FileUp, Mic } from "lucide-react";
+import { CircleCheck, Download, FileUp, Mic, TriangleAlert } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ASR_DIARIZATION_DEFAULT } from "../../../shared/defaults.ts";
-import { subtitleImportResponseSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
+import { subtitleImportResponseSchema, type SubtitleImportRequest, type SubtitleImportResponse, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import { STYLED_EXPORT_FORMATS, type SubtitleExportFormat, type SubtitleExportRequest } from "../../../shared/dto/export.ts";
 import type { AsrModelRefDto } from "../../../shared/dto/model-ref.ts";
 import type { DiarizationRequest } from "../../../shared/dto/speaker.ts";
@@ -13,8 +13,10 @@ import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import type { SubtitleStyle } from "../../../shared/subtitle-style.ts";
 import { ApiError } from "../../api/client.ts";
-import { useApi } from "../../api/context.tsx";
-import { useAsrProfiles, useMe, useSettings } from "../../api/queries.ts";
+import { publishSpeakersChanged } from "../../api/content-events.ts";
+import { useApi, useContentEvents } from "../../api/context.tsx";
+import { queryKeys, useAsrProfiles, useMe, useSettings } from "../../api/queries.ts";
+import { languageNames } from "../../../shared/i18n/zh-CN/languages.ts";
 import { diarizationOffer } from "../../components/asr-diarization.ts";
 import { AsrModelSelect, asrModelOptions, initialAsrModelRef } from "../../components/asr-model-select.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
@@ -33,7 +35,7 @@ import { BurnDialog, BurnTracker } from "./burn-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, revisionGroups, segmentsAt, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
 import { subtitleExportBody, type SubtitleSpeakerChoice } from "./export-dialog.tsx";
-import { revisionLabel } from "./labels.ts";
+import { languageLabel, revisionLabel } from "./labels.ts";
 import { revisionInfo } from "./revision-info.ts";
 import { DIARIZATION_UNAVAILABLE_CODE, DiarizationOptions, DiarizationUnavailableNotice, useDiarizationChoice } from "./retranscribe-diarization.tsx";
 import { AsrBanner } from "./asr-banner.tsx";
@@ -50,6 +52,12 @@ import { matchesSpeakers, sentenceCounts } from "./speaker-filter.ts";
 import { SpeakerFilterButton } from "./speaker-filter-ui.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { VirtualRows } from "./virtual-rows.tsx";
+import { buildSubtitleImportOptions, importBlockers, isReferenceTextFile, needsFreshPreview, plainImportPossible } from "./subtitle-import-choice.ts";
+import { useSubtitlePreview, type SubtitlePreviewSource } from "./subtitle-import-data.ts";
+import { importedSpeakerCount, SubtitleImportPreview, useSubtitleImportChoice } from "./subtitle-import-preview.tsx";
+
+/** Files the import dialog offers: timed subtitles and the package, and plain text read as reference. */
+const IMPORT_ACCEPT = ".srt,.vtt,.ass,.ambersub,.txt,.md";
 
 /**
  * The download choices for a subtitle version: the plain formats of the
@@ -318,6 +326,21 @@ export function SubtitlesTab() {
                     {t(`contentView.export.format.${item.format}`)}
                   </DropdownMenu.Item>
                 ))}
+                {revision === undefined || revision.kind === "translated" ? null : (
+                  <>
+                    <DropdownMenu.Separator className="my-1 h-px bg-line" />
+                    {/* The package carries the original with its speakers and current translations, for another device. */}
+                    <DropdownMenu.Item
+                      className="flex cursor-pointer flex-col items-start gap-0.5 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
+                      onSelect={() => download.mutate({ format: "ambersub", revisionId: revision.id })}
+                      data-testid="subtitles-download-ambersub"
+                    >
+                      <span>{t("contentView.export.format.ambersub")}</span>
+                      <span className="max-w-52 text-xs text-muted">{t("subtitleImport.export.quickHint")}</span>
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Separator className="my-1 h-px bg-line" />
+                  </>
+                )}
                 <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-xs text-muted" data-testid="subtitles-ass-hint">
                   {t("contentView.subtitles.assCanvasHint")}
                 </DropdownMenu.Label>
@@ -439,41 +462,236 @@ export function SubtitlesTab() {
 }
 
 function ImportSubtitleDialog(props: { open: boolean; onClose: () => void; defaultLanguage: string | undefined }) {
+  const { t } = useTranslation();
+  return (
+    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.subtitles.import")}>
+      {/* Mounted only while open, so every opening starts from no file. */}
+      {props.open ? <ImportSubtitleForm onClose={props.onClose} defaultLanguage={props.defaultLanguage} /> : null}
+    </Modal>
+  );
+}
+
+/** What an import brought in, for the dialog's one-line result. */
+interface ImportOutcome {
+  response: SubtitleImportResponse;
+  reference: boolean;
+  sentences?: number;
+  speakers?: number;
+}
+
+/**
+ * 「导入字幕」 for the open Content, file first: a timed file is previewed against the Content
+ * (`POST /subtitles/inspect` with its id) and imported with the choices made there; TXT and
+ * Markdown are imported as reference text without a preview. A preview that fails can still be
+ * imported as a plain subtitle (no options) unless the import would fail the same way; an import
+ * refused because the file or the Content changed since the preview asks for a fresh one. After
+ * the import the dialog stays open with a one-line result and any timeline warnings.
+ */
+function ImportSubtitleForm(props: { onClose: () => void; defaultLanguage: string | undefined }) {
   const { t, i18n } = useTranslation();
   const client = useApi();
   const queryClient = useQueryClient();
+  const events = useContentEvents();
   const page = useContentPage();
+  const contentId = page.content.id;
+  const ids = useId();
   const [file, setFile] = useState<File | undefined>(undefined);
-  const [language, setLanguage] = useState(props.defaultLanguage ?? i18n.language);
+  const [language, setLanguage] = useState(props.defaultLanguage ?? "");
+  const [outcome, setOutcome] = useState<ImportOutcome | undefined>(undefined);
+  const referenceFile = file !== undefined && isReferenceTextFile(file.name);
+  const source = useMemo<SubtitlePreviewSource | undefined>(() => (file === undefined || referenceFile ? undefined : { kind: "text", file, contentId }), [file, referenceFile, contentId]);
+  const previewState = useSubtitlePreview(source);
+  const preview = previewState.status === "ready" ? previewState.preview : undefined;
+  const [choice, setChoice] = useSubtitleImportChoice(preview);
+  // A file of another extension may still turn out to be plain text.
+  const reference = referenceFile || preview?.format === "txt" || preview?.format === "md";
+  const plain = previewState.status === "failed" && plainImportPossible(previewState.error.code);
+  const askLanguage = !reference && ((preview !== undefined && preview.package === undefined) || plain);
+  const languageMissing = askLanguage && language.trim() === "";
+  const blockers = preview !== undefined && choice !== undefined && !reference ? importBlockers(preview, choice, language) : [];
+  const ready = reference || ((preview !== undefined || plain) && blockers.length === 0 && !languageMissing);
+  const languageOptions = [...new Set([...Object.keys(languageNames), ...(props.defaultLanguage === undefined || props.defaultLanguage === "" ? [] : [props.defaultLanguage])])];
+
   const upload = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<ImportOutcome> => {
       if (file === undefined) throw new Error("no file");
-      const text = await file.text();
-      return client.post(`/api/contents/${encodeURIComponent(page.content.id)}/subtitle-import`, subtitleImportResponseSchema, {
-        body: { text, filename: file.name, ...(language.trim() === "" ? {} : { language: language.trim() }) },
-      });
+      // The previewed text itself, so the digest the options carry is of what is sent.
+      const text = previewState.status === "ready" && previewState.text !== undefined ? previewState.text : await file.text();
+      const withOptions = preview !== undefined && choice !== undefined && !reference;
+      const body: SubtitleImportRequest = reference
+        ? { text, filename: file.name }
+        : {
+            text,
+            filename: file.name,
+            ...(preview === undefined ? {} : { format: preview.format }),
+            language: preview?.package?.language ?? language.trim(),
+            ...(withOptions ? { options: buildSubtitleImportOptions(preview, choice) } : {}),
+          };
+      const response = await client.post(`/api/contents/${encodeURIComponent(contentId)}/subtitle-import`, subtitleImportResponseSchema, { body });
+      return {
+        response,
+        reference,
+        ...(withOptions ? { sentences: preview.cueCount, speakers: importedSpeakerCount(preview, choice) } : {}),
+      };
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(page.content.id) });
-      props.onClose();
+    onSuccess: (result) => {
+      setOutcome(result);
+      void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId), exact: true });
+      if (result.reference) return;
+      void queryClient.invalidateQueries({ queryKey: contentKeys.translations(contentId), exact: true });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.content(contentId), exact: true });
+      // New or reused speakers change the speaker list and what derives from it, here and in other tabs.
+      publishSpeakersChanged(events, queryClient, contentId);
     },
   });
+
+  if (outcome !== undefined) {
+    return <ImportResult outcome={outcome} onClose={props.onClose} />;
+  }
+
+  const stale = upload.error instanceof ApiError && needsFreshPreview(upload.error.error.code);
   return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.subtitles.import")}>
-      <div className="flex flex-col gap-3 text-sm">
-        <FilePicker accept=".srt,.vtt,.txt,.md" fileName={file?.name} onFile={setFile} label={t("contentView.subtitles.importFile")} />
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-muted">{t("contentView.subtitles.importLanguage")}</span>
-          <input className="h-8 rounded border border-line bg-surface px-2" value={language} onChange={(event) => setLanguage(event.target.value)} />
-        </label>
-        {upload.error instanceof ApiError ? <ErrorView error={upload.error.error} /> : null}
-        <div className="flex justify-end gap-2">
-          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button variant="primary" disabled={file === undefined || upload.isPending} onClick={() => upload.mutate()}>
-            {t("contentView.subtitles.importSubmit")}
-          </Button>
-        </div>
+    <div className="flex flex-col gap-4 text-sm" data-testid="subtitle-import-dialog">
+      <div className="flex flex-col gap-1.5">
+        <span id={`${ids}-file`} className="text-xs text-muted">
+          {t("contentView.subtitles.importFile")}
+        </span>
+        <FilePicker
+          accept={IMPORT_ACCEPT}
+          fileName={file?.name}
+          labelledBy={`${ids}-file`}
+          testId="subtitle-import-file"
+          onFile={(next) => {
+            setFile(next);
+            upload.reset();
+          }}
+        />
+        <p className="text-xs text-muted">{t("subtitleImport.dialog.fileHint")}</p>
       </div>
-    </Modal>
+      {reference ? (
+        <p className="rounded-md border border-line bg-panel px-3 py-2 text-xs text-muted" data-testid="subtitle-import-reference">
+          {t("subtitleImport.dialog.reference")}
+        </p>
+      ) : null}
+      {askLanguage ? (
+        <label className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="text-xs text-muted">{t("subtitleImport.dialog.language")}</span>
+          <select className="h-8 min-w-0 rounded-md border border-line bg-surface px-2 text-sm" value={language} onChange={(event) => setLanguage(event.target.value)} data-testid="subtitle-import-language">
+            <option value="" disabled>
+              {t("subtitleImport.dialog.chooseLanguage")}
+            </option>
+            {languageOptions.map((tag) => (
+              <option key={tag} value={tag}>
+                {languageLabel(tag, t, i18n)}
+              </option>
+            ))}
+          </select>
+          {languageMissing ? <span className="text-xs text-muted">{t("subtitleImport.dialog.needLanguage")}</span> : null}
+        </label>
+      ) : null}
+      {reference ? null : (
+        <SubtitleImportPreview
+          state={previewState}
+          choice={choice}
+          onChoice={setChoice}
+          onRefresh={() => {
+            upload.reset();
+            previewState.refresh();
+          }}
+          originalLanguage={preview?.package?.language ?? language}
+          contentId={contentId}
+        />
+      )}
+      {upload.error instanceof ApiError ? (
+        <div data-testid="subtitle-import-error">
+          <ErrorView error={upload.error.error}>
+            {stale ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  upload.reset();
+                  previewState.refresh();
+                }}
+                data-testid="subtitle-import-repreview"
+              >
+                {t("subtitleImport.failed.retry")}
+              </Button>
+            ) : undefined}
+          </ErrorView>
+        </div>
+      ) : null}
+      {/* Kept in view while a long preview scrolls. */}
+      <div className="sticky -bottom-5 -mx-5 -mb-5 flex justify-end gap-2 border-t border-line bg-surface px-5 py-3">
+        <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+        <Button variant="primary" disabled={!ready || stale || upload.isPending} onClick={() => upload.mutate()} data-testid="subtitle-import-submit">
+          {upload.isPending ? t("subtitleImport.dialog.submitting") : plain && preview === undefined ? t("subtitleImport.dialog.submitPlain") : t("subtitleImport.dialog.submit")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Timeline codes an import reports, in the order they are listed. */
+const WARNING_ORDER = [
+  "imported_subtitle_invalid",
+  "imported_subtitle_suspicious",
+  "subtitle_coverage_low",
+  "subtitle_coverage_high",
+  "subtitle_coverage_marginal",
+  "subtitle_music_lines",
+  "subtitle_gap",
+  "subtitle_cue_dropped",
+] as const;
+type KnownWarning = (typeof WARNING_ORDER)[number];
+
+/** The warnings worth a line each, known ones first in a fixed order, anything else once. */
+export function importWarningLines(warnings: readonly string[]): Array<KnownWarning | "other"> {
+  const present = new Set(warnings);
+  const known: Array<KnownWarning | "other"> = WARNING_ORDER.filter((code) => present.has(code));
+  return warnings.some((code) => !(WARNING_ORDER as readonly string[]).includes(code)) ? [...known, "other"] : known;
+}
+
+/** The one-line result of an import and the timeline warnings it reported. */
+function ImportResult(props: { outcome: ImportOutcome; onClose: () => void }) {
+  const { t, i18n } = useTranslation();
+  const { outcome } = props;
+  const format = new Intl.NumberFormat(i18n.language);
+  const translations = Object.keys(outcome.response.translationRevisionIds ?? {}).map((tag) => languageLabel(tag, t, i18n));
+  const speakers = outcome.speakers ?? outcome.response.speakersCreated ?? 0;
+  const parts = outcome.reference
+    ? [t("subtitleImport.result.reference")]
+    : [
+        outcome.sentences === undefined ? t("subtitleImport.result.done") : t("subtitleImport.result.sentences", { n: format.format(outcome.sentences) }),
+        ...(speakers > 0 ? [t("subtitleImport.result.speakers", { n: format.format(speakers) })] : []),
+        ...(translations.length > 0 ? [t("subtitleImport.result.translations", { languages: translations.join(t("subtitleImport.separator")) })] : []),
+      ];
+  const warnings = importWarningLines(outcome.response.warnings);
+  return (
+    <div className="flex flex-col gap-3 text-sm" data-testid="subtitle-import-result">
+      <p className="flex items-start gap-2 rounded-md border border-line bg-panel px-3 py-2.5" role="status" data-testid="subtitle-import-summary">
+        <CircleCheck size={16} className="mt-0.5 shrink-0 text-ok" aria-hidden="true" />
+        <span className="tabular-nums">{parts.join(" · ")}</span>
+      </p>
+      {warnings.length === 0 ? null : (
+        <div className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent-soft px-3 py-2.5 text-xs" data-testid="subtitle-import-warnings">
+          <TriangleAlert size={14} className="mt-px shrink-0 text-accent" aria-hidden="true" />
+          <div className="min-w-0">
+            <p>{t("subtitleImport.result.warnings")}</p>
+            <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-4">
+              {warnings.map((code) => (
+                <li key={code} data-warning={code}>
+                  {t(`subtitleImport.warning.${code}`)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      <div className="flex justify-end">
+        <Button variant="primary" onClick={props.onClose} data-testid="subtitle-import-done">
+          {t("subtitleImport.dialog.done")}
+        </Button>
+      </div>
+    </div>
   );
 }

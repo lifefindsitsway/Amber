@@ -16,12 +16,14 @@ import { BYTES_PER_MB } from "../../shared/units.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
+import type { SubtitleDocument } from "../domain/subtitle-document.ts";
 import { canonicalLanguageTag, importedTranscript, parseTimedSubtitle } from "../domain/subtitle-file.ts";
 import { importedSubtitleWarnings } from "../domain/subtitle-verdict.ts";
 import type { TranscriptRevision } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { ContentCursor, Repository, RepositoryScope } from "../ports/repository.ts";
 import { revisionListItems } from "./revision-references.ts";
+import { importSubtitleWithReader, insertReferenceText, needsSubtitleReader, sniffReaderOnlyDocument } from "./subtitle-import.ts";
 
 export interface ContentServiceOptions {
   repository: Repository;
@@ -48,7 +50,8 @@ export interface ContentListRequest {
   ids?: readonly string[];
 }
 
-type SubtitleImportFormat = NonNullable<SubtitleImportRequest["format"]>;
+/** The formats the plain import reads itself; ASS and packages always go through the shared subtitle reader. */
+type SubtitleImportFormat = "srt" | "vtt" | "txt" | "md";
 
 /**
  * `title` carries the display title, so every list and page shows the user's rename without
@@ -153,11 +156,12 @@ const FORMAT_BY_EXTENSION: Readonly<Record<string, SubtitleImportFormat>> = { sr
 
 /**
  * The declared format, else the file name's extension, else the content: text with cue
- * timing is a timed subtitle, anything else plain text.
+ * timing is a timed subtitle, anything else plain text (`unrecognized`, which may still be an
+ * ASS or a package recognized by content). Only for requests the shared reader does not take.
  */
-function importFormat(body: SubtitleImportRequest): SubtitleImportFormat | "timed" {
+function importFormat(body: SubtitleImportRequest): SubtitleImportFormat | "timed" | "unrecognized" {
   if (body.format !== undefined) {
-    return body.format;
+    return body.format as SubtitleImportFormat;
   }
   const extension = body.filename?.toLowerCase().match(/\.([a-z]+)$/)?.[1];
   const byName = extension === undefined ? undefined : FORMAT_BY_EXTENSION[extension];
@@ -168,7 +172,7 @@ function importFormat(body: SubtitleImportRequest): SubtitleImportFormat | "time
     parseTimedSubtitle(body.text);
     return "timed";
   } catch {
-    return "txt";
+    return "unrecognized";
   }
 }
 
@@ -332,26 +336,48 @@ export class ContentService {
   }
 
   /**
-   * SRT / VTT become an `imported` revision that is made primary; TXT / Markdown become a
-   * ReferenceText and leave the primary alone. A timeline that does not
-   * fit the known media duration is only reported as a warning.
+   * SRT / VTT / ASS / packages become an `imported` revision that is made primary (unless
+   * options say otherwise); TXT / Markdown become a ReferenceText and leave the primary
+   * alone. A timeline that does not fit the known media duration is only reported as a
+   * warning. A request without options for SRT, VTT or plain text takes the plain import,
+   * whose result and response are exactly what they always were; options, an ASS or a
+   * package go through the shared subtitle reader.
    */
   importSubtitle(principal: RequestPrincipal, contentId: string, body: SubtitleImportRequest): SubtitleImportResponse {
     const owner = principal.userId;
     if (Buffer.byteLength(body.text, "utf8") > SUBTITLE_IMPORT_MAX_BYTES) {
       throw amberError("media_too_large", "subtitle text is too large", { params: { limit: `${SUBTITLE_IMPORT_MAX_BYTES / BYTES_PER_MB} MB` } });
     }
-    const format = importFormat(body);
     const now = this.now();
+    const viaReader = (document?: SubtitleDocument): SubtitleImportResponse =>
+      this.options.repository.withTransaction((scope) =>
+        importSubtitleWithReader(scope, owner, {
+          contentId,
+          text: body.text,
+          format: body.format,
+          filename: body.filename,
+          language: body.language,
+          options: body.options,
+          ...(document === undefined ? {} : { document }),
+          newId: this.newId,
+          now,
+        }),
+      );
+    if (needsSubtitleReader(body)) {
+      return viaReader();
+    }
+    const detected = importFormat(body);
+    const sniffed = detected === "unrecognized" ? sniffReaderOnlyDocument(body.text) : undefined;
+    if (sniffed !== undefined) {
+      return viaReader(sniffed);
+    }
+    const format = detected === "unrecognized" ? "txt" : detected;
     if (format === "txt" || format === "md") {
       return this.options.repository.withTransaction((scope) => {
         if (scope.contents.get(owner, contentId) === undefined) {
           throw amberError("not_found", "content not found");
         }
-        const id = this.newId();
-        scope.referenceTexts.insert(owner, { id, contentId, origin: format === "md" ? "md_import" : "txt_import", text: body.text, createdAt: now });
-        scope.search.syncContent(owner, contentId);
-        return { referenceTextId: id, warnings: [] };
+        return { referenceTextId: insertReferenceText(scope, owner, { contentId, format, text: body.text, newId: this.newId, now }), warnings: [] };
       });
     }
     const language = body.language === undefined ? undefined : canonicalLanguageTag(body.language);

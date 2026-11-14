@@ -9,6 +9,7 @@ import { useOpenTasksRequest } from "../../../src/web/shell/task-panel.tsx";
 import { baseRoutes, content, provider, SETTINGS } from "../../fixtures/web/shell-data.ts";
 import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
+import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
 
 vi.mock("../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -156,7 +157,8 @@ describe("NewPage", () => {
     const uploads = calls.filter((call) => call.path === "/api/contents/upload");
     expect(uploads[0]?.form?.map(([name]) => name)).toEqual(["settings", "subtitleLanguage", "subtitle", "file"]);
     expect(uploads.at(-1)?.form?.map(([name]) => name)).toEqual(["settings", "allowDuplicate", "subtitleLanguage", "subtitle", "file"]);
-    expect(JSON.parse(String(uploads[0]?.form?.[0]?.[1]))).toMatchObject({ templateId: "summary.core", autoProofread: true });
+    // With a subtitle attached and the checkbox untouched, the text is not rewritten by AI.
+    expect(JSON.parse(String(uploads[0]?.form?.[0]?.[1]))).toMatchObject({ templateId: "summary.core", autoProofread: false });
     expect(uploads[0]?.headers["x-amber-request"]).toBe("1");
     expect(uploads[0]?.headers["idempotency-key"]).toBeTruthy();
     expect((uploads[0]?.form?.at(-1)?.[1] as File).name).toBe("lecture.mp4");
@@ -286,7 +288,7 @@ describe("NewPage in the desktop client", () => {
     expect(post?.body).toEqual({
       path: MEDIA,
       grant: expect.objectContaining({ path: MEDIA, purpose: "local_file", sig: "test-signature" }),
-      settings: { templateId: "summary.core", outputLanguage: "zh-CN", autoProofread: true },
+      settings: { templateId: "summary.core", outputLanguage: "zh-CN", autoProofread: false },
       allowDuplicate: false,
       initialSubtitle: { path: SUBTITLE, grant: expect.objectContaining({ path: SUBTITLE }), language: "zh-CN" },
     });
@@ -522,5 +524,138 @@ describe("NewPage speaker identification note", () => {
     expect(await noteFor([profile("dashscope", "fun-asr")], { asrDiarization: false, defaultAsrModelRef: ref })).toBeNull();
     cleanup();
     expect(await noteFor([profile("dashscope", "fun-asr")], { asrDiarization: true })).toBeNull();
+  });
+});
+
+describe("NewPage with a subtitle", () => {
+  const SRT = "1\n00:00:00,000 --> 00:00:01,000\n张三：你好\n";
+
+  async function openTab(name: string) {
+    const tab = await screen.findByRole("tab", { name });
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+  }
+
+  function settingsCheckbox(): HTMLInputElement | null {
+    return screen.queryByRole("checkbox", { name: "自动校对" }) as HTMLInputElement | null;
+  }
+
+  it("starts 「自动校对」 unchecked under an attached subtitle, keeps the user's choice, and restores the default on removal", async () => {
+    mockApi({ ...baseRoutes({ mode: "server" }), "POST /api/subtitles/inspect": { body: srtPreview() } });
+    renderApp(page(), { route: "/new", mode: "server" });
+    await openTab("上传本地文件");
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    expect(settingsCheckbox()?.checked).toBe(true);
+    fireEvent.change(screen.getByTestId("upload-subtitle"), { target: { files: [new File([SRT], "lecture.srt")] } });
+    const moved = await screen.findByTestId("subtitle-auto-proofread");
+    expect(moved.textContent).toContain("已附带字幕，默认不用 AI 改写；总结和章节仍会生成");
+    // One checkbox only, now under the subtitle.
+    expect(screen.getAllByRole("checkbox", { name: "自动校对" })).toHaveLength(1);
+    const box = within(moved).getByRole("checkbox", { name: "自动校对" }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    fireEvent.click(screen.getByTestId("upload-remove-subtitle"));
+    expect(screen.queryByTestId("subtitle-auto-proofread")).toBeNull();
+    expect(settingsCheckbox()?.checked).toBe(true);
+    fireEvent.change(screen.getByTestId("upload-subtitle"), { target: { files: [new File([SRT], "lecture.srt")] } });
+    expect((within(await screen.findByTestId("subtitle-auto-proofread")).getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("keeps a choice the user made before attaching a subtitle", async () => {
+    mockApi({ ...baseRoutes({ mode: "server" }), "POST /api/subtitles/inspect": { body: srtPreview() } });
+    renderApp(page(), { route: "/new", mode: "server" });
+    await openTab("上传本地文件");
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    fireEvent.click(settingsCheckbox() as HTMLInputElement);
+    fireEvent.click(settingsCheckbox() as HTMLInputElement);
+    fireEvent.change(screen.getByTestId("upload-subtitle"), { target: { files: [new File([SRT], "lecture.srt")] } });
+    expect((within(await screen.findByTestId("subtitle-auto-proofread")).getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("previews the uploaded subtitle under it and sends the choices in the subtitleOptions part", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes({ mode: "server" }),
+      "POST /api/subtitles/inspect": { body: prefixPreview() },
+      "POST /api/contents/upload": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c7"] } },
+    });
+    renderApp(page(), { route: "/new", mode: "server" });
+    await openTab("上传本地文件");
+    fireEvent.change(screen.getByTestId("upload-file"), { target: { files: [new File([new Uint8Array([1])], "lecture.mp4", { type: "video/mp4" })] } });
+    fireEvent.change(screen.getByTestId("upload-subtitle"), { target: { files: [new File([SRT], "lecture.srt")] } });
+    await screen.findByTestId("subtitle-preview");
+    expect(calls.find((call) => call.path === "/api/subtitles/inspect")?.body).toEqual({ text: SRT, filename: "lecture.srt" });
+    // A new Content has no existing speakers to map or current version to keep.
+    expect(screen.queryByTestId("subtitle-preview-identities")).toBeNull();
+    expect(screen.queryByTestId("subtitle-preview-set-current")).toBeNull();
+    fireEvent.click(screen.getByTestId("subtitle-preview-unlabeled-unassigned"));
+    fireEvent.change(screen.getByTestId("upload-subtitle-language"), { target: { value: "zh-CN" } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c7"));
+    const form = calls.find((call) => call.path === "/api/contents/upload")?.form ?? [];
+    expect(form.map(([name]) => name)).toEqual(["settings", "subtitleLanguage", "subtitleOptions", "subtitle", "file"]);
+    expect(JSON.parse(String(form[2]?.[1]))).toEqual({ expectedDigest: DIGEST, speakers: { prefixNames: ["张三", "李四"], unlabeled: "unassigned" } });
+  });
+
+  it("takes a package's language from the package and sends it with the link", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/subtitles/inspect": { body: packagePreview() },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    await openTab("导入字幕");
+    fireEvent.change(screen.getByLabelText("音视频链接"), { target: { value: VIDEO } });
+    fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
+    await screen.findByTestId("subtitle-preview-package");
+    expect(screen.queryByTestId("subtitle-language")).toBeNull();
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    const body = calls.find((call) => call.path === "/api/contents/import")?.body as { items: unknown[]; settings: { autoProofread: boolean } };
+    expect(body.items).toEqual([{ url: VIDEO, initialSubtitle: { text: "{}", language: "zh-CN", format: "ambersub", options: { expectedDigest: DIGEST } } }]);
+    expect(body.settings.autoProofread).toBe(false);
+  });
+
+  it("holds the import while the preview asks for a decision", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/subtitles/inspect": { body: srtPreview({ format: "ass", bilingual: { source: "style", count: 3, samples: [] } }) } });
+    renderApp(page(), { route: "/new" });
+    await openTab("导入字幕");
+    fireEvent.change(screen.getByLabelText("音视频链接"), { target: { value: VIDEO } });
+    fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["[Script Info]"], "第一讲.ass")] } });
+    await screen.findByTestId("subtitle-preview-translation-pick");
+    fireEvent.change(screen.getByTestId("subtitle-language"), { target: { value: "zh-CN" } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    expect(await screen.findByText("请先处理字幕预览中的提示")).toBeTruthy();
+    expect(calls.some((call) => call.path === "/api/contents/import")).toBe(false);
+  });
+});
+
+describe("NewPage with a picked subtitle in the desktop client", () => {
+  it("previews the picked subtitle under its grant and sends the choices with it", async () => {
+    const MEDIA = "D:\\课程\\第一讲.mp4";
+    const SUBTITLE = "D:\\课程\\第一讲.ass";
+    fakeShell.desktop = true;
+    fakeShell.pickLocalFile.mockResolvedValueOnce(pickedFile(MEDIA)).mockResolvedValueOnce(pickedFile(SUBTITLE));
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/subtitles/inspect-local": { body: srtPreview({ format: "ass", bilingual: { source: "style", count: 3, samples: [{ original: "你好", translation: "Hello" }] } }) },
+      "POST /api/contents/local-file": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c9"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    const tab = await screen.findByRole("tab", { name: "选择本地文件" });
+    await waitFor(() => expect(tab.hasAttribute("disabled")).toBe(false));
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+    fireEvent.click(await screen.findByTestId("local-pick"));
+    await waitFor(() => expect(screen.getByTestId("local-file-name").textContent).toBe("第一讲.mp4"));
+    fireEvent.click(screen.getByTestId("local-pick-subtitle"));
+    await screen.findByTestId("subtitle-preview");
+    expect(calls.find((call) => call.path === "/api/subtitles/inspect-local")?.body).toEqual({ path: SUBTITLE, grant: expect.objectContaining({ path: SUBTITLE }) });
+    fireEvent.change(screen.getByTestId("local-subtitle-language"), { target: { value: "zh-CN" } });
+    fireEvent.change(screen.getByTestId("subtitle-preview-translation-language"), { target: { value: "en" } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c9"));
+    const body = calls.find((call) => call.path === "/api/contents/local-file")?.body as { initialSubtitle: unknown };
+    expect(body.initialSubtitle).toEqual({ path: SUBTITLE, grant: expect.objectContaining({ path: SUBTITLE }), language: "zh-CN", options: { expectedDigest: DIGEST, translationLanguage: "en" } });
   });
 });

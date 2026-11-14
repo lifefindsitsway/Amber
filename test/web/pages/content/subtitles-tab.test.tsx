@@ -11,6 +11,7 @@ import { fakeShell } from "../../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
 import { stubResizeObserver } from "../../../fixtures/web/speaker-fetch.ts";
+import { packagePreview, prefixPreview, target } from "../../../fixtures/web/subtitle-preview.ts";
 
 vi.mock("../../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -800,5 +801,174 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
     await waitFor(() => expect(posted(calls).at(-1)).toEqual({ asrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, diarization: { mode: "off" } }));
     await waitFor(() => expect(screen.queryByTestId("diarization-unavailable")).toBeNull());
     expect((screen.getByTestId("diarization-switch") as HTMLInputElement).checked).toBe(false);
+  });
+});
+
+describe("importing a subtitle into the Content", () => {
+  const SRT = "1\n00:00:00,000 --> 00:00:01,000\n张三：你好\n";
+  const ZHANG = { id: "sp1", ordinal: 1, name: "张三", colorIndex: 0, used: true };
+
+  function routes(extra: Record<string, unknown> = {}) {
+    return {
+      ...contentRoutes(contentDetail({ rawLanguage: "zh-CN" })),
+      "POST /api/subtitles/inspect": { body: prefixPreview({ target: target({ speakers: [ZHANG], speakerRoom: 5, currentTranslations: {} }) }) },
+      ...extra,
+    } as Parameters<typeof mockApi>[0];
+  }
+
+  async function openDialog(file: File) {
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    fireEvent.click(await screen.findByRole("button", { name: "导入字幕" }));
+    const dialog = await screen.findByRole("dialog", { name: "导入字幕" });
+    fireEvent.change(within(dialog).getByTestId("subtitle-import-file"), { target: { files: [file] } });
+    return dialog;
+  }
+
+  it("previews a timed file against the Content and imports it with the choices made there", async () => {
+    const { calls } = mockApi(
+      routes({
+        "POST /api/contents/c1/subtitle-import": {
+          body: { transcriptRevisionId: "r9", translationRevisionIds: { en: "t9" }, speakersCreated: 1, warnings: ["subtitle_cue_dropped", "imported_subtitle_suspicious", "subtitle_gap"] },
+        },
+      }),
+    );
+    const dialog = await openDialog(new File([SRT], "第一讲.srt"));
+    await within(dialog).findByTestId("subtitle-preview");
+    const inspect = calls.find((call) => call.path === "/api/subtitles/inspect");
+    expect(inspect?.body).toEqual({ text: SRT, filename: "第一讲.srt", contentId: "c1" });
+    expect((within(dialog).getByTestId("subtitle-import-language") as HTMLSelectElement).value).toBe("zh-CN");
+    // 张三 continues the existing speaker; 注意 stays in the text.
+    fireEvent.click(within(dialog).getByTestId("subtitle-preview-identity-reuse"));
+    const revisionReads = calls.filter((call) => call.path === "/api/contents/c1/transcript/revisions").length;
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-submit"));
+    const summary = await within(dialog).findByTestId("subtitle-import-summary");
+    expect(summary.textContent).toBe("已导入 10 句 · 2 位发言人 · 英语译文");
+    expect(calls.find((call) => call.path === "/api/contents/c1/subtitle-import")?.body).toEqual({
+      text: SRT,
+      filename: "第一讲.srt",
+      format: "srt",
+      language: "zh-CN",
+      options: {
+        expectedDigest: "a".repeat(64),
+        speakers: { prefixNames: ["张三", "李四"], unlabeled: "inherit" },
+        identities: [{ key: "张三", speakerId: "sp1" }],
+        setCurrent: true,
+        expectedState: { primaryRevisionId: "r1", currentTranslations: {}, speakers: [{ id: "sp1", name: "张三" }], speakerRoom: 5 },
+      },
+    });
+    // The timeline warnings an import reports are shown, known ones in a fixed order.
+    const warnings = within(dialog).getByTestId("subtitle-import-warnings");
+    expect([...warnings.querySelectorAll("[data-warning]")].map((item) => item.textContent)).toEqual([
+      "字幕时间轴疑似不完整",
+      "字幕中间有很长的空白",
+      "跳过了无效的字幕条（正文为空或时间无效）",
+    ]);
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/c1/transcript/revisions").length).toBeGreaterThan(revisionReads));
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-done"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("disables 导入 with the reason while the Content has no room for the new speakers", async () => {
+    mockApi(routes({ "POST /api/subtitles/inspect": { body: prefixPreview({ target: target({ speakerRoom: 1 }) }) } }));
+    const dialog = await openDialog(new File([SRT], "第一讲.srt"));
+    expect((await within(dialog).findByTestId("subtitle-preview-capacity")).textContent).toContain("只剩 1 个名额");
+    expect((within(dialog).getByTestId("subtitle-import-submit") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getAllByTestId("subtitle-preview-candidate")[1] as HTMLElement);
+    expect((within(dialog).getByTestId("subtitle-import-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("asks for a fresh preview when the Content changed after the preview", async () => {
+    const { calls } = mockApi(
+      routes({
+        "POST /api/contents/c1/subtitle-import": {
+          status: 409,
+          body: { error: { class: "conflict", code: "conflict.primary_changed", retryDisposition: "never", userMessage: "当前原文已变化，请重新预览" } },
+        },
+      }),
+    );
+    const dialog = await openDialog(new File([SRT], "第一讲.srt"));
+    await within(dialog).findByTestId("subtitle-preview");
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-submit"));
+    expect((await within(dialog).findByTestId("subtitle-import-error")).textContent).toContain("当前原文已变化，请重新预览");
+    expect((within(dialog).getByTestId("subtitle-import-submit") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-repreview"));
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/subtitles/inspect")).toHaveLength(2));
+    await within(dialog).findByTestId("subtitle-preview");
+    expect(within(dialog).queryByTestId("subtitle-import-error")).toBeNull();
+    expect((within(dialog).getByTestId("subtitle-import-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("imports a file whose preview failed as a plain subtitle, without options", async () => {
+    const { calls } = mockApi(routes({ "POST /api/subtitles/inspect": { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } }, "POST /api/contents/c1/subtitle-import": { body: { transcriptRevisionId: "r9", warnings: [] } } }));
+    const dialog = await openDialog(new File([SRT], "第一讲.srt"));
+    await within(dialog).findByTestId("subtitle-preview-failed");
+    const submit = within(dialog).getByTestId("subtitle-import-submit");
+    expect(submit.textContent).toBe("按普通字幕导入");
+    fireEvent.click(submit);
+    expect((await within(dialog).findByTestId("subtitle-import-summary")).textContent).toBe("已导入字幕");
+    expect(calls.find((call) => call.path === "/api/contents/c1/subtitle-import")?.body).toEqual({ text: SRT, filename: "第一讲.srt", language: "zh-CN" });
+  });
+
+  it("imports TXT as reference text, without a preview", async () => {
+    const { calls } = mockApi(routes({ "POST /api/contents/c1/subtitle-import": { body: { referenceTextId: "x1", warnings: [] } } }));
+    const dialog = await openDialog(new File(["讲义"], "讲义.txt"));
+    expect(within(dialog).getByTestId("subtitle-import-reference").textContent).toBe("将导入为参考文本，可用于总结与对话，不生成字幕稿");
+    expect(within(dialog).queryByTestId("subtitle-import-language")).toBeNull();
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-submit"));
+    expect((await within(dialog).findByTestId("subtitle-import-summary")).textContent).toBe("已导入为参考文本");
+    expect(calls.some((call) => call.path === "/api/subtitles/inspect")).toBe(false);
+    expect(calls.find((call) => call.path === "/api/contents/c1/subtitle-import")?.body).toEqual({ text: "讲义", filename: "讲义.txt" });
+  });
+
+  it("takes a package's language from the package", async () => {
+    const { calls } = mockApi(
+      routes({
+        "POST /api/subtitles/inspect": { body: packagePreview({ target: target({ currentTranslations: { en: "t1" } }) }) },
+        "POST /api/contents/c1/subtitle-import": { body: { transcriptRevisionId: "r9", translationRevisionIds: { en: "t9" }, speakersCreated: 2, warnings: [] } },
+      }),
+    );
+    const dialog = await openDialog(new File(["{}"], "第一讲.ambersub"));
+    await within(dialog).findByTestId("subtitle-preview-package");
+    expect(within(dialog).queryByTestId("subtitle-import-language")).toBeNull();
+    expect(within(dialog).getByTestId("subtitle-preview-current-note").textContent).toBe("导入的译文会设为当前，现有译文保留在历史中");
+    fireEvent.click(within(dialog).getByTestId("subtitle-import-submit"));
+    expect((await within(dialog).findByTestId("subtitle-import-summary")).textContent).toBe("已导入 2,888 句 · 2 位发言人 · 英语译文");
+    expect(calls.find((call) => call.path === "/api/contents/c1/subtitle-import")?.body).toMatchObject({ format: "ambersub", language: "zh-CN", options: { setCurrent: true } });
+  });
+});
+
+describe("downloading an Amber subtitle package", () => {
+  it("offers the package for an original, noting what it is for, and sends only the revision", async () => {
+    const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+    URL.createObjectURL = () => "blob:mock";
+    URL.revokeObjectURL = () => undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    onTestFinished(() => {
+      URL.createObjectURL = original.create;
+      URL.revokeObjectURL = original.revoke;
+      click.mockRestore();
+    });
+    const { calls } = mockApi({ ...contentRoutes(), "POST /api/contents/c1/export": { file: { filename: "第一讲.ambersub", text: "{}" } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
+    fireEvent.keyDown(await screen.findByTestId("subtitles-download"), { key: "Enter" });
+    const item = await screen.findByTestId("subtitles-download-ambersub");
+    expect(item.textContent).toBe("Amber 字幕包用于在另一台设备上还原");
+    fireEvent.click(item);
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ format: "ambersub", revisionId: "r1" });
+    expect(click).toHaveBeenCalled();
+  });
+
+  it("is not offered for a translation, which travels inside its original's package", async () => {
+    const translated = revision("t1", { kind: "translated", language: "en", parentRevisionId: "r1" });
+    mockApi({
+      ...contentRoutes(),
+      "GET /api/contents/c1/transcript/revisions": { body: { primaryTranscriptRevisionId: "r1", revisions: [revision("r1"), translated] } },
+      "GET /api/transcript/revisions/t1/segments": { body: { revision: translated, items: [] } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles&revision=t1", path: "/contents/:id" });
+    fireEvent.keyDown(await screen.findByTestId("subtitles-download"), { key: "Enter" });
+    await screen.findByTestId("subtitles-download-srt");
+    expect(screen.queryByTestId("subtitles-download-ambersub")).toBeNull();
   });
 });

@@ -1,0 +1,69 @@
+1
+00:00:00,000 --> 00:00:02,500
+林晓：大家好，欢迎来到今天的分享。
+Hello everyone, welcome to today's session.
+
+2
+00:00:02,500 --> 00:00:05,000
+我们先简单回顾一下上周的内容。
+Let's first briefly review last week.
+
+3
+00:00:05,000 --> 00:00:08,200
+上周我们讲了三个关键概念。
+Last week we covered three key concepts.
+
+4
+00:00:08,200 --> 00:00:11,000
+Alice Smith-Johnson, PhD：They’re “ok” with the plan, I think.
+They’re “ok” with the plan, I think.
+
+5
+00:00:11,000 --> 00:00:13,500
+Let me show the formula: a \ b = {x}.
+Let me show the formula: a \ b = {x}.
+
+6
+00:00:13,500 --> 00:00:16,000
+（掌声）
+(Applause)
+
+7
+00:00:16,000 --> 00:00:19,000
+发言人 3：我想补充一点：<b>重点</b> & 难点要分开看。
+One more point: keep the <b>key</b> & hard parts apart.
+
+8
+00:00:19,000 --> 00:00:21,500
+张伟：对，我同意这个看法。
+Right, I agree with that.
+
+9
+00:00:21,500 --> 00:00:24,000
+张伟：我也同意，不过有个问题。
+I agree too, but I have a question.
+
+10
+00:00:24,000 --> 00:00:26,000
+嗯。
+
+11
+00:00:26,000 --> 00:00:30,000
+林晓：这个问题我们留到最后再讨论。
+Let's leave that question for the end.
+
+12
+00:00:29,000 --> 00:00:32,000
+Alice Smith-Johnson, PhD：Sure, sounds good.
+Sure, sounds good.
+
+13
+00:00:32,000 --> 00:00:40,000
+林晓：接下来我们要讨论的是一个非常长的句子，它包含了很多很多的内容，目的是让字幕在画面上放不下一行，从而触发带样式字幕的预先折行，确保每一行都不会超出画面的宽度。
+Next comes a very long sentence with a great deal of content, meant to be too wide for one line on screen so that styled subtitles break it in advance and no line runs past the picture.
+
+14
+00:00:40,000 --> 00:00:43,000
+发言人 3：谢谢大家，我们下次见。
+Thanks, everyone. See you next time.
+

@@ -145,6 +145,10 @@ const MATRIX: Record<string, Entry> = {
   "POST /api/contents/:id/subtitle-import": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/subtitle-import`, payload: { text: "1\n00:00:00,000 --> 00:00:01,000\nx\n", format: "srt", language: "en" } },
   ]),
+  "POST /api/subtitles/inspect": owned((ids) => [
+    { method: "POST", url: "/api/subtitles/inspect", payload: { text: "1\n00:00:00,000 --> 00:00:01,000\nx\n", filename: "a.srt", contentId: ids.contentId } },
+    { method: "POST", url: "/api/subtitles/inspect", payload: { text: "notes", format: "txt", contentId: ids.contentId } },
+  ]),
   "GET /api/contents/:id/transcript/revisions": owned((ids) => [get(`/api/contents/${ids.contentId}/transcript/revisions`)]),
   "PUT /api/contents/:id/primary-transcript": owned((ids) => [
     { method: "PUT", url: `/api/contents/${ids.contentId}/primary-transcript`, payload: { revisionId: ids.correctedRevisionId } },

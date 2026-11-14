@@ -1,0 +1,29 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans SC,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,2,192,192,0,1
+Style: Translation,Noto Sans SC,44,&H0000FFFF,&H0000FFFF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,2,0,2,192,192,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,0:00:00.00,0:00:02.50,Default,,0,0,0,,{\an2\pos(960,994)}大家好，欢迎来到今天的分享。
+Dialogue: 1,0:00:02.50,0:00:05.00,Default,,0,0,0,,{\an2\pos(960,994)}我们先简单回顾一下上周的内容。
+Dialogue: 1,0:00:05.00,0:00:08.20,Default,,0,0,0,,{\an2\pos(960,994)}上周我们讲了三个关键概念。
+Dialogue: 1,0:00:08.20,0:00:11.00,Default,,0,0,0,,{\an2\pos(960,994)}They’re “ok” with the plan, I think.
+Dialogue: 1,0:00:11.00,0:00:13.50,Default,,0,0,0,,{\an2\pos(960,994)}Let me show the formula: a ＼ b = ｛x｝.
+Dialogue: 1,0:00:13.50,0:00:16.00,Default,,0,0,0,,{\an2\pos(960,994)}（掌声）
+Dialogue: 1,0:00:16.00,0:00:19.00,Default,,0,0,0,,{\an2\pos(960,994)}我想补充一点：<b>重点</b> & 难点要分开看。
+Dialogue: 1,0:00:19.00,0:00:21.50,Default,,0,0,0,,{\an2\pos(960,994)}对，我同意这个看法。
+Dialogue: 1,0:00:21.50,0:00:24.00,Default,,0,0,0,,{\an2\pos(960,994)}我也同意，不过有个问题。
+Dialogue: 1,0:00:24.00,0:00:26.00,Default,,0,0,0,,{\an2\pos(960,994)}嗯。
+Dialogue: 1,0:00:26.00,0:00:29.00,Default,,0,0,0,,{\an2\pos(960,994)}这个问题我们留到最后再讨论。
+Dialogue: 1,0:00:29.00,0:00:30.00,Default,,0,0,0,,{\an2\pos(960,994)}这个问题我们留到最后再讨论。\NSure, sounds good.
+Dialogue: 1,0:00:30.00,0:00:32.00,Default,,0,0,0,,{\an2\pos(960,994)}Sure, sounds good.
+Dialogue: 1,0:00:32.00,0:00:40.00,Default,,0,0,0,,{\an2\pos(960,994)}接下来我们要讨论的是一个非常长的句子，它包含了很多很多的内容，目的是让字幕在画面上放不下一行，从而触发带样式字幕的预先折行，确保每一行都不会超出画面的宽度。
+Dialogue: 1,0:00:40.00,0:00:43.00,Default,,0,0,0,,{\an2\pos(960,994)}谢谢大家，我们下次见。

@@ -155,9 +155,10 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
       if (ownsContent.get(contentId, ownerUserId) === undefined) {
         throw new Error("content is not the owner's");
       }
-      let ordinal = (maxOrdinal.get(contentId) as { max: number }).max;
+      let max = (maxOrdinal.get(contentId) as { max: number }).max;
       return speakers.map((speaker) => {
-        ordinal += 1;
+        const ordinal = speaker.ordinal ?? max + 1;
+        max = Math.max(max, ordinal);
         insert.run({
           contentId,
           id: speaker.id,

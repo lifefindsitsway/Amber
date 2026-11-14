@@ -47,6 +47,7 @@ describe("POST /api/contents/:id/export", () => {
       [{ format: "ass-bilingual", revisionId, translationRevisionId }, "text/x-ssa; charset=utf-8", ".ass"],
       [{ format: "srt-bilingual", revisionId, translationRevisionId }, "application/x-subrip; charset=utf-8", ".srt"],
       [{ format: "markdown", sections: { chapters: true }, backlinks: true }, "text/markdown; charset=utf-8", ".md"],
+      [{ format: "ambersub", revisionId }, "application/json; charset=utf-8", ".ambersub"],
     ] as const;
     for (const [payload, type, extension] of cases) {
       const response = await app.inject({ method: "POST", url: `/api/contents/${fixture.contentId}/export`, headers: auth, payload });
@@ -96,6 +97,29 @@ describe("POST /api/contents/:id/export", () => {
 
     expect((await post({ format: "srt", revisionId: "no-such-revision" })).statusCode).toBe(404);
     expect((await post({ format: "srt", revisionId: fixture.asr.revision.id }, bob)).statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/contents/:id/export, Amber subtitle package", () => {
+  it("streams the package of the owner's revision; a translation, extra fields and another user are refused", async () => {
+    const { h, app, fixture } = await setup();
+    const url = `/api/contents/${fixture.contentId}/export`;
+    const post = (payload: Record<string, unknown>, headers = auth) => app.inject({ method: "POST", url, headers, payload });
+    const body = { format: "ambersub", revisionId: fixture.corrected.revision.id } as const;
+
+    const response = await post(body);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-disposition"]).toBe(`attachment; filename*=UTF-8''${encodeURIComponent("示例课程：第一讲导论.ambersub")}`);
+    expect(response.body).toBe(await text(h.exports.exportContent(LOCAL, fixture.contentId, body)));
+    expect(JSON.parse(response.body)).toMatchObject({ format: "amber-subtitle", formatVersion: 1 });
+
+    const translated = await post({ format: "ambersub", revisionId: fixture.translated.revision.id });
+    expect(translated.statusCode).toBe(400);
+    expect(translated.json().error.class).toBe("invalid_request");
+    // Speakers always travel with a package: there is no option for them.
+    expect((await post({ ...body, includeSpeakers: true })).statusCode).toBe(400);
+    expect((await post({ format: "ambersub" })).statusCode).toBe(400);
+    expect((await post(body, bob)).statusCode).toBe(404);
   });
 });
 

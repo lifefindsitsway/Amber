@@ -159,7 +159,7 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
 
 /** Text parts are small JSON or flags; anything beyond this is not a legitimate client. */
 const FIELD_MAX_BYTES = 64 * 1024;
-const UPLOAD_MAX_PARTS = 5;
+const UPLOAD_MAX_PARTS = 6;
 
 /**
  * The file stream of a part, ending in `FileTooLargeError` when the multipart parser cut it

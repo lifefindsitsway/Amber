@@ -79,7 +79,8 @@ describe("content DTOs", () => {
   it("import a subtitle as non-empty text with an optional format, language and file name", () => {
     expect(subtitleImportRequestSchema.safeParse({ text: "1\n00:00:00,000 --> 00:00:01,000\nx\n" }).success).toBe(true);
     expect(subtitleImportRequestSchema.safeParse({ text: "notes", format: "md", filename: "notes.md" }).success).toBe(true);
-    expect(subtitleImportRequestSchema.safeParse({ text: "x", format: "ass" }).success).toBe(false);
+    expect(subtitleImportRequestSchema.safeParse({ text: "x", format: "ass", language: "zh-CN" }).success).toBe(true);
+    expect(subtitleImportRequestSchema.safeParse({ text: "x", format: "ssa" }).success).toBe(false);
     expect(subtitleImportRequestSchema.safeParse({ text: "" }).success).toBe(false);
     expect(subtitleImportRequestSchema.safeParse({ text: "x", path: "/etc/passwd" }).success).toBe(false);
     expect(subtitleImportResponseSchema.parse({ transcriptRevisionId: "r1", warnings: ["subtitle_cue_dropped"] }).warnings).toEqual(["subtitle_cue_dropped"]);

@@ -384,6 +384,8 @@ export const contentView = {
     manual: "手动修订",
     corrected: "校对稿",
     translated: "翻译",
+    /** A translation brought in with a bilingual subtitle or a subtitle package. */
+    importedTranslation: "导入译文",
   },
   transcript: {
     version: "版本",
@@ -423,7 +425,6 @@ export const contentView = {
     configureAsr: "去配置转录模型",
     import: "导入字幕",
     importFile: "字幕文件",
-    importLanguage: "字幕语言（SRT / VTT 必填）",
     importSubmit: "导入",
   },
   locate: {
@@ -486,6 +487,18 @@ export const contentView = {
       "ass-bilingual": "双语 ASS",
       vtt: "VTT",
       txt: "TXT",
+      ambersub: "Amber 字幕包",
     },
+    /** One line under each subtitle format: what the file carries and what a re-import can bring back. */
+    formatNote: {
+      srt: "时间与正文，发言人写在行首；再导入时需确认哪些名字是发言人",
+      "srt-bilingual": "原文与译文各占一行；再导入时需确认第二行是译文并选择其语言",
+      vtt: "时间、正文与逐句发言人；再导入时同名的不同发言人会合为一人",
+      txt: "纯文本、无时间轴；再导入只能作为参考文本",
+      ass: "固定样式；再导入可带回时间、正文与发言人，时间精度 10 毫秒，需要 Amber 0.7.0 或更高版本",
+      "ass-bilingual": "固定样式的原文与译文；再导入时需选择译文语言，需要 Amber 0.7.0 或更高版本",
+      ambersub: "在另一台设备上完整还原字幕、发言人与译文，需要 Amber 0.7.0 或更高版本",
+    },
+    ambersubTranslated: "Amber 字幕包从原文版本导出，会带上它的各语言当前译文；请在上方选择原文版本",
   },
 } as const;

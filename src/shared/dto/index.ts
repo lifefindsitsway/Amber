@@ -32,3 +32,4 @@ export * from "./backup.ts";
 export * from "./web-search.ts";
 export * from "./speaker.ts";
 export * from "./speaker-context.ts";
+export * from "./subtitle-import.ts";

@@ -22,6 +22,7 @@ import type { DerivedTaskService } from "./application/derived-tasks.ts";
 import type { ImportContentService } from "./application/import-content.ts";
 import type { InstanceSettingsService } from "./application/instance-settings.ts";
 import type { LocalImportService } from "./application/local-import.ts";
+import type { SubtitleImportService } from "./application/subtitle-import.ts";
 import type { MediaAssetService } from "./application/media-assets.ts";
 import type { NoteService } from "./application/notes.ts";
 import type { SpeakerService } from "./application/speakers.ts";
@@ -67,6 +68,7 @@ import { registerChatRoutes } from "./api/routes/chat.ts";
 import { registerClientMediaRoutes } from "./api/routes/client-media.ts";
 import { registerCollectionRoutes } from "./api/routes/collections.ts";
 import { registerContentRoutes, registerLocalFileRoute, registerUploadRoute } from "./api/routes/contents.ts";
+import { registerSubtitleRoutes } from "./api/routes/subtitles.ts";
 import { registerInstanceSettingsRoutes } from "./api/routes/instance-settings.ts";
 import { registerMediaDeleteRoute, registerMediaPlaybackRoutes } from "./api/routes/media.ts";
 import { registerNoteRoutes } from "./api/routes/notes.ts";
@@ -172,6 +174,8 @@ export interface AppDeps {
   derivedTasks?: DerivedTaskService;
   /** Upload [server] or local-file [client] import. */
   localImport?: LocalImportService;
+  /** Subtitle previews before an import; the local-file preview exists only in local mode. */
+  subtitleImport?: SubtitleImportService;
   /** Server mode: `GET /api/storage`. */
   storageQuota?: StorageQuota;
   media?: MediaAssetService;
@@ -382,6 +386,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     } else {
       registerLocalFileRoute(app, { localImport: deps.localImport });
     }
+  }
+  if (deps.subtitleImport !== undefined) {
+    registerSubtitleRoutes(app, { subtitleImport: deps.subtitleImport, local: deps.mode === "local" });
   }
   if (deps.storageQuota !== undefined) {
     registerStorageRoutes(app, { quota: deps.storageQuota });

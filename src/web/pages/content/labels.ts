@@ -67,6 +67,17 @@ function revisionTime(epochMs: number, seconds: boolean): string {
   return seconds ? `${time}:${pad(date.getSeconds())}` : time;
 }
 
+/**
+ * The kind a label starts with. A transcription made only for comparison is named as such,
+ * apart from ordinary recognitions; a translation that came in with a subtitle file is named
+ * apart from machine translations.
+ */
+function kindLabel(revision: TranscriptRevisionDto, t: TFunction): string {
+  if (isComparisonGeneration(revision.generation)) return t("speakerCompare.revisionKind");
+  if (revision.kind === "translated" && revision.generation["kind"] === "imported") return t("contentView.revisionKind.importedTranslation");
+  return t(`contentView.revisionKind.${revision.kind}`);
+}
+
 function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18n, "exists"> | undefined, seconds: boolean): string {
   const manual = manualTranslationModel(revision);
   if (manual !== null) {
@@ -75,8 +86,7 @@ function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18
     const language = i18n === undefined ? revision.language : languageLabel(revision.language, t, i18n);
     return [kind, language, revisionTime(revision.createdAt, seconds)].join(" · ");
   }
-  // A transcription made only for comparison is named as such, apart from ordinary recognitions.
-  const parts: string[] = [isComparisonGeneration(revision.generation) ? t("speakerCompare.revisionKind") : t(`contentView.revisionKind.${revision.kind}`)];
+  const parts: string[] = [kindLabel(revision, t)];
   // Every other kind is in the Content's own language; a translation is named by its target.
   if (revision.kind === "translated") {
     parts.push(i18n === undefined ? revision.language : languageLabel(revision.language, t, i18n));

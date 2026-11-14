@@ -1,14 +1,26 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { BundledFontMetrics } from "../../../src/server/adapters/fonts/otf-advances.ts";
+import { escapeFilterValue } from "../../../src/server/adapters/media-ingest/ffmpeg-burner.ts";
+import { SUBTITLE_FONT_FILE } from "../../../src/server/api/routes/fonts.ts";
 import { ExportService, type ExportFile } from "../../../src/server/application/export.ts";
 import type { SummaryRevision } from "../../../src/server/domain/artifact.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
+import { buildSubtitlePackage } from "../../../src/server/domain/export/ambersub.ts";
+import { assDialogueDigest, parseSubtitlePackage, serializeSubtitlePackage, type SubtitlePackage } from "../../../src/server/domain/subtitle-package.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
-import { API_PAGE_SIZE_MAX } from "../../../src/shared/defaults.ts";
-import type { ContentExportRequest } from "../../../src/shared/dto/export.ts";
+import { burnSubtitleRequest } from "../../../src/server/pipeline/stages/burn.ts";
+import { API_PAGE_SIZE_MAX, SUBTITLE_ASS_DATA_CHUNK } from "../../../src/shared/defaults.ts";
+import type { ContentExportRequest, SubtitleExportRequest } from "../../../src/shared/dto/export.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle } from "../../../src/shared/subtitle-style.ts";
 import { addLocalFile, ASR_LINES, seedExportCollection, seedExportContent, type ExportFixture, type ExportLine } from "../../fixtures/export/export-data.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { toolPath, toolsBinDir } from "../../fixtures/tools.ts";
+import { tempDataDir } from "../../tools/sqlite.ts";
 
 const NOW = new Date(2026, 9, 1, 12).getTime();
 const VERSION = "9.9.9";
@@ -714,4 +726,492 @@ describe("ExportService with speakers", () => {
     const srt = await exportText(exports, fixture, subtitle(fixture, "srt", { includeSpeakers: true }));
     expect(srt.split("\n\n").slice(0, 3).map((cue) => cue.split("\n")[2])).toEqual(["发言人 1：Hi world.", "你好世界", "发言人 2：第二段{\\b1}开始"]);
   });
+});
+
+describe("ExportService, unchanged formats", () => {
+  /**
+   * SHA-256 of every file below as exported before VTT escaping and restore data existed;
+   * these formats must keep their bytes. The fixture has speakers, an unnamed and an
+   * unassigned sentence, and markup characters in one sentence.
+   */
+  const BEFORE: Readonly<Record<string, string>> = {
+    "asr-srt-false": "61b0d3ea5300ebb3de8403b443ed6504c26d51e16ec1f7b80aff096c0ff0771b",
+    "asr-srt-true": "b999abcc2f898e7f23069c9d0151d4dac2a9927d73d7d77aa8c840b4a243f624",
+    "asr-txt-false": "587384c74cfeae92e55916276266407f4a117bc863a0bbb3ad25f10f5f56812d",
+    "asr-txt-true": "14fe0ad097cf4cf0b28675074362bb14a214ec74c16ed42011a0af068e35b655",
+    "asr-ass-false": "b7d077e37448d40366c0f59b8fb204e219148cf5dcca91ea80c47c648dc44eeb",
+    "asr-ass-true": "aebd48cbf0cad2d62cc753f73e972d01fe332de270d184b50ccfe76d2938c8d4",
+    "corrected-srt-false": "cd4fbaf235dd85b5122baa97b70021d44cc6509877b963a82c57368e871b164a",
+    "corrected-srt-true": "310c76e7c30904853ba2edca54d07924679c6f9f84b12bca487cae09fbf8b53e",
+    "corrected-txt-false": "be1b4389f0f8d432b416f05ed86f924d7d1c6f2cd08e9b783d9580ff671234b1",
+    "corrected-txt-true": "18b5718124f1523161be9f06383216198dc571006a71e8b63fce07093a1794ab",
+    "corrected-ass-false": "a5f35837bdfa9e99a26b3c5c760ae0e690fce7cffa1a0d36872b0c3f036aedcd",
+    "corrected-ass-true": "72e72f7a9d9a6ce6dd963139c4cf4ce74b90eeb40a2cfc666a3bc7b4aae03512",
+    "translated-srt-false": "55abf4065cf4193a37e31948e16eab112a748f8a32b1d45f53736c15161799b2",
+    "translated-srt-true": "2e12a613689ec783dcdddb810ce1ee86167d68f127a5188b1b387ef20e8b1613",
+    "translated-txt-false": "3369f4f3549d646948f1ada8c3aec9ed5aaf0d8de2097df17a39edfa7cdffa49",
+    "translated-txt-true": "19fb05eec29bde973221abb7d3e95df0a136f87f47241fc0932e94904f9e7317",
+    "translated-ass-false": "1073afdf0da7cd03b4b5d7589dfac27f9650a562e1954a411d85f5ce3719d02a",
+    "translated-ass-true": "47b993f817d139735e05fa6be660ca6fd1acd81ec44614632f6434896231e9c5",
+    // The translated revision has no markup characters: its VTT is unchanged too.
+    "translated-vtt-false": "667116f2b2d3ee64025183c1b0376095e49ce216011d4edbfcf2c093a10e58a0",
+    "translated-vtt-true": "67540cf926f5d0e64874fde20398bdaa4903b6466a34ab172624d00d01524937",
+    "srt-bilingual": "d87be5ac0a32ba07e388db58ee5b5fb634ff840ebbd0507410740ce37a8c1b0c",
+    "ass-bilingual": "26a7934398ba1d8fb7bda45a79ad9ebb3c51059f87d422475e01ebcbb0271ae7",
+    // Styled ASS as a video export reads it, which is the download before its restore data.
+    styled: "6d8e578a23ab166b302fe469285ffe524a99086f17cd53eea75c80557f99c1ae",
+    "styled-single": "30699659aef1b4c2801a5f9be4811f7f52d87583100d2c4fb6b6a61da18353ba",
+  };
+  const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+
+  it("exports SRT, TXT, fixed-style ASS and markup-free VTT byte for byte as before", async () => {
+    const h = createHarness();
+    open.push(h);
+    const owners = ["a", "a", "b", undefined, "a", "b"];
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+      lines: ASR_LINES.map((line, index) => ({ ...line, text: index === 2 ? "x <b> & y" : line.text, ...(owners[index] === undefined ? {} : { speakerId: owners[index] as string }) })),
+      speakerNames: { a: "张三" },
+    });
+    const exports = new ExportService({ repository: h.repository, version: "1.0.0", now: () => 0 });
+    const style: SubtitleStyle = { appearance: { ...defaultSubtitleAppearance(), speaker: "change" }, placement: defaultSubtitlePlacement() };
+    const actual: Record<string, string> = {};
+    for (const { revision } of [fixture.asr, fixture.corrected, fixture.translated]) {
+      for (const format of ["srt", "txt", "ass", "vtt"] as const) {
+        if (format === "vtt" && revision.kind !== "translated") continue;
+        for (const includeSpeakers of [false, true]) {
+          actual[`${revision.kind}-${format}-${includeSpeakers}`] = sha256(await text(exports.exportContent(LOCAL, fixture.contentId, { format, revisionId: revision.id, includeSpeakers })));
+        }
+      }
+    }
+    const pair = { revisionId: fixture.corrected.revision.id, translationRevisionId: fixture.translated.revision.id, includeSpeakers: true };
+    for (const format of ["srt-bilingual", "ass-bilingual"] as const) {
+      actual[format] = sha256(await text(exports.exportContent(LOCAL, fixture.contentId, { format, ...pair })));
+    }
+    actual.styled = sha256(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, { format: "ass-bilingual", ...pair, style })));
+    actual["styled-single"] = sha256(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, { format: "ass", revisionId: fixture.translated.revision.id, style })));
+    expect(actual).toEqual(BEFORE);
+  });
+});
+
+const PACKAGE_VERSION = "0.7.0-test";
+const PKG_A = "spk-a";
+const PKG_B = "spk-b";
+const PKG_C = "spk-c";
+/** A and C share a name but are different people; B is unnamed; sentence 3 is unassigned. */
+const PKG_OWNERS = [PKG_A, PKG_B, PKG_C, undefined, PKG_A, PKG_C] as const;
+
+
+type Revision = { revision: TranscriptRevision; segments: TranscriptSegment[] };
+
+function setupPackage(): { h: Harness; exports: ExportService; fixture: ExportFixture } {
+  const h = createHarness();
+  open.push(h);
+  const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+    lines: ASR_LINES.map((line, index) => ({ ...line, ...(PKG_OWNERS[index] === undefined ? {} : { speakerId: PKG_OWNERS[index] as string }) })),
+    speakerNames: { [PKG_A]: "张三", [PKG_C]: "张三" },
+  });
+  // A speaker of the Content no sentence names.
+  h.repository.withTransaction((scope) => scope.speakers.insert(LOCAL.userId, fixture.contentId, [{ id: "spk-d", name: "李四" }], 1));
+  return { h, exports: new ExportService({ repository: h.repository, version: PACKAGE_VERSION, now: () => 1 }), fixture };
+}
+
+/** A translation of `parent` covering the sentences at `ordinals`, inserted (and made current for its language when asked). */
+function addTranslation(h: Harness, fixture: ExportFixture, parent: Revision, language: string, ordinals: readonly number[], current: boolean): Revision {
+  const id = h.newId();
+  const revision: TranscriptRevision = {
+    id,
+    contentId: fixture.contentId,
+    kind: "translated",
+    parentRevisionId: parent.revision.id,
+    language,
+    timingFidelity: "segment_only",
+    generation: { kind: "manual" },
+    segmentCount: ordinals.length,
+    createdAt: 1,
+  };
+  const segments: TranscriptSegment[] = ordinals.map((ordinal) => {
+    const source = parent.segments[ordinal] as TranscriptSegment;
+    return {
+      id: h.newId() as SegmentId,
+      revisionId: id,
+      ordinal,
+      startMs: source.startMs,
+      endMs: source.endMs,
+      text: `${language}:${ordinal}`,
+      ...(source.speakerId === undefined ? {} : { speakerId: source.speakerId }),
+      sourceSegmentIds: [source.id],
+    };
+  });
+  h.repository.withTransaction((scope) => {
+    scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+    if (current) {
+      const artifact = scope.translations.getArtifact(LOCAL.userId, fixture.contentId, language);
+      scope.translations.setCurrent(LOCAL.userId, fixture.contentId, language, id, artifact?.id ?? h.newId());
+    }
+  });
+  return { revision, segments };
+}
+
+function setCurrentTranslation(h: Harness, fixture: ExportFixture, translation: Revision): void {
+  h.repository.withTransaction((scope) => {
+    const artifact = scope.translations.getArtifact(LOCAL.userId, fixture.contentId, translation.revision.language);
+    scope.translations.setCurrent(LOCAL.userId, fixture.contentId, translation.revision.language, translation.revision.id, artifact?.id ?? h.newId());
+  });
+}
+
+
+
+const RESTORE_PREFIX = "Comment: 0,0:00:00.00,0:00:00.00,Default,,0,0,0,amber-data,";
+
+/** The restore data of a styled ASS: the digest line's parts and the package it carries, or undefined without any. */
+function restoreDataOf(ass: string): { header: string; chunks: string[]; pkg: SubtitlePackage; digestMatches: boolean } | undefined {
+  const lines = ass.split("\n");
+  const texts = lines.filter((line) => line.startsWith(RESTORE_PREFIX)).map((line) => line.slice(RESTORE_PREFIX.length));
+  if (texts.length === 0) return undefined;
+  const [header, ...chunks] = texts as [string, ...string[]];
+  const digest = assDialogueDigest(lines.filter((line) => line.startsWith("Dialogue:")));
+  return { header, chunks, pkg: parseSubtitlePackage(Buffer.from(chunks.join(""), "base64").toString("utf8")), digestMatches: header === `amber-data 1 ${digest}` };
+}
+
+describe("ExportService, Amber subtitle package", () => {
+  it("packages the revision with its speakers and only the current translations made from it", async () => {
+    const { h, exports, fixture } = setupPackage();
+    setCurrentTranslation(h, fixture, fixture.translated);
+    // Partial: the second and later sentences are missing.
+    addTranslation(h, fixture, fixture.corrected, "ja", [0, 2], true);
+    // Of another revision: not this package's.
+    addTranslation(h, fixture, fixture.asr, "fr", [0, 1, 2, 3, 4, 5], true);
+    // Made from this revision but no longer current: the current German one is of the ASR original.
+    addTranslation(h, fixture, fixture.corrected, "de", [0], true);
+    addTranslation(h, fixture, fixture.asr, "de", [0], true);
+
+    const file = exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: fixture.corrected.revision.id });
+    expect(file).toMatchObject({ filename: "示例课程：第一讲导论.ambersub", contentType: "application/json; charset=utf-8" });
+    const body = await text(file);
+    expect(body.startsWith("\uFEFF")).toBe(false);
+    const pkg = parseSubtitlePackage(body);
+    expect(serializeSubtitlePackage(pkg)).toBe(body);
+    expect(pkg.generator).toEqual({ app: "Amber", version: PACKAGE_VERSION });
+    expect(pkg.original.language).toBe("zh-CN");
+    expect(pkg.original.paragraphMarks).toBe(false);
+    // Ordinals follow registration: A, B, C, then the unreferenced D (left out). Unnamed B has no name.
+    expect(pkg.original.speakers).toEqual([
+      { key: "s1", ordinal: 1, name: "张三", colorIndex: expect.any(Number) },
+      { key: "s2", ordinal: 2, colorIndex: expect.any(Number) },
+      { key: "s3", ordinal: 3, name: "张三", colorIndex: expect.any(Number) },
+    ]);
+    const stored = h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, fixture.contentId));
+    expect(pkg.original.speakers.map((speaker) => speaker.colorIndex)).toEqual(stored.slice(0, 3).map((speaker) => speaker.colorIndex));
+    expect(pkg.original.segments).toEqual(
+      fixture.corrected.segments.map((segment, index) => ({
+        key: String(index + 1),
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: segment.text,
+        speaker: new Map<string | undefined, string>([[PKG_A, "s1"], [PKG_B, "s2"], [PKG_C, "s3"]]).get(PKG_OWNERS[index]) ?? null,
+      })),
+    );
+    // Stored text, not rendered: the ASS escape `{\b1}` and nothing turned full-width.
+    expect(pkg.original.segments[2]?.text).toBe("第二段{\\b1}开始");
+    expect(pkg.translations).toEqual([
+      { language: "en", segments: fixture.translated.segments.map((segment, index) => ({ sourceSegmentKey: String(index + 1), text: segment.text })) },
+      { language: "ja", segments: [{ sourceSegmentKey: "1", text: "ja:0" }, { sourceSegmentKey: "3", text: "ja:2" }] },
+    ]);
+
+    // From the ASR original: its own current translations only.
+    const asr = parseSubtitlePackage(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: fixture.asr.revision.id })));
+    expect(asr.translations.map((translation) => translation.language)).toEqual(["de", "fr"]);
+    expect(asr.original.segments[0]?.text).toBe("Hello world.");
+  });
+
+  it("writes paragraph marks on every sentence when the revision has them", async () => {
+    const { h, exports, fixture } = setupPackage();
+    const id = h.newId();
+    const marks = [true, false, true, false, false, true];
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { ...fixture.corrected.revision, id, kind: "manual", parentRevisionId: fixture.corrected.revision.id, generation: { kind: "manual" } },
+        fixture.corrected.segments.map((segment, ordinal) => ({ ...segment, id: h.newId() as SegmentId, revisionId: id, paragraphStart: marks[ordinal] as boolean, sourceSegmentIds: [segment.id] })),
+      ),
+    );
+    const pkg = parseSubtitlePackage(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: id })));
+    expect(pkg.original.paragraphMarks).toBe(true);
+    expect(pkg.original.segments.map((segment) => segment.paragraphStart)).toEqual(marks);
+    expect(pkg.translations).toEqual([]);
+  });
+
+  it("is the same package the builder makes from the revision, byte for byte", async () => {
+    const { h, exports, fixture } = setupPackage();
+    setCurrentTranslation(h, fixture, fixture.translated);
+    const body = await text(exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: fixture.corrected.revision.id }));
+    const speakers = h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, fixture.contentId));
+    expect(body).toBe(
+      serializeSubtitlePackage(
+        buildSubtitlePackage({
+          revision: fixture.corrected.revision,
+          segments: fixture.corrected.segments,
+          speakers,
+          translations: [{ language: "en", segments: fixture.translated.segments }],
+          version: PACKAGE_VERSION,
+        }),
+      ),
+    );
+  });
+
+  it("refuses a translation as the original, another owner's or Content's revision, before the first byte", () => {
+    const { h, exports, fixture } = setupPackage();
+    const translated = refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: fixture.translated.revision.id }));
+    expect(translated.class).toBe("invalid_request");
+    expect(translated.userMessage).toContain("revisionId");
+    expect(refusal(() => exports.exportContent(BOB, fixture.contentId, { format: "ambersub", revisionId: fixture.corrected.revision.id })).class).toBe("not_found");
+    const other = seedExportContent(h, LOCAL.userId, "local");
+    expect(refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: other.corrected.revision.id })).class).toBe("not_found");
+  });
+
+  it("refuses with media_too_large a package larger than SUBTITLE_IMPORT_MAX_BYTES, which no import would take", () => {
+    const { h, exports, fixture } = setupPackage();
+    const id = h.newId();
+    // Five sentences of 4.5 MB: 22.5 MB of text.
+    const lines = Array.from({ length: 5 }, (_, ordinal) => ({ startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `${ordinal}${"x".repeat(4.5 * 1024 * 1024)}` }));
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id, contentId: fixture.contentId, kind: "imported", language: "en", timingFidelity: "segment_only", generation: { kind: "imported", format: "srt" }, segmentCount: 5, createdAt: 1 },
+        lines.map((line, ordinal) => ({ ...line, id: h.newId() as SegmentId, revisionId: id, ordinal, sourceSegmentIds: [] })),
+      ),
+    );
+    const refused = refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId: id }));
+    expect(refused.class).toBe("media_too_large");
+    expect(refused.userMessage).toContain("20 MB");
+  });
+});
+
+describe("ExportService, blank sentences in a package", () => {
+  /** A manual revision of the corrected one with the given texts in place of its sentences'. */
+  function withTexts(h: Harness, fixture: ExportFixture, texts: readonly string[]): string {
+    const id = h.newId();
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { ...fixture.corrected.revision, id, kind: "manual", parentRevisionId: fixture.corrected.revision.id, generation: { kind: "manual" } },
+        fixture.corrected.segments.map((segment, ordinal) => ({ ...segment, id: h.newId() as SegmentId, revisionId: id, text: texts[ordinal] as string, sourceSegmentIds: [segment.id] })),
+      ),
+    );
+    return id;
+  }
+  const style: SubtitleStyle = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+
+  it("packages a revision with an empty sentence without it, in a file the reader takes, and keeps restore data in its styled ASS", async () => {
+    const { h, exports, fixture } = setupPackage();
+    const revisionId = withTexts(h, fixture, ["一", "", "三", "四", "五", "六"]);
+    const pkg = parseSubtitlePackage(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId })));
+    expect(pkg.original.segments.map((segment) => [segment.key, segment.text])).toEqual([["1", "一"], ["2", "三"], ["3", "四"], ["4", "五"], ["5", "六"]]);
+    const restore = restoreDataOf(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "ass", revisionId, style })));
+    expect(restore?.digestMatches).toBe(true);
+    expect(restore?.pkg).toEqual(pkg);
+  });
+
+  it("refuses the package of a revision whose every sentence is blank, and writes its styled ASS without restore data", async () => {
+    const { h, exports, fixture } = setupPackage();
+    const revisionId = withTexts(h, fixture, ["", " ", "", "\n", "", ""]);
+    const refused = refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "ambersub", revisionId }));
+    expect(refused.class).toBe("invalid_request");
+    expect(refused.userMessage).toContain("revisionId");
+    const body = { format: "ass" as const, revisionId, style };
+    const ass = await text(exports.exportContent(LOCAL, fixture.contentId, body));
+    expect(ass).not.toContain("amber-data");
+    expect(ass).toBe(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, body)));
+  });
+});
+
+describe("ExportService, restore data in a styled ASS download", () => {
+  const style: SubtitleStyle = { appearance: { ...defaultSubtitleAppearance(), speaker: "change" }, placement: defaultSubtitlePlacement() };
+  const download = (exports: ExportService, fixture: ExportFixture, body: Record<string, unknown>): Promise<string> =>
+    text(exports.exportContent(LOCAL, fixture.contentId, body as ContentExportRequest));
+
+  it("embeds the shown original and the paired translation after the dialogue, with a digest of every Dialogue line", async () => {
+    const { h, exports, fixture } = setupPackage();
+    setCurrentTranslation(h, fixture, fixture.translated);
+    // Current, made from the same revision, but not the one this file shows: left out.
+    addTranslation(h, fixture, fixture.corrected, "ja", [0], true);
+    const ass = await download(exports, fixture, {
+      format: "ass-bilingual",
+      revisionId: fixture.corrected.revision.id,
+      translationRevisionId: fixture.translated.revision.id,
+      style: { ...style, appearance: { ...style.appearance, background: { enabled: true, color: "#000000", opacityPct: 50, padding: 8, scope: "both" } } },
+      includeSpeakers: true,
+    });
+    const restore = restoreDataOf(ass);
+    expect(restore?.digestMatches).toBe(true);
+    // The restore events close the file, after every Dialogue line.
+    const lines = ass.trimEnd().split("\n");
+    const firstComment = lines.findIndex((line) => line.startsWith("Comment: "));
+    expect(lines.slice(firstComment).every((line) => line.startsWith(RESTORE_PREFIX))).toBe(true);
+    expect(lines.slice(0, firstComment).some((line) => line.startsWith("Dialogue: 0,"))).toBe(true);
+    expect(restore?.chunks.slice(0, -1).every((chunk) => chunk.length === SUBTITLE_ASS_DATA_CHUNK)).toBe(true);
+    const speakers = h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, fixture.contentId));
+    expect(restore?.pkg).toEqual(
+      buildSubtitlePackage({
+        revision: fixture.corrected.revision,
+        segments: fixture.corrected.segments,
+        speakers,
+        translations: [{ language: "en", segments: fixture.translated.segments }],
+        version: PACKAGE_VERSION,
+      }),
+    );
+  });
+
+  it("embeds a translated revision shown alone as the original, without translations", async () => {
+    const { exports, fixture } = setupPackage();
+    const restore = restoreDataOf(await download(exports, fixture, { format: "ass", revisionId: fixture.translated.revision.id, style }));
+    expect(restore?.digestMatches).toBe(true);
+    expect(restore?.pkg.original.language).toBe("en");
+    expect(restore?.pkg.original.segments.map((segment) => segment.text)).toEqual(fixture.translated.segments.map((segment) => segment.text));
+    expect(restore?.pkg.original.speakers.map((speaker) => speaker.key)).toEqual(["s1", "s2", "s3"]);
+    expect(restore?.pkg.translations).toEqual([]);
+  });
+
+  it("any change to a Dialogue line breaks the digest", async () => {
+    const { exports, fixture } = setupPackage();
+    const ass = await download(exports, fixture, { format: "ass", revisionId: fixture.corrected.revision.id, style });
+    expect(restoreDataOf(ass)?.digestMatches).toBe(true);
+    expect(restoreDataOf(ass.replace("Hi world.", "Hi world!"))?.digestMatches).toBe(false);
+    expect(restoreDataOf(ass.replace(/^Dialogue: .*\n/m, ""))?.digestMatches).toBe(false);
+    expect(restoreDataOf(ass.replace(/^Dialogue: 1,0:00:01\.00/m, "Dialogue: 1,0:00:01.10"))?.digestMatches).toBe(false);
+  });
+
+  it("leaves restore data out of a fixed-style ASS and of every ASS a subtitled video export reads", async () => {
+    const { h, exports, fixture } = setupPackage();
+    setCurrentTranslation(h, fixture, fixture.translated);
+    const revisionId = fixture.corrected.revision.id;
+    const translationRevisionId = fixture.translated.revision.id;
+    for (const body of [
+      { format: "ass", revisionId },
+      { format: "ass-bilingual", revisionId, translationRevisionId, includeSpeakers: true },
+    ]) {
+      expect(await download(exports, fixture, body)).not.toContain("amber-data");
+    }
+    // Schema version 1 of a burn request: the fixed ASS through the Task path.
+    for (const mode of ["original", "translation", "bilingual"] as const) {
+      const request = burnSubtitleRequest({ mode, revisionId, translationRevisionId } as Parameters<typeof burnSubtitleRequest>[0]);
+      expect(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, request))).not.toContain("amber-data");
+      // Even a styled body on the Task path stays without it.
+      if (request.format === "ass" || request.format === "ass-bilingual") {
+        expect(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, { ...request, style }))).not.toContain("amber-data");
+      }
+    }
+    // Schema version 2: the styled ASS of hard subtitles and of soft subtitle tracks.
+    for (const textOnly of [false, true]) {
+      for (const mode of ["original", "translation", "bilingual"] as const) {
+        let out = "";
+        for await (const piece of exports.styledAssOf(LOCAL.userId, fixture.contentId, {
+          mode,
+          revisionId,
+          ...(mode === "original" ? {} : { translationRevisionId }),
+          style,
+          playRes: { width: 1920, height: 1080 },
+          textOnly,
+          speakerLabels: { [PKG_A]: "张三" },
+        })) {
+          out += piece;
+        }
+        expect(out).toContain("Dialogue: ");
+        expect(out).not.toContain("amber-data");
+        expect(out).not.toContain("Comment: ");
+      }
+    }
+  });
+
+  it("is the file without restore data, byte for byte, plus the appended events", async () => {
+    const { exports, fixture } = setupPackage();
+    const body = { format: "ass" as const, revisionId: fixture.corrected.revision.id, style, includeSpeakers: true };
+    const withData = await download(exports, fixture, body);
+    const without = await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, body));
+    expect(withData.startsWith(without)).toBe(true);
+    expect(withData.slice(without.length)).toMatch(/^(Comment: 0,0:00:00\.00,0:00:00\.00,Default,,0,0,0,amber-data,[^\n]*\n)+$/);
+  });
+
+  it("downloads without restore data when embedding it would pass SUBTITLE_IMPORT_MAX_BYTES", async () => {
+    const { h, exports, fixture } = setupPackage();
+    const id = h.newId();
+    // 11 MB of text: the document fits, the document plus its base64 package does not.
+    const lines = Array.from({ length: 2 }, (_, ordinal) => ({ startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `${ordinal}${"x".repeat(5.5 * 1024 * 1024)}` }));
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        { id, contentId: fixture.contentId, kind: "imported", language: "en", timingFidelity: "segment_only", generation: { kind: "imported", format: "srt" }, segmentCount: 2, createdAt: 1 },
+        lines.map((line, ordinal) => ({ ...line, id: h.newId() as SegmentId, revisionId: id, ordinal, sourceSegmentIds: [] })),
+      ),
+    );
+    const body = { format: "ass" as const, revisionId: id, style: { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() } };
+    const ass = await download(exports, fixture, body);
+    expect(ass).not.toContain("amber-data");
+    expect(ass).toBe(await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, body)));
+  });
+});
+
+/** Per-frame MD5 lines of a synthetic clip with `ass` drawn by the `subtitles` filter, the way a burn draws it. */
+function frameHashes(ass: string | undefined, fontsDir: string, dir: string, name: string): string[] {
+  const filter =
+    ass === undefined
+      ? "null"
+      : (() => {
+          const path = join(dir, `${name}.ass`);
+          writeFileSync(path, ass);
+          return `subtitles=filename=${escapeFilterValue(path)}:fontsdir=${escapeFilterValue(fontsDir)}:wrap_unicode=1:force_style=WrapStyle=1`;
+        })();
+  const run = spawnSync(
+    toolPath("ffmpeg"),
+    ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=0x336699:size=1280x720:rate=10:duration=3", "-vf", filter, "-pix_fmt", "rgb24", "-f", "framemd5", "-"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  expect(run.status, run.stderr).toBe(0);
+  return run.stdout.split("\n").filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+describe("restore data under the bundled FFmpeg", () => {
+  it("draws a styled ASS with restore data frame for frame like the same file without it", async () => {
+    const binDir = toolsBinDir(["ffmpeg"]);
+    const fontsDir = join(binDir, "..", "fonts");
+    const h = createHarness();
+    open.push(h);
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+      lines: [
+        { startMs: 0, endMs: 1400, text: "第一句，带发言人的原文", speakerId: "spk-a" },
+        { startMs: 1000, endMs: 2200, text: "Overlapping second line <b>&", speakerId: "spk-b" },
+        { startMs: 2300, endMs: 3000, text: "没有发言人" },
+        // The fixture's summary cites six sentences; these fall after the rendered clip.
+        { startMs: 4000, endMs: 5000, text: "四" },
+        { startMs: 5000, endMs: 6000, text: "五" },
+        { startMs: 6000, endMs: 7000, text: "六" },
+      ],
+      speakerNames: { "spk-a": "张三" },
+    });
+    const exports = new ExportService({ repository: h.repository, version: "0.7.0-test", fontMetrics: new BundledFontMetrics(join(fontsDir, SUBTITLE_FONT_FILE)) });
+    const body: SubtitleExportRequest = {
+      format: "ass-bilingual",
+      revisionId: fixture.corrected.revision.id,
+      translationRevisionId: fixture.translated.revision.id,
+      includeSpeakers: true,
+      style: {
+        appearance: { ...defaultSubtitleAppearance(), speaker: "change", background: { enabled: true, color: "#000000", opacityPct: 60, padding: 10, scope: "both" } },
+        placement: defaultSubtitlePlacement(),
+      },
+    };
+    const withData = await text(exports.exportContent(LOCAL, fixture.contentId, body));
+    const without = await text(exports.exportContentOf(LOCAL.userId, fixture.contentId, body));
+    expect(withData).toContain(",amber-data,amber-data 1 ");
+    expect(without).not.toContain("amber-data");
+
+    const dir = tempDataDir("amber-restore-render-");
+    const drawnWith = frameHashes(withData, fontsDir, dir, "with");
+    const drawnWithout = frameHashes(without, fontsDir, dir, "without");
+    const bare = frameHashes(undefined, fontsDir, dir, "bare");
+    // Three seconds at ten frames per second.
+    expect(drawnWith).toHaveLength(30);
+    expect(drawnWith).toEqual(drawnWithout);
+    // The subtitles were drawn at all: most frames differ from the clip without them.
+    expect(drawnWith.filter((line, index) => line !== bare[index]).length).toBeGreaterThan(20);
+  }, 60_000);
 });

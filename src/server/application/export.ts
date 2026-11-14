@@ -1,5 +1,5 @@
 import { capCitationRuns } from "../../shared/citation-runs.ts";
-import { API_PAGE_SIZE_MAX, CITATION_RUN_MAX } from "../../shared/defaults.ts";
+import { API_PAGE_SIZE_MAX, CITATION_RUN_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import {
   BILINGUAL_EXPORT_FORMATS,
   type CollectionExportRequest,
@@ -7,12 +7,14 @@ import {
   type MarkdownExportRequest,
   type SubtitleExportFormat,
   type SubtitleExportRequest,
+  type SubtitlePackageExportRequest,
 } from "../../shared/dto/export.ts";
 import type { BurnMode } from "../../shared/enums.ts";
 import { exportFile } from "../../shared/i18n/zh-CN/export-file.ts";
 import type { SpeakerLabelMode } from "../../shared/speakers.ts";
 import { subtitleCues } from "../../shared/subtitle-geometry.ts";
 import type { SubtitleStyle } from "../../shared/subtitle-style.ts";
+import { BYTES_PER_MB } from "../../shared/units.ts";
 import { summaryTemplate } from "../../shared/i18n/zh-CN/summary-templates.ts";
 import { contentView } from "../../shared/i18n/zh-CN/ui-content.ts";
 import type { ChapterRevision, SummaryRevision } from "../domain/artifact.ts";
@@ -20,6 +22,7 @@ import { backlinkUrl } from "../domain/backlink.ts";
 import { withoutCitations } from "../domain/citations.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
+import { buildSubtitlePackage, withAssRestoreData } from "../domain/export/ambersub.ts";
 import { assDialogue, ASS_HEADER, STYLED_ASS_PLAY_RES_Y, styledAssDocument, type AssPlayRes } from "../domain/export/ass.ts";
 import type { GlyphAdvances } from "../domain/export/subtitle-breaks.ts";
 import type { ExportCue } from "../domain/export/cues.ts";
@@ -42,6 +45,8 @@ import { dateText, dateTimeText, durationText } from "../domain/export/time-form
 import { txtParagraph } from "../domain/export/txt.ts";
 import { VTT_HEADER, vttCue } from "../domain/export/vtt.ts";
 import { DEFAULT_SUMMARY_TEMPLATE_ID } from "../domain/prompts.ts";
+import type { ContentSpeaker } from "../domain/speaker.ts";
+import { serializeSubtitlePackage, SUBTITLE_PACKAGE_EXTENSION } from "../domain/subtitle-package.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -106,6 +111,8 @@ const SUBTITLE_FILES: Readonly<Record<SubtitleExportFormat, { extension: string;
   "ass-bilingual": { extension: "ass", contentType: "text/x-ssa; charset=utf-8" },
 };
 
+const SUBTITLE_PACKAGE_TYPE = "application/json; charset=utf-8";
+
 /**
  * File export of Contents and Collections. Every revision is
  * named by the request; nothing is chosen behind the user's back. Long transcripts are
@@ -121,18 +128,33 @@ export class ExportService {
     this.now = options.now ?? Date.now;
   }
 
+  /** A download: a styled ASS carries restore data, so it re-imports as exactly as a subtitle package. */
   exportContent(principal: RequestPrincipal, contentId: string, body: ContentExportRequest): ExportFile {
-    return this.exportContentOf(principal.userId, contentId, body);
+    return this.contentFile(principal.userId, contentId, body, true);
   }
 
-  /** The same file for an owner known from a Task rather than a request; burning reads its ASS here. */
+  /**
+   * The same file for an owner known from a Task rather than a request; burning reads its ASS
+   * here. Never with restore data: a burned picture or a muxed track is not re-imported.
+   */
   exportContentOf(owner: string, contentId: string, body: ContentExportRequest): ExportFile {
+    return this.contentFile(owner, contentId, body, false);
+  }
+
+  private contentFile(owner: string, contentId: string, body: ContentExportRequest, restoreData: boolean): ExportFile {
     return this.options.repository.withTransaction((scope) => {
       const content = scope.contents.get(owner, contentId);
       if (content === undefined) {
         throw amberError("not_found", "content not found");
       }
-      return body.format === "markdown" ? this.markdownFile(scope, owner, content, body) : this.subtitleFile(scope, owner, content, body);
+      switch (body.format) {
+        case "markdown":
+          return this.markdownFile(scope, owner, content, body);
+        case "ambersub":
+          return this.packageFile(scope, owner, content, body);
+        default:
+          return this.subtitleFile(scope, owner, content, body, restoreData);
+      }
     });
   }
 
@@ -178,7 +200,47 @@ export class ExportService {
     };
   }
 
-  private subtitleFile(scope: RepositoryScope, owner: string, content: Content, body: SubtitleExportRequest): ExportFile {
+  /**
+   * The Amber subtitle package of one original revision with every current translation made
+   * from it. It is built whole before the first byte: a package too large to import again is
+   * refused rather than produced.
+   */
+  private packageFile(scope: RepositoryScope, owner: string, content: Content, body: SubtitlePackageExportRequest): ExportFile {
+    const revision = revisionOf(scope, owner, content, body.revisionId);
+    if (revision.kind === "translated") {
+      throw amberError("invalid_request", "a subtitle package starts from an original, not a translation", { params: { detail: "revisionId" } });
+    }
+    const translations = scope.translations.listArtifacts(owner, content.id).flatMap((artifact) => {
+      const current = artifact.currentRevisionId === undefined ? undefined : scope.transcripts.getRevision(owner, artifact.currentRevisionId);
+      // Only translations made from this very revision: one of another revision would point at sentences the package does not hold.
+      return current !== undefined && current.contentId === content.id && current.kind === "translated" && current.parentRevisionId === revision.id
+        ? [{ language: current.language, segments: allSegments(scope, owner, current.id) }]
+        : [];
+    });
+    const pkg = buildSubtitlePackage({
+      revision,
+      segments: allSegments(scope, owner, revision.id),
+      speakers: scope.speakers.list(owner, content.id),
+      translations,
+      version: this.options.version,
+    });
+    if (pkg.original.segments.length === 0) {
+      throw amberError("invalid_request", "the revision has no sentence with text to package", { params: { detail: "revisionId" } });
+    }
+    const serialized = serializeSubtitlePackage(pkg);
+    if (Buffer.byteLength(serialized, "utf8") > SUBTITLE_IMPORT_MAX_BYTES) {
+      throw amberError("media_too_large", "subtitle package is larger than an import takes", { params: { limit: `${SUBTITLE_IMPORT_MAX_BYTES / BYTES_PER_MB} MB` } });
+    }
+    return {
+      filename: exportFilename(titleOf(scope, owner, content), exportFile.untitled, SUBTITLE_PACKAGE_EXTENSION),
+      contentType: SUBTITLE_PACKAGE_TYPE,
+      body: (async function* () {
+        yield serialized;
+      })(),
+    };
+  }
+
+  private subtitleFile(scope: RepositoryScope, owner: string, content: Content, body: SubtitleExportRequest, restoreData: boolean): ExportFile {
     const revision = revisionOf(scope, owner, content, body.revisionId);
     let translation: TranscriptRevision | undefined;
     if (BILINGUAL_EXPORT_FORMATS.has(body.format)) {
@@ -202,11 +264,12 @@ export class ExportService {
       const options = { style: body.style, playRes: FILE_PLAY_RES, textOnly: false };
       // A downloaded file is made now, so its label lines carry the names as they are now.
       const labels = body.style.appearance.speaker === undefined ? undefined : (speakers?.names ?? speakerLabels(scope.speakers.list(owner, content.id)));
-      const lines =
-        mode === "translation"
-          ? this.styledAss(owner, mode, undefined, revision.id, options, speakers?.names, labels)
-          : this.styledAss(owner, mode, revision.id, translation?.id, options, speakers?.names, labels);
-      return { filename, contentType: file.contentType, body: lines };
+      const originalId = mode === "translation" ? undefined : revision.id;
+      const translationId = mode === "translation" ? revision.id : translation?.id;
+      const restore: RestoreData | undefined = restoreData
+        ? { language: revision.language, ...(translation === undefined ? {} : { translationLanguage: translation.language }), speakers: scope.speakers.list(owner, content.id) }
+        : undefined;
+      return { filename, contentType: file.contentType, body: this.styledAss(owner, mode, originalId, translationId, options, speakers?.names, labels, restore) };
     }
     const cues = this.cuesOf(owner, revision.id, translation?.id);
     const karaoke = revision.timingFidelity === "exact_words";
@@ -236,7 +299,9 @@ export class ExportService {
    * Styled cues need the whole timeline at once — overlapping sentences are cut into
    * slices — so the revisions are read fully, page by page, when the body is consumed.
    * `speakerNames` fill the events' `Name` field; `labelLines` are the speaker labels drawn
-   * above the cues when the style asks for them.
+   * above the cues when the style asks for them. With `restore`, the document carries the
+   * package of exactly what it shows: the shown revision as the original and, bilingually,
+   * the translation it pairs with.
    */
   private async *styledAss(
     owner: string,
@@ -246,6 +311,7 @@ export class ExportService {
     options: Pick<StyledAssRequest, "style" | "playRes" | "textOnly">,
     speakerNames?: ReadonlyMap<string, string>,
     labelLines?: ReadonlyMap<string, string>,
+    restore?: RestoreData,
   ): AsyncGenerator<string> {
     const read = async (revisionId: string | undefined): Promise<TranscriptSegment[]> => {
       const segments: TranscriptSegment[] = [];
@@ -262,7 +328,7 @@ export class ExportService {
     // One cue per sentence of the revision the mode shows, in that order.
     const shown = mode === "translation" ? translation : original;
     const ofCue = shown.map((segment) => segment.speakerId);
-    yield styledAssDocument(cues, {
+    const document = styledAssDocument(cues, {
       style: options.style,
       playRes: options.playRes,
       textOnly: options.textOnly,
@@ -271,6 +337,19 @@ export class ExportService {
       ...(speakerNames === undefined ? {} : { speakers: { ofCue, names: speakerNames } }),
       ...(labelLines === undefined ? {} : { speakerLines: { ofCue, labels: labelLines } }),
     });
+    if (restore === undefined) {
+      yield document;
+      return;
+    }
+    const pkg = buildSubtitlePackage({
+      revision: { language: restore.language },
+      segments: shown,
+      speakers: restore.speakers,
+      translations: mode === "bilingual" && restore.translationLanguage !== undefined ? [{ language: restore.translationLanguage, segments: translation }] : [],
+      version: this.options.version,
+    });
+    // Without a sentence the package would not import; the file then re-imports as a plain ASS.
+    yield pkg.original.segments.length === 0 ? document : withAssRestoreData(document, serializeSubtitlePackage(pkg));
   }
 
   private markdownFile(scope: RepositoryScope, owner: string, content: Content, body: MarkdownExportRequest): ExportFile {
@@ -508,6 +587,30 @@ export class ExportService {
       scope.transcripts.listSegments(owner, revisionId, { ...(afterOrdinal === undefined ? {} : { afterOrdinal }), limit: API_PAGE_SIZE_MAX }),
     );
   }
+}
+
+/** Every sentence of a revision in ordinal order, read inside the caller's transaction. */
+function allSegments(scope: RepositoryScope, owner: string, revisionId: string): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  let after: number | undefined;
+  for (;;) {
+    const page = scope.transcripts.listSegments(owner, revisionId, { ...(after === undefined ? {} : { afterOrdinal: after }), limit: API_PAGE_SIZE_MAX });
+    segments.push(...page);
+    if (page.length < API_PAGE_SIZE_MAX) {
+      return segments;
+    }
+    after = (page.at(-1) as TranscriptSegment).ordinal;
+  }
+}
+
+/**
+ * What a styled ASS download needs besides its sentences to embed restore data: the shown
+ * revision's language, the paired translation's language when bilingual, and the speakers.
+ */
+interface RestoreData {
+  language: string;
+  translationLanguage?: string;
+  speakers: readonly ContentSpeaker[];
 }
 
 /** A transcript revision of `content`, or `not_found`: an export never reaches into another Content. */

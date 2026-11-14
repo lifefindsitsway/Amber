@@ -222,6 +222,12 @@ export const MEDIA_PROBE_TIMEOUT_MS = 60000;
 export const MEDIA_SNIFF_BYTES = 8192;
 /** Upper bound of subtitle and cookie text imports, in bytes (20 MiB). */
 export const SUBTITLE_IMPORT_MAX_BYTES = 20971520;
+/** Occurrences a leading "Name:" needs in an imported SRT before it is preselected as a speaker. */
+export const SUBTITLE_SPEAKER_PREFIX_MIN = 2;
+/** Share of SRT cues with exactly two lines from which the second line is suggested to be a translation. */
+export const SUBTITLE_BILINGUAL_LINE_RATIO = 0.8;
+/** Base64 characters carried by each restore-data comment event of a styled ASS download. */
+export const SUBTITLE_ASS_DATA_CHUNK = 1000;
 /** Maximum length of `MediaAsset.displayName`. */
 export const DISPLAY_NAME_MAX_CHARS = 255;
 

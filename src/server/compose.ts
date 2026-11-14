@@ -66,6 +66,7 @@ import { ImportContentService } from "./application/import-content.ts";
 import { ensureInstanceSettings, InstanceSettingsService, readInstanceSettingsEnv } from "./application/instance-settings.ts";
 import { LlmGateway } from "./application/llm-gateway.ts";
 import { LocalImportService } from "./application/local-import.ts";
+import { SubtitleImportService } from "./application/subtitle-import.ts";
 import { MediaAssetService } from "./application/media-assets.ts";
 import { PlatformAccountService } from "./application/platform-accounts.ts";
 import { PlatformQrLoginService } from "./application/platform-qr-login.ts";
@@ -312,6 +313,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     ...(grants === undefined ? {} : { grants }),
     ...(quota === undefined ? {} : { quota }),
   });
+  const subtitleImport = new SubtitleImportService({ repository, ...(grants === undefined ? {} : { grants }) });
   const mediaAssets = new MediaAssetService({ repository, media, gate, locks: cachePaths, ...(grants === undefined ? {} : { grants }) });
   const ytDlp = new YtDlp({ runner, binDir: config.binDir, dataDir: config.dataDir, env: childProcessEnv(config.env) });
   // Server mode applies the outbound network policy to every hop: private and reserved
@@ -586,6 +588,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     notes,
     speakers,
     localImport,
+    subtitleImport,
     media: mediaAssets,
     ...(clientMedia === undefined ? {} : { clientMedia }),
     ...(relink === undefined ? {} : { relink }),

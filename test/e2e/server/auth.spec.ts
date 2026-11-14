@@ -175,3 +175,85 @@ test("instance settings: the administrator edits them under /admin, a regular us
   expect(statuses).toEqual([403, 403]);
   await context.close();
 });
+
+/** Two speakers named at the start of their cues, each cue with an English second line. */
+const SPEAKER_SRT = [
+  ["张老师：大家好", "Hello everyone"],
+  ["张老师：今天讲字幕", "Today: subtitles"],
+  ["李同学：老师好", "Hello, teacher"],
+  ["李同学：我有个问题", "I have a question"],
+]
+  .map(([original, translation], index) => `${index + 1}\n00:00:0${index * 2},000 --> 00:00:0${index * 2 + 1},500\n${original}\n${translation}\n`)
+  .join("\n");
+
+test("a subtitle package exported from one Content restores its speakers and translation in another through the import dialog", async ({ page }) => {
+  await page.goto("/login");
+  await logIn(page, E2E_ADMIN.password);
+  await expect(page).toHaveURL(/\/library$/u);
+  const userId = userIdOf(E2E_ADMIN.username);
+  const source = seedContent(userId, "字幕包来源");
+  const target = seedContent(userId, "字幕包目标");
+
+  // The source gets speakers and a translation the way the import dialog would send them.
+  const imported = await page.evaluate(
+    async ({ contentId, text }) => {
+      const headers = { "content-type": "application/json", "x-amber-request": "1" };
+      const preview = (await (await fetch("/api/subtitles/inspect", { method: "POST", headers, body: JSON.stringify({ text, filename: "source.srt", contentId }) })).json()) as {
+        digest: string;
+        speakers: { candidates: Array<{ key: string; preselected: boolean }> };
+      };
+      const response = await fetch(`/api/contents/${contentId}/subtitle-import`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          text,
+          filename: "source.srt",
+          format: "srt",
+          language: "zh-CN",
+          options: {
+            expectedDigest: preview.digest,
+            speakers: { prefixNames: preview.speakers.candidates.filter((candidate) => candidate.preselected).map((candidate) => candidate.key), unlabeled: "inherit" },
+            translationLanguage: "en",
+          },
+        }),
+      });
+      return { status: response.status, body: (await response.json()) as { translationRevisionIds?: Record<string, string>; speakersCreated?: number } };
+    },
+    { contentId: source, text: SPEAKER_SRT },
+  );
+  expect(imported.status).toBe(201);
+  expect(imported.body.speakersCreated).toBe(2);
+  expect(Object.keys(imported.body.translationRevisionIds ?? {})).toEqual(["en"]);
+
+  await page.goto(`/contents/${source}?tab=subtitles`);
+  await page.getByTestId("subtitles-download").click();
+  const download = page.waitForEvent("download");
+  await page.getByTestId("subtitles-download-ambersub").click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("字幕包来源.ambersub");
+  const chunks: Buffer[] = [];
+  for await (const chunk of await file.createReadStream()) chunks.push(chunk as Buffer);
+  const packageBytes = Buffer.concat(chunks);
+
+  await page.goto(`/contents/${target}?tab=subtitles`);
+  await page.getByTestId("subtitles-toolbar").getByRole("button", { name: "导入字幕" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByTestId("subtitle-import-file").setInputFiles({ name: file.suggestedFilename(), mimeType: "application/json", buffer: packageBytes });
+  await expect(dialog.getByTestId("subtitle-preview-package-sentences")).toHaveText("句数4");
+  await expect(dialog.getByTestId("subtitle-preview-package-speakers")).toHaveText("发言人2");
+  await expect(dialog.getByTestId("subtitle-preview-package-translations")).toHaveText("译文语言英语");
+  await dialog.getByTestId("subtitle-import-submit").click();
+  await expect(dialog.getByTestId("subtitle-import-summary")).toHaveText("已导入 4 句 · 2 位发言人 · 英语译文");
+  await dialog.getByTestId("subtitle-import-done").click();
+
+  const versions = page.getByTestId("subtitles-version").locator("option");
+  await expect(versions.filter({ hasText: /^导入字幕 · / })).toHaveCount(1);
+  await expect(versions.filter({ hasText: /^导入译文 · 英语 · / })).toHaveCount(1);
+
+  await page.goto(`/contents/${target}?tab=transcript`);
+  const headers = page.getByTestId("turn-header");
+  await expect(headers).toHaveCount(2);
+  await expect(headers.nth(0)).toContainText("张老师");
+  await expect(headers.nth(1)).toContainText("李同学");
+  await expect(page.getByRole("tabpanel")).toContainText("今天讲字幕");
+});

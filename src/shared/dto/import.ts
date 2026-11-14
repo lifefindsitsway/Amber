@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { asrModelRefSchema, modelRefSchema } from "./model-ref.ts";
+import { languageTagSchema } from "./language.ts";
 import { diarizationRequestSchema } from "./speaker.ts";
+import { subtitleImportOptionsSchema, timedSubtitleFormatSchema } from "./subtitle-import.ts";
 
-/** BCP-47 shape only; whether a language is offered in the UI is not validated here. */
-export const languageTagSchema = z.string().regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/);
+export { languageTagSchema };
 
 /** Per-import processing settings, frozen into each created Task's request. */
 export const importSettingsSchema = z
@@ -20,12 +21,13 @@ export const importSettingsSchema = z
   .strict();
 export type ImportSettings = z.infer<typeof importSettingsSchema>;
 
-/** A subtitle carried with a new Content; SRT or WebVTT text, format decided by content. */
+/** A subtitle carried with a new Content; format decided by content when not given. */
 export const initialSubtitleTextSchema = z
   .object({
     text: z.string().min(1),
-    format: z.enum(["srt", "vtt"]).exactOptional(),
+    format: timedSubtitleFormatSchema.exactOptional(),
     language: languageTagSchema,
+    options: subtitleImportOptionsSchema.exactOptional(),
   })
   .strict();
 export type InitialSubtitleText = z.infer<typeof initialSubtitleTextSchema>;

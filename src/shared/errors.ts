@@ -158,8 +158,10 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.draft_changed": { detailsKeys: ["currentVersion"] },
   // The speakers a revision names changed (renamed, name confirmation changed) since the client read them for review.
   "conflict.speakers_changed": {},
-  // Too few speaker slots are left on the Content for another transcription made only for comparison.
+  // Too few speaker slots are left on the Content for the speakers a comparison transcription or an imported subtitle would add.
   "conflict.speaker_capacity": { detailsKeys: ["room", "required"] },
+  // The subtitle file read for an import is not the one its preview was made from.
+  "conflict.subtitle_changed": {},
   // The cache check the request refers to has expired, is unknown or no longer matches the request.
   "conflict.cache_inspection_expired": {},
   "conflict.last_admin": {},
@@ -282,6 +284,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.range_not_satisfiable": {},
   "invalid_request.subtitle_encoding": {},
   "invalid_request.subtitle_format": {},
+  // An Amber subtitle package written in a newer format version than this build reads.
+  "invalid_request.subtitle_newer": { detailsKeys: ["formatVersion", "supportedVersion"] },
   // A multi-part submission that did not choose parts.
   "invalid_request.multipart_choice_required": { detailsKeys: ["parts"] },
   "invalid_request.batch_too_large": { detailsKeys: ["itemCount", "limit"] },

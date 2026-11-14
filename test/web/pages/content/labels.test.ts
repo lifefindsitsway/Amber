@@ -27,6 +27,16 @@ describe("revisionLabel", () => {
     expect(revisionLabel({ ...manual, archived: true }, undefined, t, i18n)).toBe("手动修订 · 10-04 12:05 · 已归档");
   });
 
+  it("names a translation that came in with a subtitle file 「导入译文」, and a hand edit of it as any hand edit", () => {
+    const t = i18n.t.bind(i18n);
+    const imported = revision("i1", { kind: "translated", language: "en", parentRevisionId: "r0", generation: { kind: "imported", format: "ambersub" }, createdAt: at(12, 10) });
+    expect(revisionLabel(imported, undefined, t, i18n)).toBe("导入译文 · 英语 · 10-04 12:10");
+    // An imported original keeps its own kind.
+    expect(revisionLabel(revision("i0", { kind: "imported", generation: { kind: "imported", format: "srt" }, createdAt: at(12, 10) }), undefined, t, i18n)).toBe("导入字幕 · 10-04 12:10");
+    const edited = revision("i2", { kind: "translated", language: "en", parentRevisionId: "r0", generation: { kind: "manual" }, createdAt: at(12, 20) });
+    expect(revisionLabel(edited, undefined, t, i18n)).toBe("人工编辑 · 英语 · 10-04 12:20");
+  });
+
   it("names kind, model and time so two proofreads by one model tell apart, and marks the current one", () => {
     const t = i18n.t.bind(i18n);
     expect(all.map((item) => revisionLabel(item, "r2", t, i18n, all))).toEqual([

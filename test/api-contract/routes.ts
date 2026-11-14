@@ -31,6 +31,9 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/contents/upload", modes: ["server"] },
   { method: "POST", path: "/contents/local-file", modes: ["local"] },
   { method: "POST", path: "/contents/:id/subtitle-import", modes: BOTH },
+  // subtitles
+  { method: "POST", path: "/subtitles/inspect", modes: BOTH },
+  { method: "POST", path: "/subtitles/inspect-local", modes: ["local"] },
   { method: "GET", path: "/contents", modes: BOTH },
   { method: "PATCH", path: "/contents/:id", modes: BOTH },
   { method: "GET", path: "/contents/:id", modes: BOTH },

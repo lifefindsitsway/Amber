@@ -8,6 +8,7 @@ import {
 } from "../enums.ts";
 import { nameSchema } from "./collection.ts";
 import { languageTagSchema } from "./import.ts";
+import { INSPECTED_SUBTITLE_FORMATS, subtitleImportOptionsSchema } from "./subtitle-import.ts";
 
 const idSchema = z.string().min(1);
 const epochMsSchema = z.number().int().nonnegative();
@@ -162,17 +163,25 @@ export type PrimaryTranscriptRequest = z.infer<typeof primaryTranscriptRequestSc
 export const subtitleImportRequestSchema = z
   .object({
     text: z.string().min(1),
-    format: z.enum(["srt", "vtt", "txt", "md"]).exactOptional(),
+    format: z.enum(INSPECTED_SUBTITLE_FORMATS).exactOptional(),
+    /** Required for SRT, VTT and ASS; a package carries its own languages and ignores it. */
     language: languageTagSchema.exactOptional(),
     filename: z.string().max(1024).exactOptional(),
+    options: subtitleImportOptionsSchema.exactOptional(),
   })
   .strict();
 export type SubtitleImportRequest = z.infer<typeof subtitleImportRequestSchema>;
 
-/** Exactly one of the two ids; `warnings` are reason codes such as `subtitle_cue_dropped`. */
+/**
+ * Exactly one of the two ids; `warnings` are reason codes such as `subtitle_cue_dropped`.
+ * `translationRevisionIds` maps each imported translation's language to its revision;
+ * `speakersCreated` counts the speaker identities the import added.
+ */
 export const subtitleImportResponseSchema = z.object({
   transcriptRevisionId: idSchema.exactOptional(),
   referenceTextId: idSchema.exactOptional(),
+  translationRevisionIds: z.record(z.string().min(1), idSchema).exactOptional(),
+  speakersCreated: z.number().int().nonnegative().exactOptional(),
   warnings: z.array(z.string()),
 });
 export type SubtitleImportResponse = z.infer<typeof subtitleImportResponseSchema>;

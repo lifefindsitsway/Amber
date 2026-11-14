@@ -52,13 +52,21 @@ const subtitleExportSchema = z
   });
 
 /**
+ * An Amber subtitle package: the original revision with its speakers and every current
+ * translation made from it, for restoring them exactly on another device. Speakers always
+ * travel with it, so there is no `includeSpeakers`.
+ */
+const subtitlePackageExportSchema = z.object({ format: z.literal("ambersub"), revisionId: idSchema }).strict();
+
+/**
  * `POST /api/contents/:id/export`: every revision is named explicitly; the
  * response is the file itself, streamed, with `Content-Disposition: attachment`.
  */
-export const contentExportRequestSchema = z.union([markdownExportSchema, subtitleExportSchema]);
+export const contentExportRequestSchema = z.union([markdownExportSchema, subtitleExportSchema, subtitlePackageExportSchema]);
 export type ContentExportRequest = z.infer<typeof contentExportRequestSchema>;
 export type MarkdownExportRequest = z.infer<typeof markdownExportSchema>;
 export type SubtitleExportRequest = z.infer<typeof subtitleExportSchema>;
+export type SubtitlePackageExportRequest = z.infer<typeof subtitlePackageExportSchema>;
 
 /** `POST /api/collections/:id/export`: the collection Markdown. */
 export const collectionExportRequestSchema = z.object({ backlinks: z.boolean() }).strict();

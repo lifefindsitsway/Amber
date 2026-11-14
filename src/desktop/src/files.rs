@@ -29,7 +29,9 @@ const MEDIA_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mkv", "webm", "mov", "avi", "flv", "wmv", "ts", "mts", "m2ts", "mpg", "mpeg", "3gp", "mp3", "m4a", "aac",
     "wav", "flac", "ogg", "oga", "opus", "wma",
 ];
-const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "txt"];
+/// Timed subtitle files a new Content can carry, the Amber subtitle package included. Plain
+/// text cannot be imported with new media, so it is not offered.
+const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "ambersub"];
 /// ISO BMFF major brands of the MP4 files an export writes; other ISO BMFF files (M4A,
 /// QuickTime, AVIF, HEIC) share the `ftyp` box but are not exports.
 const MP4_BRANDS: &[[u8; 4]] = &[*b"isom", *b"iso2", *b"mp41", *b"mp42"];

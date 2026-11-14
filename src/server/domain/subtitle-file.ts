@@ -23,7 +23,8 @@ const VTT_HEADER = /^WEBVTT(?:[ \t].*)?$/;
 const VTT_METADATA_BLOCK = /^(?:NOTE|STYLE|REGION)(?:[ \t]|$)/;
 const ENTITIES: Readonly<Record<string, string>> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&nbsp;": " ", "&lrm;": "", "&rlm;": "" };
 
-function formatError(message: string): Error {
+/** `invalid_request.subtitle_format`: the text is not a subtitle file of the format it claims or looks like. */
+export function formatError(message: string): Error {
   return amberError("invalid_request", message, { code: "invalid_request.subtitle_format" });
 }
 
@@ -58,7 +59,7 @@ function timestampMs(stamp: string): number {
 }
 
 /** Cue lines are display wrapping; Latin words get a space, CJK text joins directly. */
-function joinLines(lines: readonly string[]): string {
+export function joinLines(lines: readonly string[]): string {
   return lines.reduce((joined, line) => {
     if (joined === "") {
       return line;
@@ -68,19 +69,63 @@ function joinLines(lines: readonly string[]): string {
   }, "");
 }
 
-function cueText(lines: readonly string[]): string {
-  const cleaned = lines
-    .map((line) => line.replace(/<[^>]*>/g, "").replace(/&(?:amp|lt|gt|nbsp|lrm|rlm);/g, (entity) => ENTITIES[entity] ?? entity).trim())
-    .filter((line) => line !== "");
-  return joinLines(cleaned);
+/** Character references a cue may carry, as text. */
+export function unescapeCueEntities(text: string): string {
+  return text.replace(/&(?:amp|lt|gt|nbsp|lrm|rlm);/g, (entity) => ENTITIES[entity] ?? entity);
 }
 
 /**
- * Parses SRT or WebVTT; the format is decided by content, never by file name: a `WEBVTT`
- * header means VTT, otherwise cue timing lines mean SRT. Cues with empty text are skipped;
- * cues whose end is not after their start are dropped and counted.
+ * A cue line split into its text and its `<…>` tags (each without the brackets). A tag runs from
+ * a `<` to the next `>`; once a `<` has no `>` after it, neither has any later one, so the rest
+ * is text. One pass, linear in the line, unlike a backtracking tag pattern on a line of `<`s.
  */
-export function parseTimedSubtitle(text: string): ParsedSubtitle {
+export function scanCueTags(line: string): { text: string; tags: string[] } {
+  const tags: string[] = [];
+  let text = "";
+  let at = 0;
+  for (;;) {
+    const open = line.indexOf("<", at);
+    const close = open < 0 ? -1 : line.indexOf(">", open + 1);
+    if (close < 0) {
+      text += line.slice(at);
+      return { text, tags };
+    }
+    text += line.slice(at, open);
+    tags.push(line.slice(open + 1, close));
+    at = close + 1;
+  }
+}
+
+/** One cue line as text: every `<…>` tag removed, character references resolved, trimmed. */
+export function cleanCueLine(line: string): string {
+  return unescapeCueEntities(scanCueTags(line).text).trim();
+}
+
+/** A cue's text lines after cleaning, empty ones left out. */
+export function cueLines(lines: readonly string[]): string[] {
+  return lines.map(cleanCueLine).filter((line) => line !== "");
+}
+
+function cueText(lines: readonly string[]): string {
+  return joinLines(cueLines(lines));
+}
+
+/** One cue block of an SRT or WebVTT file as written, in file order, before any filtering. */
+export interface ScannedCue {
+  startMs: number;
+  endMs: number;
+  /** The timing line as written. */
+  timing: string;
+  /** The raw lines after the timing line. */
+  lines: string[];
+}
+
+/**
+ * Splits SRT or WebVTT into cue blocks in file order; the format is decided by content, never
+ * by file name: a `WEBVTT` header means VTT, otherwise cue timing lines mean SRT; a text with
+ * neither is `invalid_request.subtitle_format`. Nothing is filtered here.
+ */
+export function scanTimedSubtitle(text: string): { format: TimedSubtitleFormat; cues: ScannedCue[] } {
   const lines = text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
   const format: TimedSubtitleFormat | undefined = VTT_HEADER.test(lines[0] ?? "")
     ? "vtt"
@@ -100,8 +145,7 @@ export function parseTimedSubtitle(text: string): ParsedSubtitle {
       (blocks.at(-1) as string[]).push(line);
     }
   }
-  const cues: SubtitleCue[] = [];
-  let droppedCues = 0;
+  const cues: ScannedCue[] = [];
   for (const [index, block] of blocks.entries()) {
     if (block.length === 0 || (format === "vtt" && (index === 0 || VTT_METADATA_BLOCK.test(block[0] as string)))) {
       continue;
@@ -110,16 +154,30 @@ export function parseTimedSubtitle(text: string): ParsedSubtitle {
     if (timingIndex < 0) {
       continue;
     }
-    const match = TIMING.exec(block[timingIndex] as string) as RegExpExecArray;
-    const startMs = timestampMs(match[1] as string);
-    const endMs = timestampMs(match[2] as string);
-    const body = cueText(block.slice(timingIndex + 1));
-    if (!(startMs < endMs)) {
+    const timing = block[timingIndex] as string;
+    const match = TIMING.exec(timing) as RegExpExecArray;
+    cues.push({ startMs: timestampMs(match[1] as string), endMs: timestampMs(match[2] as string), timing: timing.trim(), lines: block.slice(timingIndex + 1) });
+  }
+  return { format, cues };
+}
+
+/**
+ * Parses SRT or WebVTT; the format is decided by content, never by file name: a `WEBVTT`
+ * header means VTT, otherwise cue timing lines mean SRT. Cues with empty text are skipped;
+ * cues whose end is not after their start are dropped and counted.
+ */
+export function parseTimedSubtitle(text: string): ParsedSubtitle {
+  const { format, cues: scanned } = scanTimedSubtitle(text);
+  const cues: SubtitleCue[] = [];
+  let droppedCues = 0;
+  for (const cue of scanned) {
+    const body = cueText(cue.lines);
+    if (!(cue.startMs < cue.endMs)) {
       droppedCues += 1;
       continue;
     }
     if (body !== "") {
-      cues.push({ startMs, endMs, text: body });
+      cues.push({ startMs: cue.startMs, endMs: cue.endMs, text: body });
     }
   }
   if (cues.length === 0) {

@@ -1,3 +1,4 @@
+import type { TimedSubtitleFormat as SubtitleImportFormat } from "../../shared/dto/subtitle-import.ts";
 import type { TimingFidelity, TranscriptKind } from "../../shared/enums.ts";
 import { isUlid, type SegmentId } from "../../shared/ids.ts";
 import type { DiarizationStatus, SpeakerReviewState } from "../../shared/speakers.ts";
@@ -7,7 +8,7 @@ import type { SpeakerContextSnapshot } from "./speaker-context.ts";
 /** Who produced a revision. */
 export type TranscriptGeneration =
   | { kind: "platform"; acquisition: "guest" | "authenticated" }
-  | { kind: "imported"; format: "srt" | "vtt" }
+  | { kind: "imported"; format: SubtitleImportFormat }
   /**
    * `diarization` is absent on revisions made before speaker identification was recorded.
    * `purpose: "comparison"` marks a transcription made only to compare speakers with: it

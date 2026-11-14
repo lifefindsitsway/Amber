@@ -360,14 +360,16 @@ export interface SpeakerRepository {
   list(ownerUserId: string, contentId: string): ContentSpeaker[];
   get(ownerUserId: string, contentId: string, speakerId: string): ContentSpeaker | undefined;
   /**
-   * Adds speakers in the given order at the next ordinals; a speaker without `colorIndex` gets
-   * `defaultSpeakerColorIndex(ordinal)`. Throws unless the Content is the owner's and every id
-   * is new to it. The caller enforces `SPEAKERS_PER_CONTENT_MAX`.
+   * Adds speakers in the given order; a speaker without `ordinal` takes the next one after
+   * every ordinal of the Content (those added earlier in the same call included), and one
+   * without `colorIndex` gets `defaultSpeakerColorIndex(ordinal)`. Throws unless the Content
+   * is the owner's, every id is new to it and every explicit ordinal is free. The caller
+   * enforces `SPEAKERS_PER_CONTENT_MAX`.
    */
   insert(
     ownerUserId: string,
     contentId: string,
-    speakers: ReadonlyArray<{ id: string; name?: string; nameConfirmedAt?: number; colorIndex?: number }>,
+    speakers: ReadonlyArray<{ id: string; name?: string; nameConfirmedAt?: number; colorIndex?: number; ordinal?: number }>,
     now: number,
   ): ContentSpeaker[];
   /** Applies the patch; a new photo raises the photo version. `undefined` when there is no such speaker. */

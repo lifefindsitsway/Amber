@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs } from "radix-ui";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { useId, useMemo, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router";
 import { UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
@@ -19,6 +19,10 @@ import { ErrorView } from "../components/error-view.tsx";
 import { diarizationNoteKey, diarizationOffer } from "../components/asr-diarization.ts";
 import { AsrModelSelect, initialAsrModelRef } from "../components/asr-model-select.tsx";
 import { pickLocalFile, type PickedFile } from "../desktop/bridge.ts";
+import { buildSubtitleImportOptions, importBlockers, plainImportPossible } from "./content/subtitle-import-choice.ts";
+import { useSubtitlePreview, type SubtitlePreviewSource } from "./content/subtitle-import-data.ts";
+import { SubtitleImportPreview, useSubtitleImportChoice } from "./content/subtitle-import-preview.tsx";
+import type { SubtitleImportOptions, TimedSubtitleFormat } from "../../shared/dto/subtitle-import.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
 import { linesOf, recognizeLink } from "../links.ts";
 import type { NewPagePrefill } from "../shell/paste-guard.ts";
@@ -42,7 +46,8 @@ interface PartPrompt {
 }
 
 const FIELD = "h-9 rounded-md border border-line bg-surface px-2 text-sm";
-const SUBTITLE_ACCEPT = ".srt,.vtt,text/vtt,application/x-subrip";
+/** Timed subtitles a new Content can carry; plain text cannot be imported with new media. */
+const SUBTITLE_ACCEPT = ".srt,.vtt,.ass,.ambersub,text/vtt,application/x-subrip";
 /**
  * The file and subtitle tabs put each label beside its control, labels sharing one column; a narrow
  * form stacks them. Rows without a label of their own (hints, errors) sit under the controls.
@@ -62,12 +67,10 @@ function decodeModel(value: string): ModelRefDto | undefined {
   return { providerProfileId, modelId };
 }
 
-/** `.srt` / `.vtt` from the file name; otherwise the server decides by content. */
-function subtitleFormat(fileName: string): "srt" | "vtt" | undefined {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".srt")) return "srt";
-  if (lower.endsWith(".vtt")) return "vtt";
-  return undefined;
+/** The timed format a file name says; otherwise the server decides by content. */
+function subtitleFormat(fileName: string): TimedSubtitleFormat | undefined {
+  const extension = fileName.toLowerCase().split(".").pop();
+  return extension === "srt" || extension === "vtt" || extension === "ass" || extension === "ambersub" ? extension : undefined;
 }
 
 /** The file name of a picked path, whichever separator the platform uses. */
@@ -138,10 +141,12 @@ export function NewPage() {
   const [tab, setTab] = useState<Tab>("link");
   const [text, setText] = useState(() => (location.state as NewPagePrefill | null)?.prefill ?? "");
   const [subtitleUrl, setSubtitleUrl] = useState("");
-  const [subtitle, setSubtitle] = useState<{ name: string; text: string } | undefined>(undefined);
+  const [subtitle, setSubtitle] = useState<File | undefined>(undefined);
   const [subtitleLanguage, setSubtitleLanguage] = useState("");
   const [uploadFile, setUploadFile] = useState<File | undefined>(undefined);
   const [uploadSubtitle, setUploadSubtitle] = useState<File | undefined>(undefined);
+  // Remounts the upload's subtitle picker after a removal, so picking the same file again is seen.
+  const [uploadSubtitleRound, setUploadSubtitleRound] = useState(0);
   const [localFile, setLocalFile] = useState<PickedFile | undefined>(undefined);
   const [localSubtitle, setLocalSubtitle] = useState<PickedFile | undefined>(undefined);
   const [showSettings, setShowSettings] = useState(false);
@@ -152,7 +157,8 @@ export function NewPage() {
   const [languageChoice, setLanguageChoice] = useState<string | undefined>(undefined);
   const [collectionChoice, setCollectionChoice] = useState("");
   const [newCollectionName, setNewCollectionName] = useState("");
-  const [autoProofread, setAutoProofread] = useState(true);
+  // `undefined` until the user touches 「自动校对」: then it follows whether a subtitle is attached.
+  const [autoProofreadChoice, setAutoProofreadChoice] = useState<boolean | undefined>(undefined);
   const [partPrompts, setPartPrompts] = useState<PartPrompt[]>([]);
   const [partChoices, setPartChoices] = useState<Record<string, PartChoice>>({});
   const [problem, setProblem] = useState<string | undefined>(undefined);
@@ -179,6 +185,38 @@ export function NewPage() {
   const templateLabel = (template: SummaryTemplateDto): string => (template.builtin && i18n.exists(template.name) ? String(t(template.name as never)) : template.name);
 
   const lines = tab === "subtitle" ? linesOf(subtitleUrl).slice(0, 1) : linesOf(text);
+
+  // The subtitle of the open tab is previewed under its file; only that one is imported.
+  const uploadSource = useMemo<SubtitlePreviewSource | undefined>(() => (uploadSubtitle === undefined ? undefined : { kind: "text", file: uploadSubtitle }), [uploadSubtitle]);
+  const localSource = useMemo<SubtitlePreviewSource | undefined>(
+    () => (localSubtitle === undefined ? undefined : { kind: "local", path: localSubtitle.path, grant: localSubtitle.grant }),
+    [localSubtitle],
+  );
+  const linkSource = useMemo<SubtitlePreviewSource | undefined>(() => (subtitle === undefined ? undefined : { kind: "text", file: subtitle }), [subtitle]);
+  const subtitleSource = tab === "upload" ? uploadSource : tab === "local" ? localSource : tab === "subtitle" ? linkSource : undefined;
+  const previewState = useSubtitlePreview(subtitleSource);
+  const preview = previewState.status === "ready" ? previewState.preview : undefined;
+  const [subtitleChoice, setSubtitleChoice] = useSubtitleImportChoice(preview);
+  const hasSubtitle = subtitleSource !== undefined;
+  // A package names its own language; every other subtitle needs one chosen.
+  const packageLanguage = preview?.package?.language;
+  const effectiveSubtitleLanguage = packageLanguage ?? subtitleLanguage;
+  // A subtitle already gives the text, so it is not rewritten by AI unless the user asks for it.
+  const autoProofread = autoProofreadChoice ?? !hasSubtitle;
+  /** The subtitle was taken away: 「自动校对」 returns to its default. */
+  const subtitleRemoved = (): void => setAutoProofreadChoice(undefined);
+
+  /** Why the attached subtitle cannot go with the import yet, if it cannot. */
+  const subtitleProblem = (): string | undefined => {
+    if (!hasSubtitle) return undefined;
+    if (previewState.status === "loading" || previewState.status === "idle") return t("subtitleImport.newPage.pending");
+    if (previewState.status === "failed" && !plainImportPossible(previewState.error.code)) return t("subtitleImport.newPage.blocked");
+    if (preview !== undefined && subtitleChoice !== undefined && importBlockers(preview, subtitleChoice, effectiveSubtitleLanguage).length > 0) return t("subtitleImport.newPage.blocked");
+    return undefined;
+  };
+  /** The options of a previewed subtitle; a failed preview imports it as a plain subtitle. */
+  const subtitleOptions = (): SubtitleImportOptions | undefined =>
+    preview === undefined || subtitleChoice === undefined ? undefined : buildSubtitleImportOptions(preview, subtitleChoice);
   const recognized = lines.map((line) => recognizeLink(line));
   const noLlm = providers.data !== undefined && providers.data.items.length === 0;
 
@@ -209,7 +247,9 @@ export function NewPage() {
       form.append("settings", JSON.stringify(settings));
       if (options.allowDuplicate) form.append("allowDuplicate", "true");
       if (uploadSubtitle !== undefined) {
-        form.append("subtitleLanguage", subtitleLanguage);
+        form.append("subtitleLanguage", effectiveSubtitleLanguage);
+        const options = subtitleOptions();
+        if (options !== undefined) form.append("subtitleOptions", JSON.stringify(options));
         form.append("subtitle", uploadSubtitle, uploadSubtitle.name);
       }
       form.append("file", uploadFile, uploadFile.name);
@@ -234,6 +274,11 @@ export function NewPage() {
     },
   });
 
+  const localInitialSubtitle = (file: PickedFile): NonNullable<LocalFileRequest["initialSubtitle"]> => {
+    const options = subtitleOptions();
+    return { path: file.path, grant: file.grant, language: effectiveSubtitleLanguage, ...(options === undefined ? {} : { options }) };
+  };
+
   const localImport = useMutation({
     mutationFn: async (options: { allowDuplicate: boolean }): Promise<void> => {
       if (localFile === undefined) return;
@@ -243,7 +288,7 @@ export function NewPage() {
         grant: localFile.grant,
         settings: { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting },
         allowDuplicate: options.allowDuplicate,
-        ...(localSubtitle === undefined ? {} : { initialSubtitle: { path: localSubtitle.path, grant: localSubtitle.grant, language: subtitleLanguage } }),
+        ...(localSubtitle === undefined ? {} : { initialSubtitle: localInitialSubtitle(localSubtitle) }),
       };
       const response = await api.post("/api/contents/local-file", importResponseSchema, { body, idempotent: true });
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
@@ -265,19 +310,27 @@ export function NewPage() {
     mutationFn: async (): Promise<void> => {
       const collection = collectionTarget();
       const modelRef = decodeModel(model);
-      const items: ImportItem[] =
-        tab === "subtitle" && subtitle !== undefined
-          ? [
-              {
-                url: lines[0] ?? "",
-                initialSubtitle: {
-                  text: subtitle.text,
-                  language: subtitleLanguage,
-                  ...(subtitleFormat(subtitle.name) === undefined ? {} : { format: subtitleFormat(subtitle.name) as "srt" | "vtt" }),
-                },
-              },
-            ]
-          : lines.map((url) => ({ url, ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }) }));
+      let items: ImportItem[];
+      if (tab === "subtitle" && subtitle !== undefined) {
+        // The previewed text itself, so the digest the options carry is of what is sent.
+        const subtitleText = previewState.status === "ready" && previewState.text !== undefined ? previewState.text : await subtitle.text();
+        const previewed = preview?.format;
+        const format = previewed !== undefined && previewed !== "txt" && previewed !== "md" ? previewed : subtitleFormat(subtitle.name);
+        const options = subtitleOptions();
+        items = [
+          {
+            url: lines[0] ?? "",
+            initialSubtitle: {
+              text: subtitleText,
+              language: effectiveSubtitleLanguage,
+              ...(format === undefined ? {} : { format }),
+              ...(options === undefined ? {} : { options }),
+            },
+          },
+        ];
+      } else {
+        items = lines.map((url) => ({ url, ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }) }));
+      }
       const body: ImportRequest = {
         items,
         settings: { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting },
@@ -313,31 +366,72 @@ export function NewPage() {
     setSkipped(undefined);
     if (tab === "upload") {
       if (uploadFile === undefined) return setProblem(t("shell.newPage.needFile"));
-      if (uploadSubtitle !== undefined && subtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
+      if (uploadSubtitle !== undefined && effectiveSubtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
+      const blocked = subtitleProblem();
+      if (blocked !== undefined) return setProblem(blocked);
       upload.mutate({ allowDuplicate: false });
       return;
     }
     if (tab === "local") {
       if (localFile === undefined) return setProblem(t("shell.newPage.needLocalFile"));
-      if (localSubtitle !== undefined && subtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
+      if (localSubtitle !== undefined && effectiveSubtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
       if (expired(localFile) || (localSubtitle !== undefined && expired(localSubtitle))) {
         setLocalFile(undefined);
         setLocalSubtitle(undefined);
         return setProblem(t("shell.newPage.pickAgain"));
       }
+      const blocked = subtitleProblem();
+      if (blocked !== undefined) return setProblem(blocked);
       localImport.mutate({ allowDuplicate: false });
       return;
     }
     if (lines.length === 0) return setProblem(t("shell.newPage.needUrl"));
-    if (tab === "subtitle" && (subtitle === undefined || subtitleLanguage === "")) return setProblem(t("shell.newPage.needSubtitle"));
+    if (tab === "subtitle" && (subtitle === undefined || effectiveSubtitleLanguage === "")) return setProblem(t("shell.newPage.needSubtitle"));
+    if (tab === "subtitle") {
+      const blocked = subtitleProblem();
+      if (blocked !== undefined) return setProblem(blocked);
+    }
     if (collectionChoice === NEW_COLLECTION && newCollectionName.trim() === "") return setProblem(t("shell.newPage.needCollectionName"));
     submit.mutate();
   };
 
   const onSubtitleFile = (file: File | undefined): void => {
-    if (file === undefined) return setSubtitle(undefined);
-    void file.text().then((content) => setSubtitle({ name: file.name, text: content }));
+    setSubtitle(file);
+    if (file === undefined) subtitleRemoved();
   };
+
+  /** Under an attached subtitle: its preview, its language unless a package names it, and 「自动校对」 with why it starts off. */
+  const subtitleDetails = (languageId: string, languageTestId: string) => (
+    <>
+      <div className="min-w-0 @lg:col-start-2">
+        <SubtitleImportPreview state={previewState} choice={subtitleChoice} onChoice={setSubtitleChoice} onRefresh={previewState.refresh} originalLanguage={effectiveSubtitleLanguage} />
+      </div>
+      {packageLanguage === undefined ? (
+        <>
+          <label htmlFor={languageId} className={FORM_LABEL}>
+            {t("shell.newPage.subtitleLanguage")}
+          </label>
+          <select id={languageId} data-testid={languageTestId} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
+            <option value="">{t("shell.newPage.chooseLanguage")}</option>
+            {Object.keys(languageNames).map((tag) => (
+              <option key={tag} value={tag}>
+                {languageLabel(tag)}
+              </option>
+            ))}
+          </select>
+        </>
+      ) : null}
+      <div className="flex flex-col gap-0.5 @lg:col-start-2" data-testid="subtitle-auto-proofread">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)} aria-describedby={`${formId}-proofread-note`} />
+          {t("shell.newPage.autoProofread")}
+        </label>
+        <p id={`${formId}-proofread-note`} className="pl-6 text-xs text-muted">
+          {t("subtitleImport.newPage.autoProofreadNote")}
+        </p>
+      </div>
+    </>
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -388,28 +482,34 @@ export function NewPage() {
               <span id={`${formId}-upload-subtitle`} className={FORM_LABEL}>
                 {t("shell.newPage.uploadSubtitle")}
               </span>
-              <FilePicker
-                testId="upload-subtitle"
-                accept={SUBTITLE_ACCEPT}
-                fileName={uploadSubtitle?.name}
-                onFile={setUploadSubtitle}
-                labelledBy={`${formId}-upload-subtitle`}
-              />
-              {uploadSubtitle === undefined ? null : (
-                <>
-                  <label htmlFor={`${formId}-upload-language`} className={FORM_LABEL}>
-                    {t("shell.newPage.subtitleLanguage")}
-                  </label>
-                  <select id={`${formId}-upload-language`} data-testid="upload-subtitle-language" value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
-                    <option value="">{t("shell.newPage.chooseLanguage")}</option>
-                    {Object.keys(languageNames).map((tag) => (
-                      <option key={tag} value={tag}>
-                        {languageLabel(tag)}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
+              <div className="flex min-w-0 items-center gap-3">
+                <FilePicker
+                  key={uploadSubtitleRound}
+                  testId="upload-subtitle"
+                  accept={SUBTITLE_ACCEPT}
+                  fileName={uploadSubtitle?.name}
+                  onFile={(file) => {
+                    setUploadSubtitle(file);
+                    if (file === undefined) subtitleRemoved();
+                  }}
+                  labelledBy={`${formId}-upload-subtitle`}
+                />
+                {uploadSubtitle === undefined ? null : (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setUploadSubtitle(undefined);
+                      setUploadSubtitleRound(uploadSubtitleRound + 1);
+                      subtitleRemoved();
+                    }}
+                    data-testid="upload-remove-subtitle"
+                  >
+                    {t("shell.newPage.removeSubtitle")}
+                  </Button>
+                )}
+              </div>
+              <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
+              {uploadSubtitle === undefined ? null : subtitleDetails(`${formId}-upload-language`, "upload-subtitle-language")}
             </Tabs.Content>
           ) : null}
           {desktop ? (
@@ -434,27 +534,20 @@ export function NewPage() {
                     <span className="min-w-0 truncate text-sm" data-testid="local-subtitle-name" title={localSubtitle.path}>
                       {baseName(localSubtitle.path)}
                     </span>
-                    <Button variant="ghost" onClick={() => setLocalSubtitle(undefined)}>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setLocalSubtitle(undefined);
+                        subtitleRemoved();
+                      }}
+                    >
                       {t("shell.newPage.removeSubtitle")}
                     </Button>
                   </>
                 )}
               </div>
-              {localSubtitle === undefined ? null : (
-                <>
-                  <label htmlFor={`${formId}-local-language`} className={FORM_LABEL}>
-                    {t("shell.newPage.subtitleLanguage")}
-                  </label>
-                  <select id={`${formId}-local-language`} data-testid="local-subtitle-language" value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
-                    <option value="">{t("shell.newPage.chooseLanguage")}</option>
-                    {Object.keys(languageNames).map((tag) => (
-                      <option key={tag} value={tag}>
-                        {languageLabel(tag)}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
+              <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
+              {localSubtitle === undefined ? null : subtitleDetails(`${formId}-local-language`, "local-subtitle-language")}
               {pick.error === null ? null : (
                 <div className={FORM_FULL}>
                   <ErrorView error={appErrorOf(pick.error)} />
@@ -471,17 +564,24 @@ export function NewPage() {
               {t("shell.newPage.subtitleFile")}
             </span>
             <FilePicker testId="subtitle-file" accept={SUBTITLE_ACCEPT} fileName={subtitle?.name} onFile={onSubtitleFile} labelledBy={`${formId}-subtitle-file`} />
-            <label htmlFor={`${formId}-subtitle-language`} className={FORM_LABEL}>
-              {t("shell.newPage.subtitleLanguage")}
-            </label>
-            <select id={`${formId}-subtitle-language`} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
-              <option value="">{t("shell.newPage.chooseLanguage")}</option>
-              {Object.keys(languageNames).map((tag) => (
-                <option key={tag} value={tag}>
-                  {languageLabel(tag)}
-                </option>
-              ))}
-            </select>
+            <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
+            {subtitle === undefined ? (
+              <>
+                <label htmlFor={`${formId}-subtitle-language`} className={FORM_LABEL}>
+                  {t("shell.newPage.subtitleLanguage")}
+                </label>
+                <select id={`${formId}-subtitle-language`} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
+                  <option value="">{t("shell.newPage.chooseLanguage")}</option>
+                  {Object.keys(languageNames).map((tag) => (
+                    <option key={tag} value={tag}>
+                      {languageLabel(tag)}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              subtitleDetails(`${formId}-subtitle-language`, "subtitle-language")
+            )}
           </Tabs.Content>
         </Tabs.Root>
 
@@ -584,10 +684,13 @@ export function NewPage() {
                   <input value={newCollectionName} onChange={(event) => setNewCollectionName(event.target.value)} className={FIELD} />
                 </label>
               ) : null}
-              <label className="flex items-center gap-2 text-sm sm:col-span-2">
-                <input type="checkbox" checked={autoProofread} onChange={(event) => setAutoProofread(event.target.checked)} />
-                {t("shell.newPage.autoProofread")}
-              </label>
+              {/* With a subtitle attached the checkbox sits under it instead, with why it starts off. */}
+              {hasSubtitle ? null : (
+                <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                  <input type="checkbox" checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)} />
+                  {t("shell.newPage.autoProofread")}
+                </label>
+              )}
             </div>
           ) : null}
         </section>
