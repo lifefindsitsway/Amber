@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { PARAGRAPH_GAP_MS, SPEAKER_SHORT_TURN_CHARS } from "../../src/shared/defaults.ts";
+import { PARAGRAPH_GAP_MS } from "../../src/shared/defaults.ts";
 import { readingParagraphs, type ReadingSentence } from "../../src/shared/reading.ts";
-import { isShortTurn, speakerModeFor, speakerSections, speakerShares, speakerTurns } from "../../src/shared/speaker-turns.ts";
+import { speakerModeFor, speakerSections, speakerShares, speakerTurns } from "../../src/shared/speaker-turns.ts";
 
 function sentence(startMs: number, endMs: number, text: string, speakerId?: string, extra: Partial<ReadingSentence> = {}): ReadingSentence {
   return { startMs, endMs, text, ...(speakerId === undefined ? {} : { speakerId }), ...extra };
@@ -48,31 +48,6 @@ describe("speakerSections", () => {
       [undefined, ["A"]],
       ["二", ["A"]],
     ]);
-  });
-});
-
-describe("isShortTurn", () => {
-  const turnOf = (...texts: string[]) => speakerTurns(readingParagraphs(texts.map((text, index) => sentence(index * 100, index * 100 + 50, text, "A"))))[0];
-
-  it("is one sentence of at most SPEAKER_SHORT_TURN_CHARS grapheme clusters without marks", () => {
-    expect(isShortTurn(turnOf("好的。") as never, { hasMarks: false })).toBe(true);
-    expect(isShortTurn(turnOf("好".repeat(SPEAKER_SHORT_TURN_CHARS)) as never, { hasMarks: false })).toBe(true);
-    expect(isShortTurn(turnOf("好".repeat(SPEAKER_SHORT_TURN_CHARS + 1)) as never, { hasMarks: false })).toBe(false);
-  });
-
-  it("counts clusters, not UTF-16 units", () => {
-    const family = "👨‍👩‍👧‍👦";
-    expect(family.repeat(SPEAKER_SHORT_TURN_CHARS).length).toBeGreaterThan(SPEAKER_SHORT_TURN_CHARS);
-    expect(isShortTurn(turnOf(family.repeat(SPEAKER_SHORT_TURN_CHARS)) as never, { hasMarks: false })).toBe(true);
-    expect(isShortTurn(turnOf(family.repeat(SPEAKER_SHORT_TURN_CHARS + 1)) as never, { hasMarks: false })).toBe(false);
-  });
-
-  it("is never short with a mark, or with more than one sentence or paragraph", () => {
-    expect(isShortTurn(turnOf("好的。") as never, { hasMarks: true })).toBe(false);
-    expect(isShortTurn(turnOf("好。", "是。") as never, { hasMarks: false })).toBe(false);
-    const twoParagraphs = speakerTurns(readingParagraphs([sentence(0, 100, "好。", "A"), sentence(100 + PARAGRAPH_GAP_MS + 1, 200 + PARAGRAPH_GAP_MS + 1, "是。", "A")]))[0];
-    expect(twoParagraphs?.paragraphs).toHaveLength(2);
-    expect(isShortTurn(twoParagraphs as never, { hasMarks: false })).toBe(false);
   });
 });
 

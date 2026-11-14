@@ -1,6 +1,4 @@
-import { SPEAKER_SHORT_TURN_CHARS } from "./defaults.ts";
 import { readingParagraphs, readingSections, type ReadingChapter, type ReadingParagraph, type ReadingSentence } from "./reading.ts";
-import { graphemesOf } from "./speakers.ts";
 
 /**
  * Consecutive reading paragraphs of one speaker. `speakerId` is absent for the sentences
@@ -49,20 +47,6 @@ export function speakerSections<T extends ReadingSentence>(sentences: readonly T
     ...(section.chapter === undefined ? {} : { chapter: section.chapter }),
     turns: speakerTurns(readingParagraphs(section.sentences)),
   }));
-}
-
-/**
- * Whether a turn is shown compactly: a single sentence of at most `SPEAKER_SHORT_TURN_CHARS`
- * grapheme clusters that carries no note and no search hit (`hasMarks`, which only the
- * caller knows). Length counts what a reader counts, not UTF-16 units.
- */
-export function isShortTurn<T extends ReadingSentence>(turn: SpeakerTurn<T>, options: { hasMarks: boolean }): boolean {
-  if (options.hasMarks || turn.paragraphs.length !== 1) return false;
-  const segments = (turn.paragraphs[0] as ReadingParagraph<T>).segments;
-  if (segments.length !== 1) return false;
-  const text = (segments[0] as T).text.trim();
-  // A cluster is at least one UTF-16 unit, so a text within the limit in units is within it in clusters.
-  return text.length <= SPEAKER_SHORT_TURN_CHARS || graphemesOf(text).length <= SPEAKER_SHORT_TURN_CHARS;
 }
 
 /**

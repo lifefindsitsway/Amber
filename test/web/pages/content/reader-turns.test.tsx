@@ -4,6 +4,8 @@ import { READER_FONT_SIZE_DEFAULT, READER_FONT_SIZE_MAX, READER_FONT_SIZE_MIN } 
 import { MARKER_FADE_MS } from "../../../../src/web/pages/content/reader-sticky.ts";
 import { READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS } from "../../../../src/web/pages/content/reader-sentences.tsx";
 import { READER_GUTTER } from "../../../../src/web/pages/content/reader-turns.tsx";
+import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
+import { formatDuration } from "../../../../src/web/format.ts";
 import { segment } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
 import { CHEN, mountReader, SPEAKER_SEGMENTS, speakerRoutes, TYPOGRAPHY_KEY, UNNAMED } from "../../../fixtures/web/reader-speakers.tsx";
@@ -25,10 +27,49 @@ async function openReader(routes: Parameters<typeof mockApi>[0] = speakerRoutes(
 
 const headers = (reader: HTMLElement): string[] => within(reader).queryAllByTestId("turn-header").map((header) => header.getAttribute("aria-label") ?? "");
 
+/** Each sentence paragraph of the reader: the first sentence's id and the paragraph's first child node. */
+const paragraphs = (reader: HTMLElement) =>
+  [...reader.querySelectorAll<HTMLElement>("p[data-reader-text]")].map((paragraph) => ({
+    id: paragraph.querySelector("[data-segment-id]")?.getAttribute("data-segment-id"),
+    lead: paragraph.firstChild as HTMLElement,
+    times: paragraph.querySelectorAll("[data-reading-time]").length,
+  }));
+
+/** Start of each sentence of the conversation, by id. */
+const STARTS = new Map(SPEAKER_SEGMENTS.map((item) => [item.id, item.startMs]));
+
+/**
+ * Every paragraph opens with exactly one time: a real button with the reader's look, showing the
+ * paragraph's start, that plays from its first sentence.
+ */
+function expectTimeFirst(reader: HTMLElement, select: ReturnType<typeof vi.fn>, ids: string[]): void {
+  const found = paragraphs(reader);
+  expect(found.map((paragraph) => paragraph.id)).toEqual(ids);
+  for (const { id, lead, times } of found) {
+    expect(lead.tagName).toBe("BUTTON");
+    expect(lead.getAttribute("type")).toBe("button");
+    expect(lead.hasAttribute("data-reading-time")).toBe(true);
+    for (const name of ["font-mono", "text-xs", "leading-none", "text-accent", "hover:underline"]) expect(lead.className.split(" ")).toContain(name);
+    expect(lead.className).toContain("mr-2");
+    // A 24px hit area from a positioned pseudo-element, leaving the line box alone.
+    expect(lead.className).toContain("relative");
+    expect(lead.className).toContain("before:absolute");
+    expect(lead.className).toContain("before:h-6");
+    expect(times).toBe(1);
+    const startMs = STARTS.get(id ?? "") as number;
+    expect(lead.textContent).toBe(formatDuration(startMs));
+    // Its visible time is its accessible name.
+    expect(lead.getAttribute("aria-label")).toBeNull();
+    select.mockClear();
+    fireEvent.click(lead);
+    expect(select).toHaveBeenCalledWith({ revisionId: "r1", segmentId: id }, startMs);
+  }
+}
+
 describe("speaker mode decision", () => {
   it("reads by turns when two speakers or a named one are referenced", async () => {
     const { reader } = await openReader();
-    expect(headers(reader)).toEqual(["陈明，0:00", "陈明，0:10", "未分配，0:30", "陈明，1:15"]);
+    expect(headers(reader)).toEqual(["陈明", "发言人 2", "陈明", "未分配", "陈明"]);
   });
 
   it("reads like a plain text when the only speaker has no name", async () => {
@@ -60,12 +101,17 @@ describe("speaker mode decision", () => {
 });
 
 describe("turn layout", () => {
-  it("names each turn once with its speaker and start time, the paragraphs of a turn sharing one line", async () => {
+  it("names each turn once with its avatar and speaker only, the paragraphs of a turn sharing one line", async () => {
     const { reader } = await openReader();
-    const first = within(reader).getAllByTestId("turn-header")[1] as HTMLElement;
+    const first = within(reader).getAllByTestId("turn-header")[2] as HTMLElement;
     expect(first.getAttribute("role")).toBe("group");
-    expect(first.textContent).toBe("陈陈明0:10");
+    expect(first.hasAttribute("data-turn-header")).toBe(true);
+    expect(first.textContent).toBe("陈陈明");
     expect(within(first).getByTitle("陈明").textContent).toBe("陈明");
+    // The header is a line of its own, ahead of the text.
+    const row = first.closest("[data-turn-key]") as HTMLElement;
+    expect(row.firstElementChild).toBe(first);
+    expect(first.querySelector("[data-reader-text]")).toBeNull();
     // The turn's second paragraph has no header of its own but sits under the same turn key and line.
     const second = reader.querySelector("[data-segment-id='g5']")?.closest("[data-turn-key]") as HTMLElement;
     expect(second.getAttribute("data-turn-key")).toBe("g4");
@@ -77,15 +123,39 @@ describe("turn layout", () => {
     expect((lines[0] as HTMLElement).style.backgroundColor).toContain("--speaker-0-fg");
   });
 
+  it("keeps the time out of the header: no time button, no time mark, and marked as said by nobody", async () => {
+    const { reader } = await openReader();
+    const all = within(reader).getAllByTestId("turn-header");
+    expect(all).toHaveLength(5);
+    for (const header of all) {
+      expect(header.hasAttribute("data-reader-meta")).toBe(true);
+      expect(header.hasAttribute("data-reading-time")).toBe(false);
+      expect(header.querySelector("[data-reading-time]")).toBeNull();
+      expect(header.textContent).not.toMatch(/\d:\d\d/);
+      expect(within(header).queryByRole("button", { name: /\d:\d\d/ })).toBeNull();
+    }
+  });
+
+  it("opens every paragraph with its time, the first of a turn included, and plays from its first sentence", async () => {
+    const select = vi.fn();
+    const { reader } = await openReader(speakerRoutes(), { select });
+    expectTimeFirst(reader, select, ["g1", "g3", "g4", "g5", "g6", "g7"]);
+    // The time sits at the start of the text column, after the turn line, in the wide layout.
+    const g4 = reader.querySelector("[data-segment-id='g4']")?.closest("p") as HTMLElement;
+    expect(g4.parentElement?.firstElementChild?.getAttribute("aria-hidden")).toBe("true");
+    expect(g4.closest("[data-turn-layout]")?.getAttribute("data-turn-layout")).toBe("wide");
+  });
+
   it("does not break the document outline: no turn header is a heading", async () => {
     const { reader } = await openReader();
-    expect(within(reader).getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["0:00开场", "1:00正文"]);
+    expect(within(reader).getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["开场", "正文"]);
   });
 
   it("shows sentences nobody owns as 未分配 with the neutral avatar, which opens nothing", async () => {
     const { reader } = await openReader();
-    const header = within(reader).getAllByTestId("turn-header")[2] as HTMLElement;
-    expect(header.textContent).toBe("未分配0:30");
+    const header = within(reader).getAllByTestId("turn-header")[3] as HTMLElement;
+    expect(header.textContent).toBe("未分配");
+    expect(header.getAttribute("aria-label")).toBe("未分配");
     expect(header.querySelector("[data-kind='unassigned']")).not.toBeNull();
     expect(within(header).queryByTestId("turn-speaker")?.tagName).toBe("SPAN");
   });
@@ -93,14 +163,7 @@ describe("turn layout", () => {
   it("shows the speaker again after a chapter heading, even when the same one goes on", async () => {
     const { reader } = await openReader();
     const rows = [...reader.querySelectorAll("[data-row-index]")].map((row) => (row.querySelector("[data-testid='transcript-chapter']") !== null ? "chapter" : row.querySelector("[data-testid='turn-header']") !== null ? "header" : "body"));
-    expect(rows).toEqual(["chapter", "header", "body", "header", "body", "header", "chapter", "header"]);
-  });
-
-  it("seeks from the turn's time like a paragraph's time does", async () => {
-    const select = vi.fn();
-    const { reader } = await openReader(speakerRoutes(), { select });
-    fireEvent.click(within(within(reader).getAllByTestId("turn-header")[1] as HTMLElement).getByRole("button", { name: "0:10" }));
-    expect(select).toHaveBeenCalledWith({ revisionId: "r1", segmentId: "g4" }, 10_000);
+    expect(rows).toEqual(["chapter", "header", "header", "header", "body", "header", "chapter", "header"]);
   });
 
   it("opens the identity card from the avatar or name without seeking, with the speaker's share, and offers editing", async () => {
@@ -108,6 +171,9 @@ describe("turn layout", () => {
     const { reader } = await openReader(speakerRoutes(), { select });
     const trigger = within(within(reader).getAllByTestId("turn-header")[0] as HTMLElement).getByTestId("turn-speaker");
     expect(trigger.tagName).toBe("BUTTON");
+    // One control holds both the avatar and the name.
+    expect(trigger.querySelector("[data-testid='speaker-avatar']")).not.toBeNull();
+    expect(within(trigger).getByTitle("陈明")).toBeTruthy();
     fireEvent.click(trigger);
     const card = await screen.findByTestId("speaker-card");
     expect(within(card).getByTestId("speaker-card-name").textContent).toBe("陈明");
@@ -128,48 +194,84 @@ describe("turn layout", () => {
     expect(await screen.findByTestId("speaker-card")).toBeTruthy();
   });
 
-  it("gives avatars an accessible name outside a header that already names them", async () => {
+  it("names a header by who speaks alone, the avatar beside the written name being decorative", async () => {
     const { reader } = await openReader();
-    const compact = reader.querySelector("[data-turn-layout='compact']") as HTMLElement;
-    expect(compact.getAttribute("role")).toBe("group");
-    expect(compact.getAttribute("aria-label")).toBe("发言人 2，0:08");
-    expect(within(compact).getByRole("img", { name: "发言人 2" })).toBeTruthy();
-    // In a header the avatar sits beside the written name and is decorative.
-    const header = within(reader).getAllByTestId("turn-header")[0] as HTMLElement;
-    expect(within(header).queryByRole("img")).toBeNull();
+    const [named, unnamed] = within(reader).getAllByTestId("turn-header") as [HTMLElement, HTMLElement];
+    expect(named.getAttribute("aria-label")).toBe("陈明");
+    expect(unnamed.getAttribute("aria-label")).toBe("发言人 2");
+    expect(unnamed.textContent).toBe("2发言人 2");
+    for (const header of [named, unnamed]) {
+      expect(within(header).queryByRole("img")).toBeNull();
+      expect(header.querySelector("[data-testid='speaker-avatar']")?.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+});
+
+describe("selecting across turns", () => {
+  /** Selects from the start of `from`'s first text to the end of `to`'s last text. */
+  function select(from: Element, to: Element): Selection {
+    const texts = (element: Element): Text[] => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      const found: Text[] = [];
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) found.push(node as Text);
+      return found;
+    };
+    const range = document.createRange();
+    range.setStart(texts(from)[0] as Text, 0);
+    const end = texts(to).at(-1) as Text;
+    range.setEnd(end, end.length);
+    const selection = window.getSelection() as Selection;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return selection;
+  }
+
+  it("takes what was said: no speaker names and no times, the chapter title kept", async () => {
+    const { reader } = await openReader();
+    const [first] = within(reader).getAllByTestId("turn-header") as [HTMLElement];
+    const g4 = reader.querySelector("[data-segment-id='g4']") as HTMLElement;
+    const across = select(first, g4);
+    expect(across.toString()).toContain("发言人 2");
+    expect(selectionForExplain(across)).toEqual({ text: "今天讲检索。先看向量库。嗯。对，重排序是第二步，要把粗排的结果再精排一遍。" });
+    const g6 = reader.querySelector("[data-segment-id='g6']") as HTMLElement;
+    const g7 = reader.querySelector("[data-segment-id='g7']") as HTMLElement;
+    expect(selectionForExplain(select(g6, g7))?.text).toBe("这一句没有人认领，所以它属于未分配的轮次。正文再看重排序，它决定了最终展示给用户的排列顺序。");
+    window.getSelection()?.removeAllRanges();
   });
 });
 
 describe("short turns", () => {
-  it("keeps the compact avatar out of the tab order and out of the text a selection takes, while the name beside it stays a stop", async () => {
-    const { reader } = await openReader();
-    const row = reader.querySelector("[data-turn-layout='compact']") as HTMLElement;
-    const [avatarCell, text] = [row.children[0] as HTMLElement, row.children[1] as HTMLElement];
-    expect(avatarCell.hasAttribute("data-reading-time")).toBe(true);
-    expect(avatarCell.querySelector("button")?.getAttribute("tabindex")).toBe("-1");
-    expect(text.querySelector("button[data-testid='turn-speaker']")?.hasAttribute("tabindex")).toBe(false);
-  });
+  /** The layout of the turn holding g3 (speaker 2's one-word answer): its row's children and the text's. */
+  const shape = (reader: HTMLElement) => {
+    const row = reader.querySelector("[data-segment-id='g3']")?.closest("[data-turn-key]") as HTMLElement;
+    return {
+      layout: row.getAttribute("data-turn-layout"),
+      children: [...row.children].map((child) => (child.getAttribute("data-testid") === "turn-header" ? "header" : child.tagName)),
+      header: within(row).getByTestId("turn-header").getAttribute("aria-label"),
+      text: (row.querySelector("p[data-reader-text]") as HTMLElement).firstElementChild?.textContent,
+    };
+  };
+  const USUAL = { layout: "wide", children: ["header", "DIV"], header: "发言人 2", text: "0:08" };
 
-  it("keeps a one-line turn compact: avatar in the gutter, the name running at the start of the text", async () => {
+  it("lays out a one-sentence short turn like any other: header line, then its time and text", async () => {
     const { reader } = await openReader();
-    const compact = reader.querySelectorAll("[data-turn-layout='compact']");
-    expect(compact).toHaveLength(1);
-    const row = compact[0] as HTMLElement;
-    expect(within(row).queryByTestId("turn-header")).toBeNull();
-    const text = row.querySelector("p") as HTMLElement;
-    expect(text.textContent).toBe("发言人 20:08嗯。");
+    expect(reader.querySelector("[data-turn-layout='compact']")).toBeNull();
+    expect([...reader.querySelectorAll("[data-turn-layout]")].map((row) => row.getAttribute("data-turn-layout"))).toEqual(["wide", "wide", "wide", "wide", "wide", "wide"]);
+    expect(shape(reader)).toEqual(USUAL);
+    expect((reader.querySelector("[data-segment-id='g3']")?.closest("p") as HTMLElement).textContent).toBe("0:08嗯。");
     // Same grid as the long turns.
-    expect(row.style.gridTemplateColumns).toBe((reader.querySelector("[data-turn-layout='wide'] > div:last-child") as HTMLElement).style.gridTemplateColumns);
+    const grids = [...reader.querySelectorAll<HTMLElement>("[data-turn-layout='wide'] > div:last-child")].map((grid) => grid.style.gridTemplateColumns);
+    expect(new Set(grids).size).toBe(1);
   });
 
-  it("gives a short turn with a search hit the full layout", async () => {
+  it("lays out a short turn with a search hit the same way", async () => {
     const { reader } = await openReader(speakerRoutes(), { route: "/contents/c1?tab=transcript&revision=r1&search=%E5%97%AF" });
     await waitFor(() => expect(reader.querySelector("mark")).not.toBeNull());
     expect(reader.querySelector("[data-turn-layout='compact']")).toBeNull();
-    expect(headers(reader)).toContain("发言人 2，0:08");
+    expect(shape(reader)).toEqual(USUAL);
   });
 
-  it("gives a short turn with a note the full layout", async () => {
+  it("lays out a short turn with a note the same way", async () => {
     const routes = {
       ...speakerRoutes(),
       "GET /api/contents/c1/notes": {
@@ -179,6 +281,7 @@ describe("short turns", () => {
     const { reader } = await openReader(routes);
     await waitFor(() => expect(reader.querySelector("[data-testid='note-run']")).not.toBeNull());
     expect(reader.querySelector("[data-turn-layout='compact']")).toBeNull();
+    expect(shape(reader)).toEqual(USUAL);
   });
 });
 
@@ -202,13 +305,18 @@ describe("narrow pane", () => {
 
   it("puts avatar and name above the text, without the gutter, below 520px", async () => {
     resizeTo(480);
-    const { reader } = await openReader();
+    const select = vi.fn();
+    const { reader } = await openReader(speakerRoutes(), { select });
     await waitFor(() => expect(reader.querySelector("[data-turn-layout='narrow']")).not.toBeNull());
-    expect(reader.querySelector("[data-turn-layout='wide'], [data-turn-layout='compact']")).toBeNull();
+    expect(reader.querySelector("[data-turn-layout]:not([data-turn-layout='narrow'])")).toBeNull();
     expect(reader.querySelector("[data-testid='turn-line']")).toBeNull();
     const row = reader.querySelector("[data-segment-id='g4']")?.closest("[data-turn-key]") as HTMLElement;
     const children = [...row.children].map((child) => child.tagName + (child.getAttribute("data-testid") === "turn-header" ? ":header" : ""));
     expect(children).toEqual(["DIV:header", "P"]);
+    const later = reader.querySelector("[data-segment-id='g5']")?.closest("[data-turn-key]") as HTMLElement;
+    expect([...later.children].map((child) => child.tagName)).toEqual(["P"]);
+    // Every paragraph still opens with its time, the first of a turn included.
+    expectTimeFirst(reader, select, ["g1", "g3", "g4", "g5", "g6", "g7"]);
     // No sticky marker without a gutter.
     expect(screen.queryByTestId("turn-marker")).toBeNull();
   });
@@ -230,7 +338,10 @@ describe("typography", () => {
     const wide = reader.querySelector("[data-turn-layout='wide']") as HTMLElement;
     expect(wide.style.lineHeight).toBe("1.8");
     // Spacing, measure and gutter are em (or derive from the em-based avatar), so they follow the font size.
-    expect(wide.style.paddingBottom).toBe("1.5em");
+    // The first turn is one paragraph: its row ends with the turn gap; a paragraph inside a turn with the paragraph gap.
+    expect(wide.style.paddingBottom).toBe("1em");
+    expect((reader.querySelector("[data-segment-id='g4']")?.closest("[data-turn-key]") as HTMLElement).style.paddingBottom).toBe("0.75em");
+    expect((reader.querySelector("[data-segment-id='g5']")?.closest("[data-turn-key]") as HTMLElement).style.paddingBottom).toBe("1em");
     expect(wide.style.getPropertyValue("--reader-avatar")).toBe("clamp(28px, 1.75em, 48px)");
     const grid = wide.lastElementChild as HTMLElement;
     expect(grid.style.gridTemplateColumns).toBe("calc(var(--reader-avatar) + 0.75em) minmax(0, 1fr)");
@@ -246,7 +357,7 @@ describe("typography", () => {
     expect(chapterColumn.className).toBe(READER_COLUMN_CLASS);
     expect(chapterColumn.hasAttribute(READER_INDENT_ATTRIBUTE)).toBe(true);
     expect(column.hasAttribute(READER_INDENT_ATTRIBUTE)).toBe(false);
-    // The timestamp and the avatar are separate boxes in the header row; the text column starts after the gutter.
+    // The header holds the avatar and the name; the text column starts after the gutter.
     const header = within(wide).getByTestId("turn-header");
     expect(header.style.minHeight).toBe("var(--reader-avatar)");
     expect(grid.firstElementChild?.getAttribute("aria-hidden")).toBe("true");
@@ -254,13 +365,14 @@ describe("typography", () => {
     expect(body.className).toContain("break-words");
     // Chapter headings and timestamps keep the interface size: they carry no inline font size.
     expect((within(reader).getAllByTestId("transcript-chapter")[0] as HTMLElement).style.fontSize).toBe("");
-    expect((within(header).getByRole("button", { name: "0:00" }) as HTMLElement).style.fontSize).toBe("");
+    expect((within(wide).getByRole("button", { name: "0:00" }) as HTMLElement).style.fontSize).toBe("");
   });
 
-  it("keeps the plain paragraph on the same scale outside speaker mode", async () => {
+  it("keeps the plain paragraph on the same scale outside speaker mode, opening with the same time", async () => {
     localStorage.setItem(TYPOGRAPHY_KEY, JSON.stringify({ version: 1, fontSize: 24, lineHeight: 1.6, showSpeakers: true }));
     const plain = SPEAKER_SEGMENTS.map(({ speakerId: _speakerId, ...rest }) => rest);
-    const { reader } = await openReader(speakerRoutes({ segments: plain }));
+    const select = vi.fn();
+    const { reader } = await openReader(speakerRoutes({ segments: plain }), { select });
     const paragraph = reader.querySelector("[data-segment-id='g1']")?.closest("p") as HTMLElement;
     expect(paragraph.style.fontSize).toBe("24px");
     expect(paragraph.style.lineHeight).toBe("1.6");
@@ -271,6 +383,8 @@ describe("typography", () => {
     expect(host.style.getPropertyValue("--reader-gutter")).toBe("0px");
     expect(host.style.getPropertyValue("--reader-font-size")).toBe("24px");
     expect(paragraph.style.paddingBottom).toBe("0.75em");
+    // Without turns the first four sentences are one paragraph.
+    expectTimeFirst(reader, select, ["g1", "g5", "g6", "g7"]);
   });
 
   it("defaults to 16px and a line height of 1.7", async () => {
@@ -377,6 +491,22 @@ describe("overlapping sentences", () => {
 });
 
 describe("sticky marker", () => {
+  /** Lets the scroll's animation frame and a fade pass, so a marker that was going to show has shown. */
+  const settleFrames = () => act(() => new Promise((resolve) => setTimeout(resolve, MARKER_FADE_MS + 50)));
+
+  /** Places each row at `top` with `height`, its header at its top and its text below the header, above a 12px trailing gap. */
+  function place(reader: HTMLElement, layout: (key: string) => { top: number; height: number }): void {
+    for (const row of reader.querySelectorAll<HTMLElement>("[data-row-key]")) {
+      const { top, height } = layout(row.getAttribute("data-row-key") ?? "");
+      row.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: top, width: 600, height });
+      const header = row.querySelector<HTMLElement>("[data-turn-header]");
+      if (header !== null) header.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: top, width: 600, height: 28 });
+      const text = row.querySelector<HTMLElement>("[data-reader-text]");
+      const textTop = header === null ? top : top + 28;
+      if (text !== null) text.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: textTop, width: 600, height: top + height - 12 - textTop });
+    }
+  }
+
   it("stands for the turn whose header scrolled out, fades with the turn, and is hidden from assistive technology", async () => {
     const { reader } = await openReader();
     const host = reader.parentElement as HTMLElement;
@@ -388,15 +518,15 @@ describe("sticky marker", () => {
     // The viewport starts at y=100; the g4/g5 turn's header (in row g4) has scrolled above it.
     reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 100, width: 600, height: 300 });
     const keys = [...reader.querySelectorAll<HTMLElement>("[data-row-key]")].map((row) => row.getAttribute("data-row-key"));
-    const rowTops = new Map(keys.map((key, index) => [key, index < keys.indexOf("g4") ? -1_000 : key === "g4" ? -40 : key === "g5" ? 60 : 900]));
-    for (const row of reader.querySelectorAll<HTMLElement>("[data-row-key]")) {
-      const key = row.getAttribute("data-row-key") ?? "";
-      const top = rowTops.get(key) ?? 900;
-      row.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: top, width: 600, height: key === "g4" ? 120 : 160 });
-      const header = row.querySelector<HTMLElement>("[data-turn-header]");
-      if (header !== null) header.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: top, width: 600, height: 40 });
-    }
-    // g4 ends at 80 (above the viewport top + clearance); g5 is the first row with room and its turn's header is in g4.
+    place(reader, (key) => {
+      const index = keys.indexOf(key);
+      if (index < keys.indexOf("g4")) return { top: -1_000, height: 100 };
+      if (key === "g4") return { top: -40, height: 120 };
+      if (key === "g5") return { top: 60, height: 160 };
+      return { top: 900, height: 100 };
+    });
+    // At 16px × 1.7 a row needs its text to reach 28 + 27.2 px below the top. g4's text ends at 68,
+    // above the top; g5's reaches 208, and its turn's header is in g4.
     act(() => void fireEvent.scroll(reader));
     await waitFor(() => expect(marker.getAttribute("data-visible")).toBe("true"));
     expect(marker.querySelector("[data-speaker-id]")?.getAttribute("data-speaker-id")).toBe("sp1");
@@ -412,12 +542,28 @@ describe("sticky marker", () => {
     const { reader } = await openReader();
     const marker = screen.getByTestId("turn-marker");
     reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 100, width: 600, height: 300 });
-    for (const row of reader.querySelectorAll<HTMLElement>("[data-row-key]")) {
-      row.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 110, width: 600, height: 100 });
-      const header = row.querySelector<HTMLElement>("[data-turn-header]");
-      if (header !== null) header.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 110, width: 600, height: 40 });
-    }
+    // The opening chapter heading has scrolled away; g1's row, header and two lines of text are in view.
+    place(reader, (key) => (key === "chapter:0" ? { top: -1_000, height: 60 } : key === "g1" ? { top: 110, height: 100 } : { top: 900, height: 100 }));
     act(() => void fireEvent.scroll(reader));
+    await settleFrames();
+    expect(marker.getAttribute("data-visible")).toBe("false");
+  });
+
+  it("is hidden when a turn's text has less than a marker and a line left below the top", async () => {
+    const { reader } = await openReader();
+    const marker = screen.getByTestId("turn-marker");
+    reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 100, width: 600, height: 300 });
+    const keys = [...reader.querySelectorAll<HTMLElement>("[data-row-key]")].map((row) => row.getAttribute("data-row-key"));
+    // g5's text ends at 150: 50px below the top, under the 55.2px needed. g6's header follows, in view.
+    place(reader, (key) => {
+      const index = keys.indexOf(key);
+      if (index < keys.indexOf("g5")) return { top: -1_000, height: 100 };
+      if (key === "g5") return { top: -40, height: 202 };
+      if (key === "g6") return { top: 162, height: 100 };
+      return { top: 900, height: 100 };
+    });
+    act(() => void fireEvent.scroll(reader));
+    await settleFrames();
     expect(marker.getAttribute("data-visible")).toBe("false");
   });
 });
@@ -425,6 +571,6 @@ describe("sticky marker", () => {
 describe("speakers in the data", () => {
   it("names a speaker the list does not know as unassigned instead of failing", async () => {
     const { reader } = await openReader(speakerRoutes({ speakers: [CHEN] }));
-    expect((reader.querySelector("[data-turn-layout='compact']") as HTMLElement).getAttribute("aria-label")).toBe("未分配，0:08");
+    expect(headers(reader)).toEqual(["陈明", "未分配", "陈明", "未分配", "陈明"]);
   });
 });

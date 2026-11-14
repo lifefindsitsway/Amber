@@ -13,12 +13,24 @@ export type SpeakerAvatarSubject = Pick<SpeakerDto, "id" | "ordinal" | "colorInd
 /** `"em"`: the reader's size, scaling with the text beside it; a number is a fixed diameter in px. */
 export type SpeakerAvatarSize = number | "em";
 
-/** `clamp(min px, em, max px)`: grows with the text beside it, within what stays legible and unobtrusive. */
-const emSize = (minPx: number, em: number, maxPx: number): string => `clamp(${[`${minPx}px`, `${em}em`, `${maxPx}px`].join(", ")})`;
+/** A diameter that grows with the text beside it, within what stays legible and unobtrusive. */
+interface EmScale {
+  minPx: number;
+  em: number;
+  maxPx: number;
+}
+/** The scale as CSS: `clamp(min px, em, max px)`. */
+const emSize = (scale: EmScale): string => `clamp(${[`${scale.minPx}px`, `${scale.em}em`, `${scale.maxPx}px`].join(", ")})`;
+/** The reader's avatar scale; the CSS size and the measured size both derive from it, so they cannot drift apart. */
+const AVATAR_EM: EmScale = { minPx: 28, em: 1.75, maxPx: 48 };
 /** The reader's avatar diameter. */
-export const AVATAR_EM_SIZE = emSize(28, 1.75, 48);
+export const AVATAR_EM_SIZE = emSize(AVATAR_EM);
+/** `AVATAR_EM_SIZE` in px where the em is `fontSizePx`, for layout decisions made in script. */
+export function avatarEmPx(fontSizePx: number): number {
+  return Math.min(AVATAR_EM.maxPx, Math.max(AVATAR_EM.minPx, AVATAR_EM.em * fontSizePx));
+}
 /** The muted avatar of follow-up rows, in the same scale as the reader's. */
-const AVATAR_EM_SIZE_MUTED = emSize(20, 1.25, 34);
+const AVATAR_EM_SIZE_MUTED = emSize({ minPx: 20, em: 1.25, maxPx: 34 });
 /** Share of the diameter the muted variant takes. */
 const MUTED_SCALE = 0.72;
 /** Strength of the hairline ring, in percent of the speaker's colour. */

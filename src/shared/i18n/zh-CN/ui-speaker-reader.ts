@@ -18,10 +18,6 @@ export const speakerReader = {
     showSpeakers: "显示发言人",
     reset: "恢复默认",
   },
-  turn: {
-    /** Accessible name of a turn header: who speaks and when it starts. */
-    label: "{{name}}，{{time}}",
-  },
   copy: {
     /** The toolbar's copy menu, offered when the text has speakers. */
     menu: "复制",

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,9 +14,8 @@ import { useApi } from "../../api/context.tsx";
 import { queryKeys, useProviders, useSettings } from "../../api/queries.ts";
 import { loadBundledFont } from "../../bundled-fonts.ts";
 import { ErrorView } from "../../components/error-view.tsx";
-import { formatDuration } from "../../format.ts";
 import { usePlayerCapabilities, usePlayerTime } from "../../player/player-controller.tsx";
-import { searchKeys, termRanges } from "../../search/search.ts";
+import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
 import { elementOf } from "../../ui/dom-selection.ts";
@@ -42,8 +41,10 @@ import { DraftEditor } from "./draft-editor.tsx";
 import { revisionLabel } from "./labels.ts";
 import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
-import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
-import { useStickyTurn } from "./reader-sticky.ts";
+import { ChapterHeading } from "./reader-chapter.tsx";
+import { ReaderJumpButtons } from "./reader-jump.tsx";
+import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS, ReaderTime, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
+import { stickyMetrics, useStickyTurn } from "./reader-sticky.ts";
 import { READER_GUTTER, StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
 import { ReaderTypographyPopover } from "./reader-typography-popover.tsx";
 import { READER_TYPOGRAPHY_DEFAULTS, readerSideMargin, useReaderTypography, type ReaderTypography, type ReaderTypographyChange } from "./reader-typography.ts";
@@ -336,14 +337,7 @@ function TranscriptReader(props: {
   const speakerById = useMemo(() => new Map((speakerList ?? []).map((speaker) => [speaker.id, speaker])), [speakerList]);
   const shares = useMemo(() => new Map(speakerShares(showTurns ? list : []).map((share) => [share.speakerId, share])), [showTurns, list]);
   const sections = useMemo(() => readerSections(list, currentChapters?.chapters ?? []), [list, currentChapters]);
-  const rowOptions = useMemo(
-    () => ({
-      turns: showTurns,
-      // A sentence with a note or a search hit needs room, which a compact turn does not give it.
-      hasMarks: (segment: TranscriptSegmentDto) => (placed.get(segment.id)?.length ?? 0) > 0 || (props.search !== "" && termRanges(segment.text, props.search).length > 0),
-    }),
-    [showTurns, placed, props.search],
-  );
+  const rowOptions = useMemo(() => ({ turns: showTurns }), [showTurns]);
   const rows = useMemo(() => viewRows(sections, rowOptions), [sections, rowOptions]);
   // 「只看」: the rows shown are the selected speakers' sentences with gap bars between them;
   // copying still takes the whole text.
@@ -380,7 +374,7 @@ function TranscriptReader(props: {
   const { primary: current, others: overlapping } = segmentsAt(list, tracking ? time : undefined, pinnedId);
   const overlapKey = overlapping.map((segment) => segment.id).join(",");
   const overlapIds = useMemo(() => new Set(overlapKey === "" ? [] : overlapKey.split(",")), [overlapKey]);
-  const turnMarker = useStickyTurn(host, showTurns && !narrow, shownRows);
+  const turnMarker = useStickyTurn(host, showTurns && !narrow, shownRows, stickyMetrics(typography));
 
   // The pin ends when playback has been inside the sentence and then left it.
   useEffect(() => {
@@ -480,11 +474,15 @@ function TranscriptReader(props: {
     setPinnedId(segment.id);
     page.select({ revisionId: revision.id, segmentId: segment.id }, segment.startMs);
   };
-  // A heading seeks to the first sentence under it, so the selection lands on a real sentence.
-  const onSeekHeading = (index: number): void => {
-    const next = shownRows[index + 1];
-    const first = next?.kind === "paragraph" ? next.paragraph.segments[0] : undefined;
-    if (first !== undefined) onSentence(first);
+  // A heading plays from the first sentence shown under it, before the next heading, so the selection
+  // lands on a real sentence. With none shown (a filter hid them all) it has nothing to play.
+  const headingSeek = (index: number): { ms: number; onSeek: () => void } | undefined => {
+    for (const row of shownRows.slice(index + 1)) {
+      if (row.kind === "chapter") return undefined;
+      const first = row.kind === "paragraph" ? row.paragraph.segments[0] : undefined;
+      if (first !== undefined) return { ms: first.startMs, onSeek: () => onSentence(first) };
+    }
+    return undefined;
   };
   const menuTarget = useSentenceMenu<HTMLDivElement>((segmentId) => segments.data?.find((segment) => segment.id === segmentId), {
     explainSentence: false,
@@ -508,7 +506,10 @@ function TranscriptReader(props: {
           }}
         />
       );
-    if (row.kind === "chapter") return <ChapterHeading startMs={row.startMs} title={row.title} onSeek={() => onSeekHeading(index)} />;
+    if (row.kind === "chapter") {
+      const seek = headingSeek(index);
+      return <ChapterHeading title={row.title} first={index === 0} {...(seek === undefined ? {} : { seek })} />;
+    }
     const sentences: SentenceViewProps = {
       selectedId: located.segmentId,
       currentId: current?.id,
@@ -702,47 +703,10 @@ function TranscriptReader(props: {
             )}
           />
           {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
-          {shownRows.length > 0 ? (
-            <div className="absolute right-6 bottom-4 flex flex-col gap-2">
-              <ReaderJump label={t("contentView.transcript.toTop")} onClick={() => reader.current?.scrollToTop()} testId="reader-to-top">
-                <ChevronsUp size={16} />
-              </ReaderJump>
-              <ReaderJump label={t("contentView.transcript.toBottom")} onClick={() => reader.current?.scrollToBottom()} testId="reader-to-bottom">
-                <ChevronsDown size={16} />
-              </ReaderJump>
-            </div>
-          ) : null}
+          {shownRows.length > 0 ? <ReaderJumpButtons onTop={() => reader.current?.scrollToTop()} onBottom={() => reader.current?.scrollToBottom()} /> : null}
         </div>
       )}
     </div>
-  );
-}
-
-/** A round button floating over the reader's corner; translucent so it hides little text. */
-function ReaderJump(props: { label: string; onClick: () => void; testId: string; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      aria-label={props.label}
-      title={props.label}
-      className="flex h-7 w-7 items-center justify-center rounded-full border border-line bg-surface/90 text-muted shadow hover:bg-sunken hover:text-ink"
-      onClick={props.onClick}
-      data-testid={props.testId}
-    >
-      {props.children}
-    </button>
-  );
-}
-
-/** A chapter start inside the reading view: a boundary above paragraphs, named and seekable. */
-function ChapterHeading(props: { startMs: number; title: string; onSeek: () => void }) {
-  return (
-    <h3 className="flex items-baseline gap-2 pt-4 pb-1 text-sm font-semibold" data-testid="transcript-chapter">
-      <button type="button" className="font-mono text-xs font-normal text-accent hover:underline" data-reading-time onClick={props.onSeek}>
-        {formatDuration(props.startMs)}
-      </button>
-      <span>{props.title}</span>
-    </h3>
   );
 }
 
@@ -754,9 +718,7 @@ function ParagraphView(props: SentenceViewProps & { paragraph: Paragraph; typogr
       {...{ [READER_TEXT_ATTRIBUTE]: "" }}
       style={{ ...readerBodyStyle(props.typography), paddingBottom: `${PARAGRAPH_GAP_EM}em` }}
     >
-      <button type="button" className="mr-2 font-mono text-xs text-accent hover:underline" data-reading-time onClick={props.onSeekParagraph}>
-        {formatDuration(props.paragraph.startMs)}
-      </button>
+      <ReaderTime startMs={props.paragraph.startMs} onSeek={props.onSeekParagraph} />
       <SentenceRuns {...props} segments={props.paragraph.segments} />
     </p>
   );

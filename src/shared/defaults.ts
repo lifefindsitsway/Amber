@@ -327,8 +327,6 @@ export const SPEAKER_ALIGN_MIN_SHARE = 0.7;
 export const SPEAKER_ALIGN_MIN_COVERAGE = 0.6;
 /** Shortest half a sentence split between two speakers may leave. */
 export const SPEAKER_SPLIT_MIN_MS = 300;
-/** Longest single-sentence turn, in characters, the reading view shows compactly. */
-export const SPEAKER_SHORT_TURN_CHARS = 12;
 /** Fewest grapheme clusters of a question's text that may be taken for a speaker's name. */
 export const SPEAKER_MENTION_MIN_GRAPHEMES = 2;
 /** Clips per speaker the review panel offers for listening. */
@@ -353,8 +351,8 @@ export const READER_MARGIN_MIN = 16;
 export const READER_MARGIN_MAX = 200;
 /** Step of the reading view's side margin control, in px. */
 export const READER_MARGIN_STEP = 4;
-/** Side margin the reading view starts with, in px: just clear of the floating jump buttons. */
-export const READER_MARGIN_DEFAULT = 56;
+/** Side margin the reading view starts with, in px: from here up the floating jump buttons stay clear of the text. */
+export const READER_MARGIN_DEFAULT = 44;
 /** Longest name of a reading font the user types in, in characters. */
 export const READER_FONT_NAME_MAX_CHARS = 64;
 

@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { READER_MARGIN_DEFAULT, READER_MARGIN_MAX, READER_MARGIN_MIN } from "../../src/shared/defaults.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, readerTypographyKey } from "../../src/shared/reader-typography.ts";
-import { installMockBackend } from "./mock-backend.ts";
-import { SPEAKER_STUDENT, SPEAKER_TEACHER, SPEAKERS_CONTENT, speakerSentence, speakersRequests } from "./mock-speakers.ts";
+import { installMockBackend, segmentId } from "./mock-backend.ts";
+import { SPEAKER_STUDENT, SPEAKER_TEACHER, SPEAKERS_CONTENT, SPEAKERS_REVISION, speakerSentence, speakersRequests } from "./mock-speakers.ts";
 
 /** The width the content page remembers for its output column, set before the page loads. */
 const OUTPUTS_WIDTH_KEY = "amber.content.outputsWidth";
@@ -12,6 +12,23 @@ const SNAP_PX = 1;
 /** What the text keeps when the pane is too narrow for the margin, and the least margin then, as the style sheet sets them (1rem = 16px). */
 const TEXT_FLOOR_PX = 320;
 const MARGIN_FLOOR_PX = 8;
+
+/*
+ * Playwright starts headless Chromium with its scrollbars hidden, which takes them out of layout
+ * as well. These specs measure against the scrollbar gutters, so the scrollbars are kept: each
+ * gutter then takes the width of a classic scrollbar, as on a desktop with scrollbars always
+ * shown. A zero-width gutter is simulated per test where it matters.
+ */
+test.use({ launchOptions: { ignoreDefaultArgs: ["--hide-scrollbars"] } });
+
+/** The least width a classic scrollbar takes in this browser, to tell a real gutter from none. */
+const CLASSIC_GUTTER_MIN_PX = 10;
+/** The jump buttons' box: 28px wide, 8px inside the gutter's inner edge, 16px above the reader's bottom. */
+const JUMP_INSET_PX = 8;
+const JUMP_SIZE_PX = 28;
+const JUMP_BOTTOM_PX = 16;
+/** The side margin a reader starts with when none is stored. */
+const DEFAULT_MARGIN_PX = 44;
 
 /** Turns that alternate every sentence, so each sentence is a row of its own. */
 const alternating = (count: number): string[] => Array.from({ length: count }, (_, index) => (index % 2 === 0 ? SPEAKER_TEACHER : SPEAKER_STUDENT));
@@ -28,8 +45,15 @@ interface Geometry {
   rows: Array<{ chapter: boolean; left: number; right: number }>;
   /** Each visible sentence paragraph's edges from the inner pane's edges, and its width. */
   texts: Array<{ left: number; right: number; width: number }>;
-  /** The floating jump buttons' box. */
-  jump?: { left: number; right: number; top: number; bottom: number };
+  /** Width of each scrollbar gutter. */
+  gutter: number;
+  /** The bottom edge of the box the reader is placed in. */
+  hostBottom: number;
+  /** The floating jump buttons' box (their direct parent), and whether both buttons share it. */
+  jump?: { left: number; right: number; top: number; bottom: number; shared: boolean };
+  /** The visible paragraphs' right edges, and the boxes of the lines of their text, in viewport px. */
+  paragraphRights: number[];
+  lineBoxes: Array<{ left: number; right: number; top: number; bottom: number }>;
   /** Whether anything is wider than the pane (a horizontal scroll). */
   overflowX: boolean;
 }
@@ -49,18 +73,30 @@ async function geometry(page: Page): Promise<Geometry> {
       // A chapter heading is indented to the text's edge, so its block starts one speaker gutter in.
       return [{ chapter: column.hasAttribute("data-reader-indent"), left: block.left - inner.left, right: inner.right - block.right }];
     });
-    const texts = [...scroller.querySelectorAll<HTMLElement>("p[data-reader-text]")]
+    const paragraphs = [...scroller.querySelectorAll<HTMLElement>("p[data-reader-text]")].filter((element) => visible(element.getBoundingClientRect()));
+    const texts = paragraphs
       .map((element) => element.getBoundingClientRect())
-      .filter(visible)
       .map((rect) => ({ left: rect.left - inner.left, right: inner.right - rect.right, width: rect.width }));
-    const jump = document.querySelector("[data-testid='reader-to-top']")?.parentElement?.getBoundingClientRect();
+    // The lines the text is drawn on, not the paragraph's box: what a floating button could cover.
+    const lineBoxes = paragraphs.flatMap((paragraph) => {
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      return [...range.getClientRects()].filter((rect) => rect.width > 0 && visible(rect)).map((rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }));
+    });
+    const top = document.querySelector("[data-testid='reader-to-top']");
+    const bottom = document.querySelector("[data-testid='reader-to-bottom']");
+    const jump = top?.parentElement?.getBoundingClientRect();
     return {
       pane: { left: box.left, right: box.right, width: box.width },
       inner,
       scrollbar: scroller.scrollHeight > scroller.clientHeight,
       rows,
       texts,
-      ...(jump === undefined ? {} : { jump: { left: jump.left, right: jump.right, top: jump.top, bottom: jump.bottom } }),
+      gutter,
+      hostBottom: scroller.parentElement?.getBoundingClientRect().bottom ?? Number.NaN,
+      ...(jump === undefined ? {} : { jump: { left: jump.left, right: jump.right, top: jump.top, bottom: jump.bottom, shared: bottom?.parentElement === top?.parentElement } }),
+      paragraphRights: paragraphs.map((paragraph) => paragraph.getBoundingClientRect().right),
+      lineBoxes,
       overflowX: scroller.scrollWidth > scroller.clientWidth,
     };
   });
@@ -88,7 +124,7 @@ async function open(page: Page, options: { fontSize: number; sideMargin?: number
     [readerTypographyKey("local"), JSON.stringify(typography), OUTPUTS_WIDTH_KEY, String(options.outputsWidth)] as const,
   );
   await page.reload();
-  await expect(page.getByText(speakerSentence(0), { exact: true })).toBeVisible();
+  await expect(page.locator("[data-testid='transcript-reader'] [data-segment-id]").first()).toBeVisible();
 }
 
 /** The output column width that gives the reading pane `pane` px, found from one measurement. */
@@ -119,10 +155,29 @@ function marginProblems(label: string, g: Geometry, margin: number, gutterPx: nu
 /** The speaker gutter in px at a font size, read off the page: where the text starts beyond the row's block. */
 async function gutterOf(page: Page): Promise<number> {
   return page.evaluate(() => {
-    const row = document.querySelector<HTMLElement>("[data-turn-layout='wide'] .grid");
+    const row = document.querySelector<HTMLElement>("[data-turn-layout='wide']");
     const text = row?.querySelector("p[data-reader-text]");
     return row === null || row === undefined || text === null || text === undefined ? 0 : text.getBoundingClientRect().left - row.getBoundingClientRect().left;
   });
+}
+
+/** Every way the floating jump buttons cover text or miss their place: 8px inside the gutter, 16px above the bottom, over no line of text. */
+function jumpProblems(label: string, g: Geometry, options: { clearOfText: boolean }): string[] {
+  const jump = g.jump;
+  if (jump === undefined) return [`${label}: no jump buttons`];
+  const problems: string[] = [];
+  if (!jump.shared) problems.push(`${label}: the jump buttons do not share one box`);
+  if (Math.abs(g.inner.right - jump.right - JUMP_INSET_PX) > SNAP_PX) problems.push(`${label}: jump box ends ${(g.inner.right - jump.right).toFixed(1)}px inside the gutter, want ${JUMP_INSET_PX}`);
+  if (Math.abs(jump.right - jump.left - JUMP_SIZE_PX) > SNAP_PX) problems.push(`${label}: jump box is ${(jump.right - jump.left).toFixed(1)}px wide`);
+  // Never over the scrollbar: the box stays left of the gutter.
+  if (jump.right > g.inner.right + SNAP_PX / 2) problems.push(`${label}: jump box reaches into the scrollbar gutter`);
+  if (Math.abs(g.hostBottom - jump.bottom - JUMP_BOTTOM_PX) > SNAP_PX) problems.push(`${label}: jump box ${(g.hostBottom - jump.bottom).toFixed(1)}px above the bottom, want ${JUMP_BOTTOM_PX}`);
+  if (!options.clearOfText) return problems;
+  if (g.lineBoxes.length === 0) problems.push(`${label}: no text measured`);
+  for (const right of g.paragraphRights) if (right > jump.left + SNAP_PX / 2) problems.push(`${label}: a paragraph ends at ${right.toFixed(1)}, under the jump box from ${jump.left.toFixed(1)}`);
+  const covered = g.lineBoxes.filter((line) => line.left < jump.right && jump.left < line.right && line.top < jump.bottom && jump.top < line.bottom);
+  if (covered.length > 0) problems.push(`${label}: ${covered.length} lines of text run under the jump buttons`);
+  return problems;
 }
 
 const SIZES = [12, 15, 16, 18, 20, 24, 32] as const;
@@ -176,8 +231,8 @@ test("reader column: wider panes widen the text and keep the margin; narrow ones
       problems.push(...marginProblems(label, g, want, wide ? await gutterOf(page) : 0));
       // Below the margin the text block keeps the floor between the gutters.
       if (g.inner.width - 2 * want < Math.min(TEXT_FLOOR_PX, g.inner.width - 2 * MARGIN_FLOOR_PX) - SNAP_PX) problems.push(`${label}: text block ${g.inner.width - 2 * want}`);
-      // At the default margin or more the text stays clear of the floating jump buttons.
-      if (want >= READER_MARGIN_DEFAULT && g.jump !== undefined && g.texts.some((text) => g.inner.right - text.right > g.jump!.left + SNAP_PX)) problems.push(`${label}: text runs under the jump buttons`);
+      // At the default margin or more the text stays clear of the floating jump buttons; below it they may float over line ends.
+      problems.push(...jumpProblems(label, g, { clearOfText: want >= DEFAULT_MARGIN_PX }));
       const first = g.rows.find((row) => !row.chapter);
       if (first !== undefined) lefts.set(pane, first.left);
     }
@@ -191,6 +246,68 @@ test("reader column: wider panes widen the text and keep the margin; narrow ones
     }
   }
   expect(problems).toEqual([]);
+});
+
+/** Sentences that fill their lines to the right margin, so text reaches the jump buttons' corner. */
+const fullLines = (count: number): Record<number, string> =>
+  Object.fromEntries(Array.from({ length: count }, (_, index) => [index, `${speakerSentence(index)}${"这句话很长，好让每一行都排到右边的边距为止，".repeat(8)}`]));
+
+for (const scrollbar of ["classic", "none"] as const) {
+  test(`reader jump buttons: 8px inside the gutter, 16px above the bottom and clear of the text from the default margin on, ${scrollbar === "classic" ? "beside a classic scrollbar" : "with a zero-width gutter"}`, async ({ page }) => {
+    test.setTimeout(240_000);
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await installMockBackend(page);
+    const requests = speakersRequests(page);
+    requests.sequence = alternating(60);
+    requests.texts = fullLines(60);
+    await page.goto(READER);
+    await expect(page.locator("[data-testid='transcript-reader'] [data-segment-id]").first()).toBeVisible();
+    const problems: string[] = [];
+    for (const pane of [1300, 600]) {
+      const outputs = await outputsFor(page, pane);
+      for (const size of [12, 16, 32]) {
+        for (const margin of [DEFAULT_MARGIN_PX, READER_MARGIN_MAX]) {
+          await open(page, { fontSize: size, sideMargin: margin, outputsWidth: outputs });
+          // A geometry simulation of overlay scrollbars (a platform that reserves no gutter): the
+          // scroller and its still copies lose their gutters, everything else stays as it is.
+          if (scrollbar === "none") await page.addStyleTag({ content: ".reader-scroller { scrollbar-width: none; }" });
+          // Text at the bottom of the pane, behind the buttons' corner.
+          await page.getByTestId("transcript-reader").evaluate((element) => {
+            element.scrollTop = element.scrollHeight / 3;
+          });
+          await page.waitForTimeout(150);
+          const g = await geometry(page);
+          const label = `${scrollbar} ${pane}px ${size}px margin ${margin}`;
+          if (scrollbar === "classic" ? g.gutter < CLASSIC_GUTTER_MIN_PX : g.gutter > 0) problems.push(`${label}: gutter ${g.gutter}`);
+          const want = expectedMargin(margin, g.inner.width);
+          if (Math.abs((g.rows.find((row) => !row.chapter)?.right ?? Number.NaN) - want) > SNAP_PX) problems.push(`${label}: margin is not ${want}`);
+          problems.push(...jumpProblems(label, g, { clearOfText: want >= DEFAULT_MARGIN_PX }));
+        }
+      }
+    }
+    expect(problems).toEqual([]);
+  });
+}
+
+test("reader column: with no margin stored the margin is 44, 恢复默认 brings 44 back, and a stored 56 is kept", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await installMockBackend(page);
+  await page.goto(READER);
+  await expect(page.getByText(speakerSentence(0), { exact: true })).toBeVisible();
+  const outputs = await outputsFor(page, 936);
+  const margin = async (): Promise<number> => (await geometry(page)).rows.find((row) => !row.chapter)?.right ?? Number.NaN;
+  await open(page, { fontSize: 16, outputsWidth: outputs });
+  expect(Math.abs((await margin()) - DEFAULT_MARGIN_PX)).toBeLessThanOrEqual(SNAP_PX);
+  await open(page, { fontSize: 16, sideMargin: 56, outputsWidth: outputs });
+  expect(Math.abs((await margin()) - 56)).toBeLessThanOrEqual(SNAP_PX);
+  await page.reload();
+  await expect(page.getByText(speakerSentence(0), { exact: true })).toBeVisible();
+  expect(Math.abs((await margin()) - 56)).toBeLessThanOrEqual(SNAP_PX);
+  const panel = await openPanel(page);
+  await expect(panel.getByTestId("reader-margin-value")).toHaveText("56 px");
+  await panel.getByTestId("reader-typography-reset").click();
+  await expect(panel.getByTestId("reader-margin-value")).toHaveText(`${DEFAULT_MARGIN_PX} px`);
+  await expect.poll(margin).toBeCloseTo(DEFAULT_MARGIN_PX, 0);
 });
 
 test("reader column: the 「Aa」 margin control applies at once, survives a reload, and 恢复默认 brings the default back", async ({ page }) => {
@@ -303,6 +420,54 @@ test("reader column: changing the size or the margin keeps the first visible row
       if (Math.max(...samples) - Math.min(...samples) > SNAP_PX) problems.push(`${label}: scroll moves after settling ${samples.join(",")}`);
     }
     await page.keyboard.press("Escape");
+  }
+  expect(problems).toEqual([]);
+});
+
+test("reader column: a few hundred one-word turns window, jump to both ends and keep the first visible row through line height, font and 显示发言人 too", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await installMockBackend(page);
+  const requests = speakersRequests(page);
+  requests.sequence = alternating(400);
+  requests.texts = Object.fromEntries(Array.from({ length: 400 }, (_, index) => [index, index % 2 === 0 ? "好。" : "对。"]));
+  await page.goto(READER);
+  await open(page, { fontSize: 16, outputsWidth: 900 });
+  const reader = page.getByTestId("transcript-reader");
+  const sentence = (index: number) => reader.locator(`[data-segment-id="${segmentId(SPEAKERS_REVISION, index)}"]`);
+  await expect(reader.locator("[data-index]").first()).toBeAttached();
+  await page.getByTestId("reader-to-bottom").click();
+  await expect(sentence(399)).toBeInViewport();
+  await page.getByTestId("reader-to-top").click();
+  await expect(sentence(0)).toBeInViewport();
+  await reader.evaluate((element) => {
+    element.scrollTop = element.scrollHeight / 2;
+  });
+  await page.waitForTimeout(300);
+  const panel = await openPanel(page);
+  const steps: Array<[string, () => Promise<void>]> = [
+    ["size 24", () => panel.getByTestId("reader-font-size").fill("24")],
+    ["line height 2.0", () => panel.getByRole("radio", { name: "2.0" }).check({ force: true })],
+    ["margin 120", () => panel.getByTestId("reader-margin").fill("120")],
+    [
+      "custom font",
+      async () => {
+        await panel.getByRole("radio", { name: "自选" }).click({ force: true });
+        await panel.getByRole("textbox", { name: "本机字体名" }).fill("DejaVu Serif");
+      },
+    ],
+    ["speakers off", () => panel.getByRole("switch", { name: "显示发言人" }).click({ force: true })],
+    ["speakers on", () => panel.getByRole("switch", { name: "显示发言人" }).click({ force: true })],
+    ["line height 1.5", () => panel.getByRole("radio", { name: "1.5" }).check({ force: true })],
+  ];
+  const problems: string[] = [];
+  for (const [label, change] of steps) {
+    const before = await firstVisible(page);
+    await change();
+    await page.waitForTimeout(400);
+    const offset = await rowOffset(page, before.key);
+    if (offset === undefined) problems.push(`${label}: row ${before.key} is gone`);
+    else if (Math.abs(offset - before.offset) > SNAP_PX) problems.push(`${label}: offset ${offset.toFixed(1)}, was ${before.offset.toFixed(1)}`);
   }
   expect(problems).toEqual([]);
 });

@@ -91,7 +91,7 @@ describe("filtering sentences", () => {
 });
 
 describe("filteredViewRows", () => {
-  const options = { turns: true, hasMarks: () => false };
+  const options = { turns: true };
 
   it("keeps the selected speaker's turns apart with a gap bar naming the skipped time and the first skipped sentence", () => {
     const view = filteredViewRows(TEXT, CHAPTERS, new Set(["sp1"]), options);
@@ -108,7 +108,7 @@ describe("filteredViewRows", () => {
 
   it("never merges one speaker's sentences across skipped text into a paragraph, even when paragraphs would", () => {
     const close = [say("x", 0, 0, 1_000, "sp1"), say("y", 1, 1_000, 2_000, "sp2"), say("z", 2, 2_000, 3_000, "sp1")];
-    const view = filteredViewRows(close, [], new Set(["sp1"]), { turns: false, hasMarks: () => false });
+    const view = filteredViewRows(close, [], new Set(["sp1"]), { turns: false });
     expect(describeRows(view.rows)).toEqual(["x", "gap:y:1000", "z"]);
   });
 

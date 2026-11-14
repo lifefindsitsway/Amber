@@ -100,6 +100,30 @@ describe("selectionForExplain", () => {
     expect(selectionForExplain(selectIn(READING, ["#a", 2], ["#b", 2]))).toEqual({ text: "召回。，再看" });
   });
 
+  it("leaves speaker headers and paragraph times out of a selection across two turns", () => {
+    const turns = `<div data-revision-id="r1" data-explainable>
+      <div data-turn-key="a"><div role="group" aria-label="陈明" data-turn-header data-reader-meta><button><span aria-hidden="true">陈</span><span id="n1">陈明</span></button></div>
+        <p data-reader-text><button data-reading-time>0:00</button><span id="a" data-segment-id="s1">先看召回。</span></p></div>
+      <div data-turn-key="b"><div role="group" aria-label="发言人 2" data-turn-header data-reader-meta><span><span aria-hidden="true">2</span><span id="n2">发言人 2</span></span></div>
+        <p data-reader-text><button data-reading-time>0:08</button><span id="b" data-segment-id="s2">再看重排序。</span></p></div>
+    </div>`;
+    const selection = selectIn(turns, ["#n1", 0], ["#b", 6]);
+    expect(selection.toString()).toContain("发言人 2");
+    expect(selection.toString()).toContain("0:08");
+    expect(selectionForExplain(selection)).toEqual({ text: "先看召回。 再看重排序。" });
+  });
+
+  it("keeps a chapter title inside the selection, without the heading's play button", () => {
+    const chapter = `<div data-revision-id="r1" data-explainable>
+      <p data-reader-text><button data-reading-time>0:40</button><span id="a" data-segment-id="s1">先看召回。</span></p>
+      <div data-testid="transcript-chapter"><h3 data-testid="chapter-title"><span id="t">正文</span></h3><span><button data-testid="chapter-play" data-reader-meta aria-label="从 1:00 播放">播放</button></span></div>
+      <p data-reader-text><button data-reading-time>1:00</button><span id="b" data-segment-id="s2">再看重排序。</span></p>
+    </div>`;
+    const selection = selectIn(chapter, ["#a", 0], ["#b", 6]);
+    expect(selection.toString()).toContain("播放");
+    expect(selectionForExplain(selection)).toEqual({ text: "先看召回。 正文 再看重排序。" });
+  });
+
   it("drops citation badges from summary text", () => {
     const summary = `<div data-explainable><p><span id="t">讲了重排序 </span><button data-citation="s2">1:15</button><span id="u">。下一步</span><span data-citation="unresolved">引用无法定位</span></p></div>`;
     expect(selectionForExplain(selectIn(summary, ["#t", 0], ["#u", 4]))).toEqual({ text: "讲了重排序。下一步" });

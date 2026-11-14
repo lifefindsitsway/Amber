@@ -3,6 +3,7 @@ import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { isMarked, readingSeparator } from "../../../shared/reading.ts";
 import { DecoratedText } from "../../notes/decorated-text.tsx";
 import type { SentenceNote } from "../../notes/note-anchor.ts";
+import { formatDuration } from "../../format.ts";
 import { termRanges } from "../../search/search.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
 
@@ -36,11 +37,37 @@ export const READER_COLUMN_CLASS = "reader-column";
 export const READER_INDENT_ATTRIBUTE = "data-reader-indent";
 /** Space between paragraphs and between turns, in em so both follow the font size. */
 export const PARAGRAPH_GAP_EM = 0.75;
-export const TURN_GAP_EM = 1.5;
+export const TURN_GAP_EM = 1;
+/**
+ * Marks what the reader shows among the text but nobody said (a turn's speaker header, a play
+ * button): a text selection leaves it out of what it takes.
+ */
+export const READER_META_ATTRIBUTE = "data-reader-meta";
 
 /** Font size and line height of the reading body; everything inside sizes in em from here. */
 export function readerBodyStyle(typography: Pick<ReaderTypography, "fontSize" | "lineHeight">): CSSProperties {
   return { fontSize: `${typography.fontSize}px`, lineHeight: typography.lineHeight };
+}
+
+/**
+ * A paragraph's start time, opening its text: it plays from the paragraph's first sentence.
+ * `data-reading-time` keeps it out of the text a selection takes. The type is small, so a
+ * pseudo-element extends the hit area to 24px tall around it; being absolutely positioned, it
+ * leaves the line box and the baseline to the text. The button's own line is no taller than its
+ * type: its size follows the browser's font size, not the reading size, and a taller line would
+ * push a small reading text's first line apart from the rest.
+ */
+export function ReaderTime(props: { startMs: number; onSeek: () => void }) {
+  return (
+    <button
+      type="button"
+      className="relative mr-2 font-mono text-xs leading-none text-accent hover:underline before:absolute before:inset-x-0 before:top-1/2 before:h-6 before:-translate-y-1/2 before:content-['']"
+      data-reading-time
+      onClick={props.onSeek}
+    >
+      {formatDuration(props.startMs)}
+    </button>
+  );
 }
 
 /**

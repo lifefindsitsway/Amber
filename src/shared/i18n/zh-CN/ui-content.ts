@@ -400,6 +400,8 @@ export const contentView = {
     chapters: "章节",
     chapterOutline: "章节目录（{{count}}）",
     noChapters: "尚无章节",
+    /** Accessible name and tooltip of a chapter heading's play button; the time is where playback starts. */
+    chapterPlay: "从 {{time}} 播放",
     toTop: "去顶部",
     toBottom: "去底部",
   },

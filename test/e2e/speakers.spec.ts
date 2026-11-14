@@ -177,11 +177,13 @@ const readerText = (page: Page) => page.getByText(speakerSentence(0), { exact: t
 test("speakers: the reading view names each turn and its typography follows the Aa panel, resets and survives a reload", async ({ page }) => {
   await installMockBackend(page);
   await page.goto(`/contents/${SPEAKERS_CONTENT}?tab=transcript`);
-  // Turn headers: the named speaker, the unnamed one by its ordinal, the unassigned sentences neutrally.
-  await expect(page.getByRole("group", { name: "林老师，0:00" })).toBeVisible();
-  await expect(page.getByRole("group", { name: "发言人 2，0:20" })).toBeVisible();
-  await expect(page.getByRole("group", { name: "林老师，0:30" })).toBeVisible();
-  const unassigned = page.getByRole("group", { name: "未分配，0:50" });
+  // Turn headers are named by who speaks: the named speaker, the unnamed one by its ordinal, the
+  // unassigned sentences neutrally. The times belong to the paragraphs, not the headers.
+  await expect(page.getByTestId("turn-header")).toHaveCount(4);
+  await expect(page.getByRole("group", { name: "林老师", exact: true })).toHaveCount(2);
+  await expect(page.getByRole("group", { name: "发言人 2", exact: true })).toHaveCount(1);
+  const unassigned = page.getByRole("group", { name: "未分配", exact: true });
+  await expect(unassigned).toHaveCount(1);
   await expect(unassigned).toBeVisible();
   await expect(unassigned.getByTestId("turn-speaker")).toHaveAttribute("data-unassigned", "true");
 
@@ -218,8 +220,8 @@ test("speakers: a rename in one tab shows in another without a reload, and photo
   const url = `/contents/${SPEAKERS_CONTENT}?tab=transcript`;
   await page.goto(url);
   await other.goto(url);
-  await expect(page.getByRole("group", { name: "林老师，0:00" })).toBeVisible();
-  await expect(other.getByRole("group", { name: "林老师，0:00" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "林老师", exact: true })).toHaveCount(2);
+  await expect(other.getByRole("group", { name: "林老师", exact: true })).toHaveCount(2);
   // The second tab must not be reloaded: the mark would go with it.
   await other.evaluate(() => ((window as unknown as { __opened: boolean }).__opened = true));
 
@@ -228,9 +230,9 @@ test("speakers: a rename in one tab shows in another without a reload, and photo
   await page.getByTestId("speaker-name-input").fill("陈老师");
   await page.getByTestId("speaker-edit-save").click();
 
-  await expect(page.getByRole("group", { name: "陈老师，0:00" })).toBeVisible();
-  await expect(other.getByRole("group", { name: "陈老师，0:00" })).toBeVisible();
-  await expect(other.getByRole("group", { name: "林老师，0:00" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "陈老师", exact: true })).toHaveCount(2);
+  await expect(other.getByRole("group", { name: "陈老师", exact: true })).toHaveCount(2);
+  await expect(other.getByRole("group", { name: "林老师", exact: true })).toHaveCount(0);
   expect(await other.evaluate(() => (window as unknown as { __opened?: boolean }).__opened)).toBe(true);
 
   // The teacher's photo is fetched through the API client, so every request carries its marker.

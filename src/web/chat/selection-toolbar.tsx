@@ -15,8 +15,12 @@ export interface ExplainableSelection {
   quote?: QuoteDraft;
 }
 
-/** Shown in the page but not part of what was said: citation badges and paragraph times. */
-const NOT_TEXT = ["[data-citation]", "[data-reading-time]"].join(",");
+/**
+ * Shown in the page but not part of what was said: citation badges, paragraph times
+ * (`data-reading-time`) and the reader's other furniture (`data-reader-meta`: a turn's speaker
+ * header, a play button). Chapter titles are not marked: a heading is text the reader may want.
+ */
+const NOT_TEXT = ["[data-citation]", "[data-reading-time]", "[data-reader-meta]"].join(",");
 
 /**
  * The selection "explain" can work on: it must lie inside a `[data-explainable]` region (the

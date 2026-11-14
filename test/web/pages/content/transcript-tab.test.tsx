@@ -8,6 +8,7 @@ import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../s
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
+import { READER_COLUMN_CLASS } from "../../../../src/web/pages/content/reader-sentences.tsx";
 import { changedSegments, TranscriptTab } from "../../../../src/web/pages/content/transcript-tab.tsx";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { note } from "../../../fixtures/web/note-data.ts";
@@ -87,7 +88,7 @@ describe("TranscriptTab reading view", () => {
     const second = reader.querySelector(`[data-segment-id='${CITED_SEGMENT_ID}']`)?.closest("p");
     expect(second?.textContent).toBe("1:15再看重排序。");
     // The fixture's current chapters head the reading view and go into the copy as their own lines.
-    expect(within(reader).getAllByTestId("transcript-chapter").map((heading) => heading.textContent)).toEqual(["0:00开场", "1:00正文"]);
+    expect(within(reader).getAllByTestId("transcript-chapter").map((heading) => heading.textContent)).toEqual(["开场", "正文"]);
     fireEvent.click(screen.getByRole("button", { name: "复制" }));
     expect(writeText).toHaveBeenCalledWith("开场\n\n今天讲检索 先看向量库\n\n正文\n\n再看重排序。");
   });
@@ -142,14 +143,47 @@ describe("TranscriptTab reading view", () => {
     expect(writeText).toHaveBeenCalledWith("今天讲检索。先看向量库。\n\n再看重排序。");
   });
 
-  it("seeks to the first sentence under a chapter heading when its time is clicked", async () => {
+  it("heads a chapter with its title alone, in a heading, and a play button beside it named by where it plays from", async () => {
     mockApi(contentRoutes());
     renderApp(<ContentPage />, { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" });
     const reader = await screen.findByTestId("transcript-reader");
     const headings = await within(reader).findAllByTestId("transcript-chapter");
-    fireEvent.click(within(headings[1] as HTMLElement).getByRole("button", { name: "1:00" }));
-    await waitFor(() => expect(reader.querySelector(`[data-segment-id='${CITED_SEGMENT_ID}']`)?.getAttribute("aria-current")).toBe("true"));
-    expect(reader.querySelector("[data-segment-id='s1']")?.getAttribute("aria-current")).toBeNull();
+    expect(headings.map((heading) => heading.textContent)).toEqual(["开场", "正文"]);
+    for (const [index, heading] of headings.entries()) {
+      // The heading is a row of the reading column itself.
+      expect(heading.parentElement?.className).toBe(READER_COLUMN_CLASS);
+      const title = within(heading).getByTestId("chapter-title");
+      expect(title.textContent).toBe(["开场", "正文"][index]);
+      const h3 = title.closest("h3");
+      expect(h3).not.toBeNull();
+      expect(heading.contains(h3)).toBe(true);
+      const play = within(heading).getByTestId("chapter-play");
+      expect(play.tagName).toBe("BUTTON");
+      expect(h3?.contains(play)).toBe(false);
+      // Not text anyone said: a selection leaves it out.
+      expect(play.hasAttribute("data-reader-meta")).toBe(true);
+    }
+    // The time is where the first sentence shown under the heading starts.
+    expect(headings.map((heading) => within(heading).getByTestId("chapter-play").getAttribute("aria-label"))).toEqual(["从 0:00 播放", "从 1:15 播放"]);
+  });
+
+  it("seeks to the first sentence under a chapter heading from its play button or its title", async () => {
+    stubResizeObserver();
+    const select = vi.fn();
+    mockApi(speakerRoutes());
+    mountReader({ select });
+    const reader = await screen.findByTestId("transcript-reader", {}, { timeout: 5_000 });
+    const heading = async (title: string) => (await within(reader).findAllByTestId("transcript-chapter")).find((item) => item.textContent === title) as HTMLElement;
+    // 正文 starts at 1:00; the first sentence under it, g7, at 1:15.
+    const body = await heading("正文");
+    expect(within(body).getByTestId("chapter-play").getAttribute("aria-label")).toBe("从 1:15 播放");
+    fireEvent.click(within(body).getByTestId("chapter-title"));
+    expect(select).toHaveBeenLastCalledWith({ revisionId: "r1", segmentId: "g7" }, 75_000);
+    fireEvent.click(within(await heading("开场")).getByRole("button", { name: "从 0:00 播放" }));
+    expect(select).toHaveBeenLastCalledWith({ revisionId: "r1", segmentId: "g1" }, 0);
+    fireEvent.click(within(body).getByRole("button", { name: "从 1:15 播放" }));
+    expect(select).toHaveBeenLastCalledWith({ revisionId: "r1", segmentId: "g7" }, 75_000);
+    expect(select).toHaveBeenCalledTimes(3);
   });
 
   it("says the chapters are based on an older transcript when they are stale", async () => {
@@ -189,7 +223,11 @@ describe("TranscriptTab chapter outline and jump buttons", () => {
     fireEvent.click(screen.getByTestId("chapter-outline"));
     expect(screen.getByText("章节目录（2）")).toBeTruthy();
     const items = within(screen.getByTestId("chapter-outline-list")).getAllByTestId("chapter-outline-item");
-    expect(items.map((item) => item.textContent)).toEqual(within(reader).getAllByTestId("transcript-chapter").map((heading) => heading.textContent));
+    // Each entry is the chapter's start and the title its heading in the reader shows.
+    const titles = within(reader).getAllByTestId("transcript-chapter").map((heading) => heading.textContent);
+    expect(titles).toEqual(["开场", "正文"]);
+    expect(items.map((item) => item.textContent)).toEqual(["0:00开场", "1:00正文"]);
+    expect(items.map((item) => item.lastElementChild?.textContent)).toEqual(titles);
   });
 
   it("puts the picked chapter heading at the top of the reader and closes, without seeking", async () => {
@@ -1284,11 +1322,11 @@ describe("TranscriptTab reading font", () => {
       expect(heading.closest("[data-reader-text]")).toBeNull();
       expect(heading.querySelector("[data-reader-text]")).toBeNull();
     }
-    // A compact row's name is inside its paragraph, marked as UI text the style sheet sets back.
-    const compact = reader.querySelector("[data-turn-layout='compact'] [data-reader-text]");
-    expect(compact).not.toBeNull();
-    const name = compact?.querySelector("[data-testid='turn-speaker']");
-    expect(name?.closest("[data-reading-time]")?.closest("[data-reader-text]")).toBe(compact);
+    // No speaker name is inside a paragraph; each paragraph's time button opens it, and buttons keep their own font.
+    expect(reader.querySelector("[data-reader-text] [data-testid='turn-speaker']")).toBeNull();
+    const texts = [...reader.querySelectorAll("[data-reader-text]")];
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) expect((text.firstElementChild as HTMLElement).matches("button[data-reading-time]")).toBe(true);
   });
 
   it("leaves the chapter titles in the page's font: no reading font rule reaches them", async () => {
@@ -1408,7 +1446,7 @@ describe("TranscriptTab reading in a stored bundled font", () => {
     expect(reader.querySelector("[aria-current]")).toBeNull();
   });
 
-  it("puts a chapter picked in the outline at the top, and a chapter's time seeks to its first sentence", async () => {
+  it("puts a chapter picked in the outline at the top, and a chapter's play button seeks to its first sentence", async () => {
     const { reader, sentence } = await openPage();
     const heading = within(reader).getAllByTestId("transcript-chapter")[1]?.closest("[data-row-index]") as HTMLElement;
     reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 0, y: 100, width: 400, height: 300 });
@@ -1418,7 +1456,7 @@ describe("TranscriptTab reading in a stored bundled font", () => {
     expect(screen.queryByTestId("chapter-outline-list")).toBeNull();
     expect(reader.scrollTop).toBe(240);
 
-    fireEvent.click(within(within(reader).getAllByTestId("transcript-chapter")[1] as HTMLElement).getByRole("button", { name: "1:00" }));
+    fireEvent.click(within(within(reader).getAllByTestId("transcript-chapter")[1] as HTMLElement).getByRole("button", { name: "从 1:15 播放" }));
     await waitFor(() => expect(sentence(CITED_SEGMENT_ID).getAttribute("aria-current")).toBe("true"));
   });
 

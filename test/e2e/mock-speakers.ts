@@ -62,13 +62,21 @@ function revision(id: string = SPEAKERS_REVISION, segmentCount: number = SPEAKER
   } as const;
 }
 
-function segments(sequence: SpeakerSequence = SPEAKER_SEQUENCE, texts: Readonly<Record<number, string>> = {}, revisionId: string = SPEAKERS_REVISION): TranscriptSegmentDto[] {
+function segments(
+  sequence: SpeakerSequence = SPEAKER_SEQUENCE,
+  texts: Readonly<Record<number, string>> = {},
+  revisionId: string = SPEAKERS_REVISION,
+  offsetMs = 0,
+  paragraphStarts?: ReadonlySet<number>,
+): TranscriptSegmentDto[] {
   return sequence.map((speakerId, index) => ({
+    // Paragraph marks are all-or-nothing in a revision: with them, every sentence says whether it opens a paragraph.
+    ...(paragraphStarts === undefined ? {} : { paragraphStart: paragraphStarts.has(index) }),
     id: segmentId(revisionId, index),
     revisionId,
     ordinal: index,
-    startMs: index * SEGMENT_MS,
-    endMs: (index + 1) * SEGMENT_MS - SEGMENT_GAP_MS,
+    startMs: offsetMs + index * SEGMENT_MS,
+    endMs: offsetMs + (index + 1) * SEGMENT_MS - SEGMENT_GAP_MS,
     text: texts[index] ?? speakerSentence(index),
     ...(speakerId === undefined ? {} : { speakerId }),
     sourceSegmentIds: [],
@@ -132,6 +140,20 @@ export interface SpeakersRequests {
   avatarHeaders: Array<Record<string, string>>;
   /** Refuses the next re-transcribe with `invalid_request.diarization_unavailable` and this reason. */
   refuseNextRetranscribe?: DiarizationUnavailableReason;
+  /** Chapters of the primary revision, each opening at the sentence with index `start`; absent = the lecture has no chapters. */
+  chapters?: ReadonlyArray<{ start: number; title: string }>;
+  /** Where the primary revision's first sentence starts, in ms; absent = 0. Every later sentence moves with it. */
+  offsetMs?: number;
+  /**
+   * Sentences of the primary revision that open a paragraph, as proofreading marks them; absent =
+   * no marks, and paragraphs follow the readability rules (pauses, length).
+   */
+  paragraphStarts?: ReadonlySet<number>;
+}
+
+/** Where a sentence of the primary revision starts in this browser context. */
+export function speakerStartMs(state: Pick<SpeakersRequests, "offsetMs">, index: number): number {
+  return (state.offsetMs ?? 0) + index * SEGMENT_MS;
 }
 
 const states = new WeakMap<BrowserContext, SpeakersRequests>();
@@ -159,7 +181,28 @@ export function speakersRequests(page: Page): SpeakersRequests {
 
 /** The sentences a revision of the lecture has in this browser context. */
 function revisionSegments(state: SpeakersRequests, revisionId: string): TranscriptSegmentDto[] {
-  return revisionId === SPEAKERS_EARLIER_REVISION ? segments(EARLIER_SEQUENCE, {}, revisionId) : segments(state.sequence, state.texts);
+  return revisionId === SPEAKERS_EARLIER_REVISION ? segments(EARLIER_SEQUENCE, {}, revisionId) : segments(state.sequence, state.texts, SPEAKERS_REVISION, state.offsetMs ?? 0, state.paragraphStarts);
+}
+
+/** The lecture's chapters as the chapters endpoint returns them; none unless a spec set `chapters`. */
+function speakerChapters(state: SpeakersRequests) {
+  const chapters = state.chapters;
+  if (chapters === undefined) return chaptersDtoSchema.parse({ revisions: [] });
+  const end = speakerStartMs(state, state.sequence.length);
+  const revision = {
+    id: "01J0000000000000000000SPCH",
+    artifactId: "01J0000000000000000000SPCA",
+    origin: { kind: "platform" },
+    chapters: chapters.map((chapter, index) => {
+      const next = chapters[index + 1];
+      return { startMs: speakerStartMs(state, chapter.start), endMs: next === undefined ? end : speakerStartMs(state, next.start), title: chapter.title };
+    }),
+    quality: "normal",
+    qualityReasons: [],
+    stale: false,
+    createdAt: now,
+  };
+  return chaptersDtoSchema.parse({ artifactId: revision.artifactId, current: revision, revisions: [revision] });
 }
 
 function revisionDto(state: SpeakersRequests, revisionId: string) {
@@ -214,7 +257,7 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
     const resource = contentMatch[2];
     if (method === "GET" && resource === undefined) return json(contentDetailDtoSchema.parse({ ...content(), media: [] }));
     if (method === "GET" && resource === "summaries") return json(summaries(SPEAKERS_REVISION, SPEAKERS_CONTENT, false));
-    if (method === "GET" && resource === "chapters") return json(chaptersDtoSchema.parse({ revisions: [] }));
+    if (method === "GET" && resource === "chapters") return json(speakerChapters(speakersRequests(request.frame().page())));
     if (method === "GET" && resource === "notes") return json({ items: [] });
     if (method === "GET" && resource === "transcript/revisions") {
       const state = speakersRequests(request.frame().page());

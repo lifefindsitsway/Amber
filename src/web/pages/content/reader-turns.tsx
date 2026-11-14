@@ -2,10 +2,9 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import type { SpeakerShare } from "../../../shared/speaker-turns.ts";
-import { formatDuration } from "../../format.ts";
 import type { Paragraph } from "./content-data.ts";
 import { READER_TEXT_ATTRIBUTE } from "./reader-font.ts";
-import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_SCROLLER_CLASS, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
+import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_META_ATTRIBUTE, READER_SCROLLER_CLASS, ReaderTime, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
 import { MARKER_FADE_MS, TURN_HEADER_ATTRIBUTE, TURN_KEY_ATTRIBUTE, TURN_SPEAKER_ATTRIBUTE, useFadedTurn, type StickyTurn } from "./reader-sticky.ts";
 import type { TurnPlace } from "./reader-rows.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
@@ -55,31 +54,21 @@ const READER_TEXT = { [READER_TEXT_ATTRIBUTE]: "" };
 
 const TRIGGER_CLASS = "inline-flex min-w-0 items-center rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
-/** A time button with the reader's usual look; it seeks like a paragraph's time does. */
-function TimeButton(props: { ms: number; onSeek: () => void; className?: string }) {
-  return (
-    <button type="button" className={`font-mono text-xs text-accent hover:underline ${props.className ?? ""}`} data-reading-time onClick={props.onSeek}>
-      {formatDuration(props.ms)}
-    </button>
-  );
-}
-
 /**
  * Who a turn belongs to: the avatar and the name, as one control that opens the identity
  * card. A speaker the list does not know, and sentences nobody was assigned to, show the
- * neutral avatar and 「未分配」 and open nothing.
+ * neutral avatar and 「未分配」 and open nothing. The avatar sits beside the written name, so
+ * it is decorative.
  */
-function SpeakerTag(props: { context: TurnContext; speakerId: string | undefined; part?: "both" | "avatar" | "name" }) {
+function SpeakerTag(props: { context: TurnContext; speakerId: string | undefined }) {
   const { t } = useTranslation();
   const { context } = props;
-  const part = props.part ?? "both";
   const speaker = props.speakerId === undefined ? undefined : context.speakers.get(props.speakerId);
-  const avatarClass = part === "both" ? GUTTER_GAP_CLASS : "";
   if (speaker === undefined) {
     return (
       <span className="inline-flex min-w-0 items-center" data-testid="turn-speaker" data-unassigned="true">
-        {part === "name" ? null : <SpeakerAvatar unassigned size="em" decorative={part === "both"} className={avatarClass} />}
-        {part === "avatar" ? null : <span className="truncate font-semibold text-muted">{t("speakerIdentity.unassigned")}</span>}
+        <SpeakerAvatar unassigned size="em" decorative className={GUTTER_GAP_CLASS} />
+        <span className="truncate font-semibold text-muted">{t("speakerIdentity.unassigned")}</span>
       </span>
     );
   }
@@ -93,30 +82,19 @@ function SpeakerTag(props: { context: TurnContext; speakerId: string | undefined
       triggerClassName={TRIGGER_CLASS}
       testId="turn-speaker"
     >
-      {part === "name" ? null : <SpeakerAvatar contentId={context.contentId} speaker={speaker} size="em" decorative={part === "both"} className={avatarClass} />}
-      {part === "avatar" ? null : (
-        <span className="truncate font-semibold" style={{ color: speakerColorVars(speaker.colorIndex).fg }} title={label}>
-          {label}
-        </span>
-      )}
+      <SpeakerAvatar contentId={context.contentId} speaker={speaker} size="em" decorative className={GUTTER_GAP_CLASS} />
+      <span className="truncate font-semibold" style={{ color: speakerColorVars(speaker.colorIndex).fg }} title={label}>
+        {label}
+      </span>
     </SpeakerIdentityCard>
   );
 }
 
-/**
- * Takes the avatar button of a compact row out of the tab order: the name beside it opens the
- * same card, and two stops for one control only slow the keyboard down. The button belongs to
- * the identity card, which has no prop for this.
- */
-function skipTabStop(element: HTMLElement | null): void {
-  element?.querySelector("button")?.setAttribute("tabindex", "-1");
-}
-
-/** The accessible name of a turn header: who and when. */
+/** The accessible name of a turn header: who speaks. Each paragraph's time button says when. */
 function useTurnLabel(context: TurnContext, turn: TurnPlace): string {
   const { t } = useTranslation();
   const speaker = turn.speakerId === undefined ? undefined : context.speakers.get(turn.speakerId);
-  return t("speakerReader.turn.label", { name: speaker === undefined ? t("speakerIdentity.unassigned") : speakerLabel(t, speaker), time: formatDuration(turn.startMs) });
+  return speaker === undefined ? t("speakerIdentity.unassigned") : speakerLabel(t, speaker);
 }
 
 /** The line a turn's paragraphs share, in the speaker's colour; it runs on through the gap to the next paragraph of the turn. */
@@ -140,50 +118,33 @@ function TurnLine(props: { context: TurnContext; turn: TurnPlace }) {
 }
 
 /**
- * One paragraph of a speaker turn. The turn's first paragraph carries the header (avatar,
- * name, start time); the others sit under the same line. A short turn is one compact row:
- * the avatar in the gutter, the name running inline at the start of the text. A narrow pane
- * drops the gutter and puts the header above the text.
+ * One paragraph of a speaker turn. The turn's first paragraph carries the header (avatar and
+ * name) on a line of its own; every paragraph opens with its time and sits under the turn's
+ * line. A narrow pane drops the gutter and the line.
  */
 export function TurnParagraph(props: SentenceViewProps & { context: TurnContext; paragraph: Paragraph; turn: TurnPlace; onSeekParagraph: () => void }) {
   const { context, paragraph, turn } = props;
   const label = useTurnLabel(context, turn);
   const marker = { [TURN_KEY_ATTRIBUTE]: turn.key, [TURN_SPEAKER_ATTRIBUTE]: turn.speakerId ?? "" };
-  const runs = <SentenceRuns {...props} segments={paragraph.segments} />;
   const style = rowStyle(context, turn);
-  const time = <TimeButton ms={paragraph.startMs} onSeek={props.onSeekParagraph} className="mr-2" />;
+  const text = (
+    <p className="break-words" {...READER_TEXT} style={context.narrow && turn.first ? { marginTop: "0.25em" } : undefined}>
+      <ReaderTime startMs={paragraph.startMs} onSeek={props.onSeekParagraph} />
+      <SentenceRuns {...props} segments={paragraph.segments} />
+    </p>
+  );
 
-  if (turn.compact && !context.narrow) {
-    return (
-      <div {...marker} role="group" aria-label={label} data-turn-layout="compact" className="grid items-start" style={{ ...style, ...GRID_COLUMNS }}>
-        {/* A flex cell, so the avatar starts at the cell's top: in a line box it would sit on the
-            baseline of a full-height line and drop below the text's first line at large sizes. */}
-        <div {...{ [TURN_HEADER_ATTRIBUTE]: "" }} data-reading-time ref={skipTabStop} className="flex" style={{ marginTop: `calc((1lh - var(${AVATAR_VAR})) / 2)` }}>
-          <SpeakerTag context={context} speakerId={turn.speakerId} part="avatar" />
-        </div>
-        <p className="break-words" {...READER_TEXT}>
-          <span data-reading-time className="mr-2 inline-block max-w-full align-bottom">
-            <SpeakerTag context={context} speakerId={turn.speakerId} part="name" />
-          </span>
-          {time}
-          {runs}
-        </p>
-      </div>
-    );
-  }
-
+  // Not said by anyone: a selection across turns leaves the speaker's name out.
   const header = turn.first ? (
     <div
       role="group"
       aria-label={label}
-      {...{ [TURN_HEADER_ATTRIBUTE]: "" }}
-      data-reading-time
+      {...{ [TURN_HEADER_ATTRIBUTE]: "", [READER_META_ATTRIBUTE]: "" }}
       data-testid="turn-header"
-      className="flex min-w-0 items-center gap-2"
+      className="flex min-w-0 items-center"
       style={{ minHeight: `var(${AVATAR_VAR})` }}
     >
       <SpeakerTag context={context} speakerId={turn.speakerId} />
-      <TimeButton ms={turn.startMs} onSeek={props.onSeekParagraph} className="shrink-0" />
     </div>
   ) : null;
 
@@ -191,10 +152,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
     return (
       <div {...marker} data-turn-layout="narrow" style={style}>
         {header}
-        <p className="break-words" {...READER_TEXT} style={header === null ? undefined : { marginTop: "0.25em" }}>
-          {turn.first ? null : time}
-          {runs}
-        </p>
+        {text}
       </div>
     );
   }
@@ -203,10 +161,7 @@ export function TurnParagraph(props: SentenceViewProps & { context: TurnContext;
       {header}
       <div className="grid" style={GRID_COLUMNS}>
         <TurnLine context={context} turn={turn} />
-        <p className="break-words" {...READER_TEXT}>
-          {turn.first ? null : time}
-          {runs}
-        </p>
+        {text}
       </div>
     </div>
   );

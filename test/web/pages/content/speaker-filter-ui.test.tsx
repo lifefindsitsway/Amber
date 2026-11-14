@@ -35,9 +35,9 @@ function Location() {
 /** A small reading view put together the way the transcript tab is to use these parts. */
 function Reader(props: { segments: TranscriptSegmentDto[]; speakers: SpeakerDto[] | undefined; scrolled: (index: number) => void }) {
   const filter = useSpeakerFilter(props.speakers);
-  const full = useMemo<FilteredRow[]>(() => viewRows(readerSections(props.segments, []), { turns: true, hasMarks: () => false }), [props.segments]);
+  const full = useMemo<FilteredRow[]>(() => viewRows(readerSections(props.segments, []), { turns: true }), [props.segments]);
   const filtered = useMemo(
-    () => (filter.active ? filteredViewRows(props.segments, [], filter.selectedSet, { turns: true, hasMarks: () => false }) : undefined),
+    () => (filter.active ? filteredViewRows(props.segments, [], filter.selectedSet, { turns: true }) : undefined),
     [filter.active, filter.selectedSet, props.segments],
   );
   const rows = filtered?.rows ?? full;
