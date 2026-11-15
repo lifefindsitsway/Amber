@@ -6,6 +6,7 @@ import { useSearchParams } from "react-router";
 import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState } from "../../ui/feedback.tsx";
+import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 import { normalizeSelection, paramsWithSelection, rowIndexOfSegment, SPEAKER_PARAM, skippedParts, type FilteredRow, type FilterSpeaker, type GapRow } from "./speaker-filter.ts";
 import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
 import { speakerLabel } from "./speakers/speaker-data.ts";
@@ -181,6 +182,7 @@ export function SpeakerGap(props: { gap: GapRow; onReturn: (firstSkippedId: stri
         type="button"
         className="shrink-0 rounded px-2 py-0.5 text-xs text-muted hover:bg-sunken hover:text-ink"
         aria-label={t("speakerContext.filter.gapLabel", { duration })}
+        {...{ [READER_PART_ATTRIBUTE]: "gap" }}
         onClick={() => props.onReturn(props.gap.firstSkippedId)}
       >
         {t("speakerContext.filter.gap", { duration })}

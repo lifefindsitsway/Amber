@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronDown, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
@@ -14,11 +14,11 @@ import { useApi } from "../../api/context.tsx";
 import { queryKeys, useProviders, useSettings } from "../../api/queries.ts";
 import { loadBundledFont } from "../../bundled-fonts.ts";
 import { ErrorView } from "../../components/error-view.tsx";
+import { formatDuration } from "../../format.ts";
 import { usePlayerCapabilities, usePlayerTime } from "../../player/player-controller.tsx";
 import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
-import { elementOf } from "../../ui/dom-selection.ts";
 import { notesBySegment } from "../../notes/note-anchor.ts";
 import { useOptionalNotesUi } from "../../notes/note-ui-context.tsx";
 import { useContentNotes } from "../../notes/queries.ts";
@@ -43,6 +43,8 @@ import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
 import { ChapterHeading } from "./reader-chapter.tsx";
 import { ReaderJumpButtons } from "./reader-jump.tsx";
+import { useReaderSelection } from "./reader-selection-controller.ts";
+import { selectionRows } from "./reader-selection.ts";
 import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS, ReaderTime, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
 import { stickyMetrics, useStickyTurn } from "./reader-sticky.ts";
 import { READER_GUTTER, StickyTurnMarker, TurnParagraph, useIsNarrow, type TurnContext } from "./reader-turns.tsx";
@@ -56,7 +58,7 @@ import { isChineseLanguage } from "./sentence-editor.tsx";
 import { useSentenceMenu } from "./sentence-menu.tsx";
 import { SpeakersNotReadHint } from "./speaker-basis-notice.tsx";
 import { filteredRowKey, filteredViewRows, rowIndexOfSegment, sentenceCounts, type FilteredRow } from "./speaker-filter.ts";
-import { SpeakerFilterBar, SpeakerFilterButton, SpeakerFilterEmpty, SpeakerGap, useScrollToSegment, useSpeakerFilter } from "./speaker-filter-ui.tsx";
+import { SpeakerFilterBar, SpeakerFilterButton, SpeakerFilterEmpty, SpeakerGap, useScrollToSegment, useSkippedText, useSpeakerFilter } from "./speaker-filter-ui.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { SpeakerReviewControl } from "./speakers/review/speaker-review-panel.tsx";
 import { ComparisonSummary } from "./speakers/compare/comparison-summary.tsx";
@@ -285,7 +287,6 @@ function TranscriptReader(props: {
   const reader = useRef<VirtualRowsHandle>(null);
   const notesUi = useOptionalNotesUi();
   const notes = useContentNotes(page.content.id, revision.id);
-  const pinned = useDragPin();
   const [typography, setTypography, resetTypography] = useReaderTypography();
   // A font size, line height, font or layout change resizes every row: keep the first visible row where it was.
   // The anchor is taken just before the change and used by the very next commit; a change that
@@ -348,6 +349,29 @@ function TranscriptReader(props: {
     [filter.active, filter.selectedSet, list, currentChapters, rowOptions],
   );
   const shownRows: FilteredRow[] = filtered?.rows ?? rows;
+  // The rows as text, for a selection: what it takes is written from these, not read off the
+  // page, where a long text only has the rows near the viewport.
+  const skippedText = useSkippedText();
+  const selectionModels = useMemo(
+    () =>
+      selectionRows(shownRows, (row) => filteredRowKey(row, viewRowKey), {
+        speaker: (turn) => {
+          const speaker = turn.speakerId === undefined ? undefined : speakerById.get(turn.speakerId);
+          return speaker === undefined ? { name: t("speakerIdentity.unassigned"), named: false } : { name: speakerLabel(t, speaker), named: true };
+        },
+        time: formatDuration,
+        gap: (row) => t("speakerContext.filter.gap", { duration: skippedText(row.skippedMs) }),
+      }),
+    // `skippedText` is rebuilt every render and only depends on the language, like `t`.
+    [shownRows, speakerById, t],
+  );
+  // Another revision, filter or speaker display is another view of the text: a selection does not carry over.
+  const selection = useReaderSelection({
+    revisionId: revision.id,
+    viewKey: `${revision.id} ${filter.selected.join(",")} ${showTurns}`,
+    rows: selectionModels,
+    skipped: t("chat.selection.skipped"),
+  });
   const scrollToRow = useCallback((index: number) => reader.current?.scrollToIndex(index, "start"), []);
   const returnTo = useScrollToSegment(shownRows, scrollToRow);
   // Scrolls to a sentence; one the filter hides brings the whole text back first.
@@ -676,7 +700,7 @@ function TranscriptReader(props: {
         <div
           ref={setHost}
           className="relative min-h-0 flex-1"
-          onMouseDown={pinned.start}
+          onMouseDown={selection.onMouseDown}
           {...readerFont.hostProps}
           style={{
             ...readerFont.hostProps.style,
@@ -694,7 +718,8 @@ function TranscriptReader(props: {
             keyOf={(row) => filteredRowKey(row, viewRowKey)}
             estimateSize={96}
             scrollToIndex={targetIndex}
-            pinnedIndex={pinned.index}
+            pinnedKeys={selection.pinnedKeys}
+            scrollerRef={selection.scrollerRef}
             render={(row, index) => (
               // Every row sits in the reading column; a chapter heading indents to the text's edge.
               <div className={READER_COLUMN_CLASS} {...(row.kind === "chapter" ? { [READER_INDENT_ATTRIBUTE]: "" } : {})}>
@@ -722,37 +747,4 @@ function ParagraphView(props: SentenceViewProps & { paragraph: Paragraph; typogr
       <SentenceRuns {...props} segments={props.paragraph.segments} />
     </p>
   );
-}
-
-/**
- * Keeps the row a drag selection started in mounted while the drag goes on: the
- * windowed reader auto-scrolls under a long drag and would otherwise unmount the row holding
- * the selection's anchor. The pin follows the selection's anchor node and is released on
- * mouseup, after the selection toolbar has taken its snapshot.
- */
-function useDragPin(): { index: number | undefined; start: (event: MouseEvent<HTMLElement>) => void } {
-  const [index, setIndex] = useState<number | undefined>(undefined);
-  const release = useRef<(() => void) | undefined>(undefined);
-  useEffect(() => () => release.current?.(), []);
-  const start = (event: MouseEvent<HTMLElement>): void => {
-    if (event.button !== 0 || !(event.target instanceof Node)) return;
-    if (elementOf(event.target)?.closest("[data-row-index]") == null) return;
-    release.current?.();
-    const follow = (): void => {
-      const anchor = window.getSelection()?.anchorNode;
-      const row = anchor == null ? null : elementOf(anchor)?.closest<HTMLElement>("[data-row-index]");
-      const value = row?.dataset["rowIndex"];
-      if (value !== undefined) setIndex(Number(value));
-    };
-    const stop = (): void => {
-      document.removeEventListener("selectionchange", follow);
-      document.removeEventListener("mouseup", stop);
-      release.current = undefined;
-      setIndex(undefined);
-    };
-    document.addEventListener("selectionchange", follow);
-    document.addEventListener("mouseup", stop);
-    release.current = stop;
-  };
-  return { index, start };
 }

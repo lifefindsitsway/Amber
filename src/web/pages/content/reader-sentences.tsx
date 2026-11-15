@@ -5,6 +5,7 @@ import { DecoratedText } from "../../notes/decorated-text.tsx";
 import type { SentenceNote } from "../../notes/note-anchor.ts";
 import { formatDuration } from "../../format.ts";
 import { termRanges } from "../../search/search.ts";
+import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
 
 /** What the sentences of a paragraph are drawn with, the same in a plain paragraph and in a turn. */
@@ -63,6 +64,7 @@ export function ReaderTime(props: { startMs: number; onSeek: () => void }) {
       type="button"
       className="relative mr-2 font-mono text-xs leading-none text-accent hover:underline before:absolute before:inset-x-0 before:top-1/2 before:h-6 before:-translate-y-1/2 before:content-['']"
       data-reading-time
+      {...{ [READER_PART_ATTRIBUTE]: "time" }}
       onClick={props.onSeek}
     >
       {formatDuration(props.startMs)}

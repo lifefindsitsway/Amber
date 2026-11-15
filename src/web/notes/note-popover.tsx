@@ -17,10 +17,16 @@ const DETACHED_INSET_PX = 16;
 
 const cssId = (value: string): string => (typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/gu, "\\$&"));
 
-/** The element a target hangs on: the run with its note, or the first anchored sentence. */
+/**
+ * The element a target hangs on: the run with its note, or an anchored sentence of a draft. A
+ * draft's selection may run across more screens than a windowed list keeps mounted, so it hangs
+ * on its first sentence or, with that one out of the document, on its last: the end the user
+ * let go at is the one in view.
+ */
 function anchorElement(target: NoteTarget): HTMLElement | null {
   if (target.kind === "compose") {
-    return document.querySelector<HTMLElement>(`[data-notes] [data-segment-id="${cssId(target.anchor.startSegmentId)}"]`);
+    const sentence = (id: string): HTMLElement | null => document.querySelector<HTMLElement>(`[data-notes] [data-segment-id="${cssId(id)}"]`);
+    return sentence(target.anchor.startSegmentId) ?? sentence(target.anchor.endSegmentId);
   }
   for (const id of target.noteIds) {
     const run = document.querySelector<HTMLElement>(`[data-segment-id="${cssId(target.segmentId)}"] [data-note-ids~="${cssId(id)}"]`);

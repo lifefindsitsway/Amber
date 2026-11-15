@@ -20,10 +20,11 @@ const BUTTON = "flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-sunke
  * create the note at once in the colour last used for that mark; each press is one creation
  * intent with a fixed key, so 重试 after a failure resends exactly that request. 评论 opens a
  * draft in the note popover instead and writes nothing until it is saved. A selection longer
- * than NOTE_SPAN_MAX_SEGMENTS sentences, or whose sentences are not loaded, offers them
- * disabled with the reason.
+ * than NOTE_SPAN_MAX_SEGMENTS sentences, whose sentences are not loaded, or that `crossesGap`
+ * (spans text the view does not show) offers them disabled with the reason; the hidden text is
+ * named first, as showing it is the remedy.
  */
-export function NoteSelectionActions(props: { bounds: SelectionBounds; rect: SelectionRect; close: () => void }) {
+export function NoteSelectionActions(props: { bounds: SelectionBounds; rect: SelectionRect; crossesGap?: boolean; close: () => void }) {
   const { t } = useTranslation();
   const page = useContentPage();
   const ui = useNotesUi();
@@ -31,8 +32,15 @@ export function NoteSelectionActions(props: { bounds: SelectionBounds; rect: Sel
   const create = useCreateNote();
   const [intent, setIntent] = useState<NoteCreateIntent | undefined>(undefined);
   const result = anchorFromBounds(props.bounds, segments.data);
-  const reason = result.ok ? undefined : result.reason === "tooLong" ? t("notes.selection.tooLong", { limit: NOTE_SPAN_MAX_SEGMENTS }) : t("notes.selection.unavailable");
-  const disabled = !result.ok || create.isPending;
+  const crossesGap = props.crossesGap === true;
+  const reason = crossesGap
+    ? t("notes.selection.crossesGap")
+    : result.ok
+      ? undefined
+      : result.reason === "tooLong"
+        ? t("notes.selection.tooLong", { limit: NOTE_SPAN_MAX_SEGMENTS })
+        : t("notes.selection.unavailable");
+  const disabled = crossesGap || !result.ok || create.isPending;
 
   const send = (next: NoteCreateIntent): void => {
     setIntent(next);
@@ -45,7 +53,7 @@ export function NoteSelectionActions(props: { bounds: SelectionBounds; rect: Sel
     });
   };
   const mark = (kind: NoteMark): void => {
-    if (!result.ok) return;
+    if (crossesGap || !result.ok) return;
     send(newNoteIntent(page.content.id, { ...result.anchor, mark: kind, color: rememberedColor(kind) }));
   };
 
@@ -66,7 +74,7 @@ export function NoteSelectionActions(props: { bounds: SelectionBounds; rect: Sel
         disabled={disabled}
         title={reason}
         onClick={() => {
-          if (!result.ok) return;
+          if (crossesGap || !result.ok) return;
           if (ui.openCompose({ anchor: result.anchor, rect: props.rect, excerpt: result.excerpt })) props.close();
         }}
         data-testid="selection-note-comment"

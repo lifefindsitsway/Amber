@@ -2,6 +2,7 @@ import { Play } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDuration } from "../../format.ts";
+import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 
 /** One title line, in the title's own em. */
 const TITLE_LINE = 1.35;
@@ -31,6 +32,7 @@ export function ChapterHeading(props: { title: string; first: boolean; seek?: { 
         className={`min-w-0 font-semibold break-words ${seek === undefined ? "" : "cursor-pointer"}`}
         style={TITLE_TYPE}
         data-testid="chapter-title"
+        {...{ [READER_PART_ATTRIBUTE]: "title" }}
         // The title stays plain selectable text; the play button below is the keyboard path to the
         // same action, so the click here is a pointer convenience only.
         onClick={

@@ -549,12 +549,13 @@ describe("TranscriptTab notes", () => {
     await waitFor(() => expect(reads()).toBe(before + 1));
   });
 
-  it("keeps the row a drag started in mounted while the windowed reader scrolls, until the mouse is released", async () => {
+  it("keeps the row a selection starts in mounted however far the windowed reader scrolls, until the selection goes elsewhere", async () => {
     // jsdom has no layout: give every element a height so the virtualizer computes a window.
     const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 400 });
     onTestFinished(() => {
       if (original !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
+      window.getSelection()?.removeAllRanges();
     });
     const step = PARAGRAPH_GAP_MS * 2;
     const many = Array.from({ length: 200 }, (_, index) => segment(`p${index}`, index, index * step, index * step + 1_000, `第${index}段。`));
@@ -566,6 +567,11 @@ describe("TranscriptTab notes", () => {
     renderApp(<ContentPage />, { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" });
     const reader = await screen.findByTestId("transcript-reader");
     const start = await waitFor(() => reader.querySelector("[data-segment-id='p0']") as HTMLElement);
+    const changed = (): void => {
+      act(() => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+    };
     const scrollFar = (): void => {
       reader.scrollTop = 100_000;
       fireEvent.scroll(reader);
@@ -573,16 +579,22 @@ describe("TranscriptTab notes", () => {
 
     fireEvent.mouseDown(start);
     select(start.firstChild as Text, 1, 3);
-    act(() => {
-      document.dispatchEvent(new Event("selectionchange"));
-    });
+    changed();
     scrollFar();
     // The window moved to the end of the list; only the pin keeps the first row.
     await waitFor(() => expect(reader.querySelector("[data-segment-id='p199']")).not.toBeNull());
     expect(reader.querySelector("[data-segment-id='p100']")).toBeNull();
     expect(reader.querySelector("[data-segment-id='p0']")).not.toBeNull();
+    // Letting go keeps the selection, so the row stays: a later read still finds where it starts.
     fireEvent.mouseUp(document);
+    changed();
+    expect(reader.querySelector("[data-segment-id='p0']")).not.toBeNull();
+    // A selection made elsewhere releases it.
+    const last = reader.querySelector("[data-segment-id='p199']") as HTMLElement;
+    select(last.firstChild as Text, 0, 2);
+    changed();
     await waitFor(() => expect(reader.querySelector("[data-segment-id='p0']")).toBeNull());
+    expect(reader.querySelector("[data-segment-id='p199']")).not.toBeNull();
   });
 });
 

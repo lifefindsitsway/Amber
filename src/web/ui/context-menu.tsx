@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router";
 import { copyText } from "./clipboard.ts";
+import { selectionSourceFor, type RegionSelection } from "./selection-source.ts";
 
 /**
  * One clickable menu row. `onSelect` must only use data captured when the menu was built.
@@ -24,8 +25,12 @@ export type LinkKind = "internal" | "external" | "mailto" | "other";
 /** What the right click landed on, collected before any object is asked. */
 export interface MenuHit {
   target: Element;
-  /** The text of the selection, when the click fell inside it. */
-  selection?: { text: string };
+  /**
+   * The selection, when the click fell inside it: `text` is what "copy selection" takes.
+   * `region` is the reading of a region that answers for the selection itself, `null` when such
+   * a region has nothing to work on, and absent when none answers (the page is read instead).
+   */
+  selection?: { text: string; region?: RegionSelection | null };
   /** The nearest link around the target, with its resolved (exact) href. */
   anchor?: { href: string; kind: LinkKind; element: HTMLAnchorElement };
 }
@@ -82,25 +87,44 @@ export function isTextEditableTarget(target: Element): boolean {
 }
 
 /**
- * The selection text when the point lies inside the current selection. Only the
- * point-to-caret APIs decide; without them the selection is not used rather than guessed
- * from element containment (which misreads a partly selected element).
+ * The selection when the point lies inside the current selection. Only the point-to-caret APIs
+ * decide; without them the selection is not used rather than guessed from element containment
+ * (which misreads a partly selected element). A region answering for the selection supplies the
+ * text: the page may hold only part of what is selected.
  */
-export function selectionAt(x: number, y: number, doc: Document = document): { text: string } | undefined {
+export function selectionAt(x: number, y: number, doc: Document = document): MenuHit["selection"] {
   const selection = doc.getSelection();
   if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return undefined;
+  const point = caretPoint(doc, x, y);
+  if (point === undefined || !pointInSelection(selection, point)) return undefined;
+  const region = selectionSourceFor(selection);
+  const read = region?.source.read();
+  if (read !== undefined) return { text: read.menuCopyText, region: read };
   const text = selection.toString();
   if (text.trim() === "") return undefined;
-  const point = caretPoint(doc, x, y);
-  if (point === undefined) return undefined;
+  return region === undefined ? { text } : { text, region: null };
+}
+
+/**
+ * The selection a region keeps, for a menu asked for at a point outside the window. That is a
+ * menu opened from the keyboard: the browser places it at the start of the selection, which a
+ * selection running across many screens has left behind. The region then stands for the place.
+ */
+function keptSelection(doc: Document): { selection: NonNullable<MenuHit["selection"]>; element: Element } | undefined {
+  const region = selectionSourceFor(doc.getSelection());
+  const read = region?.source.read();
+  return region === undefined || read === undefined ? undefined : { selection: { text: read.menuCopyText, region: read }, element: region.element };
+}
+
+function pointInSelection(selection: Selection, point: { node: Node; offset: number }): boolean {
   for (let index = 0; index < selection.rangeCount; index += 1) {
     try {
-      if (selection.getRangeAt(index).isPointInRange(point.node, point.offset)) return { text };
+      if (selection.getRangeAt(index).isPointInRange(point.node, point.offset)) return true;
     } catch {
       // The point lies in another document or a doctype: not inside.
     }
   }
-  return undefined;
+  return false;
 }
 
 interface CaretDocument {
@@ -237,6 +261,9 @@ export function keepOpenForContextMenu(event: { target: EventTarget | null; prev
   if (event.target instanceof Element && event.target.closest("[data-context-menu]") !== null) event.preventDefault();
 }
 
+/** How far inside a region's box a menu opens when the point asked for lies outside the window. */
+const OFFSCREEN_INSET_PX = 8;
+
 export const MENU_CONTENT_CLASS = "z-50 min-w-40 rounded-md border border-line bg-surface p-1 text-sm shadow-lg";
 export const MENU_ITEM_CLASS = "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-[disabled]:cursor-default data-[disabled]:opacity-50 data-[highlighted]:bg-sunken";
 
@@ -294,10 +321,22 @@ export function ContextMenuHost(props: { blockNative: boolean; children: ReactNo
     const onContextMenu = (event: MouseEvent): void => {
       if (event.defaultPrevented) return;
       const raw = event.target;
-      const target = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null;
+      let target = raw instanceof Element ? raw : raw instanceof Node ? raw.parentElement : null;
       if (target === null || isTextEditableTarget(target)) return;
       const { blockNative, t: translate } = settings.current;
-      const selection = selectionAt(event.clientX, event.clientY);
+      let { clientX: x, clientY: y } = event;
+      let selection = selectionAt(x, y);
+      if (selection === undefined && (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight)) {
+        const kept = keptSelection(document);
+        if (kept !== undefined) {
+          selection = kept.selection;
+          target = kept.element;
+          // Opened inside the region, as near the reported point as the region reaches.
+          const box = kept.element.getBoundingClientRect();
+          x = Math.min(Math.max(x, box.left + OFFSCREEN_INSET_PX), Math.max(box.left, box.right - OFFSCREEN_INSET_PX));
+          y = Math.min(Math.max(y, box.top + OFFSCREEN_INSET_PX), Math.max(box.top, box.bottom - OFFSCREEN_INSET_PX));
+        }
+      }
       const link = linkAt(target, window.location.origin);
       const hit: MenuHit = { target, ...(selection === undefined ? {} : { selection }), ...(link === undefined ? {} : { anchor: link }) };
       const touch = "pointerType" in event && (event as PointerEvent).pointerType === "touch";
@@ -306,7 +345,6 @@ export function ContextMenuHost(props: { blockNative: boolean; children: ReactNo
       event.preventDefault();
       const entries = assembleMenu(hit, model, blockNative, translate);
       if (entries.length === 0) return;
-      let { clientX: x, clientY: y } = event;
       if (x === 0 && y === 0) {
         // Menu key / Shift+F10: no pointer position, so open under the target.
         const box = target.getBoundingClientRect();

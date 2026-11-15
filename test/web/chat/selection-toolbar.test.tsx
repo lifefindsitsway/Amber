@@ -1,9 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ChatComposer, ChatComposerProvider } from "../../../src/web/chat/chat-composer.tsx";
 import { CHAT_MESSAGE_MAX_CHARS } from "../../../src/shared/defaults.ts";
-import { explainSelectionQuestion, selectionForExplain, SelectionToolbar, type SelectionSnapshot } from "../../../src/web/chat/selection-toolbar.tsx";
+import {
+  explainIsTruncated,
+  explainSelectionQuestion,
+  selectionForExplain,
+  SelectionToolbar,
+  toolbarPosition,
+  type SelectionRect,
+  type SelectionSnapshot,
+} from "../../../src/web/chat/selection-toolbar.tsx";
 import { initI18n } from "../../../src/web/i18n.ts";
+import { registerSelectionSource, type RegionSelection } from "../../../src/web/ui/selection-source.ts";
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
@@ -212,5 +222,353 @@ describe("SelectionToolbar actions", () => {
         else Object.defineProperty(target, key, descriptor);
       }
     }
+  });
+});
+
+describe("explain question cut", () => {
+  const t = initI18n().t;
+  const room = CHAT_MESSAGE_MAX_CHARS - t("chat.explainSelectionPrompt", { text: "" }).length;
+  // With the u flag a class of surrogates matches only unpaired halves.
+  const loneSurrogate = /[\uD800-\uDFFF]/u;
+
+  it("never leaves half of a surrogate pair where an emoji straddles the cut", () => {
+    // The cut keeps room - 1 units; the emoji's high half sits at the last kept unit.
+    const text = `${"长".repeat(room - 2)}😀${"长".repeat(10)}`;
+    expect(text.charCodeAt(room - 2)).toBe(0xd83d);
+    const question = explainSelectionQuestion(t, text);
+    expect(loneSurrogate.test(question)).toBe(false);
+    expect(question.length).toBeLessThanOrEqual(CHAT_MESSAGE_MAX_CHARS);
+    expect(question.endsWith(`${"长".repeat(room - 2)}…」`)).toBe(true);
+  });
+
+  it("keeps a whole emoji that ends right at the cut, and short text unchanged", () => {
+    const text = `${"长".repeat(room - 3)}😀${"长".repeat(10)}`;
+    expect(explainSelectionQuestion(t, text).endsWith("😀…」")).toBe(true);
+    expect(explainSelectionQuestion(t, "短😀")).toBe("解释一下「短😀」");
+  });
+
+  it("says whether the text will be cut", () => {
+    expect(explainIsTruncated(t, "长".repeat(room))).toBe(false);
+    expect(explainIsTruncated(t, "长".repeat(room + 1))).toBe(true);
+  });
+});
+
+const box = (top: number, bottom: number, left = 100, right = left + 10): SelectionRect => ({ top, bottom, left, right, width: right - left, height: bottom - top });
+
+describe("toolbarPosition", () => {
+  const region = box(100, 500, 50, 650);
+  const size = { width: 200, height: 30 };
+  const place = (first: SelectionRect | undefined, focus: SelectionRect | undefined, over: Partial<Parameters<typeof toolbarPosition>[0]> = {}) =>
+    toolbarPosition({ first, focus, region, size, viewportWidth: 1000, ...over });
+
+  it("sits above the first line when it shows", () => {
+    expect(place(box(200, 220), box(400, 420, 300))).toEqual({ top: 164, left: 100, anchor: "first" });
+  });
+
+  it("goes below the first line when there is no room above it", () => {
+    expect(place(box(120, 140), undefined)).toEqual({ top: 146, left: 100, anchor: "first" });
+  });
+
+  it("sits below the released end when the first line is off screen", () => {
+    expect(place(box(0, 20), box(300, 320, 400))).toEqual({ top: 326, left: 400, anchor: "focus" });
+    expect(place(undefined, box(300, 320, 400))).toEqual({ top: 326, left: 400, anchor: "focus" });
+  });
+
+  it("goes above the released end when there is no room below it", () => {
+    expect(place(box(0, 20), box(470, 490, 400))).toEqual({ top: 434, left: 400, anchor: "focus" });
+  });
+
+  it("falls back to the region's top edge when neither end shows", () => {
+    expect(place(box(0, 20), box(600, 620))).toEqual({ top: 108, left: 58, anchor: "region" });
+    expect(place(undefined, undefined)).toEqual({ top: 108, left: 58, anchor: "region" });
+  });
+
+  it("treats a box that only touches the region's edge as off screen", () => {
+    expect(place(box(80, 100), box(500, 520)).anchor).toBe("region");
+  });
+
+  it("stays inside the region at every edge", () => {
+    // Right: the region's edge, then the viewport's when it is narrower.
+    expect(place(box(200, 220, 600), undefined).left).toBe(442);
+    expect(place(box(200, 220, 600), undefined, { viewportWidth: 500 }).left).toBe(292);
+    // Left.
+    expect(place(box(200, 220, 0), undefined).left).toBe(58);
+    expect(place(box(200, 220, 0), undefined, { region: box(100, 500, -20, 650) }).left).toBe(8);
+    // Bottom: below a tall first line.
+    expect(place(box(101, 499), undefined).top).toBe(462);
+    // Top: above a tall released end.
+    expect(place(undefined, box(110, 490)).top).toBe(108);
+  });
+
+  it("keeps to the region's top left corner when the region is smaller than the toolbar", () => {
+    expect(place(box(200, 220, 300), undefined, { region: box(100, 500, 50, 150) }).left).toBe(58);
+    expect(place(box(105, 115), undefined, { region: box(100, 120, 50, 650) }).top).toBe(108);
+  });
+});
+
+const BOUNDS = { revisionId: "r1", start: { segmentId: "s1", offset: 0 }, end: { segmentId: "s2", offset: 2 } };
+
+function reading(over: Partial<RegionSelection> = {}): RegionSelection {
+  return {
+    version: 1,
+    text: "先看召回。 再看",
+    quote: { transcriptRevisionId: "r1", segmentId: "s1" as never, text: "先看召回。" },
+    copyText: "先看召回。\n再看",
+    menuCopyText: "先看召回。\n\n再看",
+    bounds: BOUNDS,
+    sentenceCount: 2,
+    crossesGap: true,
+    ...over,
+  };
+}
+
+/** Counts mounts of the extra actions, so a kept snapshot can be told from a new one. */
+function Mounted(props: { onMount: () => void }) {
+  const { onMount } = props;
+  useEffect(onMount, [onMount]);
+  return <button type="button" data-testid="extra-action" />;
+}
+
+/**
+ * A region that keeps its own account of the selection, not marked explainable for the page
+ * reading; `prepare` runs before the selection is released.
+ */
+function renderSourced(read: { current: RegionSelection | undefined }, prepare?: (region: HTMLElement) => void) {
+  const composer = new ChatComposer();
+  const seen: SelectionSnapshot[] = [];
+  const mounts = { count: 0 };
+  const onMount = (): void => {
+    mounts.count += 1;
+  };
+  render(
+    <ChatComposerProvider composer={composer}>
+      <div data-testid="region">
+        <p>
+          <span id="a">先看召回。</span>
+          <span id="b">再看重排序。</span>
+        </p>
+      </div>
+      <SelectionToolbar
+        actions={(snapshot) => {
+          seen.push(snapshot);
+          return <Mounted onMount={onMount} />;
+        }}
+      />
+    </ChatComposerProvider>,
+  );
+  const region = screen.getByTestId("region");
+  onTestFinished(registerSelectionSource(region, { current: { read: () => read.current } }));
+  const range = document.createRange();
+  range.setStart(document.querySelector("#a")?.firstChild as Text, 0);
+  range.setEnd(document.querySelector("#b")?.firstChild as Text, 2);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(range);
+  prepare?.(region);
+  fireEvent.mouseUp(document);
+  return { composer, seen, mounts, region };
+}
+
+/** Stubs the geometry jsdom lacks: the range's lines, the caret at its focus, the region and the toolbar size. */
+function stubGeometry(region: HTMLElement, boxes: { first: SelectionRect | undefined; focus: SelectionRect; region: SelectionRect }) {
+  const restore: Array<() => void> = [];
+  const stub = (target: object, key: string, descriptor: PropertyDescriptor): void => {
+    const original = Object.getOwnPropertyDescriptor(target, key);
+    Object.defineProperty(target, key, { configurable: true, ...descriptor });
+    restore.push(() => {
+      if (original === undefined) delete (target as Record<string, unknown>)[key];
+      else Object.defineProperty(target, key, original);
+    });
+  };
+  const rect = (b: SelectionRect): DOMRect => DOMRect.fromRect({ x: b.left, y: b.top, width: b.width, height: b.height });
+  stub(Range.prototype, "getClientRects", {
+    value(this: Range) {
+      if (this.collapsed) return [rect(boxes.focus)];
+      return boxes.first === undefined ? [] : [rect(boxes.first)];
+    },
+  });
+  stub(Range.prototype, "getBoundingClientRect", { value: () => rect(boxes.first ?? boxes.focus) });
+  stub(HTMLElement.prototype, "offsetWidth", { get: () => 200 });
+  stub(HTMLElement.prototype, "offsetHeight", { get: () => 30 });
+  stub(window, "innerWidth", { value: 1000 });
+  region.getBoundingClientRect = () => rect(boxes.region);
+  onTestFinished(() => {
+    for (const undo of restore.reverse()) undo();
+  });
+}
+
+describe("SelectionToolbar with a region that keeps its own selection", () => {
+  it("reads a selection outside every such region off the page, without a version or count", async () => {
+    renderToolbar();
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    expect(toolbar.hasAttribute("data-selection-version")).toBe(false);
+    expect(screen.queryByTestId("selection-count")).toBeNull();
+  });
+
+  it("explains the region's text and quote, not the page's", async () => {
+    const { composer } = renderSourced({ current: reading({ text: "整段文字", quote: { transcriptRevisionId: "r9", segmentId: "s9" as never, text: "整句" } }) });
+    fireEvent.click(await screen.findByTestId("selection-explain"));
+    expect(composer.snapshot().prefill?.text).toBe("解释一下「整段文字」");
+    expect(composer.snapshot().quote).toEqual({ transcriptRevisionId: "r9", segmentId: "s9", text: "整句" });
+  });
+
+  it("copies the region's copy text", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderSourced({ current: reading() });
+    fireEvent.click(await screen.findByTestId("selection-copy"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("先看召回。\n再看"));
+  });
+
+  it("hands the actions the region's bounds, sentence count and gap", async () => {
+    const { seen } = renderSourced({ current: reading({ version: 7 }) });
+    await screen.findByTestId("extra-action");
+    expect(seen.at(-1)).toMatchObject({ bounds: BOUNDS, sentenceCount: 2, crossesGap: true, version: 7 });
+    expect(screen.getByTestId("selection-toolbar").getAttribute("data-selection-version")).toBe("7");
+  });
+
+  it("shows nothing when the region has nothing to work on", () => {
+    renderSourced({ current: undefined });
+    expect(screen.queryByTestId("selection-toolbar")).toBeNull();
+  });
+
+  it("keeps the snapshot for a second release of the same selection and takes a new one for a new selection", async () => {
+    const read = { current: reading({ version: 3, text: "第一次" }) };
+    const { seen, mounts } = renderSourced(read);
+    await screen.findByTestId("extra-action");
+    expect(mounts.count).toBe(1);
+    // Same version: the same selection, even if a later read were to differ.
+    read.current = reading({ version: 3, text: "不该取到" });
+    fireEvent.keyUp(document);
+    fireEvent.mouseUp(document);
+    expect(mounts.count).toBe(1);
+    expect(seen.at(-1)?.text).toBe("第一次");
+    read.current = reading({ version: 4, text: "第二次" });
+    fireEvent.keyUp(document);
+    await waitFor(() => expect(mounts.count).toBe(2));
+    expect(seen.at(-1)?.text).toBe("第二次");
+    expect(screen.getByTestId("selection-toolbar").getAttribute("data-selection-version")).toBe("4");
+  });
+
+  it("closes when the region later has nothing to work on", async () => {
+    const read: { current: RegionSelection | undefined } = { current: reading() };
+    renderSourced(read);
+    await screen.findByTestId("selection-toolbar");
+    read.current = undefined;
+    fireEvent.mouseUp(document);
+    expect(screen.queryByTestId("selection-toolbar")).toBeNull();
+  });
+
+  it("places itself beside the released end when the first line is off screen", async () => {
+    renderSourced({ current: reading() }, (region) => stubGeometry(region, { first: box(0, 20), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) }));
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    await waitFor(() => expect(toolbar.style.top).toBe("326px"));
+    expect(toolbar.style.left).toBe("400px");
+  });
+
+  it("follows the selection to where it lies after the window was resized, keeping the snapshot", async () => {
+    const boxes = { first: box(200, 220, 120), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) };
+    const { mounts } = renderSourced({ current: reading() }, (region) => stubGeometry(region, boxes));
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    expect(toolbar.style.top).toBe("164px");
+    // The pane moved and reflowed: the first line now sits elsewhere.
+    boxes.first = box(260, 280, 90);
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(toolbar.style.top).toBe("224px"));
+    expect(toolbar.style.left).toBe("90px");
+    expect(mounts.count).toBe(1);
+  });
+
+  it("follows the selection as its region scrolls, down to the region's edge when both ends are out of view", async () => {
+    const boxes: { first: SelectionRect | undefined; focus: SelectionRect; region: SelectionRect } = { first: box(200, 220, 120), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) };
+    const { mounts, region } = renderSourced({ current: reading() }, (element) => stubGeometry(element, boxes));
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    expect(toolbar.style.top).toBe("164px");
+    // Scrolled: the first line left the region, the released end is still in it.
+    boxes.first = box(-300, -280, 120);
+    boxes.focus = box(150, 170, 400, 400);
+    fireEvent.scroll(region);
+    await waitFor(() => expect(toolbar.style.top).toBe("176px"));
+    // Scrolled on: both ends are out of view.
+    boxes.focus = box(-100, -80, 400, 400);
+    fireEvent.scroll(region);
+    await waitFor(() => expect(toolbar.style.top).toBe("108px"));
+    expect(toolbar.style.left).toBe("58px");
+    expect(mounts.count).toBe(1);
+  });
+
+  it("hands a follow-up the selection's own box while it lies inside the region, and the end in view once it runs beyond", async () => {
+    const boxes: { first: SelectionRect | undefined; focus: SelectionRect; region: SelectionRect } = { first: box(200, 220, 120), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) };
+    const { seen, region } = renderSourced({ current: reading() }, (element) => stubGeometry(element, boxes));
+    await screen.findByTestId("selection-toolbar");
+    // The stubbed range is as tall as its first line: inside the region, it is its own box.
+    expect(seen.at(-1)?.rect).toMatchObject({ top: 200, bottom: 220 });
+    // Scrolled: the selection starts far above the region now and the released end is in view.
+    boxes.first = box(-3000, -2980, 120);
+    fireEvent.scroll(region);
+    await waitFor(() => expect(seen.at(-1)?.rect).toMatchObject({ top: 300, bottom: 320, left: 400 }));
+  });
+
+  it("stays where it is when something other than its region scrolls", async () => {
+    const boxes = { first: box(200, 220, 120), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) };
+    renderSourced({ current: reading() }, (element) => stubGeometry(element, boxes));
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    const aside = document.createElement("div");
+    document.body.append(aside);
+    onTestFinished(() => aside.remove());
+    boxes.first = box(260, 280, 90);
+    fireEvent.scroll(aside);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(toolbar.style.top).toBe("164px");
+  });
+
+  it("does not bring back a toolbar that was dismissed when the window is resized", async () => {
+    renderSourced({ current: reading() });
+    fireEvent.click(await screen.findByTestId("selection-copy"));
+    expect(screen.queryByTestId("selection-toolbar")).toBeNull();
+    fireEvent(window, new Event("resize"));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId("selection-toolbar")).toBeNull();
+  });
+
+  it("places itself above the first line when it shows", async () => {
+    renderSourced({ current: reading() }, (region) => stubGeometry(region, { first: box(200, 220, 120), focus: box(300, 320, 400, 400), region: box(100, 500, 50, 650) }));
+    const toolbar = await screen.findByTestId("selection-toolbar");
+    expect(toolbar.style.top).toBe("164px");
+    expect(toolbar.style.left).toBe("120px");
+  });
+
+  describe("count hint", () => {
+    const t = initI18n().t;
+    const room = CHAT_MESSAGE_MAX_CHARS - t("chat.explainSelectionPrompt", { text: "" }).length;
+
+    function open(over: Partial<RegionSelection>, firstShows: boolean): HTMLElement | null {
+      renderSourced({ current: reading(over) }, (region) => stubGeometry(region, { first: firstShows ? box(200, 220) : box(0, 20), focus: box(300, 320), region: box(100, 500, 50, 650) }));
+      expect(screen.getByTestId("selection-toolbar")).toBeTruthy();
+      return screen.queryByTestId("selection-count");
+    }
+
+    it("says nothing for one sentence", () => {
+      expect(open({ sentenceCount: 1 }, false)).toBeNull();
+    });
+
+    it("says nothing when both ends show and explain takes it whole", () => {
+      expect(open({ sentenceCount: 3 }, true)).toBeNull();
+    });
+
+    it("counts the sentences when an end is off screen", () => {
+      const hint = open({ sentenceCount: 3 }, false);
+      expect(hint?.textContent).toBe("已选 3 句");
+      expect(hint?.parentElement?.firstElementChild).toBe(hint);
+    });
+
+    it("says explain takes only the beginning when the text is too long, wherever its ends are", () => {
+      expect(open({ sentenceCount: 1, text: "长".repeat(room + 1) }, true)?.textContent).toBe("已选 1 句 · 解释只取开头部分");
+    });
+
+    it("says nothing without geometry to tell what shows", () => {
+      renderSourced({ current: reading({ sentenceCount: 5 }) });
+      expect(screen.getByTestId("selection-toolbar")).toBeTruthy();
+      expect(screen.queryByTestId("selection-count")).toBeNull();
+    });
   });
 });

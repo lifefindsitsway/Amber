@@ -1,5 +1,5 @@
 import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from "react";
 import { captureAnchor, restoreAnchor as restoreDomAnchor, ROW_KEY_ATTRIBUTE, TOLERANCE_PX, type ScrollAnchor } from "./scroll-anchor.ts";
 
 /** Below this many rows everything renders; long transcripts switch to windowing. */
@@ -58,22 +58,39 @@ export function VirtualRows<T>(props: {
   estimateSize: number;
   scrollToIndex?: number | undefined;
   /**
-   * A row kept mounted even when it scrolls out of the window, so a drag selection that
-   * started in it keeps its anchor node while the list auto-scrolls.
+   * Rows (by `keyOf`) kept mounted even when they scroll out of the window, so a text selection
+   * keeps the nodes its two ends sit in however far the list scrolls. By key, not by index: the
+   * rows stay the same ones when rows are added or removed around them.
    */
-  pinnedIndex?: number | undefined;
+  pinnedKeys?: readonly string[] | undefined;
+  /** Receives the scrolling element. */
+  scrollerRef?: ((element: HTMLDivElement | null) => void) | undefined;
   className?: string;
   testId?: string;
   ref?: Ref<VirtualRowsHandle> | undefined;
 }) {
   const parent = useRef<HTMLDivElement>(null);
   const windowed = props.items.length >= VIRTUALIZE_FROM_ROWS;
-  const pinned = props.pinnedIndex;
+  // The keys as one string, so a new array holding the same keys does not look like a change.
+  const pinnedKeyList = (props.pinnedKeys ?? []).join("\n");
+  const rows = props.items;
+  // Callers rebuild `keyOf` on every render; read at call time, it does not make the indexes look stale.
+  const rowKey = useRef(props.keyOf);
+  rowKey.current = props.keyOf;
+  const pinned = useMemo(() => {
+    if (pinnedKeyList === "") return [];
+    const wanted = new Set(pinnedKeyList.split("\n"));
+    const found: number[] = [];
+    rows.forEach((item, index) => {
+      if (wanted.has(rowKey.current(item))) found.push(index);
+    });
+    return found;
+  }, [pinnedKeyList, rows]);
   const rangeExtractor = useCallback(
     (range: Range) => {
       const indexes = defaultRangeExtractor(range);
-      if (pinned === undefined || pinned < 0 || pinned >= range.count || indexes.includes(pinned)) return indexes;
-      return [...indexes, pinned].sort((a, b) => a - b);
+      const extra = pinned.filter((index) => index < range.count && !indexes.includes(index));
+      return extra.length === 0 ? indexes : [...indexes, ...extra].sort((a, b) => a - b);
     },
     [pinned],
   );
@@ -84,6 +101,15 @@ export function VirtualRows<T>(props: {
     overscan: 8,
     rangeExtractor,
   });
+  const { scrollerRef } = props;
+  // Stable while the caller's callback is: a ref that changed every render would be detached and attached again each time.
+  const setScroller = useCallback(
+    (element: HTMLDivElement | null) => {
+      parent.current = element;
+      scrollerRef?.(element);
+    },
+    [scrollerRef],
+  );
   const target = props.scrollToIndex;
   const rowsBox = useRef<HTMLDivElement>(null);
   const restoreFrame = useRef<number | undefined>(undefined);
@@ -203,7 +229,7 @@ export function VirtualRows<T>(props: {
   }, [target, windowed, virtualizer]);
 
   return (
-    <div ref={parent} className={`overflow-auto ${props.className ?? ""}`} data-testid={props.testId}>
+    <div ref={setScroller} className={`overflow-auto ${props.className ?? ""}`} data-testid={props.testId}>
       {windowed ? (
         <div ref={rowsBox} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((row) => {

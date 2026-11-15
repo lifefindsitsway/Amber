@@ -30,6 +30,7 @@ function Harness() {
     <>
       <button type="button" data-testid="toggle-run" onClick={() => setShown(!shown)} />
       <button type="button" data-testid="start-compose" onClick={() => ui.openCompose({ anchor: ANCHOR, rect: RECT, excerpt: "今天" })} />
+      <button type="button" data-testid="start-compose-across" onClick={() => ui.openCompose({ anchor: { ...ANCHOR, endSegmentId: "s2", endOffset: 3 }, rect: RECT, excerpt: "今天讲检索。后一句" })} />
       <div data-revision-id="r1" data-notes>
         {shown ? (
           <span data-segment-id="s1">
@@ -39,6 +40,7 @@ function Harness() {
             讲检索。
           </span>
         ) : null}
+        <span data-segment-id="s2">后一句。</span>
       </div>
       <button type="button" data-testid="transcript-notes-link" />
       <NotePopover />
@@ -245,6 +247,25 @@ describe("NotePopover composing a comment", () => {
     expect(sent.length).toBe(2);
     expect(sent[1]?.headers["idempotency-key"]).toBe(sent[0]?.headers["idempotency-key"]);
     expect(sent[1]?.body).toEqual(sent[0]?.body);
+  });
+
+  it("stays open for a selection whose first sentence is not in the document while its last one is", async () => {
+    open();
+    // A selection across more screens than the windowed list keeps: its first row is unmounted.
+    fireEvent.click(screen.getByTestId("toggle-run"));
+    fireEvent.click(screen.getByTestId("start-compose-across"));
+    const compose = await screen.findByTestId("note-compose");
+    await settle();
+    expect(screen.getByTestId("note-popover").contains(compose)).toBe(true);
+    expect(document.activeElement).toBe(within(compose).getByTestId("note-compose-input"));
+  });
+
+  it("closes an untouched draft once neither end of its selection is in the document", async () => {
+    open();
+    fireEvent.click(screen.getByTestId("start-compose"));
+    await screen.findByTestId("note-compose");
+    fireEvent.click(screen.getByTestId("toggle-run"));
+    await waitFor(() => expect(screen.queryByTestId("note-compose")).toBeNull());
   });
 
   it("refuses a second draft while one is unsaved", async () => {

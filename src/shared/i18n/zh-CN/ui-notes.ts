@@ -17,6 +17,7 @@ export const notes = {
     comment: "评论",
     tooLong: "一条笔记最多跨 {{limit}} 句",
     unavailable: "选区不在当前页面上，无法做笔记",
+    crossesGap: "选区包含未显示的原文，请显示完整原文后再建笔记",
     failed: "笔记没有保存成功",
     retry: "重试",
   },

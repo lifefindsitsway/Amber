@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { noteDtoSchema, noteListDtoSchema, type NoteDto } from "../../src/shared/dto/note.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, readerTypographyKey, type ReaderTypography } from "../../src/shared/reader-typography.ts";
+import { readingSeparator } from "../../src/shared/reading.ts";
 import { BILI_REVISION, BILIBILI_CONTENT, installMockBackend, segmentId } from "./mock-backend.ts";
 import { SPEAKER_STUDENT, SPEAKER_TEACHER, SPEAKERS_CONTENT, SPEAKERS_REVISION, speakerSentence, speakersRequests, speakerStartMs, type SpeakerSequence } from "./mock-speakers.ts";
 
@@ -816,11 +817,11 @@ test.describe("reader layout: selections", () => {
     // From inside the teacher's sentence 2 into the student's sentence 3, over the student's header.
     await dragSelect(page, { segment: sid(1), offset: 2 }, { segment: sid(2), offset: 5 });
     const text = await explained(page);
-    expect(squeeze(text)).toBe(squeeze(`${textOf(page, 1).slice(2)}${textOf(page, 2).slice(0, 5)}`));
+    expect(text).toBe(`${textOf(page, 1).slice(2)}${readingSeparator(textOf(page, 1), textOf(page, 2), false)}${textOf(page, 2).slice(0, 5)}`);
     expect(text).not.toMatch(/林老师|发言人 2|\d:\d\d/u);
   });
 
-  test("「解释」 across a chapter heading includes the title", async ({ page }) => {
+  test("「解释」 across a chapter heading includes the title, set off by one space either side", async ({ page }) => {
     await installMockBackend(page);
     speakersRequests(page).chapters = [
       { start: 0, title: "开场" },
@@ -829,15 +830,12 @@ test.describe("reader layout: selections", () => {
     await open(page, { outputsWidth: 900 });
     await dragSelect(page, { segment: sid(1), offset: 2 }, { segment: sid(2), offset: 5 });
     const text = await explained(page);
-    expect(squeeze(text)).toBe(squeeze(`${textOf(page, 1).slice(2)}第二章：提问环节${textOf(page, 2).slice(0, 5)}`));
+    expect(text).toBe(`${textOf(page, 1).slice(2)} 第二章：提问环节 ${textOf(page, 2).slice(0, 5)}`);
   });
 
   test("「解释」 over rows a windowed reader unmounts during the drag keeps every sentence and no name or time", async ({ page }) => {
-    // A known defect: 「解释」 reads its text off the page, and a windowed reader has unmounted the
-    // rows between the two ends of a long drag, so their sentences are missing. Expected to fail
-    // until the text is taken from the sentences the selection covers; it then reports as passing
-    // unexpectedly, which is the cue to drop this line.
-    test.fail(true, "「解释」 loses the sentences of rows a windowed reader has unmounted");
+    // The rows between the two ends of a long drag are not in the page: the text must come from
+    // the sentences the selection covers, not from what is mounted.
     await installMockBackend(page);
     speakersRequests(page).sequence = alternating(3000);
     const first = 1500;
@@ -870,10 +868,11 @@ test.describe("reader layout: selections", () => {
     await page.mouse.up();
 
     const text = await explained(page);
-    const expected = Array.from({ length: last - first + 1 }, (_, step) => first + step)
-      .map((index) => (index === first ? textOf(page, index).slice(2) : index === last ? textOf(page, index).slice(0, 4) : textOf(page, index)))
-      .join("");
-    expect(squeeze(text)).toBe(squeeze(expected));
+    const expected = Array.from({ length: last - first + 1 }, (_, step) => first + step).reduce((joined, index) => {
+      const piece = index === first ? textOf(page, index).slice(2) : index === last ? textOf(page, index).slice(0, 4) : textOf(page, index);
+      return index === first ? piece : `${joined}${readingSeparator(textOf(page, index - 1), textOf(page, index), false)}${piece}`;
+    }, "");
+    expect(text).toBe(expected);
   });
 
   test("a note from a selection across two turns anchors on the sentences either side", async ({ page }) => {

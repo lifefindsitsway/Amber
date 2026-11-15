@@ -144,5 +144,10 @@ export const chat = {
     label: "划词工具",
     explain: "解释",
     copy: "复制",
+    selected: "已选 {{count}} 句",
+    selectedTruncated: "已选 {{count}} 句 · 解释只取开头部分",
+  },
+  selection: {
+    skipped: "（略过未显示的内容）",
   },
 } as const;

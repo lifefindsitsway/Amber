@@ -3,6 +3,7 @@ import { useState } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextMenuHost, isTextEditableTarget, linkAt, selectionAt, useContextMenuTarget, type MenuHit, type MenuModel, type MenuProvider } from "../../../src/web/ui/context-menu.tsx";
+import { registerSelectionSource, type RegionSelection } from "../../../src/web/ui/selection-source.ts";
 
 function Target(props: { provide: MenuProvider; testId?: string; children?: React.ReactNode }) {
   const ref = useContextMenuTarget<HTMLDivElement>(props.provide);
@@ -316,5 +317,109 @@ describe("helpers", () => {
     expect(selectionAt(1, 1)).toEqual({ text: "abc" });
     delete (document as unknown as Record<string, unknown>)["caretPositionFromPoint"];
     expect(selectionAt(1, 1)).toBeUndefined();
+  });
+});
+
+describe("selectionAt with a region that keeps its own selection", () => {
+  const read: RegionSelection = { version: 1, text: "甲 乙 丙", copyText: "甲\n乙\n丙", menuCopyText: "甲\n\n乙\n\n丙", sentenceCount: 3, crossesGap: false };
+
+  /** Selects `text` inside a registered region and points the caret at `pointAt`. */
+  function selectInRegion(text: string, answer: RegionSelection | undefined, pointAt = 1) {
+    const region = document.createElement("div");
+    const span = document.createElement("span");
+    span.textContent = text;
+    region.append(span);
+    document.body.append(region);
+    const undo = registerSelectionSource(region, { current: { read: () => answer } });
+    const node = span.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, text.length);
+    window.getSelection()?.addRange(range);
+    (document as unknown as Record<string, unknown>)["caretPositionFromPoint"] = () => ({ offsetNode: node, offset: pointAt });
+    return () => {
+      undo();
+      region.remove();
+    };
+  }
+
+  it("takes the region's menu copy text and reading", () => {
+    const done = selectInRegion("甲乙", read);
+    expect(selectionAt(1, 1)).toEqual({ text: "甲\n\n乙\n\n丙", region: read });
+    done();
+  });
+
+  it("keeps the page's text and marks a region with nothing to work on", () => {
+    const done = selectInRegion("陈明", undefined);
+    expect(selectionAt(1, 1)).toEqual({ text: "陈明", region: null });
+    done();
+  });
+
+  it("answers for a region's selection even when the page holds no text of it", () => {
+    const done = selectInRegion("   ", read);
+    expect(selectionAt(1, 1)).toEqual({ text: read.menuCopyText, region: read });
+    done();
+  });
+
+  it("still requires the point to lie inside the selection", () => {
+    const span = document.createElement("span");
+    span.textContent = "外面";
+    document.body.append(span);
+    const done = selectInRegion("甲乙", read);
+    (document as unknown as Record<string, unknown>)["caretPositionFromPoint"] = () => ({ offsetNode: span.firstChild, offset: 1 });
+    expect(selectionAt(1, 1)).toBeUndefined();
+    done();
+    span.remove();
+  });
+
+  it("opens the region's menu for a keyboard menu whose point is off screen, inside the region", () => {
+    host(
+      <Target provide={(hit) => (hit.selection?.region == null ? undefined : { kind: "text", entries: [] })} testId="reader">
+        <span data-testid="text">甲乙</span>
+      </Target>,
+    );
+    const reader = screen.getByTestId("reader");
+    const undo = registerSelectionSource(reader, { current: { read: () => read } });
+    reader.getBoundingClientRect = () => DOMRect.fromRect({ x: 100, y: 200, width: 400, height: 300 });
+    const node = screen.getByTestId("text").firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, 2);
+    window.getSelection()?.addRange(range);
+    // The browser reports the selection's start, far above the window, and the page as target.
+    expect(rightClick(document.documentElement, { clientX: 150, clientY: -2000 })).toBe(true);
+    expect(screen.getByTestId("context-menu-item-copy-selection")).toBeTruthy();
+    const anchor = screen.getByTestId("context-menu-anchor");
+    expect(anchor.style.left).toBe("150px");
+    expect(anchor.style.top).toBe("208px");
+    undo();
+  });
+
+  it("leaves an off-screen point alone when no region keeps a selection", () => {
+    host(<Target provide={() => objectMenu()} />);
+    expect(rightClick(document.documentElement, { clientX: 150, clientY: -2000 })).toBe(false);
+    expect(screen.queryByTestId("context-menu")).toBeNull();
+  });
+
+  it("puts the region's text into copy selection", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    host(
+      <Target provide={() => objectMenu()}>
+        <span data-testid="text">甲乙</span>
+      </Target>,
+    );
+    const element = screen.getByTestId("text");
+    const undo = registerSelectionSource(element, { current: { read: () => read } });
+    const node = element.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, 2);
+    window.getSelection()?.addRange(range);
+    (document as unknown as Record<string, unknown>)["caretPositionFromPoint"] = () => ({ offsetNode: node, offset: 1 });
+    rightClick(element);
+    fireEvent.click(screen.getByTestId("context-menu-item-copy-selection"));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(read.menuCopyText));
+    undo();
   });
 });

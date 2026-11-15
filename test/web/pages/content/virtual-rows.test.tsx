@@ -134,8 +134,8 @@ describe("VirtualRows scrollToIndex", () => {
   });
 });
 
-describe("VirtualRows pinned row", () => {
-  it("keeps the pinned row mounted outside the window and drops it once unpinned", () => {
+describe("VirtualRows pinned rows", () => {
+  it("keeps the pinned rows mounted outside the window and drops them once unpinned", () => {
     // jsdom has no layout: give every element a height so the virtualizer computes a window.
     const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 400 });
@@ -143,16 +143,37 @@ describe("VirtualRows pinned row", () => {
       if (original !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", original);
     });
     const items = Array.from({ length: 300 }, (_, index) => `row ${index}`);
-    const view = (pinnedIndex: number | undefined) => (
-      <VirtualRows items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} testId="rows" pinnedIndex={pinnedIndex} />
+    const view = (rows: readonly string[], pinnedKeys: readonly string[] | undefined) => (
+      <VirtualRows items={rows} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} testId="rows" pinnedKeys={pinnedKeys} />
     );
-    const { rerender } = render(view(250));
+    const { rerender } = render(view(items, ["row 250", "row 120"]));
     const list = screen.getByTestId("rows");
-    expect(list.querySelector('[data-row-index="0"]')).not.toBeNull();
-    expect(list.querySelector('[data-row-index="100"]')).toBeNull();
-    expect(list.querySelector('[data-row-index="250"]')).not.toBeNull();
-    rerender(view(undefined));
-    expect(list.querySelector('[data-row-index="250"]')).toBeNull();
+    const mounted = (key: string): boolean => Array.from(list.querySelectorAll("[data-row-key]")).some((row) => row.getAttribute("data-row-key") === key);
+    expect(mounted("row 0")).toBe(true);
+    expect(mounted("row 100")).toBe(false);
+    expect(mounted("row 120")).toBe(true);
+    expect(mounted("row 250")).toBe(true);
+    // Rows in document order, the pinned ones after the window.
+    const order = Array.from(list.querySelectorAll("[data-row-index]")).map((row) => Number(row.getAttribute("data-row-index")));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    // A row added ahead moves the pinned rows to other indexes; they are still the ones kept.
+    rerender(view(["new", ...items], ["row 250", "row 120"]));
+    expect(mounted("row 250")).toBe(true);
+    expect(list.querySelector('[data-row-index="251"]')?.getAttribute("data-row-key")).toBe("row 250");
+    // A key no row has is ignored.
+    rerender(view(items, ["gone"]));
+    expect(mounted("row 250")).toBe(false);
+    rerender(view(items, undefined));
+    expect(mounted("row 120")).toBe(false);
+  });
+
+  it("hands the scrolling element to the caller once", () => {
+    const seen: Array<HTMLDivElement | null> = [];
+    const scrollerRef = (element: HTMLDivElement | null): void => void seen.push(element);
+    const view = (rows: readonly string[]) => <VirtualRows items={rows} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} testId="rows" scrollerRef={scrollerRef} />;
+    const { rerender } = render(view(["a"]));
+    rerender(view(["a", "b"]));
+    expect(seen).toEqual([screen.getByTestId("rows")]);
   });
 });
 

@@ -171,7 +171,7 @@ function ContentLayout(props: { content: ContentDetailDto }) {
             <Columns subtitleEditRequest={subtitleEditRequest} onPlayingCache={setPlayingAssetId} />
             <SelectionToolbar
               actions={(snapshot, close) =>
-                snapshot.bounds === undefined ? null : <NoteSelectionActions bounds={snapshot.bounds} rect={snapshot.rect} close={close} />
+                snapshot.bounds === undefined ? null : <NoteSelectionActions bounds={snapshot.bounds} rect={snapshot.rect} crossesGap={snapshot.crossesGap === true} close={close} />
               }
             />
             <NotePopover />

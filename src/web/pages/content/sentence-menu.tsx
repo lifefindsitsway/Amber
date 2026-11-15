@@ -3,7 +3,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { SegmentId } from "../../../shared/ids.ts";
 import { useOptionalChatComposer, type QuoteDraft } from "../../chat/chat-composer.tsx";
-import { explainSelectionQuestion, selectionForExplain } from "../../chat/selection-toolbar.tsx";
+import { explainSelectionQuestion, selectionForExplain, type ExplainableSelection } from "../../chat/selection-toolbar.tsx";
 import { formatDuration } from "../../format.ts";
 import { copyText } from "../../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
@@ -22,15 +22,20 @@ export function sentenceWithTime(sentence: SentenceData): string {
 
 /**
  * "Explain the selection" for a right click inside a selection the selection toolbar would
- * explain: the same cleaned text, question and (single-sentence) quote. Read when the menu is
- * built, so the action does not depend on the selection still being there.
+ * explain: the same text, question and (single-sentence) quote, from the region answering for
+ * the selection when there is one, else from the page. Read when the menu is built, so the
+ * action does not depend on the selection still being there.
  */
 export function explainSelectionEntries(
   hit: MenuHit,
   t: TFunction,
   explain: (quote: QuoteDraft | undefined, question: string) => void,
 ): MenuAction[] {
-  const picked = hit.selection === undefined ? undefined : selectionForExplain(window.getSelection());
+  const selection = hit.selection;
+  if (selection === undefined || selection.region === null) return [];
+  const region = selection.region;
+  const picked: ExplainableSelection | undefined =
+    region === undefined ? selectionForExplain(window.getSelection()) : { text: region.text, ...(region.quote === undefined ? {} : { quote: region.quote }) };
   if (picked === undefined) return [];
   const question = explainSelectionQuestion(t, picked.text);
   return [
@@ -51,6 +56,9 @@ export function explainSelectionEntries(
  * data at right-click time: the actions use that snapshot, never the DOM, because a windowed
  * row may unmount while the menu is open. Views whose rows cannot be selected (subtitles, AI
  * highlights) offer "explain this sentence"; the reading view explains a selection instead.
+ * Off a sentence but inside a selection its region answers for (a chapter title, a gap, blank
+ * space), the list offers the selection rows alone: the browser's own menu would copy only the
+ * part of the selection the page holds.
  */
 export function useSentenceMenu<T extends Element = HTMLElement>(
   sentenceOf: (segmentId: string) => SentenceData | undefined,
@@ -70,17 +78,20 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
   // Explaining needs the chat input; outside the content page the explain rows are left out.
   const composer = useOptionalChatComposer();
   return useContextMenuTarget<T>((hit) => {
-    const element = hit.target.closest<HTMLElement>("[data-segment-id]");
-    const segmentId = element?.dataset["segmentId"];
-    const revisionId = element?.closest<HTMLElement>("[data-revision-id]")?.dataset["revisionId"];
-    if (segmentId === undefined || revisionId === undefined) return undefined;
-    const sentence = sentenceOf(segmentId);
-    if (sentence === undefined) return undefined;
-    const quote: QuoteDraft = { transcriptRevisionId: revisionId, segmentId: segmentId as SegmentId, text: sentence.text };
     const explain = (draft: QuoteDraft | undefined, question: string): void => {
       composer?.explain(draft, question);
       window.getSelection()?.removeAllRanges();
     };
+    const element = hit.target.closest<HTMLElement>("[data-segment-id]");
+    const segmentId = element?.dataset["segmentId"];
+    const revisionId = element?.closest<HTMLElement>("[data-revision-id]")?.dataset["revisionId"];
+    if (segmentId === undefined || revisionId === undefined) {
+      if (hit.selection?.region == null) return undefined;
+      return { kind: "text", selectionEntries: composer === undefined ? [] : explainSelectionEntries(hit, t, explain), entries: [] };
+    }
+    const sentence = sentenceOf(segmentId);
+    if (sentence === undefined) return undefined;
+    const quote: QuoteDraft = { transcriptRevisionId: revisionId, segmentId: segmentId as SegmentId, text: sentence.text };
     // Read when the menu is built, like the sentence itself: the action does not depend on the view staying as it is.
     const speakerPrefix = options.speakerPrefixOf?.(segmentId);
     const selectionEntries = composer === undefined ? [] : explainSelectionEntries(hit, t, explain);

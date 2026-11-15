@@ -7,6 +7,7 @@ import { READER_TEXT_ATTRIBUTE } from "./reader-font.ts";
 import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_META_ATTRIBUTE, READER_SCROLLER_CLASS, ReaderTime, readerBodyStyle, SentenceRuns, TURN_GAP_EM, type SentenceViewProps } from "./reader-sentences.tsx";
 import { MARKER_FADE_MS, TURN_HEADER_ATTRIBUTE, TURN_KEY_ATTRIBUTE, TURN_SPEAKER_ATTRIBUTE, useFadedTurn, type StickyTurn } from "./reader-sticky.ts";
 import type { TurnPlace } from "./reader-rows.ts";
+import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
 import { SpeakerAvatar, AVATAR_EM_SIZE } from "./speakers/speaker-avatar.tsx";
 import { speakerColorVars } from "./speakers/speaker-colors.ts";
@@ -52,6 +53,9 @@ const GRID_COLUMNS: CSSProperties = { gridTemplateColumns: [`calc(var(${AVATAR_V
 /** Marks a turn's paragraph as sentence text, which takes the reading font; the header around it keeps the UI font. */
 const READER_TEXT = { [READER_TEXT_ATTRIBUTE]: "" };
 
+/** Marks the element whose text is the name a turn header shows; the avatar beside it is not part of it. */
+const SPEAKER_NAME = { [READER_PART_ATTRIBUTE]: "speaker" };
+
 const TRIGGER_CLASS = "inline-flex min-w-0 items-center rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 /**
@@ -68,7 +72,9 @@ function SpeakerTag(props: { context: TurnContext; speakerId: string | undefined
     return (
       <span className="inline-flex min-w-0 items-center" data-testid="turn-speaker" data-unassigned="true">
         <SpeakerAvatar unassigned size="em" decorative className={GUTTER_GAP_CLASS} />
-        <span className="truncate font-semibold text-muted">{t("speakerIdentity.unassigned")}</span>
+        <span className="truncate font-semibold text-muted" {...SPEAKER_NAME}>
+          {t("speakerIdentity.unassigned")}
+        </span>
       </span>
     );
   }
@@ -83,7 +89,7 @@ function SpeakerTag(props: { context: TurnContext; speakerId: string | undefined
       testId="turn-speaker"
     >
       <SpeakerAvatar contentId={context.contentId} speaker={speaker} size="em" decorative className={GUTTER_GAP_CLASS} />
-      <span className="truncate font-semibold" style={{ color: speakerColorVars(speaker.colorIndex).fg }} title={label}>
+      <span className="truncate font-semibold" style={{ color: speakerColorVars(speaker.colorIndex).fg }} title={label} {...SPEAKER_NAME}>
         {label}
       </span>
     </SpeakerIdentityCard>
