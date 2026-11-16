@@ -1,3 +1,4 @@
+import type { PlatformDescription } from "../domain/content-description.ts";
 import type { CookieBrowser } from "../domain/runtime-support.ts";
 import type { Platform } from "../domain/platform.ts";
 
@@ -70,6 +71,12 @@ export interface PlatformPart {
   canonicalUrl: string;
 }
 
+/**
+ * What one read of a platform video's description gave: text, the platform's explicit
+ * "none", or nothing readable this time. Defined beside the pure rules that classify it.
+ */
+export type { PlatformDescription };
+
 export interface PlatformMetadata {
   title: string;
   durationMs: number;
@@ -80,6 +87,8 @@ export interface PlatformMetadata {
   chapters?: PlatformChapter[];
   subtitleTracks: SubtitleTrackRef[];
   rawLanguage?: string;
+  /** Read from the same document as the rest of the metadata; no extra request is made for it. */
+  description: PlatformDescription;
 }
 
 /**
@@ -138,6 +147,12 @@ export interface PlatformSourceAdapter {
    */
   resolveParts?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart[]>;
   fetchMetadata(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformMetadata>;
+  /**
+   * The video's description alone, in one metadata read. The description belongs to the
+   * whole platform video (every bilibili part shares it), so the part id is not needed. The
+   * login rule and error classes are those of `fetchMetadata`.
+   */
+  fetchDescription(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformDescription>;
   fetchSubtitle(ref: PlatformContentRef, track: SubtitleTrackRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<CanonicalSubtitle>;
   /**
    * `expired` when the platform clearly says the login is gone, `valid` when it clearly

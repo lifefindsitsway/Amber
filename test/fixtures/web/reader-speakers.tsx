@@ -59,6 +59,8 @@ export function pageState(select: ContentPageState["select"] = () => undefined):
     highlightThreshold: 0,
     setHighlightThreshold: () => undefined,
     openSubtitleEditor: () => undefined,
+    navigation: 0,
+    switchRevision: () => undefined,
   };
 }
 

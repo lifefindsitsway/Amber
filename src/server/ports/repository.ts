@@ -189,6 +189,11 @@ export interface ContentRepository {
     metadata: Partial<Pick<Content, "title" | "durationMs" | "coverUrl" | "publishedAt" | "rawLanguage"> & Pick<Content["source"], "channelId" | "channelTitle">>,
     updatedAt: number,
   ): void;
+  /**
+   * Writes the three description columns only — never `updated_at` — when the Content is the owner's, not in the trash, and `checkedAt` is newer than what is stored (or nothing is stored, or the stored time lies in the future of `now`, i.e. the clock was set back). Returns whether it wrote.
+   * `description: null` clears the text and the truncated flag (the platform said there is none).
+   */
+  setDescription(ownerUserId: string, contentId: string, value: { description: string | null; truncated: boolean; checkedAt: number }, now: number): boolean;
   /** Points the Content at one of its own revisions; `undefined` clears the pointer. */
   setPrimaryTranscript(ownerUserId: string, contentId: string, revisionId: string | undefined, updatedAt: number): void;
   /**

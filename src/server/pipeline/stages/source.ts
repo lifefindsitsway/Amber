@@ -1,4 +1,5 @@
 import { monotonicFactory } from "ulid";
+import { capDescription, type DescriptionClock } from "../../domain/content-description.ts";
 import { amberError } from "../../domain/errors.ts";
 import { normalizePlatformChapters } from "../../domain/platform-subtitle.ts";
 import type { Repository } from "../../ports/repository.ts";
@@ -8,6 +9,8 @@ import { platformTarget, taskContent, type PlatformAccess } from "./platform-acc
 export interface SourceStageDeps {
   repository: Repository;
   platforms: PlatformAccess;
+  /** The process's one issuer of description request times, shared with the manual description fetch. */
+  descriptionClock: DescriptionClock;
   now?: () => number;
   newId?: () => string;
 }
@@ -17,7 +20,9 @@ export interface SourceStageDeps {
  * platform metadata, fills the Content's title, duration, cover, date and channel, and
  * stores creator chapters as a `ChapterRevision(origin = platform)` (first chapter from 0,
  * deduplicated by content). Platform chapters become current unless an AI revision
- * already is.
+ * already is. The description read with the metadata is stored when the platform gave a
+ * clear answer (text or "none") and no later request's answer is stored already; an
+ * unreadable one leaves what is stored alone.
  */
 export class SourceStageExecutor implements StageExecutor {
   private readonly deps: SourceStageDeps;
@@ -38,7 +43,13 @@ export class SourceStageExecutor implements StageExecutor {
     }
     // Metadata goes through the platform's extractor: managed heavy work that waits for a slot of
     // the shared heavy-job governor.
-    const metadata = await context.withHeavySlot(() => target.adapter.fetchMetadata(target.ref, target.auth, context.signal));
+    let checkedAt = 0;
+    const metadata = await context.withHeavySlot(() => {
+      // The time the request is sent, not when it returns: a manual fetch sent while this one
+      // is out is newer and must win.
+      checkedAt = this.deps.descriptionClock.issue();
+      return target.adapter.fetchMetadata(target.ref, target.auth, context.signal);
+    });
     if (!(metadata.durationMs > 0)) {
       throw amberError("source_unreachable", "the platform reported no duration");
     }
@@ -62,6 +73,13 @@ export class SourceStageExecutor implements StageExecutor {
           },
           now,
         );
+        const { description } = metadata;
+        if (description.state === "found") {
+          const capped = capDescription(description.text);
+          scope.contents.setDescription(owner, content.id, { description: capped.text, truncated: capped.truncated, checkedAt }, now);
+        } else if (description.state === "empty") {
+          scope.contents.setDescription(owner, content.id, { description: null, truncated: false, checkedAt }, now);
+        }
         scope.search.syncContent(owner, content.id);
         if (chapters.length === 0) {
           return;

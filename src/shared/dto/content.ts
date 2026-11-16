@@ -70,8 +70,29 @@ export const mediaAssetDtoSchema = z.object({
 });
 export type MediaAssetDto = z.infer<typeof mediaAssetDtoSchema>;
 
-export const contentDetailDtoSchema = contentDtoSchema.extend({ media: z.array(mediaAssetDtoSchema) });
+export const contentDetailDtoSchema = contentDtoSchema.extend({
+  media: z.array(mediaAssetDtoSchema),
+  /** The platform video's own description as plain text; absent when there is none or it was never read. Only on the detail. */
+  description: z.string().exactOptional(),
+  /** The description was longer than Amber keeps and was cut; present only when it was. */
+  descriptionTruncated: z.literal(true).exactOptional(),
+  /** When the platform request that last settled the description (text or none) was sent; absent = never settled. */
+  descriptionCheckedAt: epochMsSchema.exactOptional(),
+});
 export type ContentDetailDto = z.infer<typeof contentDetailDtoSchema>;
+
+/**
+ * What one fetch of a platform video's description found: `found` / `empty` were written,
+ * `unknown` (nothing could be read) wrote nothing, `superseded` read something but a request
+ * sent later had already settled the description. `content` is the Content as it stands.
+ */
+export const DESCRIPTION_FETCH_RESULTS = ["found", "empty", "unknown", "superseded"] as const;
+export type DescriptionFetchResult = (typeof DESCRIPTION_FETCH_RESULTS)[number];
+export const contentDescriptionFetchDtoSchema = z.object({
+  result: z.enum(DESCRIPTION_FETCH_RESULTS),
+  content: contentDetailDtoSchema,
+});
+export type ContentDescriptionFetchDto = z.infer<typeof contentDescriptionFetchDtoSchema>;
 
 export const contentListDtoSchema = z.object({
   items: z.array(contentDtoSchema),

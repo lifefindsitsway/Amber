@@ -28,7 +28,7 @@ function savedDraft(version: number, segments = draftFromSegments(SEGMENTS)) {
 const echo = (version: number) => (call: RecordedCall) => ({ body: { id: "d1", contentId: "c1", ...(call.body as object), version, updatedAt: 1 } });
 
 function renderEditor(onClose = vi.fn()) {
-  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn() };
+  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn(), navigation: 0, switchRevision: vi.fn() };
   renderApp(
     <ContentPageProvider value={state}>
       <DraftEditor base={revision("r1")} primaryRevisionId="r1" onClose={onClose} />
@@ -182,6 +182,117 @@ describe("DraftEditor", () => {
     await waitFor(() => expect(screen.getByTestId("draft-save-status").textContent).toBe("自动保存"));
     fireEvent.click(screen.getByTestId("draft-exit"));
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+const PRIMARY_CHANGED = { status: 409, body: { error: { class: "conflict", code: "conflict.primary_changed", retryDisposition: "never", userMessage: "", details: { currentPrimaryRevisionId: "r2" } } } };
+const COMMITTED = { status: 201, body: revision("m1", { kind: "manual", parentRevisionId: "r1", segmentCount: 3 }) };
+
+/** Holds every commit request until the returned function is called; other requests pass. */
+function holdCommits(): () => void {
+  const inner = globalThis.fetch;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/commit")) await gate;
+    return inner(input, init);
+  });
+  return release;
+}
+
+describe("DraftEditor close result", () => {
+  it("reports 放弃草稿 as discarded, once", async () => {
+    mockApi({ "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) }, "DELETE /api/contents/c1/transcript/draft": { status: 204 } });
+    const onClose = renderEditor();
+    await screen.findByDisplayValue("今天讲检索。");
+    fireEvent.click(screen.getByTestId("draft-discard"));
+    fireEvent.click(screen.getByTestId("draft-discard"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onClose.mock.calls).toEqual([[{ kind: "discarded" }]]);
+    // The editor is still on screen here (its parent did not unmount it): a later 退出 reports nothing more.
+    fireEvent.click(screen.getByTestId("draft-exit"));
+    await act(async () => undefined);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports 退出 as exited", async () => {
+    mockApi({ "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) } });
+    const onClose = renderEditor();
+    await screen.findByDisplayValue("今天讲检索。");
+    fireEvent.click(screen.getByTestId("draft-exit"));
+    expect(onClose.mock.calls).toEqual([[{ kind: "exited" }]]);
+  });
+
+  it("reports a commit with the new revision and the draft exactly as saved, though typing went on during the commit", async () => {
+    mockApi({
+      "GET /api/contents/c1/transcript/draft": NOT_FOUND,
+      "GET /api/transcript/revisions/r1/segments": { body: { revision: revision("r1"), items: SEGMENTS } },
+      "PUT /api/contents/c1/transcript/draft": echo(1),
+      "POST /api/contents/c1/transcript/draft/commit": COMMITTED,
+    });
+    const release = holdCommits();
+    const onClose = renderEditor();
+    fireEvent.change(await screen.findByDisplayValue("今天讲检索。"), { target: { value: "今天讲检索增强。" } });
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    await waitFor(() => expect((screen.getByTestId("draft-commit") as HTMLButtonElement).disabled).toBe(true));
+    // Saved, and the commit is on its way: what is typed now is not part of it.
+    await waitFor(() => expect(screen.getByTestId("draft-save-status").textContent).toBe("自动保存"));
+    fireEvent.change(screen.getByDisplayValue("先看向量库。"), { target: { value: "提交途中又改了。" } });
+    expect(screen.getByDisplayValue("提交途中又改了。")).toBeTruthy();
+    release();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const saved = draftFromSegments(SEGMENTS).map((item, index) => (index === 0 ? { ...item, text: "今天讲检索增强。" } : item));
+    expect(onClose.mock.calls).toEqual([[{ kind: "committed", revisionId: "m1", segmentCount: 3, baseRevisionId: "r1", committed: saved }]]);
+  });
+
+  it("reports 重新加载 after a changed primary as reload, and nothing for the conflict itself", async () => {
+    mockApi({
+      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      "POST /api/contents/c1/transcript/draft/commit": PRIMARY_CHANGED,
+    });
+    const onClose = renderEditor();
+    await screen.findByDisplayValue("今天讲检索。");
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    expect(await screen.findByTestId("draft-conflict")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("重新加载"));
+    expect(onClose.mock.calls).toEqual([[{ kind: "reload" }]]);
+  });
+
+  it("stays open when the commit fails, and shows why", async () => {
+    mockApi({
+      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      "POST /api/contents/c1/transcript/draft/commit": { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } },
+    });
+    const onClose = renderEditor();
+    await screen.findByDisplayValue("今天讲检索。");
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    expect(await screen.findByText("服务内部错误")).toBeTruthy();
+    await waitFor(() => expect((screen.getByTestId("draft-commit") as HTMLButtonElement).disabled).toBe(false));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("今天讲检索。")).toBeTruthy();
+  });
+
+  it("closes once with the commit when 仍然提交 succeeds", async () => {
+    let commits = 0;
+    mockApi({
+      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      "POST /api/contents/c1/transcript/draft/commit": () => {
+        commits += 1;
+        return commits === 1 ? PRIMARY_CHANGED : COMMITTED;
+      },
+    });
+    const onClose = renderEditor();
+    await screen.findByDisplayValue("今天讲检索。");
+    fireEvent.click(screen.getByTestId("draft-commit"));
+    fireEvent.click(await screen.findByText("仍然提交"));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onClose.mock.calls).toEqual([[{ kind: "committed", revisionId: "m1", segmentCount: 3, baseRevisionId: "r1", committed: draftFromSegments(SEGMENTS) }]]);
+    fireEvent.click(screen.getByTestId("draft-exit"));
+    await act(async () => undefined);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 

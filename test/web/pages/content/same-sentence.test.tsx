@@ -11,7 +11,7 @@ function renderSubtitlesWithSelection(method: "lineage" | "none") {
     ...contentRoutes(),
     "GET /api/transcript/segments/x1/map": { body: method === "none" ? { segmentId: null, method } : { segmentId: "s2", method } },
   });
-  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: { revisionId: "other", segmentId: "x1" }, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn() };
+  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: { revisionId: "other", segmentId: "x1" }, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn(), navigation: 0, switchRevision: vi.fn() };
   renderApp(
     <PlayerControllerProvider controller={new PlayerController()}>
       <ContentPageProvider value={state}>

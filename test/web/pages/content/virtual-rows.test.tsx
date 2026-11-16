@@ -339,3 +339,290 @@ describe("VirtualRows scroll anchor", () => {
     });
   });
 });
+
+describe("VirtualRows restore loop", () => {
+  type Result = import("../../../../src/web/pages/content/virtual-rows.tsx").RestoreLoopResult;
+
+  /** Animation frames run by hand: `frame()` runs the ones queued so far. */
+  function manualFrames() {
+    const queue = new Map<number, FrameRequestCallback>();
+    let next = 1;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      queue.set(next, callback);
+      return next++;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => void queue.delete(id));
+    onTestFinished(() => void vi.unstubAllGlobals());
+    const frame = (): void =>
+      act(() => {
+        const due = [...queue.values()];
+        queue.clear();
+        for (const callback of due) callback(0);
+      });
+    const frames = (count: number): void => {
+      for (let index = 0; index < count; index += 1) frame();
+    };
+    return { frame, frames, pending: () => queue.size };
+  }
+
+  /** Records the results reported to `onDone`. */
+  function recorder() {
+    const results: Result[] = [];
+    return { results, onDone: (result: Result): void => void results.push(result) };
+  }
+
+  /**
+   * A list of `count` rows, each with two sentences, laid out as a browser would, from the DOM
+   * itself: a row is drawn where its transform puts it (a windowed row) or below every row
+   * before it (a plain list); its sentence `-a` starts at its top, `-b` 50 px below. The list is
+   * 400 px tall at y = 0 and clamps its scroll position. The layout is in place before the first
+   * render: the virtualizer reads the viewport's size when it mounts.
+   */
+  function mount(heightOf: (index: number) => number, options: { windowed: boolean; count: number; shift?: (id: string) => number }, scrollToIndex?: number) {
+    const listOf = (): HTMLElement => screen.getByTestId("rows");
+    const rowTop = (row: HTMLElement): number => {
+      const list = listOf();
+      const index = Number(row.getAttribute("data-row-index"));
+      if (options.windowed) return Number(/translateY\((-?[\d.]+)px\)/.exec(row.style.transform)?.[1] ?? 0) - list.scrollTop;
+      let start = 0;
+      for (let before = 0; before < index; before += 1) start += heightOf(before);
+      return start - list.scrollTop;
+    };
+    const originalRect = Element.prototype.getBoundingClientRect;
+    const originalHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.getAttribute("data-testid") === "rows") return DOMRect.fromRect({ x: 0, y: 0, width: 300, height: 400 });
+      if (this instanceof HTMLElement && this.hasAttribute("data-row-index")) {
+        return DOMRect.fromRect({ x: 0, y: rowTop(this), width: 300, height: heightOf(Number(this.getAttribute("data-row-index"))) });
+      }
+      const id = this.getAttribute("data-segment-id");
+      const row = this.closest<HTMLElement>("[data-row-index]");
+      if (id !== null && row !== null) return DOMRect.fromRect({ x: 0, y: rowTop(row) + (id.endsWith("-b") ? 50 : 0) + (options.shift?.(id) ?? 0), width: 300, height: 20 });
+      return originalRect.call(this);
+    };
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.hasAttribute("data-row-index") ? heightOf(Number(this.getAttribute("data-row-index"))) : 400;
+      },
+    });
+    onTestFinished(() => {
+      Element.prototype.getBoundingClientRect = originalRect;
+      if (originalHeight !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalHeight);
+    });
+
+    const handle = createRef<VirtualRowsHandle>();
+    const items = Array.from({ length: options.count }, (_, index) => `row ${index}`);
+    const view = (target: number | undefined) => (
+      <VirtualRows
+        ref={handle}
+        items={items}
+        keyOf={(item) => item}
+        render={(item) => (
+          <p>
+            <span data-segment-id={`${item}-a`}>a</span>
+            <span data-segment-id={`${item}-b`}>b</span>
+          </p>
+        )}
+        estimateSize={100}
+        scrollToIndex={target}
+        testId="rows"
+      />
+    );
+    const result = render(view(scrollToIndex));
+    const list = listOf();
+    const scrollHeight = (): number => {
+      if (options.windowed) return Number.parseFloat((list.firstElementChild as HTMLElement).style.height);
+      let total = 0;
+      for (let index = 0; index < options.count; index += 1) total += heightOf(index);
+      return total;
+    };
+    Object.defineProperty(list, "scrollHeight", { configurable: true, get: scrollHeight });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 400 });
+    let scroll = 0;
+    Object.defineProperty(list, "scrollTop", {
+      configurable: true,
+      get: () => scroll,
+      set: (value: number) => {
+        scroll = Math.max(0, Math.min(value, scrollHeight() - 400));
+        // The virtualizer follows the list through its scroll events, as in a browser.
+        list.dispatchEvent(new Event("scroll"));
+      },
+    });
+    list.scrollTo = ((to: ScrollToOptions) => {
+      list.scrollTop = to.top ?? 0;
+    }) as typeof list.scrollTo;
+    const lineTop = (id: string): number | undefined => {
+      const sentence = Array.from(list.querySelectorAll("[data-segment-id]")).find((element) => element.getAttribute("data-segment-id") === id);
+      return sentence?.getBoundingClientRect().top;
+    };
+    const api = (): VirtualRowsHandle => {
+      if (handle.current === null) throw new Error("not mounted");
+      return handle.current;
+    };
+    return { api, list, lineTop, rerender: (target: number | undefined) => result.rerender(view(target)), unmount: result.unmount };
+  }
+
+  for (const mode of [
+    { name: "a plain list", count: 20, windowed: false },
+    { name: "a windowed list", count: 300, windowed: true },
+  ]) {
+    describe(`in ${mode.name}`, () => {
+      const far = mode.windowed ? 250 : 15;
+      // Rows above the target grow past the estimate, as a long transcript's wrapped paragraphs do.
+      const heightOf = (index: number): number => (index % 3 === 0 ? 160 : 100);
+      const startOf = (index: number): number => {
+        let start = 0;
+        for (let before = 0; before < index; before += 1) start += heightOf(before);
+        return start;
+      };
+
+      it("puts a sentence's first line at the offset and reports settled", () => {
+        const { frames } = manualFrames();
+        const { api, list, lineTop } = mount(heightOf, mode);
+        const done = recorder();
+        act(() => api().restoreSegment({ rowKey: `row ${far}`, segmentId: `row ${far}-b`, offset: 30 }, done.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(done.results).toEqual(["settled"]);
+        expect(lineTop(`row ${far}-b`)).toBeCloseTo(30, 1);
+        // A windowed list draws the rows it never measured at the estimate: only a plain list's position is the sum of the real heights.
+        if (!mode.windowed) expect(list.scrollTop).toBe(startOf(far) + 50 - 30);
+      });
+
+      it("puts a sentence that started above the top back at the same negative offset", () => {
+        const { frames } = manualFrames();
+        const { api, lineTop } = mount(heightOf, mode);
+        const done = recorder();
+        act(() => api().restoreSegment({ rowKey: `row ${far}`, segmentId: `row ${far}-a`, offset: -40 }, done.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(done.results).toEqual(["settled"]);
+        expect(lineTop(`row ${far}-a`)).toBeCloseTo(-40, 1);
+      });
+
+      it("reports edge when the list cannot scroll as far as the offset asks, at the top and at the end", () => {
+        const { frames } = manualFrames();
+        const { api, list, lineTop } = mount(heightOf, mode);
+        const top = recorder();
+        act(() => api().restoreSegment({ rowKey: "row 0", segmentId: "row 0-b", offset: 120 }, top.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(top.results).toEqual(["edge"]);
+        expect(list.scrollTop).toBe(0);
+        expect(lineTop("row 0-b")).toBe(50);
+        const last = mode.count - 1;
+        const end = recorder();
+        act(() => api().restoreSegment({ rowKey: `row ${last}`, segmentId: `row ${last}-a`, offset: 0 }, end.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(end.results).toEqual(["edge"]);
+        expect(list.scrollTop).toBe(list.scrollHeight - 400);
+        expect(lineTop(`row ${last}-a`)).toBeGreaterThan(0);
+      });
+
+      it("reports capped when the sentence keeps moving, and missing for a row or a sentence that is not there", () => {
+        const { frames, pending } = manualFrames();
+        let reads = 0;
+        // A sentence whose line keeps shifting (a layout that never settles).
+        const { api } = mount(heightOf, { ...mode, shift: (id) => (id === "row 5-a" ? (reads++ % 2) * 10 : 0) });
+        const restless = recorder();
+        act(() => api().restoreSegment({ rowKey: "row 5", segmentId: "row 5-a", offset: 0 }, restless.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(restless.results).toEqual(["capped"]);
+        expect(pending()).toBe(0);
+        const noRow = recorder();
+        act(() => api().restoreSegment({ rowKey: "nope", segmentId: "row 5-a", offset: 0 }, noRow.onDone));
+        expect(noRow.results).toEqual(["missing"]);
+        const noSentence = recorder();
+        act(() => api().restoreSegment({ rowKey: "row 5", segmentId: "row 6-a", offset: 0 }, noSentence.onDone));
+        frames(RESTORE_FRAME_LIMIT - 2);
+        expect(noSentence.results).toEqual([]);
+        frames(2);
+        expect(noSentence.results).toEqual(["missing"]);
+      });
+
+      it("reports how an anchor restore ended", () => {
+        const { frames } = manualFrames();
+        const { api } = mount(heightOf, mode);
+        const found = recorder();
+        act(() => api().restoreAnchor({ key: "row 3", offset: -20 }, found.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        expect(found.results).toEqual(["settled"]);
+        const gone = recorder();
+        act(() => api().restoreAnchor({ key: "nope", offset: 0 }, gone.onDone));
+        expect(gone.results).toEqual(["missing"]);
+      });
+
+      it("runs one loop at a time: a newer restore, the reader's own scrolls and cancelRestore end the running one", () => {
+        const { frames, pending } = manualFrames();
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = () => undefined;
+        onTestFinished(() => {
+          Element.prototype.scrollIntoView = original;
+        });
+        const { api, rerender, lineTop } = mount(heightOf, mode, 0);
+        const first = recorder();
+        const second = recorder();
+        act(() => api().restoreSegment({ rowKey: `row ${far}`, segmentId: `row ${far}-a`, offset: 10 }, first.onDone));
+        act(() => api().restoreSegment({ rowKey: "row 4", segmentId: "row 4-b", offset: 60 }, second.onDone));
+        expect(first.results).toEqual(["cancelled"]);
+        frames(RESTORE_FRAME_LIMIT);
+        expect(second.results).toEqual(["settled"]);
+        expect(lineTop("row 4-b")).toBeCloseTo(60, 1);
+        // A windowed anchor restore runs a loop too; a plain list's restores it synchronously.
+        const anchorLoop = mode.windowed ? [() => api().restoreAnchor({ key: "row 7", offset: 0 }, anchored.onDone)] : [];
+        const anchored = recorder();
+        const navigations: Array<[string, () => void]> = [
+          ["scrollToIndex", () => api().scrollToIndex(2)],
+          ["scrollToTop", () => api().scrollToTop()],
+          ["scrollToBottom", () => api().scrollToBottom()],
+          ["cancelRestore", () => api().cancelRestore()],
+          ["centring", () => rerender(9)],
+        ];
+        for (const [name, navigate] of navigations) {
+          const running = recorder();
+          act(() => api().restoreSegment({ rowKey: "row 6", segmentId: "row 6-a", offset: 0 }, running.onDone));
+          act(navigate);
+          expect([name, running.results]).toEqual([name, ["cancelled"]]);
+          expect(pending() === 0 || mode.windowed).toBe(true);
+        }
+        for (const start of anchorLoop) {
+          act(start);
+          act(() => api().scrollToTop());
+          expect(anchored.results).toEqual(["cancelled"]);
+        }
+      });
+
+      it("ends the running loop on the user's input, and stops listening once it ended", () => {
+        const { frames } = manualFrames();
+        const { api, list } = mount(heightOf, mode);
+        for (const event of [new WheelEvent("wheel"), new KeyboardEvent("keydown", { key: "ArrowDown" }), new Event("pointerdown"), new Event("touchstart")]) {
+          const running = recorder();
+          act(() => api().restoreSegment({ rowKey: `row ${far}`, segmentId: `row ${far}-a`, offset: 0 }, running.onDone));
+          const before = list.scrollTop;
+          // On a row inside the list: the list hears it in the capture phase.
+          act(() => void list.querySelector("[data-segment-id]")?.dispatchEvent(event));
+          frames(3);
+          expect([event.type, running.results]).toEqual([event.type, ["cancelled"]]);
+          expect(list.scrollTop).toBe(before);
+        }
+        const settled = recorder();
+        act(() => api().restoreSegment({ rowKey: "row 2", segmentId: "row 2-a", offset: 0 }, settled.onDone));
+        frames(RESTORE_FRAME_LIMIT);
+        act(() => void list.dispatchEvent(new WheelEvent("wheel")));
+        expect(settled.results).toEqual(["settled"]);
+      });
+
+      it("stops quietly when the list unmounts mid-loop", () => {
+        const { frames, pending } = manualFrames();
+        const { api, unmount } = mount(heightOf, mode);
+        const running = recorder();
+        act(() => api().restoreSegment({ rowKey: `row ${far}`, segmentId: `row ${far}-a`, offset: 0 }, running.onDone));
+        expect(() => unmount()).not.toThrow();
+        expect(pending()).toBe(0);
+        frames(3);
+        expect(running.results).toEqual([]);
+      });
+    });
+  }
+});
+
+/** More frames than a restore loop ever takes. */
+const RESTORE_FRAME_LIMIT = 30;

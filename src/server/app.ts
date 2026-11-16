@@ -17,6 +17,7 @@ import type { TranslationDraftService } from "./application/translation-drafts.t
 import type { ChatService } from "./application/chat.ts";
 import type { CollectionService } from "./application/collections.ts";
 import type { ClientMediaTaskService } from "./application/client-media-tasks.ts";
+import type { ContentDescriptionService } from "./application/content-description.ts";
 import type { ContentService } from "./application/contents.ts";
 import type { DerivedTaskService } from "./application/derived-tasks.ts";
 import type { ImportContentService } from "./application/import-content.ts";
@@ -131,6 +132,8 @@ export interface AppDeps {
   /** Link import and inspect exist only when a platform-aware import service is composed in. */
   importContent?: ImportContentService;
   contents?: ContentService;
+  /** Reading a platform Content's description on request, `/api/contents/:id/description/fetch`. */
+  contentDescription?: ContentDescriptionService;
   /** The content trash: `DELETE /api/contents/:id` and `/api/trash*`. */
   trash?: TrashService;
   platformAccounts?: PlatformAccountService;
@@ -302,6 +305,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     ...(deps.contents === undefined ? {} : { contents: deps.contents }),
     ...(deps.trash === undefined ? {} : { trash: deps.trash }),
     ...(deps.retranscribe === undefined ? {} : { retranscribe: deps.retranscribe }),
+    ...(deps.contentDescription === undefined ? {} : { contentDescription: deps.contentDescription }),
   });
   registerTranscriptRoutes(app, {
     ...(deps.transcripts === undefined ? {} : { transcripts: deps.transcripts }),

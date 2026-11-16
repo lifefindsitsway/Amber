@@ -59,6 +59,8 @@ function open(routes: Parameters<typeof mockApi>[0] = {}, items: NoteDto[] = [no
     highlightThreshold: 0,
     setHighlightThreshold: vi.fn(),
     openSubtitleEditor: vi.fn(),
+    navigation: 0,
+    switchRevision: vi.fn(),
   };
   renderApp(
     <ContentPageProvider value={state}>

@@ -17,6 +17,8 @@ import { TranslationService } from "../../../src/server/application/translations
 import { TranslationDraftService } from "../../../src/server/application/translation-drafts.ts";
 import { CollectionService } from "../../../src/server/application/collections.ts";
 import { ContentService } from "../../../src/server/application/contents.ts";
+import { ContentDescriptionService } from "../../../src/server/application/content-description.ts";
+import { DescriptionClock } from "../../../src/server/domain/content-description.ts";
 import { DeleteContentService } from "../../../src/server/application/delete-content.ts";
 import { PendingFileDeleter } from "../../../src/server/application/pending-file-delete.ts";
 import { TrashService } from "../../../src/server/application/trash.ts";
@@ -151,6 +153,10 @@ export interface Harness {
   tasks: TaskService;
   importContent: ImportContentService;
   contents: ContentService;
+  /** The process's description request clock, shared by the description fetch and any source stage a test builds. */
+  descriptionClock: DescriptionClock;
+  /** The description fetch, without a heavy-job governor. */
+  contentDescription: ContentDescriptionService;
   /** The data and cache stores on the temp data directory, behind the pending-file worker. */
   media: MediaFiles;
   fileDeleter: PendingFileDeleter;
@@ -295,6 +301,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   };
   const importContent = new ImportContentService({ repository, bus, control, platforms: registry, credentials: platformAccounts, disk, settings, newId });
   const contents = new ContentService({ repository, newId });
+  const descriptionClock = new DescriptionClock(Date.now);
+  const contentDescription = new ContentDescriptionService({ repository, platforms: platformAccess, descriptionClock, details: contents });
   const transcripts = new TranscriptService({ repository, newId });
   const chapters = new ChapterService({ repository });
   const highlights = new HighlightService({ repository });
@@ -345,6 +353,8 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     tasks,
     importContent,
     contents,
+    descriptionClock,
+    contentDescription,
     media,
     fileDeleter,
     deleteContent,
@@ -392,6 +402,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         ...(appOptions.withImport === false ? {} : {
               importContent,
               contents,
+              contentDescription,
               trash: appOptions.trash ?? trashService,
               platformAccounts,
               transcripts,

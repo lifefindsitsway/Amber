@@ -1,7 +1,8 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { useRef, useState, type ReactNode } from "react";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../../src/shared/defaults.ts";
+import { INITIAL_SCROLL_ATTRIBUTE, type InitialScroll } from "../../../../src/web/pages/content/edit-position.ts";
 import { isChineseLanguage, SentenceEditor, withTexts, type SentenceEditorHandle } from "../../../../src/web/pages/content/sentence-editor.tsx";
 import type { DraftSyncSnapshot } from "../../../../src/web/pages/content/use-draft-sync.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -455,5 +456,213 @@ describe("SentenceEditor extensions", () => {
       act(() => handle.current?.focusSentence(0));
       expect(document.activeElement).toBe(document.body);
     });
+  });
+});
+
+describe("SentenceEditor initial scroll", () => {
+  /** Animation frames run only when the test says so. */
+  function manualFrames() {
+    const queue = new Map<number, FrameRequestCallback>();
+    let next = 1;
+    const request = vi.fn((callback: FrameRequestCallback) => {
+      const handle = next++;
+      queue.set(handle, callback);
+      return handle;
+    });
+    vi.stubGlobal("requestAnimationFrame", request);
+    vi.stubGlobal("cancelAnimationFrame", (handle: number) => queue.delete(handle));
+    const run = (count: number): void => {
+      for (let at = 0; at < count; at += 1) {
+        const pending = [...queue.values()];
+        queue.clear();
+        act(() => pending.forEach((callback) => callback(0)));
+      }
+    };
+    return { request, run, pending: () => queue.size };
+  }
+
+  const control: { setOpening?: (value: InitialScroll | undefined) => void } = {};
+
+  function Opening(props: { texts: string[]; initialScroll?: InitialScroll; visible?: ReadonlySet<number>; onItems?: (items: readonly Item[]) => void }) {
+    const [items, setItems] = useState<readonly Item[]>(() => props.texts.map((text, index) => ({ id: `s${index + 1}`, text })));
+    const [opening, setOpening] = useState(props.initialScroll);
+    control.setOpening = setOpening;
+    return (
+      <SentenceEditor
+        items={items}
+        onItemsChange={(next) => {
+          setItems(next);
+          props.onItems?.(next);
+        }}
+        keyOf={keyOf}
+        renderHeader={header}
+        textLabel={label}
+        layout="compact"
+        fillers
+        deleteWholeSentences
+        sync={SAVED}
+        onRetry={vi.fn()}
+        onLoadLatest={vi.fn()}
+        onKeepMine={vi.fn()}
+        onDiscard={vi.fn()}
+        onExit={vi.fn()}
+        onCommit={vi.fn()}
+        busy={false}
+        {...(props.visible === undefined ? {} : { visible: props.visible })}
+        {...(opening === undefined ? {} : { initialScroll: opening })}
+      />
+    );
+  }
+
+  function open(props: Parameters<typeof Opening>[0]) {
+    mockApi({});
+    const onItems = vi.fn();
+    renderApp(<Opening onItems={onItems} {...props} />);
+    return { onItems, list: screen.getByTestId("sentence-rows") };
+  }
+
+  const TEXTS = ["甲句", "乙句", "丙句", "丁句"];
+
+  it("does nothing without an initial scroll", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS });
+    frames.run(5);
+    expect(list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
+    expect(frames.request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("settles on the sentence and says so, leaving the focus alone unless asked", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: false } });
+    expect(list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("settled");
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("puts the cursor at the start of the sentence when asked, without editing anything", () => {
+    const frames = manualFrames();
+    const { list, onItems } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: true } });
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("settled");
+    const input = screen.getByLabelText("s3") as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(0);
+    expect(input.value).toBe("丙句");
+    expect(onItems).not.toHaveBeenCalled();
+  });
+
+  it("scrolls the list so the row's top sits at the offset below the list's top", () => {
+    const frames = manualFrames();
+    const LIST_TOP = 100;
+    const ROW = 40;
+    const PADDING = 8;
+    const scrolls = new WeakMap<Element, number>();
+    Object.defineProperty(HTMLOListElement.prototype, "scrollTop", {
+      configurable: true,
+      get(this: HTMLOListElement) {
+        return scrolls.get(this) ?? 0;
+      },
+      set(this: HTMLOListElement, value: number) {
+        scrolls.set(this, Math.min(Math.max(value, 0), this.scrollHeight - this.clientHeight));
+      },
+    });
+    Object.defineProperty(HTMLOListElement.prototype, "clientHeight", { configurable: true, get: () => 300 });
+    Object.defineProperty(HTMLOListElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLOListElement) {
+        return this.children.length * ROW + 2 * PADDING;
+      },
+    });
+    onTestFinished(() => {
+      for (const key of ["scrollTop", "clientHeight", "scrollHeight"]) Reflect.deleteProperty(HTMLOListElement.prototype, key);
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const index = this.getAttribute("data-sentence-index");
+      if (this instanceof HTMLOListElement) return DOMRect.fromRect({ x: 0, y: LIST_TOP, width: 400, height: 300 });
+      if (index === null || this.parentElement === null) return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+      const top = LIST_TOP + PADDING + Number(index) * ROW - (this.parentElement as HTMLOListElement).scrollTop;
+      return DOMRect.fromRect({ x: 0, y: top, width: 400, height: ROW });
+    });
+    const texts = Array.from({ length: 60 }, (_, index) => `第 ${index + 1} 句`);
+    const { list } = open({ texts, initialScroll: { index: 30, offset: 120, focus: false } });
+    // The first correction happens before the first paint.
+    expect(list.scrollTop).toBe(PADDING + 30 * ROW - 120);
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("settled");
+    const row = list.querySelector('[data-sentence-index="30"]') as HTMLElement;
+    expect(row.getBoundingClientRect().top - LIST_TOP).toBe(120);
+  });
+
+  it("cancels without moving the focus when an editable element already has it", () => {
+    const frames = manualFrames();
+    const outside = document.createElement("input");
+    document.body.append(outside);
+    onTestFinished(() => outside.remove());
+    outside.focus();
+    const { list } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: true } });
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("cancelled");
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it("cancels on a key pressed during the loop and never takes the focus", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: true } });
+    frames.run(1);
+    fireEvent.keyDown(document.body, { key: "PageDown" });
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("cancelled");
+    expect(frames.pending()).toBe(0);
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("cancelled");
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("cancels on a wheel over the list", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: true } });
+    fireEvent.wheel(list);
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("cancelled");
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("leaves a sentence the filter hides, or one out of range, alone", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS, visible: new Set([0, 1]), initialScroll: { index: 2, offset: 0, focus: true } });
+    frames.run(3);
+    expect(list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    cleanup();
+    const again = open({ texts: TEXTS, initialScroll: { index: 9, offset: 0, focus: true } });
+    frames.run(3);
+    expect(again.list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
+    expect(frames.request).not.toHaveBeenCalled();
+  });
+
+  it("starts once per mount: a later value neither restarts nor refocuses", () => {
+    const frames = manualFrames();
+    const { list } = open({ texts: TEXTS });
+    act(() => control.setOpening?.({ index: 1, offset: 0, focus: false }));
+    frames.run(3);
+    expect(list.getAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe("settled");
+    const requested = frames.request.mock.calls.length;
+    act(() => control.setOpening?.({ index: 3, offset: 0, focus: true }));
+    frames.run(3);
+    expect(frames.request.mock.calls.length).toBe(requested);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("stops on unmount without reporting", () => {
+    const frames = manualFrames();
+    mockApi({});
+    const view = renderApp(<Opening texts={TEXTS} initialScroll={{ index: 2, offset: 0, focus: true }} />);
+    const list = screen.getByTestId("sentence-rows");
+    expect(frames.pending()).toBe(1);
+    view.unmount();
+    expect(frames.pending()).toBe(0);
+    expect(list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
   });
 });

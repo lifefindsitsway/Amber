@@ -1,4 +1,5 @@
 import { PLATFORM_METADATA_TIMEOUT_MS, SHORTLINK_MAX_HOPS } from "../../../../shared/defaults.ts";
+import { classifyPlatformDescription } from "../../../domain/content-description.ts";
 import { amberError } from "../../../domain/errors.ts";
 import { cookieHeaderFor, parseNetscapeCookies } from "../../../domain/platform-cookie.ts";
 import type { OutboundHttpClient } from "../../../ports/outbound-http.ts";
@@ -8,6 +9,7 @@ import type {
   PlatformCollection,
   PlatformContentRef,
   PlatformCredential,
+  PlatformDescription,
   PlatformMetadata,
   PlatformPart,
   PlatformSourceAdapter,
@@ -26,6 +28,8 @@ const API = "https://api.bilibili.com";
 /** Where a bilibili login lives; cookies of other sites never enter its Secret. */
 export const BILIBILI_COOKIE_DOMAINS = ["bilibili.com"] as const;
 const REFERER = { Referer: "https://www.bilibili.com/" };
+/** What bilibili shows (and yt-dlp passes on) for a video whose uploader wrote no description. */
+const EMPTY_DESCRIPTIONS = ["-"] as const;
 
 export interface BilibiliAdapterOptions {
   ytDlp: YtDlp;
@@ -59,6 +63,11 @@ interface VideoInfo {
   uploader?: string;
   uploader_id?: string | number;
   chapters?: YtDlpChapter[] | null;
+  /**
+   * Read only at the top level of the document: for an interactive video yt-dlp also
+   * returns entries whose descriptions carry extra JSON in front of the text.
+   */
+  description?: unknown;
 }
 
 interface FlatPlaylist {
@@ -183,7 +192,30 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
         title: chapter.title ?? "",
       })),
       subtitleTracks: tracks,
+      description: classifyPlatformDescription(info.description, EMPTY_DESCRIPTIONS),
     };
+  }
+
+  /**
+   * One metadata read of the submission's BV URL without `p=`: the description belongs to
+   * the whole submission and is the same for every part. No subtitle list is asked for;
+   * the login is used whenever the user has one, as for every other bilibili call.
+   */
+  async fetchDescription(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformDescription> {
+    const url = videoUrl(ref.platformContentId);
+    // Only a URL `parse` accepts reaches yt-dlp.
+    if (this.parse(url)?.platformContentId !== ref.platformContentId) {
+      throw new TypeError("not a bilibili video id");
+    }
+    const cookies = await auth?.cookies();
+    const info = await this.options.ytDlp.json<Pick<VideoInfo, "description"> | null>({
+      args: ["--dump-single-json", "--skip-download", "--no-playlist", url],
+      extractors: BILIBILI_EXTRACTORS,
+      ...(cookies === undefined ? {} : { cookies }),
+      signal,
+      timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
+    });
+    return classifyPlatformDescription(info?.description, EMPTY_DESCRIPTIONS);
   }
 
   async fetchSubtitle(

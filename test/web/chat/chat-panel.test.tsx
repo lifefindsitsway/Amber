@@ -84,6 +84,8 @@ function Page(props: { children: ReactNode; select?: ContentPageState["select"];
     highlightThreshold: 80,
     setHighlightThreshold: () => undefined,
     openSubtitleEditor: () => undefined,
+    navigation: 0,
+    switchRevision: () => undefined,
   };
   return (
     <PlayerControllerProvider controller={controller}>

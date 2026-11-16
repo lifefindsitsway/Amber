@@ -142,6 +142,7 @@ const MATRIX: Record<string, Entry> = {
     { method: "PATCH", url: `/api/contents/${ids.contentId}`, payload: { pinned: true } },
   ]),
   "DELETE /api/contents/:id": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}` }]),
+  "POST /api/contents/:id/description/fetch": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/description/fetch`, payload: {} }]),
   "POST /api/contents/:id/subtitle-import": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/subtitle-import`, payload: { text: "1\n00:00:00,000 --> 00:00:01,000\nx\n", format: "srt", language: "en" } },
   ]),

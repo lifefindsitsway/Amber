@@ -116,6 +116,34 @@ describe("DraftSync", () => {
     expect(sync.getSnapshot().phase).toBe("closed");
   });
 
+  it("hands the commit the value stored at the committed version, not what was typed during the commit", async () => {
+    const server = casServer();
+    const sync = new DraftSync<string>(server.save, 100);
+    sync.init("a", null);
+    sync.edit("ab");
+    const seen: Array<{ version: number; committed: string; stored: string | undefined }> = [];
+    const done = sync.commit(async (version, committed) => {
+      // Typing goes on while the commit request is out.
+      sync.edit("typed during the commit");
+      seen.push({ version, committed, stored: server.state.text });
+      return server.commit(version);
+    });
+    await server.drain();
+    await done;
+    expect(seen).toEqual([{ version: 1, committed: "ab", stored: "ab" }]);
+  });
+
+  it("hands the commit the loaded value when nothing was edited", async () => {
+    const server = casServer();
+    server.state.version = 4;
+    server.state.text = "saved";
+    const sync = new DraftSync<string>(server.save, 100);
+    sync.init("saved", 4);
+    const done = sync.commit(async (version, committed) => ({ version, committed }));
+    await expect(done).resolves.toEqual({ version: 4, committed: "saved" });
+    expect(server.state.puts).toEqual([]);
+  });
+
   it("drops queued edits on discard, waits for the save in flight, and the draft stays gone", async () => {
     const server = casServer();
     const sync = new DraftSync<string>(server.save, 100);

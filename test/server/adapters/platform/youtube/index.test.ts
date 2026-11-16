@@ -95,6 +95,7 @@ describe("YoutubeAdapter.fetchMetadata", () => {
       rawLanguage: "en-US",
       chapters: [{ startMs: 0, endMs: 60_500, title: "Intro" }],
       subtitleTracks: captionTracks({ subtitles: { en: [{ name: "English" }] }, automatic_captions: { "en-orig": [{ name: "English (Original)" }] } }),
+      description: { state: "unknown" },
     });
     expect(runner.specs).toHaveLength(1);
     const args = runner.specs[0]?.args ?? [];
@@ -121,6 +122,48 @@ describe("YoutubeAdapter.fetchMetadata", () => {
     const twice = setup(sequence(BOT_CHECK));
     expect((await errorOf(twice.adapter.fetchMetadata({ platformContentId: ID }, LOGIN, signal()))).class).toBe("auth_required");
     expect(twice.runner.specs).toHaveLength(2);
+  });
+});
+
+describe("YoutubeAdapter: the description", () => {
+  async function metadataWith(info: Record<string, unknown>) {
+    const { adapter } = setup(() => ({ stdout: JSON.stringify({ title: "t", duration: 1, ...info }) }));
+    return (await adapter.fetchMetadata({ platformContentId: ID }, undefined, signal())).description;
+  }
+
+  it("is read from the top level of the metadata document", async () => {
+    expect(await metadataWith({ description: "Line one \nLine two" })).toEqual({ state: "found", text: "Line one\nLine two" });
+    expect(await metadataWith({ description: "" })).toEqual({ state: "empty" });
+    // YouTube has no placeholder: a lone dash is what the uploader wrote.
+    expect(await metadataWith({ description: "-" })).toEqual({ state: "found", text: "-" });
+    expect(await metadataWith({ description: null })).toEqual({ state: "unknown" });
+    expect(await metadataWith({})).toEqual({ state: "unknown" });
+    expect(await metadataWith({ entries: [{ description: "entry" }] })).toEqual({ state: "unknown" });
+  });
+
+  it("fetchDescription runs once as a guest without subtitle lists", async () => {
+    const { adapter, runner } = setup(() => ({ stdout: JSON.stringify({ title: "t", description: "About this talk" }) }));
+    expect(await adapter.fetchDescription({ platformContentId: ID }, LOGIN, signal())).toEqual({ state: "found", text: "About this talk" });
+    expect(runner.specs).toHaveLength(1);
+    const args = runner.specs[0]?.args ?? [];
+    expect(args.slice(-4)).toEqual(["--dump-single-json", "--skip-download", "--no-playlist", WATCH]);
+    expect(args.some((arg) => arg.includes("sub"))).toBe(false);
+    expect(args).not.toContain("--cookies");
+    expect(argAfter(args, "--use-extractors")).toBe(YOUTUBE_EXTRACTORS.join(","));
+  });
+
+  it("fetchDescription retries once with the login only when YouTube asks for one and a login exists", async () => {
+    const retried = setup(sequence(BOT_CHECK, { stdout: JSON.stringify({ description: "" }) }));
+    expect(await retried.adapter.fetchDescription({ platformContentId: ID }, LOGIN, signal())).toEqual({ state: "empty" });
+    expect(retried.runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false, true]);
+
+    const guest = setup(sequence(BOT_CHECK));
+    expect((await errorOf(guest.adapter.fetchDescription({ platformContentId: ID }, undefined, signal()))).class).toBe("auth_required");
+    expect(guest.runner.specs).toHaveLength(1);
+
+    const gone = setup(sequence(GONE));
+    expect((await errorOf(gone.adapter.fetchDescription({ platformContentId: ID }, LOGIN, signal()))).class).toBe("source_unreachable");
+    expect(gone.runner.specs).toHaveLength(1);
   });
 });
 

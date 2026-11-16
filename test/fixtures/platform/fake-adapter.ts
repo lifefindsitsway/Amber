@@ -9,6 +9,7 @@ import type {
   PlatformCollection,
   PlatformContentRef,
   PlatformCredential,
+  PlatformDescription,
   PlatformMetadata,
   PlatformPart,
   PlatformSourceAdapter,
@@ -23,6 +24,10 @@ export interface FakeVideo {
   /** Thrown by fetchMetadata instead of answering. */
   metadataError?: Error;
   subtitleError?: Error;
+  /** What fetchDescription answers; `{ state: "unknown" }` when unset. Metadata takes its own from `metadata.description`. */
+  description?: PlatformDescription;
+  /** Thrown by fetchDescription instead of answering. */
+  descriptionError?: Error;
 }
 
 export interface FakeCall {
@@ -79,7 +84,17 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
     if (video.metadataError !== undefined) {
       throw video.metadataError;
     }
-    return { title: `title ${ref.platformContentId}`, durationMs: 600_000, subtitleTracks: [], ...video.metadata };
+    return { title: `title ${ref.platformContentId}`, durationMs: 600_000, subtitleTracks: [], description: { state: "unknown" }, ...video.metadata };
+  }
+
+  async fetchDescription(ref: PlatformContentRef, auth: PlatformCredential | undefined): Promise<PlatformDescription> {
+    this.log("fetchDescription", ref.platformContentId, auth);
+    await auth?.cookies();
+    const video = this.videos.get(ref.platformContentId) ?? {};
+    if (video.descriptionError !== undefined) {
+      throw video.descriptionError;
+    }
+    return video.description ?? { state: "unknown" };
   }
 
   async fetchSubtitle(ref: PlatformContentRef, track: SubtitleTrackRef, auth: PlatformCredential | undefined): Promise<CanonicalSubtitle> {

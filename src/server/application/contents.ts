@@ -55,12 +55,32 @@ type SubtitleImportFormat = "srt" | "vtt" | "txt" | "md";
 
 /**
  * `title` carries the display title, so every list and page shows the user's rename without
- * knowing of it. `trashedAt` never leaves: a Content shown is never in the trash.
+ * knowing of it. `trashedAt` never leaves: a Content shown is never in the trash. The
+ * description is left out on purpose: it can be long, and only the detail carries it
+ * (`contentDetailFields`), so lists, renames and restores stay small.
  */
 export function contentDto(content: Content, collections: ContentDto["collections"]): ContentDto {
-  const { userId: _owner, title: _title, trashedAt: _trashed, ...rest } = content;
+  const {
+    userId: _owner,
+    title: _title,
+    trashedAt: _trashed,
+    description: _description,
+    descriptionTruncated: _descriptionTruncated,
+    descriptionCheckedAt: _descriptionCheckedAt,
+    ...rest
+  } = content;
   const title = displayTitle(content);
   return { ...rest, ...(title === undefined ? {} : { title }), collections: collections.map((collection) => ({ ...collection })) };
+}
+
+/** What the detail carries beyond `contentDto` from the Content itself: its stored description. */
+function contentDetailFields(content: Content): Pick<ContentDetailDto, "description" | "descriptionTruncated" | "descriptionCheckedAt"> {
+  return {
+    ...(content.description === undefined ? {} : { description: content.description }),
+    // The flag only means something beside a text.
+    ...(content.description !== undefined && content.descriptionTruncated === true ? { descriptionTruncated: true as const } : {}),
+    ...(content.descriptionCheckedAt === undefined ? {} : { descriptionCheckedAt: content.descriptionCheckedAt }),
+  };
 }
 
 /** DTOs of several Contents with their collection memberships, read in one query. */
@@ -269,10 +289,19 @@ export class ContentService {
       if (content === undefined) {
         throw amberError("not_found", "content not found");
       }
-      const [dto] = contentDtos(scope, owner, [content]) as [ContentDto];
-      const media = scope.mediaAssets.listByContent(owner, contentId).map((asset) => this.withCurrentAvailability(scope, asset));
-      return { ...dto, media: media.map((asset) => mediaAssetDto(asset, this.options.localPaths)) };
+      return this.detailIn(scope, owner, content);
     });
+  }
+
+  /**
+   * The detail of a Content read inside the caller's transaction, exactly as
+   * `GET /api/contents/:id` answers it, so another service that changed the Content can
+   * answer with the same shape.
+   */
+  detailIn(scope: RepositoryScope, owner: string, content: Content): ContentDetailDto {
+    const [dto] = contentDtos(scope, owner, [content]) as [ContentDto];
+    const media = scope.mediaAssets.listByContent(owner, content.id).map((asset) => this.withCurrentAvailability(scope, asset));
+    return { ...dto, ...contentDetailFields(content), media: media.map((asset) => mediaAssetDto(asset, this.options.localPaths)) };
   }
 
   revisions(principal: RequestPrincipal, contentId: string): TranscriptRevisionListDto {

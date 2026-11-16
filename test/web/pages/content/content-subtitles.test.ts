@@ -58,6 +58,8 @@ function setup(openTab = vi.fn()) {
     highlightThreshold: 0,
     setHighlightThreshold: () => undefined,
     openSubtitleEditor: () => undefined,
+    navigation: 0,
+    switchRevision: () => undefined,
   };
   const client = new ApiClient({ baseUrl: "" }, "local");
   const queryClient = createQueryClient();

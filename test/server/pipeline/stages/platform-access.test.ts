@@ -3,6 +3,7 @@ import { BilibiliAdapter } from "../../../../src/server/adapters/platform/bilibi
 import { amberError, isAmberError } from "../../../../src/server/domain/errors.ts";
 import type { StageExecutionContext } from "../../../../src/server/pipeline/executor.ts";
 import { expiringOnRefusal, type PlatformAccess } from "../../../../src/server/pipeline/stages/platform-access.ts";
+import { DescriptionClock } from "../../../../src/server/domain/content-description.ts";
 import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/source.ts";
 import { createHarness, LOCAL, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { FakePlatformAdapter } from "../../../fixtures/platform/fake-adapter.ts";
@@ -73,7 +74,7 @@ function bilibiliSource(h: Harness, apiCode: number) {
       updatedAt: 1,
     }),
   );
-  const executor = new SourceStageExecutor({ repository: h.repository, platforms, newId: h.newId });
+  const executor = new SourceStageExecutor({ repository: h.repository, platforms, newId: h.newId, descriptionClock: new DescriptionClock(Date.now) });
   const context = {
     task: { userId: LOCAL.userId, contentId },
     signal: new AbortController().signal,

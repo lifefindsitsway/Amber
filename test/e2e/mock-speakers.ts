@@ -1,12 +1,22 @@
 import type { BrowserContext, Page, Request, Route } from "@playwright/test";
-import { contentDetailDtoSchema, transcriptRevisionListDtoSchema } from "../../src/shared/dto/content.ts";
+import { contentDetailDtoSchema, transcriptRevisionDtoSchema, transcriptRevisionListDtoSchema } from "../../src/shared/dto/content.ts";
 import { contentExportRequestSchema } from "../../src/shared/dto/export.ts";
 import { chaptersDtoSchema } from "../../src/shared/dto/chapter.ts";
 import { speakerDtoSchema, speakerListDtoSchema, speakerPatchRequestSchema, type SpeakerDto } from "../../src/shared/dto/speaker.ts";
 import { errorResponseSchema } from "../../src/shared/errors.ts";
 import type { DiarizationUnavailableReason } from "../../src/shared/speakers.ts";
 import { taskAcceptedDtoSchema } from "../../src/shared/dto/task.ts";
-import { speakerReviewDtoSchema, speakersConfirmedRequestSchema, transcriptSegmentPageDtoSchema, type TranscriptSegmentDto } from "../../src/shared/dto/transcript.ts";
+import {
+  draftCommitRequestSchema,
+  draftVersionSchema,
+  speakerReviewDtoSchema,
+  speakersConfirmedRequestSchema,
+  transcriptDraftDtoSchema,
+  transcriptDraftRequestSchema,
+  transcriptSegmentPageDtoSchema,
+  type TranscriptDraftRequest,
+  type TranscriptSegmentDto,
+} from "../../src/shared/dto/transcript.ts";
 import { VTT_HEADER, vttCue } from "../../src/server/domain/export/vtt.ts";
 import { speakerLabels } from "../../src/server/domain/export/speaker-labels.ts";
 import { revisionListItem, segmentId, summaries } from "./mock-backend.ts";
@@ -88,14 +98,14 @@ export function speakerSegmentPage(texts: Readonly<Record<number, string>> = {})
   return transcriptSegmentPageDtoSchema.parse({ revision: revision(), items: segments().map((item) => ({ ...item, text: texts[item.ordinal] ?? item.text })) });
 }
 
-function content() {
+function content(primary: string) {
   return {
     id: SPEAKERS_CONTENT,
     source: { kind: "bilibili", sourceUrl: "https://www.bilibili.com/video/BV1mock00004", platformContentId: "BV1mock00004", platformPartId: "1" },
     title: SPEAKERS_TITLE,
     durationMs: SPEAKER_SEQUENCE.length * SEGMENT_MS,
     rawLanguage: "zh-CN",
-    primaryTranscriptRevisionId: SPEAKERS_REVISION,
+    primaryTranscriptRevisionId: primary,
     processingStatus: "succeeded",
     collections: [],
     createdAt: now,
@@ -149,7 +159,43 @@ export interface SpeakersRequests {
    * no marks, and paragraphs follow the readability rules (pauses, length).
    */
   paragraphStarts?: ReadonlySet<number>;
+  /** The lecture's single transcript draft, as saved; absent = none. */
+  draft: StoredDraft | undefined;
+  /** The `manual` revisions committed from the draft that still exist, oldest first. */
+  manual: ManualRevision[];
+  /** How many manual revisions were ever committed: numbers the next one's id. */
+  manualCommitted: number;
+  /** The primary revision; the ASR original until a commit replaces it. */
+  primary: string;
+  /** Bodies of the draft commits, refused ones included. */
+  commits: unknown[];
+  /** Answers every revision list request with a server error while set. */
+  failRevisionList: boolean;
+  /** Runs right after a commit succeeded, before it is answered: another window's doings. */
+  afterCommit?: (state: SpeakersRequests) => void;
 }
+
+/** The transcript draft as the server keeps it. */
+export interface StoredDraft {
+  baseRevisionId: string;
+  version: number;
+  segments: TranscriptDraftRequest["segments"];
+  updatedAt: number;
+}
+
+/** A committed `manual` revision of the lecture. */
+export interface ManualRevision {
+  id: string;
+  parentRevisionId: string;
+  segments: TranscriptSegmentDto[];
+  createdAt: number;
+}
+
+/**
+ * The id of the `n`th manual revision committed (from 1). The 22 characters segment ids are
+ * built from differ from every other revision's, so no two revisions share a segment id.
+ */
+export const manualRevisionId = (n: number): string => `01J0000000000000000M${String(n).padStart(2, "0")}MANR`;
 
 /** Where a sentence of the primary revision starts in this browser context. */
 export function speakerStartMs(state: Pick<SpeakersRequests, "offsetMs">, index: number): number {
@@ -173,6 +219,12 @@ export function speakersRequests(page: Page): SpeakersRequests {
       draftNeedsReview: 0,
       confirmations: [],
       avatarHeaders: [],
+      draft: undefined,
+      manual: [],
+      manualCommitted: 0,
+      primary: SPEAKERS_REVISION,
+      commits: [],
+      failRevisionList: false,
     };
     states.set(context, state);
   }
@@ -181,7 +233,64 @@ export function speakersRequests(page: Page): SpeakersRequests {
 
 /** The sentences a revision of the lecture has in this browser context. */
 function revisionSegments(state: SpeakersRequests, revisionId: string): TranscriptSegmentDto[] {
-  return revisionId === SPEAKERS_EARLIER_REVISION ? segments(EARLIER_SEQUENCE, {}, revisionId) : segments(state.sequence, state.texts, SPEAKERS_REVISION, state.offsetMs ?? 0, state.paragraphStarts);
+  if (revisionId === SPEAKERS_EARLIER_REVISION) return segments(EARLIER_SEQUENCE, {}, revisionId);
+  const manual = state.manual.find((item) => item.id === revisionId);
+  if (manual !== undefined) return manual.segments;
+  return segments(state.sequence, state.texts, SPEAKERS_REVISION, state.offsetMs ?? 0, state.paragraphStarts);
+}
+
+/** The revisions of the lecture that exist in this browser context, in creation order. */
+function revisionIds(state: SpeakersRequests): string[] {
+  return [...(state.earlierRevision ? [SPEAKERS_EARLIER_REVISION] : []), SPEAKERS_REVISION, ...state.manual.map((item) => item.id)];
+}
+
+function conflict(code: string, details?: Record<string, unknown>) {
+  return errorResponseSchema.parse({ error: { class: "conflict", code, retryDisposition: "never", userMessage: "", ...(details === undefined ? {} : { details }) } });
+}
+
+/** `conflict.draft_changed` naming the draft's current version, or none when there is no draft. */
+const draftChanged = (state: SpeakersRequests) => conflict("conflict.draft_changed", state.draft === undefined ? undefined : { currentVersion: state.draft.version });
+
+function draftDto(state: SpeakersRequests, draft: StoredDraft) {
+  return transcriptDraftDtoSchema.parse({ id: "01J0000000000000000000SPDR", contentId: SPEAKERS_CONTENT, baseRevisionId: draft.baseRevisionId, version: draft.version, segments: draft.segments, updatedAt: draft.updatedAt });
+}
+
+/**
+ * Commits the draft the way the server does: a `manual` revision with one sentence per draft
+ * sentence, in draft order, with new ids and the draft's times, becomes the primary and the
+ * draft is gone. A manual base that is the primary and that nothing else builds on is folded
+ * into the new revision: it is deleted, the new one descends from its parent and takes its
+ * sources. Returns the revision, or the refusal.
+ */
+function commitDraft(state: SpeakersRequests, body: unknown): { status: number; body: unknown } {
+  const request = draftCommitRequestSchema.parse(body);
+  state.commits.push(request);
+  const draft = state.draft;
+  if (draft === undefined || draft.version !== request.draftVersion) return { status: 409, body: draftChanged(state) };
+  if (request.expectedPrimaryRevisionId !== state.primary) {
+    return { status: 409, body: conflict("conflict.primary_changed", { currentPrimaryRevisionId: state.primary }) };
+  }
+  const base = draft.baseRevisionId;
+  const baseSegments = new Map(revisionSegments(state, base).map((segment) => [segment.id, segment]));
+  const baseManual = state.manual.find((item) => item.id === base);
+  const folded = baseManual !== undefined && base === state.primary && !state.manual.some((item) => item.parentRevisionId === base) ? baseManual : undefined;
+  state.manualCommitted += 1;
+  const id = manualRevisionId(state.manualCommitted);
+  const accept = request.speakerReview === "accept_suggestions";
+  const committed: TranscriptSegmentDto[] = draft.segments.map((segment, ordinal) => {
+    const first = segment.sourceSegmentIds[0];
+    let speakerId = segment.speakerId === undefined ? (first === undefined ? undefined : baseSegments.get(first)?.speakerId) : (segment.speakerId ?? undefined);
+    if (segment.speakerReview === "needs_review" && !accept) speakerId = undefined;
+    const sources = folded === undefined ? segment.sourceSegmentIds : segment.sourceSegmentIds.flatMap((source) => baseSegments.get(source)?.sourceSegmentIds ?? []);
+    return { id: segmentId(id, ordinal), revisionId: id, ordinal, startMs: segment.startMs, endMs: segment.endMs, text: segment.text, ...(speakerId === undefined ? {} : { speakerId }), sourceSegmentIds: sources };
+  });
+  if (folded !== undefined) state.manual = state.manual.filter((item) => item !== folded);
+  const revision: ManualRevision = { id, parentRevisionId: folded?.parentRevisionId ?? base, segments: committed, createdAt: now + state.manualCommitted };
+  state.manual.push(revision);
+  state.primary = id;
+  state.draft = undefined;
+  state.afterCommit?.(state);
+  return { status: 201, body: transcriptRevisionDtoSchema.parse(revisionDto(state, id)) };
 }
 
 /** The lecture's chapters as the chapters endpoint returns them; none unless a spec set `chapters`. */
@@ -207,7 +316,22 @@ function speakerChapters(state: SpeakersRequests) {
 
 function revisionDto(state: SpeakersRequests, revisionId: string) {
   const confirmedAt = state.confirmedAt.get(revisionId);
-  return { ...revision(revisionId, revisionSegments(state, revisionId).length), ...(confirmedAt === undefined ? {} : { speakersConfirmedAt: confirmedAt }) };
+  const manual = state.manual.find((item) => item.id === revisionId);
+  const base =
+    manual === undefined
+      ? revision(revisionId, revisionSegments(state, revisionId).length)
+      : {
+          id: manual.id,
+          contentId: SPEAKERS_CONTENT,
+          kind: "manual",
+          parentRevisionId: manual.parentRevisionId,
+          language: "zh-CN",
+          timingFidelity: "inherited_segment",
+          generation: { kind: "manual" },
+          segmentCount: manual.segments.length,
+          createdAt: manual.createdAt,
+        };
+  return { ...base, ...(confirmedAt === undefined ? {} : { speakersConfirmedAt: confirmedAt }) };
 }
 
 /** The speakers a revision's sentences name, in ordinal order. */
@@ -255,16 +379,37 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
   const contentMatch = /^\/api\/contents\/([^/]+)(?:\/(.+))?$/.exec(path);
   if (contentMatch !== null && contentMatch[1] === SPEAKERS_CONTENT) {
     const resource = contentMatch[2];
-    if (method === "GET" && resource === undefined) return json(contentDetailDtoSchema.parse({ ...content(), media: [] }));
+    const state = speakersRequests(request.frame().page());
+    if (method === "GET" && resource === undefined) return json(contentDetailDtoSchema.parse({ ...content(state.primary), media: [] }));
     if (method === "GET" && resource === "summaries") return json(summaries(SPEAKERS_REVISION, SPEAKERS_CONTENT, false));
-    if (method === "GET" && resource === "chapters") return json(speakerChapters(speakersRequests(request.frame().page())));
+    if (method === "GET" && resource === "chapters") return json(speakerChapters(state));
     if (method === "GET" && resource === "notes") return json({ items: [] });
     if (method === "GET" && resource === "transcript/revisions") {
-      const state = speakersRequests(request.frame().page());
-      const ids = state.earlierRevision ? [SPEAKERS_EARLIER_REVISION, SPEAKERS_REVISION] : [SPEAKERS_REVISION];
-      return json(transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: SPEAKERS_REVISION, revisions: ids.map((id) => revisionListItem(revisionDto(state, id))) }));
+      if (state.failRevisionList) return json(errorResponseSchema.parse({ error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } }), 500);
+      return json(transcriptRevisionListDtoSchema.parse({ primaryTranscriptRevisionId: state.primary, revisions: revisionIds(state).map((id) => revisionListItem(revisionDto(state, id))) }));
     }
-    const state = speakersRequests(request.frame().page());
+    if (resource === "transcript/draft") {
+      if (method === "GET") return state.draft === undefined ? json(errorResponseSchema.parse({ error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } }), 404) : json(draftDto(state, state.draft));
+      if (method === "PUT") {
+        const body = transcriptDraftRequestSchema.parse(request.postDataJSON());
+        if (body.expectedVersion !== (state.draft?.version ?? null)) return json(draftChanged(state), 409);
+        if (!revisionIds(state).includes(body.baseRevisionId)) return json(errorResponseSchema.parse({ error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } }), 404);
+        state.draft = { baseRevisionId: body.baseRevisionId, version: (body.expectedVersion ?? 0) + 1, segments: body.segments, updatedAt: Date.now() };
+        return json(draftDto(state, state.draft));
+      }
+      if (method === "DELETE") {
+        const asked = url.searchParams.get("version");
+        const version = asked === null ? undefined : draftVersionSchema.parse(Number(asked));
+        if (state.draft === undefined || (version !== undefined && version !== state.draft.version)) return json(draftChanged(state), 409);
+        state.draft = undefined;
+        await route.fulfill({ status: 204, body: "" });
+        return true;
+      }
+    }
+    if (method === "POST" && resource === "transcript/draft/commit") {
+      const answer = commitDraft(state, request.postDataJSON());
+      return json(answer.body, answer.status);
+    }
     if (method === "GET" && resource === "speakers") return json(speakerListDtoSchema.parse({ items: state.speakers }));
     const speakerMatch = resource === undefined ? null : /^speakers\/([^/]+)(\/avatar)?$/.exec(resource);
     if (speakerMatch !== null && speakerMatch[2] !== undefined && method === "GET") {
@@ -317,8 +462,10 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
   if (method === "GET" && path === "/api/speakers/suggestions") return json({ items: [] });
   const revisionMatch = /^\/api\/transcript\/revisions\/([^/]+)\/([a-z-]+)$/.exec(path);
   const revisionId = revisionMatch?.[1];
-  if (revisionMatch === null || (revisionId !== SPEAKERS_REVISION && revisionId !== SPEAKERS_EARLIER_REVISION)) return false;
+  if (revisionMatch === null || revisionId === undefined) return false;
   const state = speakersRequests(request.frame().page());
+  // A manual revision a later commit folded away is gone, as on the server.
+  if (revisionId !== SPEAKERS_REVISION && revisionId !== SPEAKERS_EARLIER_REVISION && !state.manual.some((item) => item.id === revisionId)) return false;
   const resource = `${method} ${revisionMatch[2]}`;
   if (resource === "GET segments") {
     return json(transcriptSegmentPageDtoSchema.parse({ revision: revisionDto(state, revisionId), items: revisionSegments(state, revisionId) }));

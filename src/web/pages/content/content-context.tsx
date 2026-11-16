@@ -11,8 +11,20 @@ export interface ContentPageState {
   content: ContentDetailDto;
   primaryRevisionId: string | undefined;
   selection: SegmentSelection | undefined;
-  /** Selects a sentence; with `startMs` the player seeks there too. */
+  /** Selects a sentence; with `startMs` the player seeks there too. Counts as a navigation. */
   select(selection: SegmentSelection, startMs?: number): void;
+  /**
+   * How many times `select` has been called on this page. A view restoring a position the user
+   * had before (coming back from the editor) gives up once this moves: the user went somewhere.
+   */
+  navigation: number;
+  /**
+   * Moves the page to another revision in one step: the `revision` address parameter (`null`
+   * removes it, showing the current text), the `segment` parameter and the selection are all
+   * written together, so nothing renders the new revision with the old selection. Neither seeks
+   * nor counts as a navigation; used when a commit replaces the text being read.
+   */
+  switchRevision(next: { revision: string | null; selection: SegmentSelection | undefined }): void;
   openTab(tab: ContentTab): void;
   /** Minimum score of the AI highlights shown, shared by the tab and the player timeline; not persisted. */
   highlightThreshold: number;

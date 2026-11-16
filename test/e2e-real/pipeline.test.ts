@@ -18,6 +18,7 @@ import { AsrStageExecutor } from "../../src/server/pipeline/stages/asr.ts";
 import { ChapterStageExecutor } from "../../src/server/pipeline/stages/chapter.ts";
 import type { PlatformAccess } from "../../src/server/pipeline/stages/platform-access.ts";
 import { ProofreadStageExecutor } from "../../src/server/pipeline/stages/proofread.ts";
+import { DescriptionClock } from "../../src/server/domain/content-description.ts";
 import { SourceStageExecutor } from "../../src/server/pipeline/stages/source.ts";
 import { SubtitleStageExecutor } from "../../src/server/pipeline/stages/subtitle.ts";
 import { SummaryStageExecutor } from "../../src/server/pipeline/stages/summary.ts";
@@ -104,7 +105,7 @@ describe.skipIf(!enabled)("real short-video pipeline (YouTube guest + ElevenLabs
       const elevenLabs = new ElevenLabsAsrProviderFactory({ http, files, secrets: h.secrets });
       const asrFor = (provider: string) => (provider === elevenLabs.descriptor.provider ? elevenLabs : undefined);
       Object.assign(h.executors, {
-        source: new SourceStageExecutor({ repository, platforms, newId }),
+        source: new SourceStageExecutor({ repository, platforms, newId, descriptionClock: new DescriptionClock(Date.now) }),
         subtitle: new SubtitleStageExecutor({ repository, platforms, newId }),
         asr: new AsrStageExecutor({ repository, files, ingest, platforms, asr: asrFor, newId }),
         proofread: new ProofreadStageExecutor({ repository, files, ingest, platforms, newId }),

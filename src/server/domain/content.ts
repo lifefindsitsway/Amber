@@ -30,6 +30,20 @@ export interface Content {
   publishedAt?: number;
   rawLanguage?: string;
   /**
+   * The platform video's description, normalized and capped. Absent when none is stored:
+   * never read, last read unreadable, or the platform said there is none (then
+   * `descriptionCheckedAt` is set). Written apart from the other metadata and without
+   * touching `updatedAt`.
+   */
+  description?: string;
+  /** Present (and true) only when the stored description was cut to the length limit. */
+  descriptionTruncated?: boolean;
+  /**
+   * When the request whose answer is stored was sent (from `DescriptionClock`), not when it
+   * returned; an answer to an earlier request never replaces a later one.
+   */
+  descriptionCheckedAt?: number;
+  /**
    * The user's own title. Kept apart from `title` because the `source` stage rewrites the
    * platform title on every run and the original must stay restorable; readers show
    * `displayTitle()`.

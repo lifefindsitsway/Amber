@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalFileStore } from "../../../../src/server/adapters/file-store/local-file-store.ts";
 import type { FileStore } from "../../../../src/server/ports/file-store.ts";
-import { CONTENT_LIST_IDS_MAX, MAX_UPLOAD_GB, SUBTITLE_IMPORT_MAX_BYTES } from "../../../../src/shared/defaults.ts";
+import { CONTENT_DESCRIPTION_MAX_CHARS, CONTENT_LIST_IDS_MAX, MAX_UPLOAD_GB, SUBTITLE_IMPORT_MAX_BYTES } from "../../../../src/shared/defaults.ts";
 import { TEXT_BODY_LIMIT_BYTES } from "../../../../src/server/api/routes/contents.ts";
 import { isUlid } from "../../../../src/shared/ids.ts";
 import { BYTES_PER_GB, BYTES_PER_MB } from "../../../../src/shared/units.ts";
@@ -262,6 +262,103 @@ describe("reading and managing Contents over HTTP", () => {
     expect(countRows(h.db, "content", "trashed_at IS NOT NULL")).toBe(1);
     expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}`, headers: auth })).statusCode).toBe(404);
     expect((await app.inject({ method: "DELETE", url: `/api/contents/${contentId}`, headers: auth })).statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/contents/:id/description/fetch", () => {
+  const bob = { authorization: `Bearer ${BOB_TOKEN}` };
+  const BVID = "BV1dsc411c7mD";
+  const DESCRIPTION_FIELDS = ["description", "descriptionTruncated", "descriptionCheckedAt"];
+
+  function platformContent(h: Harness): string {
+    const contentId = h.newId();
+    h.repository.withTransaction((scope) =>
+      scope.contents.insert({
+        id: contentId,
+        userId: LOCAL.userId,
+        source: { kind: "bilibili", sourceUrl: `https://www.bilibili.com/video/${BVID}`, platformContentId: BVID },
+        title: "Lecture",
+        processingStatus: "succeeded",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    return contentId;
+  }
+
+  const fetchDescription = (app: Awaited<ReturnType<typeof setup>>["app"], contentId: string, payload?: unknown, headers = auth) =>
+    app.inject({ method: "POST", url: `/api/contents/${contentId}/description/fetch`, headers, ...(payload === undefined ? {} : { payload: payload as object }) });
+
+  it("answers 200 with the result and the detail, with an empty object or no body", async () => {
+    const { h, app } = await setup();
+    const contentId = platformContent(h);
+    h.platforms.bilibili.video(BVID, { description: { state: "found", text: "x".repeat(CONTENT_DESCRIPTION_MAX_CHARS + 1) } });
+    const response = await fetchDescription(app, contentId, {});
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { result: string; content: Record<string, unknown> };
+    expect(Object.keys(body).sort()).toEqual(["content", "result"]);
+    expect(body.result).toBe("found");
+    expect(body.content).toMatchObject({ id: contentId, description: "x".repeat(CONTENT_DESCRIPTION_MAX_CHARS), descriptionTruncated: true, descriptionCheckedAt: expect.any(Number), media: [], updatedAt: 1 });
+    expect(body.content).not.toHaveProperty("userId");
+
+    h.platforms.bilibili.video(BVID, { description: { state: "empty" } });
+    const bodyless = await fetchDescription(app, contentId);
+    expect(bodyless.statusCode).toBe(200);
+    expect(bodyless.json().result).toBe("empty");
+    expect(bodyless.json().content).not.toHaveProperty("description");
+    expect(bodyless.json().content).not.toHaveProperty("descriptionTruncated");
+    expect(bodyless.json().content.descriptionCheckedAt).toEqual(expect.any(Number));
+  });
+
+  it("refuses unknown body fields, local Contents, others' Contents and missing ones", async () => {
+    const { h, app } = await setup();
+    const contentId = platformContent(h);
+    expect((await fetchDescription(app, contentId, { force: true })).statusCode).toBe(400);
+    const local = h.newId();
+    h.repository.withTransaction((scope) => scope.contents.insert({ id: local, userId: LOCAL.userId, source: { kind: "local" }, processingStatus: "succeeded", createdAt: 1, updatedAt: 1 }));
+    const refused = await fetchDescription(app, local, {});
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().error.class).toBe("invalid_request");
+    expect((await fetchDescription(app, contentId, {}, bob)).statusCode).toBe(404);
+    expect((await fetchDescription(app, "missing", {})).statusCode).toBe(404);
+    expect(h.platforms.bilibili.calls.filter((call) => call.method === "fetchDescription")).toEqual([]);
+  });
+
+  it("carries the description on the detail only, not on the list, a rename, the primary switch, a restore or collection items", async () => {
+    const { h, app } = await setup();
+    const contentId = platformContent(h);
+    h.platforms.bilibili.video(BVID, { description: { state: "found", text: "x".repeat(CONTENT_DESCRIPTION_MAX_CHARS + 1) } });
+    expect((await fetchDescription(app, contentId, {})).statusCode).toBe(200);
+    const noDescription = (value: unknown, label: string) => {
+      for (const field of DESCRIPTION_FIELDS) expect(value, `${label} ${field}`).not.toHaveProperty(field);
+    };
+
+    const detail = await app.inject({ method: "GET", url: `/api/contents/${contentId}`, headers: auth });
+    expect(detail.json()).toMatchObject({ description: "x".repeat(CONTENT_DESCRIPTION_MAX_CHARS), descriptionTruncated: true, descriptionCheckedAt: expect.any(Number) });
+
+    const list = await app.inject({ method: "GET", url: "/api/contents", headers: auth });
+    expect(list.json().items).toHaveLength(1);
+    noDescription(list.json().items[0], "list");
+    noDescription((await app.inject({ method: "PATCH", url: `/api/contents/${contentId}`, headers: auth, payload: { title: "Mine" } })).json(), "patch");
+
+    const subtitle = await app.inject({ method: "POST", url: `/api/contents/${contentId}/subtitle-import`, headers: auth, payload: { text: "1\n00:00:00,000 --> 00:00:02,000\nhello\n", language: "en" } });
+    const revisionId = (subtitle.json() as { transcriptRevisionId: string }).transcriptRevisionId;
+    const primary = await app.inject({ method: "PUT", url: `/api/contents/${contentId}/primary-transcript`, headers: auth, payload: { revisionId } });
+    expect(primary.statusCode).toBe(200);
+    noDescription(primary.json(), "primary");
+
+    const collection = h.collections.create(LOCAL, { name: "Course" });
+    h.repository.withTransaction((scope) => scope.collections.addItem(LOCAL.userId, { id: h.newId(), collectionId: collection.id, contentId, position: 0, addedAt: 1 }));
+    const items = (await app.inject({ method: "GET", url: `/api/collections/${collection.id}`, headers: auth })).json().items as unknown[];
+    expect(items).toHaveLength(1);
+    noDescription(items[0], "collection item");
+
+    expect((await app.inject({ method: "DELETE", url: `/api/contents/${contentId}`, headers: auth })).statusCode).toBe(204);
+    const restored = await app.inject({ method: "POST", url: `/api/trash/${contentId}/restore`, headers: auth });
+    expect(restored.statusCode).toBe(200);
+    noDescription(restored.json(), "restore");
+    // The stored description survives the trip through the trash.
+    expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}`, headers: auth })).json().description).toBe("x".repeat(CONTENT_DESCRIPTION_MAX_CHARS));
   });
 });
 

@@ -6,6 +6,7 @@ import { timingFidelityFor } from "../../../../src/server/domain/transcript.ts";
 import { taskRequestView } from "../../../../src/server/domain/task-request.ts";
 import { conditionHolds, gatherConditionFacts } from "../../../../src/server/pipeline/conditions.ts";
 import type { StageExecutionContext } from "../../../../src/server/pipeline/executor.ts";
+import { DescriptionClock } from "../../../../src/server/domain/content-description.ts";
 import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/source.ts";
 import { SubtitleStageExecutor } from "../../../../src/server/pipeline/stages/subtitle.ts";
 import type { SubtitleTrackRef } from "../../../../src/server/ports/platform-source.ts";
@@ -22,7 +23,7 @@ function harness(): Harness {
   const h = createHarness();
   open.push(h);
   const deps = { repository: h.repository, platforms: h.platformAccess, newId: h.newId };
-  h.executors.source = new SourceStageExecutor(deps);
+  h.executors.source = new SourceStageExecutor({ ...deps, descriptionClock: new DescriptionClock(Date.now) });
   h.executors.subtitle = new SubtitleStageExecutor(deps);
   return h;
 }

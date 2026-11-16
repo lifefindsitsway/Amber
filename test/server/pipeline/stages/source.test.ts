@@ -4,12 +4,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BilibiliAdapter } from "../../../../src/server/adapters/platform/bilibili/index.ts";
 import { COOKIES_DIR, YtDlp } from "../../../../src/server/adapters/platform/yt-dlp.ts";
 import { insertRow } from "../../../tools/sqlite.ts";
-import { isAmberError } from "../../../../src/server/domain/errors.ts";
+import { DescriptionClock } from "../../../../src/server/domain/content-description.ts";
+import { amberError, isAmberError } from "../../../../src/server/domain/errors.ts";
 import type { StageExecutionContext } from "../../../../src/server/pipeline/executor.ts";
 import type { PlatformAccess } from "../../../../src/server/pipeline/stages/platform-access.ts";
 import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/source.ts";
 import type { OutboundHttpClient, OutboundRequest, OutboundResponse } from "../../../../src/server/ports/outbound-http.ts";
-import type { PlatformMetadata } from "../../../../src/server/ports/platform-source.ts";
+import type { PlatformDescription, PlatformMetadata } from "../../../../src/server/ports/platform-source.ts";
 import type { ProcessResult, ProcessRunner, ProcessRunOptions, ProcessSpec } from "../../../../src/server/ports/process-runner.ts";
 import { createHarness, LOCAL, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
@@ -44,8 +45,20 @@ function platformContent(h: Harness, extra: { rawLanguage?: string; platformPart
 }
 
 /** Platform calls of the scripted bilibili adapter made while a heavy slot was held. */
-async function runSource(h: Harness, contentId: string, platforms: PlatformAccess = h.platformAccess, slotted: string[] = []): Promise<void> {
-  const executor = new SourceStageExecutor({ repository: h.repository, platforms, newId: h.newId });
+async function runSource(
+  h: Harness,
+  contentId: string,
+  platforms: PlatformAccess = h.platformAccess,
+  slotted: string[] = [],
+  options: { descriptionClock?: DescriptionClock; now?: () => number } = {},
+): Promise<void> {
+  const executor = new SourceStageExecutor({
+    repository: h.repository,
+    platforms,
+    newId: h.newId,
+    descriptionClock: options.descriptionClock ?? new DescriptionClock(Date.now),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
   const adapter = h.platforms.bilibili;
   const withHeavySlot = async <T>(work: () => Promise<T>): Promise<T> => {
     const before = adapter.calls.length;
@@ -176,6 +189,75 @@ describe("source stage", () => {
     scriptMetadata(h, { durationMs: DURATION_MS, chapters: [{ startMs: 0, title: "Three" }] });
     await runSource(h, contentId);
     expect(currentChapters(h, contentId)?.id).toBe("ai-revision");
+  });
+});
+
+describe("source stage: the description", () => {
+  const T = 1_790_000_000_000;
+  const scriptDescription = (h: Harness, description: PlatformDescription) => scriptMetadata(h, { durationMs: DURATION_MS, description });
+  const stored = (h: Harness, contentId: string) => {
+    const content = contentOf(h, contentId);
+    return { description: content?.description, truncated: content?.descriptionTruncated, checkedAt: content?.descriptionCheckedAt };
+  };
+
+  it("stores found text with the time the request was sent, capped, and leaves updatedAt to the metadata", async () => {
+    const h = harness();
+    scriptDescription(h, { state: "found", text: "简介\n第二行" });
+    const contentId = platformContent(h);
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T), now: () => T + 500 });
+    expect(stored(h, contentId)).toEqual({ description: "简介\n第二行", truncated: undefined, checkedAt: T });
+    // The metadata write's time; the description write does not touch it.
+    expect(contentOf(h, contentId)?.updatedAt).toBe(T + 500);
+
+    scriptDescription(h, { state: "found", text: "a".repeat(10_001) });
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T + 1) });
+    expect(stored(h, contentId)).toEqual({ description: "a".repeat(10_000), truncated: true, checkedAt: T + 1 });
+  });
+
+  it("clears the text when the platform says there is none and keeps it when the answer is unreadable", async () => {
+    const h = harness();
+    const contentId = platformContent(h);
+    scriptDescription(h, { state: "found", text: "old" });
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T) });
+
+    scriptDescription(h, { state: "unknown" });
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T + 10) });
+    expect(stored(h, contentId)).toEqual({ description: "old", truncated: undefined, checkedAt: T });
+
+    scriptDescription(h, { state: "empty" });
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T + 20) });
+    expect(stored(h, contentId)).toEqual({ description: undefined, truncated: undefined, checkedAt: T + 20 });
+  });
+
+  it("writes nothing when the metadata read fails", async () => {
+    const h = harness();
+    const contentId = platformContent(h);
+    scriptDescription(h, { state: "found", text: "kept" });
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T) });
+    h.platforms.bilibili.video(BVID, { metadata: { durationMs: DURATION_MS, description: { state: "empty" } }, metadataError: amberError("platform_blocked", "blocked") });
+    const error = await runSource(h, contentId, h.platformAccess, [], { descriptionClock: new DescriptionClock(() => T + 10) }).catch((caught: unknown) => caught);
+    expect(isAmberError(error) && error.appError.class).toBe("platform_blocked");
+    expect(stored(h, contentId)).toEqual({ description: "kept", truncated: undefined, checkedAt: T });
+  });
+
+  it("takes the time before the request: a later write landing while the request is out is not overwritten", async () => {
+    const h = harness();
+    const contentId = platformContent(h);
+    const clock = new DescriptionClock(() => T);
+    const adapter = h.platforms.bilibili;
+    const fetchMetadata = adapter.fetchMetadata.bind(adapter);
+    adapter.fetchMetadata = async (ref, auth) => {
+      // A manual fetch sent after the stage's request, answered first.
+      const manual = h.repository.withTransaction((scope) =>
+        scope.contents.setDescription(LOCAL.userId, contentId, { description: "manual", truncated: false, checkedAt: clock.issue() }, T),
+      );
+      expect(manual).toBe(true);
+      return { ...(await fetchMetadata(ref, auth)), durationMs: DURATION_MS, description: { state: "found", text: "stage" } };
+    };
+    await runSource(h, contentId, h.platformAccess, [], { descriptionClock: clock });
+    expect(stored(h, contentId)).toEqual({ description: "manual", truncated: undefined, checkedAt: T + 1 });
+    // The rest of the metadata is published as usual.
+    expect(contentOf(h, contentId)?.durationMs).toBe(DURATION_MS);
   });
 });
 

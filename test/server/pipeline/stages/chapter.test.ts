@@ -16,6 +16,7 @@ import { estimateTokens } from "../../../../src/server/domain/token-estimate.ts"
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
 import { transact } from "../../../../src/server/pipeline/publish.ts";
 import { ChapterStageExecutor } from "../../../../src/server/pipeline/stages/chapter.ts";
+import { DescriptionClock } from "../../../../src/server/domain/content-description.ts";
 import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/source.ts";
 import { createTask } from "../../../../src/server/pipeline/task-state.ts";
 import { CHAPTER_COUNT_MAX, CONTEXT_SAFETY_RATIO, RETRY_MAX } from "../../../../src/shared/defaults.ts";
@@ -310,7 +311,7 @@ describe("chapter stage", () => {
     const executors = platformPipelineExecutors();
     const h = createHarness({ llmProviders: [fake], executors });
     open.push(h);
-    executors.source = Object.assign(new SourceStageExecutor({ repository: h.repository, platforms: h.platformAccess, newId: h.newId }), { calls: 0 });
+    executors.source = Object.assign(new SourceStageExecutor({ repository: h.repository, platforms: h.platformAccess, newId: h.newId, descriptionClock: new DescriptionClock(Date.now) }), { calls: 0 });
     executors.chapter = Object.assign(new ChapterStageExecutor({ repository: h.repository, newId: h.newId }), { calls: 0 });
     executors.subtitle = countingExecutor({ verdict: "valid", reasons: [] });
     const modelRef = configureLlm(h);

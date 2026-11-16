@@ -58,6 +58,7 @@ import { PendingFileDeleter } from "./application/pending-file-delete.ts";
 import { CacheHoldService } from "./application/cache-holds.ts";
 import { ClientMediaTaskService } from "./application/client-media-tasks.ts";
 import { CollectionService } from "./application/collections.ts";
+import { ContentDescriptionService } from "./application/content-description.ts";
 import { ContentService } from "./application/contents.ts";
 import { DeleteContentService } from "./application/delete-content.ts";
 import { DerivedTaskService } from "./application/derived-tasks.ts";
@@ -89,6 +90,7 @@ import { TrashService } from "./application/trash.ts";
 import { UsageAnalyticsService } from "./application/usage-analytics.ts";
 import { UsageService } from "./application/usage.ts";
 import { WebSearchService } from "./application/web-search.ts";
+import { DescriptionClock } from "./domain/content-description.ts";
 import { AssetJanitor } from "./pipeline/asset-janitor.ts";
 import { CacheDownloadLedger } from "./pipeline/cache-download-ledger.ts";
 import { CacheHoldRegistry } from "./pipeline/cache-holds.ts";
@@ -336,6 +338,9 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     credentialFor: (owner, platform) => platformAccounts.credentialFor(owner, platform),
     markExpired: (owner, platform) => platformAccounts.markExpired(owner, platform),
   };
+  // One issuer of description request times for the whole process: the source stage and the
+  // manual description fetch must order their requests against each other.
+  const descriptionClock = new DescriptionClock(Date.now);
   // QR code login is the server's way in; the desktop client has its login window.
   const platformQrLogin =
     config.mode === "server" ? new PlatformQrLoginService({ logins: [new BilibiliQrLogin({ http })], accounts: platformAccounts }) : undefined;
@@ -355,6 +360,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       ? { localPaths: { pathOf: (ref: string) => media.cache.pathOf(ref), isFile: isExistingFile, cacheAvailable: () => media.cache.isAvailableSync() } }
       : {}),
   });
+  const contentDescription = new ContentDescriptionService({ repository, platforms: platformAccess, descriptionClock, details: contents, heavy });
   // One adapter per `AsrProviderProfile.provider`; a new provider adds an entry here.
   const asrFactories = new Map<AsrProviderId, AsrProviderFactory>(
     [new ElevenLabsAsrProviderFactory({ http, files, secrets }), new DashscopeAsrProviderFactory({ http, files, secrets })].map((factory) => [
@@ -559,6 +565,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     settings,
     importContent,
     contents,
+    contentDescription,
     trash,
     platformAccounts,
     ...(platformQrLogin === undefined ? {} : { platformQrLogin }),
@@ -638,7 +645,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     bus,
     executors: {
       media: new MediaStageExecutor({ repository, files, ingest, mode: config.mode }),
-      source: new SourceStageExecutor({ repository, platforms: platformAccess }),
+      source: new SourceStageExecutor({ repository, platforms: platformAccess, descriptionClock }),
       subtitle: new SubtitleStageExecutor({ repository, platforms: platformAccess }),
       asr: new AsrStageExecutor({ repository, files, media, ingest, platforms: platformAccess, asr: asrFactoryFor, logger: logger.child({ component: "asr_stage" }) }),
       proofread: new ProofreadStageExecutor({ repository, files, media, ingest, platforms: platformAccess }),

@@ -38,6 +38,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "PATCH", path: "/contents/:id", modes: BOTH },
   { method: "GET", path: "/contents/:id", modes: BOTH },
   { method: "DELETE", path: "/contents/:id", modes: BOTH },
+  { method: "POST", path: "/contents/:id/description/fetch", modes: BOTH },
   // tasks
   { method: "GET", path: "/tasks", modes: BOTH },
   { method: "GET", path: "/tasks/:id", modes: BOTH },

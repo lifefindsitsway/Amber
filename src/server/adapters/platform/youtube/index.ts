@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { monotonicFactory } from "ulid";
 import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../shared/defaults.ts";
+import { classifyPlatformDescription } from "../../../domain/content-description.ts";
 import { AmberError, amberError } from "../../../domain/errors.ts";
 import { cookieHeaderFor, parseNetscapeCookies } from "../../../domain/platform-cookie.ts";
 import type { CookieBrowser } from "../../../domain/runtime-support.ts";
@@ -13,6 +14,7 @@ import type {
   PlatformCollection,
   PlatformContentRef,
   PlatformCredential,
+  PlatformDescription,
   PlatformMetadata,
   PlatformSourceAdapter,
   SubtitleTrackRef,
@@ -78,6 +80,8 @@ interface VideoInfo {
   chapters?: YtDlpChapter[] | null;
   subtitles?: Record<string, CaptionTrack[]>;
   automatic_captions?: Record<string, CaptionTrack[]>;
+  /** Read only at the top level of the document, never from entries. */
+  description?: unknown;
 }
 
 interface FlatPlaylist {
@@ -181,7 +185,22 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
         title: chapter.title ?? "",
       })),
       subtitleTracks: captionTracks(info),
+      description: classifyPlatformDescription(info.description),
     };
+  }
+
+  /** One metadata read without subtitle lists, guest first like every other YouTube call. */
+  async fetchDescription(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformDescription> {
+    const { value: info } = await this.guestFirst(auth, (cookies) =>
+      this.options.ytDlp.json<Pick<VideoInfo, "description"> | null>({
+        args: ["--dump-single-json", "--skip-download", "--no-playlist", watchUrl(ref.platformContentId)],
+        extractors: YOUTUBE_EXTRACTORS,
+        ...(cookies === undefined ? {} : { cookies }),
+        signal,
+        timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
+      }),
+    );
+    return classifyPlatformDescription(info?.description);
   }
 
   async fetchSubtitle(ref: PlatformContentRef, track: SubtitleTrackRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<CanonicalSubtitle> {

@@ -49,7 +49,7 @@ function routes(options: { current?: TranscriptRevisionListItemDto; draft?: () =
 }
 
 function renderEditor(onClose = vi.fn()) {
-  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn() };
+  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn(), navigation: 0, switchRevision: vi.fn() };
   renderApp(
     <ContentPageProvider value={state}>
       <TranslationDraftEditor language="en" onClose={onClose} />

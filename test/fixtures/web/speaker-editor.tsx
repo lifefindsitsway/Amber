@@ -44,7 +44,7 @@ export function renderSpeakerEditor(options: { onClose?: () => void; applySpeake
   stubResizeObserver();
   Element.prototype.scrollIntoView ??= () => undefined;
   const onClose = options.onClose ?? vi.fn();
-  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn() };
+  const state = { content: contentDetail(), primaryRevisionId: "r1", selection: undefined, select: vi.fn(), openTab: vi.fn(), highlightThreshold: 80, setHighlightThreshold: vi.fn(), openSubtitleEditor: vi.fn(), navigation: 0, switchRevision: vi.fn() };
   const editor = <DraftEditor base={revision("r1")} primaryRevisionId="r1" onClose={onClose} {...(options.applySpeakersFrom === undefined ? {} : { applySpeakersFrom: options.applySpeakersFrom })} />;
   renderApp(<ContentPageProvider value={state}>{options.wrap === undefined ? editor : options.wrap(editor)}</ContentPageProvider>);
   return onClose;

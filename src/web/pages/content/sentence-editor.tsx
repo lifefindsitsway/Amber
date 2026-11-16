@@ -1,10 +1,12 @@
 import { CaseSensitive, ChevronDown, ChevronUp, Replace, Search, Undo2, X } from "lucide-react";
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../shared/defaults.ts";
 import { blockedComboOf } from "../../shortcut-registry.tsx";
 import { Button } from "../../ui/button.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
+import type { InitialScroll } from "./edit-position.ts";
+import { startInitialScroll } from "./editor-initial-scroll.ts";
 import {
   applyDelete,
   applyReplace,
@@ -105,6 +107,12 @@ export interface SentenceEditorProps<S extends SentenceItem> {
   rowActions?: (item: S, index: number) => ReactNode;
   /** Receives the editor's handle once mounted. */
   handleRef?: Ref<SentenceEditorHandle<S>>;
+  /**
+   * Where the list opens: the sentence at this original index, `offset` px below the list's top,
+   * optionally with the cursor in it. Taken from the first render that has it and acted on once
+   * per mount; later values are ignored. A sentence a filter hides is left alone.
+   */
+  initialScroll?: InitialScroll | undefined;
 }
 
 /** What a caller may do to the editor from outside: undoable batch changes and scrolling. */
@@ -134,6 +142,7 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   const { items } = props;
   const container = useRef<HTMLDivElement>(null);
   const findInput = useRef<HTMLInputElement>(null);
+  const rowList = useRef<HTMLOListElement>(null);
   const [panel, setPanel] = useState<{ open: boolean; mode: "find" | "filler"; replace: boolean }>({ open: false, mode: "find", replace: false });
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
@@ -296,6 +305,21 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
     filler.reset();
   };
 
+  // The opening position is the one this editor was opened with: a value arriving later, or
+  // changing, must not pull the list away from where the user has since scrolled. The effect
+  // depends only on whether there is one, which flips at most once, so it starts once per mount
+  // (StrictMode's simulated remount disposes the first run and starts a fresh one).
+  const opening = useRef<InitialScroll | undefined>(undefined);
+  opening.current ??= props.initialScroll;
+  const hasOpening = opening.current !== undefined;
+  useLayoutEffect(() => {
+    const target = opening.current;
+    if (target === undefined || container.current === null || rowList.current === null) return;
+    // A layout effect: the rows are in the DOM and the first correction lands before the first paint.
+    const run = startInitialScroll(container.current, rowList.current, target);
+    return () => run?.dispose();
+  }, [hasOpening]);
+
   const busy = props.busy || props.sync.phase !== "editing" && props.sync.phase !== "saving";
   busyNow.current = busy;
 
@@ -431,7 +455,7 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
         </section>
       ) : null}
       {props.notices}
-      <ol className="@container min-h-0 flex-1 overflow-auto px-3 py-2" data-testid="sentence-rows">
+      <ol ref={rowList} className="@container min-h-0 flex-1 overflow-auto px-3 py-2" data-testid="sentence-rows">
         {items.map((item, index) =>
           visible !== undefined && !visible.has(index) ? null : (
           <SentenceRow

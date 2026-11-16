@@ -118,10 +118,12 @@ export class DraftSync<T> {
   }
 
   /**
-   * Saves what is still unsaved, then runs `action` (the commit) with the draft's version.
+   * Saves what is still unsaved, then runs `action` (the commit) with the draft's version and
+   * the value stored at that version: what the commit is made of. Typing goes on during the
+   * commit and reaches only the screen, so the screen is not a record of what was committed.
    * On failure the editor goes back to editing with nothing lost; on success it is closed.
    */
-  async commit<R>(action: (version: number) => Promise<R>): Promise<R> {
+  async commit<R>(action: (version: number, committed: T) => Promise<R>): Promise<R> {
     if (this.isTerminal()) throw new Error("draft editor already finished");
     if (this.conflict !== undefined) throw new Error("draft conflict unresolved");
     this.enter("committing");
@@ -131,7 +133,8 @@ export class DraftSync<T> {
         this.failed = false;
         await this.write();
       }
-      const result = await action(this.version as number);
+      // Edits are refused from `committing` on, so the latest value is the one the server holds.
+      const result = await action(this.version as number, this.latest as T);
       this.enter("closed");
       return result;
     } catch (error) {

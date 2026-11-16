@@ -30,6 +30,7 @@ import type { NoteColor, NoteMark, StageId, StageStatus } from "../../src/shared
 import { ERROR_CLASS_DEFAULTS, errorResponseSchema, type AppErrorDetails, type ErrorClass } from "../../src/shared/errors.ts";
 import { isMarked, readingSeparator } from "../../src/shared/reading.ts";
 import { handleChat } from "./mock-chat.ts";
+import { handleDescription } from "./mock-description.ts";
 import { handleOtherModels, OtherModelsState } from "./mock-other-models.ts";
 import { handleOutputs } from "./mock-outputs.ts";
 import { handleSearch } from "./mock-search.ts";
@@ -850,6 +851,7 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
     }
     if (
       (await handleSpeakers(route, request, url)) ||
+      (await handleDescription(route, request, url)) ||
       (await handleTrash(trash, route, request, url)) ||
       (await handleNotes(notesState, route, request, url)) ||
       (await handleSearch(route, request, url, (contentId) => trash.hidden(contentId))) ||

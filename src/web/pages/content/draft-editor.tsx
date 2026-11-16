@@ -30,6 +30,7 @@ import { draftChangedVersion, useDraftSync } from "./use-draft-sync.ts";
 import { isChineseLanguage, SentenceEditor, type SentenceEditorHandle } from "./sentence-editor.tsx";
 import { KeepSpeakersConfirmed, keepSpeakersConfirmedField, useKeepSpeakersConfirmed } from "./speakers/review/keep-speakers-confirmed.tsx";
 import { ComparisonView, type ComparisonFilter } from "./speakers/compare/comparison-view.tsx";
+import { locateDraftTarget, type EditorCloseResult, type EditTarget, type InitialScroll } from "./edit-position.ts";
 import { usePlayRange } from "../../player/player-controller.tsx";
 
 export type { DraftSegment };
@@ -89,7 +90,10 @@ interface CommitInput {
 export function DraftEditor(props: {
   base: TranscriptRevisionDto;
   primaryRevisionId: string | undefined;
-  onClose: () => void;
+  /** Called once when the editor closes, with how it ended. */
+  onClose: (result: EditorCloseResult) => void;
+  /** The sentence (of the revision read when 「编辑」 was clicked) to open the editor on. */
+  initialTarget?: EditTarget;
   /** Opens the apply-speakers flow on mount with this revision as the source. */
   applySpeakersFrom?: string;
   /** Opens the cross-recognition comparison on mount. */
@@ -113,6 +117,19 @@ export function DraftEditor(props: {
   const handleRef = useRef<SentenceEditorHandle<DraftSegment>>(null);
   /** The choice for unconfirmed sentences a commit was made with: a retry after a conflict repeats it. */
   const lastReview = useRef<SpeakerReviewResolution | undefined>(undefined);
+  // The close is reported once: a late success of a request made before closing must not close it again.
+  const closed = useRef(false);
+  const { onClose } = props;
+  const close = useCallback(
+    (result: EditorCloseResult) => {
+      if (closed.current) return;
+      closed.current = true;
+      onClose(result);
+    },
+    [onClose],
+  );
+  // Where the list opens: decided once, from the draft as loaded, never again while editing.
+  const [initialScroll, setInitialScroll] = useState<InitialScroll | undefined>(undefined);
 
   const { sync, state } = useDraftSync<readonly DraftSegment[]>((value, expectedVersion) =>
     client.put(draftUrl, transcriptDraftDtoSchema, { body: { baseRevisionId, expectedVersion, segments: [...value] } }),
@@ -130,7 +147,11 @@ export function DraftEditor(props: {
       setBaseRevisionId(initial.data.baseRevisionId);
       setBaseSpeakers(initial.data.baseSpeakers);
       sync.init(initial.data.segments, initial.data.version);
+      const target = props.initialTarget;
+      const index = target === undefined ? undefined : locateDraftTarget(initial.data.segments, target);
+      if (target !== undefined && index !== undefined) setInitialScroll({ index, offset: target.offset, focus: target.strong });
     }
+    // The target is read with the first loaded draft only, so it is not a dependency.
   }, [initial.data, segments, sync]);
 
   const onItemsChange = useCallback(
@@ -189,23 +210,26 @@ export function DraftEditor(props: {
   };
 
   const commit = useMutation({
-    mutationFn: (input: CommitInput) =>
-      sync.commit((draftVersion) =>
-        client.post(`${draftUrl}/commit`, transcriptRevisionDtoSchema, {
+    mutationFn: (input: CommitInput) => {
+      const committedBase = baseRevisionId;
+      return sync.commit(async (draftVersion, committed) => {
+        const revision = await client.post(`${draftUrl}/commit`, transcriptRevisionDtoSchema, {
           body: {
             expectedPrimaryRevisionId: input.expected ?? "",
             draftVersion,
             ...(input.review === undefined ? {} : { speakerReview: input.review }),
             ...(input.speakersConfirmed === true ? { speakersConfirmed: true } : {}),
           },
-        }),
-      ),
-    onSuccess: () => {
+        });
+        return { revision, committed, baseRevisionId: committedBase };
+      });
+    },
+    onSuccess: ({ revision, committed, baseRevisionId: committedBase }) => {
       void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.content(contentId) });
       // A commit can make speakers used or unused; other tabs read the list again too.
       publishSpeakersChanged(events, queryClient, contentId);
-      props.onClose();
+      close({ kind: "committed", revisionId: revision.id, segmentCount: revision.segmentCount, baseRevisionId: committedBase, committed });
     },
     onError: (error) => {
       if (error instanceof ApiError && error.error.code === "conflict.primary_changed") {
@@ -225,7 +249,7 @@ export function DraftEditor(props: {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
       void queryClient.invalidateQueries({ queryKey: contentKeys.translations(contentId) });
-      props.onClose();
+      close({ kind: "discarded" });
     },
   });
 
@@ -238,9 +262,9 @@ export function DraftEditor(props: {
     sync.reset(latest.segments, latest.version);
   };
 
-  const exit = (): void => {
+  const exit = (result: EditorCloseResult = { kind: "exited" }): void => {
     void sync.close();
-    props.onClose();
+    close(result);
   };
 
   const renderLead = useCallback((_item: DraftSegment, index: number) => <SpeakerLead index={index} />, []);
@@ -274,10 +298,11 @@ export function DraftEditor(props: {
           onLoadLatest={() => void loadLatest()}
           onKeepMine={() => sync.overwrite()}
           onDiscard={() => discard.mutate()}
-          onExit={exit}
+          onExit={() => exit()}
           onCommit={() => (pendingReviews.length > 0 ? setReviewOpen(true) : startCommit(undefined))}
           busy={busy}
           handleRef={handleRef}
+          {...(initialScroll === undefined ? {} : { initialScroll })}
           {...(showColumn ? { renderLead, rowActions } : {})}
           {...(visible === undefined ? {} : { visible })}
           toolbarExtra={
@@ -422,7 +447,7 @@ export function DraftEditor(props: {
             onClick={() => {
               setConflict(undefined);
               void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
-              exit();
+              exit({ kind: "reload" });
             }}
           >
             {t("contentView.draft.conflictReload")}

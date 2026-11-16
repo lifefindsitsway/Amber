@@ -231,10 +231,12 @@ export const SUBTITLE_ASS_DATA_CHUNK = 1000;
 /** Maximum length of `MediaAsset.displayName`. */
 export const DISPLAY_NAME_MAX_CHARS = 255;
 
-/** Timeout of the synchronous platform metadata fetch done by import / inspect. */
+/** Timeout of the synchronous platform metadata fetch done by import / inspect, and of one fetch of a video's description (counted from queueing). */
 export const PLATFORM_METADATA_TIMEOUT_MS = 30000;
 /** yt-dlp `--socket-timeout`, in seconds. */
 export const YTDLP_SOCKET_TIMEOUT_S = 30;
+/** Code points of a platform video description kept; a longer one is cut at the last whole grapheme within it. */
+export const CONTENT_DESCRIPTION_MAX_CHARS = 10000;
 /** Maximum hops when expanding a platform short link. */
 export const SHORTLINK_MAX_HOPS = 3;
 

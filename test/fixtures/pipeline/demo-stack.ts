@@ -16,6 +16,7 @@ import { HighlightStageExecutor } from "../../../src/server/pipeline/stages/high
 import { TranslateStageExecutor } from "../../../src/server/pipeline/stages/translate.ts";
 import { CollectionSummaryStageExecutor } from "../../../src/server/pipeline/stages/collection-summary.ts";
 import { ProofreadStageExecutor } from "../../../src/server/pipeline/stages/proofread.ts";
+import { DescriptionClock } from "../../../src/server/domain/content-description.ts";
 import { SourceStageExecutor } from "../../../src/server/pipeline/stages/source.ts";
 import { SubtitleStageExecutor } from "../../../src/server/pipeline/stages/subtitle.ts";
 import { SummaryStageExecutor } from "../../../src/server/pipeline/stages/summary.ts";
@@ -63,7 +64,7 @@ export async function createDemoStack(): Promise<DemoStack> {
   const platforms = h.platformAccess;
   const asrFor = (provider: string) => (provider === asr.descriptor.provider ? asr : undefined);
   Object.assign(h.executors, {
-    source: new SourceStageExecutor({ repository, platforms, newId }),
+    source: new SourceStageExecutor({ repository, platforms, newId, descriptionClock: new DescriptionClock(Date.now) }),
     subtitle: new SubtitleStageExecutor({ repository, platforms, newId }),
     asr: new AsrStageExecutor({ repository, files, ingest, platforms, asr: asrFor, newId }),
     proofread: new ProofreadStageExecutor({ repository, files, ingest, platforms, newId }),

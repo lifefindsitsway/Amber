@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  FileText,
   FolderPlus,
   HardDriveDownload,
   MoreHorizontal,
@@ -67,6 +68,7 @@ import { ContentPageProvider, useContentPage, type ContentPageState, type Conten
 import { useChapters, useContentDetail, useContentTaskRefresh, useHighlights, useUnfinishedCacheTask } from "./content-data.ts";
 import type { QualitySource } from "../../player/player-menus.tsx";
 import { useContentSubtitles } from "./content-subtitles.ts";
+import { ContentDescription, DescriptionFetchButton, useDescriptionFetch } from "./content-description.tsx";
 import { visibleHighlights } from "./highlight-items.ts";
 import { OutputTabs } from "./output-tabs.tsx";
 import { missingOriginal, RelinkBanner } from "./relink-banner.tsx";
@@ -132,6 +134,7 @@ function ContentLayout(props: { content: ContentDetailDto }) {
     const revisionId = params.get("revision") ?? content.primaryTranscriptRevisionId;
     return segmentId === null || revisionId === undefined ? undefined : { revisionId, segmentId };
   });
+  const [navigation, setNavigation] = useState(0);
   const [highlightThreshold, setHighlightThreshold] = useState(HIGHLIGHT_THRESHOLD_DEFAULT);
   // Bumped by every 「样式与位置」 request from elsewhere on the page (the export dialog).
   const [subtitleEditRequest, setSubtitleEditRequest] = useState(0);
@@ -144,9 +147,22 @@ function ContentLayout(props: { content: ContentDetailDto }) {
       selection,
       select: (next, startMs) => {
         setSelection(next);
+        setNavigation((count) => count + 1);
         if (startMs !== undefined) controller.seek(startMs);
         const search = new URLSearchParams(window.location.search);
         search.set("segment", next.segmentId);
+        setParams(search, { replace: true });
+      },
+      navigation,
+      switchRevision: (next) => {
+        setSelection(next.selection);
+        // Read from the address itself, not this render's params: a `select` just before has
+        // already written its segment there, and this write must start from it.
+        const search = new URLSearchParams(window.location.search);
+        if (next.revision === null) search.delete("revision");
+        else search.set("revision", next.revision);
+        if (next.selection === undefined) search.delete("segment");
+        else search.set("segment", next.selection.segmentId);
         setParams(search, { replace: true });
       },
       openTab: (tab: ContentTab) => {
@@ -159,7 +175,7 @@ function ContentLayout(props: { content: ContentDetailDto }) {
       openSubtitleEditor: () => setSubtitleEditRequest((request) => request + 1),
       playingAssetId,
     }),
-    [content, selection, controller, setParams, highlightThreshold, playingAssetId],
+    [content, selection, navigation, controller, setParams, highlightThreshold, playingAssetId],
   );
 
   return (
@@ -972,6 +988,7 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
   const navigate = useNavigate();
   const { content } = useContentPage();
   const [deleting, setDeleting] = useState(false);
+  const description = useDescriptionFetch(content.id);
   return (
     <>
       <DropdownMenu.Root>
@@ -985,7 +1002,18 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
             {props.overflow.map((item) => (
               <Fragment key={item.key}>{item.menu}</Fragment>
             ))}
-            {props.overflow.length === 0 ? null : <DropdownMenu.Separator className="my-1 h-px bg-line" />}
+            {content.source.kind === "local" ? null : (
+              <DropdownMenu.Item
+                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken data-disabled:cursor-not-allowed data-disabled:opacity-50"
+                disabled={description.pending}
+                onSelect={description.fetch}
+                data-testid="content-menu-refetch-description"
+              >
+                <FileText size={14} aria-hidden="true" />
+                {t("contentView.description.refetch")}
+              </DropdownMenu.Item>
+            )}
+            {props.overflow.length === 0 && content.source.kind === "local" ? null : <DropdownMenu.Separator className="my-1 h-px bg-line" />}
             <DropdownMenu.Item
               className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
               onSelect={() => setDeleting(true)}
@@ -1150,7 +1178,9 @@ function TitleRow(props: { content: ContentDetailDto }) {
             {collection.name}
           </Link>
         ))}
+        <DescriptionFetchButton content={content} />
       </div>
+      <ContentDescription content={content} />
     </div>
   );
 }

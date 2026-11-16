@@ -150,6 +150,8 @@ describe("BurnDialog", () => {
       highlightThreshold: 0,
       setHighlightThreshold: vi.fn(),
       openSubtitleEditor: vi.fn(),
+      navigation: 0,
+      switchRevision: vi.fn(),
     };
     const onOpenChange = vi.fn<(open: boolean) => void>();
     const onStarted = vi.fn<(taskId: string) => void>();

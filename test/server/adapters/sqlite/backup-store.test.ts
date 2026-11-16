@@ -126,6 +126,26 @@ describe("SqliteBackupStore", () => {
     }
   });
 
+  it("keeps a Content's stored description in the copy", async () => {
+    const { h, library, store } = await seeded();
+    h.repository.withTransaction((scope) =>
+      scope.contents.setDescription(LOCAL.userId, library.contentId, { description: "简介\n第二行", truncated: true, checkedAt: 1_790_000_000_000 }, 1_790_000_000_000),
+    );
+    const snapshot = join(h.dir, "snapshot.sqlite");
+    store.snapshotTo(snapshot);
+    store.stripSnapshot(snapshot, { includedOriginals: new Set(), includedCaches: new Set() });
+    const copy = new Database(snapshot, { readonly: true });
+    try {
+      expect(copy.prepare("SELECT description, description_truncated, description_checked_at FROM content WHERE id = ?").get(library.contentId)).toEqual({
+        description: "简介\n第二行",
+        description_truncated: 1,
+        description_checked_at: 1_790_000_000_000,
+      });
+    } finally {
+      copy.close();
+    }
+  });
+
   it("refuses an existing snapshot target", async () => {
     const { h, store } = await seeded();
     const snapshot = join(h.dir, "snapshot.sqlite");

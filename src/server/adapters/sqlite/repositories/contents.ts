@@ -21,6 +21,9 @@ interface ContentRow {
   duration_ms: number | null;
   published_at: number | null;
   raw_language: string | null;
+  description: string | null;
+  description_truncated: number;
+  description_checked_at: number | null;
   primary_transcript_revision_id: string | null;
   import_batch_id: string | null;
   processing_status: Content["processingStatus"];
@@ -49,6 +52,9 @@ function toContent(row: ContentRow): Content {
     durationMs: row.duration_ms,
     publishedAt: row.published_at,
     rawLanguage: row.raw_language,
+    description: row.description,
+    descriptionTruncated: row.description_truncated === 1 ? true : null,
+    descriptionCheckedAt: row.description_checked_at,
     primaryTranscriptRevisionId: row.primary_transcript_revision_id,
     importBatchId: row.import_batch_id,
     processingStatus: row.processing_status,
@@ -155,6 +161,15 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
   );
   const setStatus = db.prepare("UPDATE content SET processing_status = ?, updated_at = ? WHERE id = ? AND user_id = ?");
   const setCustomTitle = db.prepare("UPDATE content SET custom_title = ?, updated_at = ? WHERE id = ? AND user_id = ?");
+  // One statement decides and writes, so a concurrent writer cannot slip in between a check
+  // and the write. A stored time in the future of `now` means the system clock went back
+  // since it was taken; it must not block every later answer.
+  const setDescription = db.prepare(
+    `UPDATE content
+     SET description = @description, description_truncated = @truncated, description_checked_at = @checkedAt
+     WHERE id = @id AND user_id = @owner AND trashed_at IS NULL
+       AND (description_checked_at IS NULL OR description_checked_at < @checkedAt OR description_checked_at > @now)`,
+  );
   const setPinned = db.prepare("UPDATE content SET pinned_at = ? WHERE id = ? AND user_id = ?");
   const remove = db.prepare("DELETE FROM content WHERE id = ? AND user_id = ?");
   const METADATA_COLUMNS = {
@@ -297,6 +312,12 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
           setMetadata.get(field)?.run(value, updatedAt, contentId, ownerUserId);
         }
       }
+    },
+    setDescription(ownerUserId, contentId, value, now) {
+      const truncated = value.description !== null && value.truncated ? 1 : 0;
+      return (
+        setDescription.run({ id: contentId, owner: ownerUserId, description: value.description, truncated, checkedAt: value.checkedAt, now }).changes > 0
+      );
     },
     setPrimaryTranscript(ownerUserId, contentId, revisionId, updatedAt) {
       if (revisionId !== undefined && revisionOfContent.get(revisionId, contentId) === undefined) {

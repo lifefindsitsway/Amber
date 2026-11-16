@@ -305,6 +305,37 @@ describe("TranscriptService commit merges unreferenced manual revisions", () => 
     expect(h.transcripts.map(LOCAL, fixture.corrected.segments[1]?.id as string, second.id)).toEqual({ segmentId: segments[1]?.id, method: "lineage" });
   });
 
+  it("creates the new sentences one to one in draft order with the draft's times, also when the edited manual revision is folded", () => {
+    // The reader comes back to the same sentence after 「完成」 by this order: draft sentence i is new sentence i.
+    const h = createHarness();
+    open.push(h);
+    const { contentId, fixture } = lecture(h);
+    const first = commitEdit(h, contentId, fixture.corrected.revision.id);
+    const base = segmentsOf(h, first.id);
+    const [a, b, c, d] = base;
+    if (a === undefined || b === undefined || c === undefined || d === undefined) throw new Error("the lecture fixture has four sentences");
+    // Split the first sentence, merge the second and third, delete nothing else, add one at the end.
+    const middle = Math.round((a.startMs + a.endMs) / 2);
+    const draft = [
+      { startMs: a.startMs, endMs: middle, text: "前半", sourceSegmentIds: [a.id] },
+      { startMs: middle, endMs: a.endMs, text: "后半", sourceSegmentIds: [a.id] },
+      { startMs: b.startMs, endMs: c.endMs, text: `${b.text}${c.text}`, sourceSegmentIds: [b.id, c.id] },
+      { id: d.id, startMs: d.startMs, endMs: d.endMs, text: d.text, sourceSegmentIds: [d.id] },
+      { startMs: 30000, endMs: 31000, text: "新句", sourceSegmentIds: [] },
+    ];
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: first.id, expectedVersion: null, segments: draft });
+    const second = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: first.id, draftVersion: 1 });
+    // The edited manual revision was folded away in the same commit.
+    expect(revisionOf(h, first.id)).toBeUndefined();
+    expect(second.segmentCount).toBe(draft.length);
+    const created = segmentsOf(h, second.id);
+    expect(created.map((segment) => ({ ordinal: segment.ordinal, startMs: segment.startMs, endMs: segment.endMs, text: segment.text }))).toEqual(
+      draft.map((sentence, ordinal) => ({ ordinal, startMs: sentence.startMs, endMs: sentence.endMs, text: sentence.text })),
+    );
+    // Every sentence is new, even the one the draft kept unchanged with its old id.
+    expect(created.some((segment) => base.some((old) => old.id === segment.id))).toBe(false);
+  });
+
   it("folds a whole chain left by earlier builds, carrying merged sources through every level", () => {
     const h = createHarness();
     open.push(h);

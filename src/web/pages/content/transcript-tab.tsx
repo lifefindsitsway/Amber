@@ -4,7 +4,7 @@ import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
-import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
+import { contentDtoSchema, type TranscriptRevisionDto, type TranscriptRevisionListDto, type TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { isOnlyPunctuationChange } from "../../../shared/reading.ts";
@@ -28,6 +28,7 @@ import { ChapterOutline } from "./chapter-outline.tsx";
 import { useContentPage } from "./content-context.tsx";
 import {
   contentKeys,
+  fetchAllSegments,
   readableRevisions,
   revisionGroups,
   segmentsAt,
@@ -38,8 +39,10 @@ import {
   type Paragraph,
 } from "./content-data.ts";
 import { DraftEditor } from "./draft-editor.tsx";
+import { RETURN_RESTORE_ATTRIBUTE, type EditorCloseResult, type EditTarget, type ReturnPosition, type ReturnRestoreOutcome, type SentenceRef } from "./edit-position.ts";
 import { revisionLabel } from "./labels.ts";
 import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
+import { captureEditEntry, mapAfterCommit, nearestByTime, nearestShownSentence } from "./reader-return.ts";
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
 import { ChapterHeading } from "./reader-chapter.tsx";
 import { ReaderJumpButtons } from "./reader-jump.tsx";
@@ -90,10 +93,53 @@ export function changedSegments(
   return changes;
 }
 
+/**
+ * An editing session opened with 「编辑」: the sentence the editor opens on, the reader's screen
+ * to come back to, and the selected sentence's times (to follow it into a committed revision).
+ */
+export interface EditSession {
+  target: EditTarget | undefined;
+  back: ReturnPosition;
+  selected: SentenceRef | undefined;
+}
+
+/**
+ * What the reader does once when it mounts again after the editor closed. Every kind carries
+ * the page's navigation count at the time editing started: a later navigation cancels it.
+ */
+export type ReaderReturn =
+  /** The same revision: the screen comes back to the pixel, or by its top sentence when that row is gone. */
+  | { kind: "anchor"; back: ReturnPosition }
+  /** A known sentence of the shown revision, put at `offset` below the reader's top. */
+  | { kind: "segment"; navigation: number; segmentId: string; offset: number; approximate: boolean }
+  /** Another revision than the one left: the sentence nearest in time to `ref`. */
+  | { kind: "time"; navigation: number; ref: SentenceRef; offset: number }
+  /** Nothing to come back to. */
+  | { kind: "none"; navigation: number };
+
+const returnNavigation = (plan: ReaderReturn): number => (plan.kind === "anchor" ? plan.back.navigation : plan.navigation);
+
+/** The editor closed and the reader waits for what to show: a commit, or a reload after the primary changed. */
+interface Transition {
+  result: Extract<EditorCloseResult, { kind: "committed" | "reload" }>;
+  session: EditSession | undefined;
+  /** The page's navigation count when the editor closed. */
+  navigation: number;
+  error?: unknown;
+  /**
+   * Everything is read and the address has been asked to change: the reader comes back once
+   * the address names `revision` (the router applies address changes as a transition, after
+   * the selection), so it never renders the new selection over the old revision.
+   */
+  settled?: { revision: string | null; plan: ReaderReturn | undefined; noCentring: { navigation: number; revisionId: string } | undefined };
+}
+
 /** 原文细读 tab: version picker, paragraph reading, change marks, Draft → Commit. */
 export function TranscriptTab() {
   const { t } = useTranslation();
   const page = useContentPage();
+  const client = useApi();
+  const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const revisions = useRevisions(page.content.id);
   const [editing, setEditing] = useState(false);
@@ -103,10 +149,21 @@ export function TranscriptTab() {
   const [applyFrom, setApplyFrom] = useState<string | undefined>(undefined);
   // The review panel's 「去编辑器查看」 opens the editor on the cross-recognition comparison.
   const [compareOnOpen, setCompareOnOpen] = useState(false);
+  // The 「编辑」 session, taken on the click and spent when the editor closes.
+  const session = useRef<EditSession | undefined>(undefined);
+  const [transition, setTransition] = useState<Transition | undefined>(undefined);
+  const [returnPlan, setReturnPlan] = useState<ReaderReturn | undefined>(undefined);
+  // Back from the editor, the reader does not centre the selected sentence until the user
+  // navigates again: it shows the screen the user had instead.
+  const [noCentring, setNoCentring] = useState<{ navigation: number; revisionId: string } | undefined>(undefined);
+  // The page as it is now, for the steps that finish after a request.
+  const pageNow = useRef(page);
+  pageNow.current = page;
   const applyParam = params.get("applySpeakers");
   // A link asking to apply speakers opens the editor on it, and is spent: the address does not keep asking.
   useEffect(() => {
     if (applyParam === null) return;
+    session.current = undefined;
     setApplyFrom(applyParam);
     setEditing(true);
     const next = new URLSearchParams(params);
@@ -114,6 +171,111 @@ export function TranscriptTab() {
     setParams(next, { replace: true });
   }, [applyParam, params, setParams]);
 
+  /**
+   * After a commit or a reload, reads the revision list (and a committed revision's sentences)
+   * before the reader comes back, then moves the address, the selection and the reader's return
+   * in one step: the reader never renders the new text with the old selection, nor the old text.
+   */
+  const finish = async (pending: Transition): Promise<void> => {
+    setTransition({ ...pending, error: undefined });
+    try {
+      const listed = await revisions.refetch();
+      if (listed.error !== null) throw listed.error;
+      const list: TranscriptRevisionListDto | undefined = listed.data;
+      if (list === undefined) throw new Error("revision list unavailable");
+      const now = pageNow.current;
+      // A navigation during editing is the user's: their selection stays and nothing is restored.
+      const undisturbed = now.navigation === (pending.session?.back.navigation ?? pending.navigation);
+      const known = (revisionId: string): boolean => list.revisions.some((item) => item.id === revisionId);
+      const keptSelection = now.selection !== undefined && known(now.selection.revisionId) ? now.selection : undefined;
+      const back = pending.session?.back;
+      if (pending.result.kind === "committed") {
+        const result = pending.result;
+        if (!known(result.revisionId)) throw new Error("committed revision not listed");
+        const next = await queryClient.fetchQuery({
+          queryKey: contentKeys.segments(result.revisionId),
+          queryFn: ({ signal }) => fetchAllSegments(client, result.revisionId, signal),
+          staleTime: Infinity,
+        });
+        let selection = keptSelection;
+        const selected = pending.session?.selected;
+        if (undisturbed && now.selection !== undefined && now.selection.revisionId === result.baseRevisionId) {
+          const ref = selected !== undefined && selected.segmentId === now.selection.segmentId ? selected : sentenceRefOf(queryClient, now.selection);
+          const mapped = ref === undefined ? undefined : mapAfterCommit({ committed: result.committed, next, ref });
+          selection = mapped === undefined ? undefined : { revisionId: result.revisionId, segmentId: mapped.segmentId };
+        }
+        let plan: ReaderReturn | undefined;
+        if (back !== undefined) {
+          const top = back.top;
+          const mapped = top === undefined ? undefined : mapAfterCommit({ committed: result.committed, next, ref: top });
+          plan =
+            top === undefined || mapped === undefined
+              ? { kind: "none", navigation: back.navigation }
+              : { kind: "segment", navigation: back.navigation, segmentId: mapped.segmentId, offset: top.offset, approximate: mapped.approximate };
+        }
+        // Shown as the current text when it is the primary; named in the address when another window's commit won.
+        const revision = list.primaryTranscriptRevisionId === result.revisionId ? null : result.revisionId;
+        now.switchRevision({ revision, selection });
+        setTransition({ ...pending, settled: { revision, plan, noCentring: back === undefined ? undefined : { navigation: back.navigation, revisionId: result.revisionId } } });
+      } else {
+        const revision = new URLSearchParams(window.location.search).get("revision");
+        const shown = shownRevisionId(list, revision);
+        if (now.selection !== keptSelection) now.switchRevision({ revision, selection: undefined });
+        let plan: ReaderReturn | undefined;
+        if (back !== undefined) {
+          plan =
+            shown === back.revisionId
+              ? { kind: "anchor", back }
+              : back.top === undefined
+                ? { kind: "none", navigation: back.navigation }
+                : { kind: "time", navigation: back.navigation, ref: back.top, offset: back.top.offset };
+        }
+        setTransition({ ...pending, settled: { revision, plan, noCentring: back === undefined || shown === undefined ? undefined : { navigation: back.navigation, revisionId: shown } } });
+      }
+    } catch (error) {
+      setTransition({ ...pending, error });
+    }
+  };
+
+  // The address now names what the transition settled on: the reader may come back.
+  const settled = transition?.settled;
+  const addressed = settled !== undefined && params.get("revision") === settled.revision;
+  useEffect(() => {
+    if (settled === undefined || !addressed) return;
+    setReturnPlan(settled.plan);
+    setNoCentring(settled.noCentring);
+    setTransition(undefined);
+  }, [settled, addressed]);
+
+  const onEditorClose = (result: EditorCloseResult): void => {
+    const spent = session.current;
+    session.current = undefined;
+    setEditing(false);
+    setApplyFrom(undefined);
+    setCompareOnOpen(false);
+    if (result.kind === "committed" || result.kind === "reload") {
+      void finish({ result, session: spent, navigation: page.navigation });
+      return;
+    }
+    setReturnPlan(spent === undefined ? undefined : { kind: "anchor", back: spent.back });
+    setNoCentring(spent === undefined ? undefined : { navigation: spent.back.navigation, revisionId: spent.back.revisionId });
+  };
+
+  if (transition !== undefined) {
+    // Never the old text meanwhile: it would be read as the result of the commit. Checked before
+    // the list's own state: the list read failing here leaves the query in error, and only this
+    // view offers the retry that finishes the return.
+    return transition.error === undefined ? (
+      <Loading />
+    ) : (
+      <div className="flex flex-col items-center gap-3 p-6" role="alert" data-testid="transcript-return-failed">
+        {transition.error instanceof ApiError ? <ErrorView error={transition.error.error} /> : <p className="text-sm">{t("common.state.loadFailed")}</p>}
+        <Button size="sm" onClick={() => void finish(transition)} data-testid="transcript-return-retry">
+          {t("common.action.retry")}
+        </Button>
+      </div>
+    );
+  }
   if (revisions.isPending) return <Loading />;
   if (revisions.isError) {
     return revisions.error instanceof ApiError ? <ErrorView error={revisions.error.error} /> : <EmptyState title={t("common.state.loadFailed")} />;
@@ -125,11 +287,7 @@ export function TranscriptTab() {
   // A link to a revision that no longer exists says so instead of silently showing another one.
   const missing = requested !== null && !all.some((item) => item.id === requested);
   const groups = revisionGroups(readable, primaryId);
-  const revision =
-    readable.find((item) => item.id === requested) ??
-    readable.find((item) => item.id === primaryId) ??
-    visibleRevisions(readable, primaryId).at(-1) ??
-    readable.at(-1);
+  const revision = pickShownRevision(readable, primaryId, requested);
   if (revision === undefined) {
     return <EmptyState title={t("contentView.transcript.empty")} hint={t("contentView.transcript.emptyHint")} />;
   }
@@ -147,6 +305,7 @@ export function TranscriptTab() {
     // Keyed by version: switching to another one closes this editor (keeping its last edits) and opens a fresh one.
     // Applying speakers always edits the current text: a newer ASR original being read is only the source of the speakers.
     const base = applyFrom === undefined ? revision : (readable.find((item) => item.id === primaryId) ?? revision);
+    const target = applyFrom === undefined && !compareOnOpen ? session.current?.target : undefined;
     return (
       <DraftEditor
         key={base.id}
@@ -154,11 +313,8 @@ export function TranscriptTab() {
         primaryRevisionId={primaryId}
         {...(applyFrom === undefined ? {} : { applySpeakersFrom: applyFrom })}
         {...(compareOnOpen ? { openComparison: true } : {})}
-        onClose={() => {
-          setEditing(false);
-          setApplyFrom(undefined);
-          setCompareOnOpen(false);
-        }}
+        {...(target === undefined ? {} : { initialTarget: target })}
+        onClose={onEditorClose}
       />
     );
   }
@@ -179,6 +335,7 @@ export function TranscriptTab() {
       if (!open && groups.archived.has(revision.id)) unpick();
     },
   };
+  const centring = noCentring === undefined || noCentring.revisionId !== revision.id || noCentring.navigation !== page.navigation;
   return (
     <TranscriptReader
       revision={revision}
@@ -190,21 +347,48 @@ export function TranscriptTab() {
       toggles={toggles}
       onPick={pick}
       onDeleted={unpick}
-      onEdit={() => {
+      centring={centring}
+      {...(returnPlan === undefined ? {} : { returnPlan })}
+      onReturnTaken={() => setReturnPlan(undefined)}
+      onEdit={(entry) => {
+        session.current = entry;
         setApplyFrom(undefined);
+        setCompareOnOpen(false);
         setEditing(true);
       }}
       onCompare={() => {
+        session.current = undefined;
         setApplyFrom(undefined);
         setCompareOnOpen(true);
         setEditing(true);
       }}
       onApplySpeakers={(sourceRevisionId) => {
+        session.current = undefined;
         setApplyFrom(sourceRevisionId);
         setEditing(true);
       }}
     />
   );
+}
+
+/** The revision the tab shows: the one the address names, else the primary, else the newest visible. */
+function pickShownRevision<T extends TranscriptRevisionListItemDto>(readable: readonly T[], primaryId: string | undefined, requested: string | null): T | undefined {
+  return (
+    readable.find((item) => item.id === requested) ??
+    readable.find((item) => item.id === primaryId) ??
+    visibleRevisions(readable, primaryId).at(-1) ??
+    readable.at(-1)
+  );
+}
+
+function shownRevisionId(list: TranscriptRevisionListDto, requested: string | null): string | undefined {
+  return pickShownRevision(readableRevisions(list.revisions), list.primaryTranscriptRevisionId, requested)?.id;
+}
+
+/** A selected sentence's times, from the sentences already read. */
+function sentenceRefOf(queryClient: ReturnType<typeof useQueryClient>, selection: { revisionId: string; segmentId: string }): SentenceRef | undefined {
+  const sentence = queryClient.getQueryData<TranscriptSegmentDto[]>(contentKeys.segments(selection.revisionId))?.find((item) => item.id === selection.segmentId);
+  return sentence === undefined ? undefined : { segmentId: sentence.id, startMs: sentence.startMs, endMs: sentence.endMs };
 }
 
 /** The state of the 「历史手动修订」 and 「显示已归档」 toggles beside a version picker. */
@@ -264,7 +448,14 @@ function TranscriptReader(props: {
   /** The query a search hit opened the page with; its terms are marked in the text. */
   search: string;
   onPick: (id: string) => void;
-  onEdit: () => void;
+  /** 「编辑」, with where the editor is to open and where to come back to. */
+  onEdit: (entry: EditSession) => void;
+  /** Whether the selected sentence is centred when it changes; off right after coming back from the editor. */
+  centring: boolean;
+  /** Where to put the screen once the rows are ready, after the editor closed; taken once. */
+  returnPlan?: ReaderReturn;
+  /** The return plan has been taken: it must not be run again by a later mount. */
+  onReturnTaken: () => void;
   /** Opens the editor on the cross-recognition comparison of the shown revision. */
   onCompare: () => void;
   /** Opens the editor on the apply-speakers flow for the given ASR revision. */
@@ -438,6 +629,11 @@ function TranscriptReader(props: {
     if (!unchanged) rememberAnchor();
     resetTypography();
   };
+  // The return after editing (see below): its outcome, the plan still to run, and the one running.
+  const [returnOutcome, setReturnOutcome] = useState<ReturnRestoreOutcome | undefined>(undefined);
+  const pendingReturn = useRef(props.returnPlan);
+  const returning = useRef<{ navigation: number; again: () => void } | undefined>(undefined);
+  const { onReturnTaken } = props;
   // Every commit consumes the anchor, but only one that really resized the rows puts it back: re-measuring
   // a windowed list for a commit that changed nothing would only make it jump.
   // The font drawn, not the one stored: a bundled face only resizes the rows once it is registered.
@@ -448,8 +644,94 @@ function TranscriptReader(props: {
     anchorBeforeChange.current = undefined;
     const resized = committedLayout.current !== layoutKey;
     committedLayout.current = layoutKey;
-    if (resized && anchor !== undefined) reader.current?.restoreAnchor(anchor);
+    if (!resized) return;
+    // While the screen is still being brought back after editing, aim for that position again:
+    // an anchor taken mid-way would settle on a spot the user never had.
+    if (returning.current !== undefined) returning.current.again();
+    else if (anchor !== undefined) reader.current?.restoreAnchor(anchor);
   });
+
+  // Coming back from the editor: once, as soon as the rows are on screen. A filter that hides
+  // every sentence leaves no rows; the return then waits until the filter is cleared.
+  useLayoutEffect(() => {
+    const plan = pendingReturn.current;
+    const handle = reader.current;
+    if (plan === undefined || handle === null || segments.data === undefined || shownRows.length === 0) return;
+    pendingReturn.current = undefined;
+    onReturnTaken();
+    const navigation = returnNavigation(plan);
+    const end = (outcome: ReturnRestoreOutcome): void => {
+      returning.current = undefined;
+      setReturnOutcome(outcome);
+    };
+    if (page.navigation !== navigation) {
+      end("cancelled");
+      return;
+    }
+    const sentences = segments.data;
+    /** Puts a sentence of the shown revision at `offset`; one the filter hides gives way to the nearest shown one. */
+    const toSentence = (segmentId: string, offset: number, approximate: boolean): void => {
+      let id: string | undefined = segmentId;
+      let near = approximate;
+      if (rowIndexOfSegment(shownRows, segmentId) < 0) {
+        const sentence = sentences.find((item) => item.id === segmentId);
+        id = sentence === undefined ? undefined : nearestShownSentence(shownRows, sentence);
+        near = true;
+      }
+      const index = id === undefined ? -1 : rowIndexOfSegment(shownRows, id);
+      const row = shownRows[index];
+      if (id === undefined || row === undefined) {
+        end("unavailable");
+        return;
+      }
+      const target = { rowKey: filteredRowKey(row, viewRowKey), segmentId: id, offset };
+      const run = (): void =>
+        reader.current?.restoreSegment(target, (result) => {
+          if (result === "cancelled") end("cancelled");
+          else if (result === "missing") end("unavailable");
+          else end(near ? "approximate" : "exact");
+        });
+      returning.current = { navigation, again: run };
+      run();
+    };
+    switch (plan.kind) {
+      case "none":
+        end("unavailable");
+        return;
+      case "segment":
+        toSentence(plan.segmentId, plan.offset, plan.approximate);
+        return;
+      case "time": {
+        const id = nearestByTime(sentences, plan.ref);
+        if (id === undefined) end("unavailable");
+        else toSentence(id, plan.offset, true);
+        return;
+      }
+      case "anchor": {
+        const { anchor, top } = plan.back;
+        const byTop = (): void => {
+          if (top === undefined) end("unavailable");
+          else toSentence(top.segmentId, top.offset, false);
+        };
+        if (anchor === undefined || !shownRows.some((row) => filteredRowKey(row, viewRowKey) === anchor.key)) {
+          byTop();
+          return;
+        }
+        const run = (): void =>
+          reader.current?.restoreAnchor(anchor, (result) => {
+            if (result === "cancelled") end("cancelled");
+            else if (result === "missing") byTop();
+            else end("exact");
+          });
+        returning.current = { navigation, again: run };
+        run();
+      }
+    }
+  });
+  // A navigation while the screen is being brought back ends that: the user went somewhere.
+  useEffect(() => {
+    if (returning.current !== undefined && returning.current.navigation !== page.navigation) reader.current?.cancelRestore();
+  }, [page.navigation]);
 
   const turnContext = useMemo<TurnContext>(
     () => ({ contentId: page.content.id, speakers: speakerById, shares, typography: { fontSize: typography.fontSize, lineHeight: typography.lineHeight }, narrow }),
@@ -489,6 +771,23 @@ function TranscriptReader(props: {
     // `locate` is rebuilt every render; what it reads is listed instead.
     [notesUi, revision.id, rows, shownRows, filter.active],
   );
+  /** 「编辑」: notes the sentence to open the editor on and the screen to come back to. */
+  const startEdit = (): void => {
+    const scroller = host?.querySelector<HTMLElement>('[data-testid="transcript-reader"]') ?? null;
+    const back: ReturnPosition = { revisionId: revision.id, anchor: undefined, top: undefined, navigation: page.navigation };
+    const entry =
+      scroller === null
+        ? { target: undefined, back }
+        : captureEditEntry(scroller, {
+            revisionId: revision.id,
+            navigation: page.navigation,
+            segments: list,
+            playback: tracking && time !== undefined ? { known: true, currentId: current?.id } : { known: false },
+            clickedId: located.segmentId,
+          });
+    const picked = page.selection?.revisionId === revision.id ? list.find((segment) => segment.id === page.selection?.segmentId) : undefined;
+    props.onEdit({ ...entry, selected: picked === undefined ? undefined : { segmentId: picked.id, startMs: picked.startMs, endMs: picked.endMs } });
+  };
   const onOpenNotes = (segmentId: string, noteIds: string[]): void => {
     notesUi?.openView({ noteIds, segmentId, revisionId: revision.id });
   };
@@ -556,7 +855,14 @@ function TranscriptReader(props: {
   };
 
   return (
-    <div ref={menuTarget} className="flex h-full min-h-0 flex-col" data-revision-id={revision.id} data-explainable data-notes>
+    <div
+      ref={menuTarget}
+      className="flex h-full min-h-0 flex-col"
+      data-revision-id={revision.id}
+      data-explainable
+      data-notes
+      {...(returnOutcome === undefined ? {} : { [RETURN_RESTORE_ATTRIBUTE]: returnOutcome })}
+    >
       <AsrBanner contentId={page.content.id} revisions={props.readable} primaryId={props.primaryId} onApplySpeakers={props.onApplySpeakers} />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
         <select
@@ -606,7 +912,7 @@ function TranscriptReader(props: {
         )}
         {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={props.primaryId} testId="proofread-speakers-not-read" /> : null}
         <ChapterOutline entries={outline} onPick={(index) => reader.current?.scrollToIndex(index, "start")} />
-        <Button size="sm" variant="ghost" onClick={props.onEdit} disabled={!canEdit}>
+        <Button size="sm" variant="ghost" onClick={startEdit} disabled={!canEdit} data-testid="transcript-edit">
           <Pencil size={14} />
           {t("common.action.edit")}
         </Button>
@@ -717,7 +1023,7 @@ function TranscriptReader(props: {
             items={shownRows}
             keyOf={(row) => filteredRowKey(row, viewRowKey)}
             estimateSize={96}
-            scrollToIndex={targetIndex}
+            scrollToIndex={props.centring ? targetIndex : undefined}
             pinnedKeys={selection.pinnedKeys}
             scrollerRef={selection.scrollerRef}
             render={(row, index) => (

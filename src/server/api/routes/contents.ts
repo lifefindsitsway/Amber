@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { API_PAGE_SIZE_DEFAULT, API_PAGE_SIZE_MAX, CONTENT_LIST_IDS_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../../shared/defaults.ts";
 import {
+  contentDescriptionFetchDtoSchema,
   contentDetailDtoSchema,
   contentDtoSchema,
   contentListDtoSchema,
@@ -18,6 +19,7 @@ import { asrModelRefSchema } from "../../../shared/dto/model-ref.ts";
 import { diarizationRequestSchema } from "../../../shared/dto/speaker.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../../../shared/enums.ts";
+import type { ContentDescriptionService } from "../../application/content-description.ts";
 import type { ContentService } from "../../application/contents.ts";
 import type { ImportContentService } from "../../application/import-content.ts";
 import type { LocalImportService, UploadPart } from "../../application/local-import.ts";
@@ -38,6 +40,8 @@ const contentParamsSchema = z.object({ id: z.string().min(1) });
 const retranscribeRequestSchema = z
   .object({ asrModelRef: asrModelRefSchema.exactOptional(), diarization: diarizationRequestSchema.exactOptional(), comparison: z.literal(true).exactOptional() })
   .strict();
+/** The description fetch takes no parameters; a client may send `{}` or no body at all. */
+const descriptionFetchRequestSchema = z.object({}).strict();
 /** `ids=a,b,c`: deduplicated, an empty entry is malformed rather than skipped. */
 const contentIdsSchema = z
   .string()
@@ -83,11 +87,13 @@ export interface ContentRouteDeps {
   /** `DELETE /api/contents/:id` moves the Content to the trash. */
   trash?: TrashService;
   retranscribe?: RetranscribeService;
+  /** `POST /api/contents/:id/description/fetch`. */
+  contentDescription?: ContentDescriptionService;
 }
 
 /** `/api/contents*` for links and existing Contents. */
 export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDeps): void {
-  const { importContent, contents, trash, retranscribe } = deps;
+  const { importContent, contents, trash, retranscribe, contentDescription } = deps;
   if (importContent !== undefined) {
     app.post("/api/contents/import", { bodyLimit: TEXT_BODY_LIMIT_BYTES }, async (request, reply) => {
       const body = parseInput(importRequestSchema, request.body, "body");
@@ -134,6 +140,15 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
       const { id } = parseInput(contentParamsSchema, request.params, "params");
       const { revisionId } = parseInput(primaryTranscriptRequestSchema, request.body, "body");
       return sendValidated(reply, 200, contentDtoSchema, contents.setPrimary(principalOf(request), id, revisionId));
+    });
+  }
+
+  if (contentDescription !== undefined) {
+    // Reads the platform once on the user's request; the read stops waiting when the client goes away.
+    app.post("/api/contents/:id/description/fetch", async (request, reply) => {
+      const { id } = parseInput(contentParamsSchema, request.params, "params");
+      parseInput(descriptionFetchRequestSchema, request.body ?? {}, "body");
+      return sendValidated(reply, 200, contentDescriptionFetchDtoSchema, await contentDescription.fetch(principalOf(request), id, requestSignal(reply)));
     });
   }
 

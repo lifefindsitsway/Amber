@@ -432,6 +432,18 @@ export const contentView = {
   locate: {
     unmatched: "无法精确定位到对应句子",
   },
+  /** The platform video's own description under the title row. */
+  description: {
+    label: "视频简介",
+    expand: "展开",
+    collapse: "收起",
+    truncated: "原简介较长，这里只保留了前 {{count}} 个字符",
+    fetch: "获取简介",
+    refetch: "重新获取简介",
+    fetching: "正在获取简介…",
+    empty: "原平台没有为这个视频填写简介",
+    unknown: "这次没能读到简介，可稍后重试",
+  },
   highlights: {
     generate: "生成 AI 高光",
     regenerate: "重算",

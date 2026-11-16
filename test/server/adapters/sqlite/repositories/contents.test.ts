@@ -162,6 +162,58 @@ describe("content repository metadata", () => {
   });
 });
 
+describe("content repository description", () => {
+  const NOW = T0 + 1_000;
+  const write = (owner: string, id: string, value: { description: string | null; truncated: boolean; checkedAt: number }, now = NOW) =>
+    repository.withTransaction((scope) => scope.contents.setDescription(owner, id, value, now));
+  const read = (id: string) => {
+    const item = repository.withTransaction((scope) => scope.contents.getIncludingTrashed("alice", id));
+    return { description: item?.description, truncated: item?.descriptionTruncated, checkedAt: item?.descriptionCheckedAt, updatedAt: item?.updatedAt };
+  };
+
+  it("stores found text with its flag and request time, without touching updatedAt", () => {
+    expect(write("alice", "a1", { description: "简介", truncated: true, checkedAt: T0 + 10 })).toBe(true);
+    expect(read("a1")).toEqual({ description: "简介", truncated: true, checkedAt: T0 + 10, updatedAt: T0 + 1 });
+    expect(write("alice", "a1", { description: "完整", truncated: false, checkedAt: T0 + 11 })).toBe(true);
+    expect(read("a1")).toEqual({ description: "完整", truncated: undefined, checkedAt: T0 + 11, updatedAt: T0 + 1 });
+  });
+
+  it("clears the text and the flag when the platform says there is none, keeping the time", () => {
+    write("alice", "a1", { description: "简介", truncated: true, checkedAt: T0 + 10 });
+    expect(write("alice", "a1", { description: null, truncated: true, checkedAt: T0 + 20 })).toBe(true);
+    expect(read("a1")).toEqual({ description: undefined, truncated: undefined, checkedAt: T0 + 20, updatedAt: T0 + 1 });
+    expect(db.prepare("SELECT description, description_truncated FROM content WHERE id = 'a1'").get()).toEqual({ description: null, description_truncated: 0 });
+  });
+
+  it("writes over nothing stored and over an older time, never over the same or a newer one", () => {
+    expect(write("alice", "a1", { description: "first", truncated: false, checkedAt: T0 + 50 })).toBe(true);
+    expect(write("alice", "a1", { description: "older", truncated: false, checkedAt: T0 + 40 })).toBe(false);
+    expect(write("alice", "a1", { description: "same", truncated: false, checkedAt: T0 + 50 })).toBe(false);
+    expect(read("a1").description).toBe("first");
+    expect(write("alice", "a1", { description: null, truncated: false, checkedAt: T0 + 60 })).toBe(true);
+    // A stored "none" is replaced by a later answer like any other.
+    expect(write("alice", "a1", { description: "later", truncated: false, checkedAt: T0 + 70 })).toBe(true);
+    expect(read("a1")).toMatchObject({ description: "later", checkedAt: T0 + 70 });
+  });
+
+  it("writes over a stored time in the future of now: the clock was set back", () => {
+    write("alice", "a1", { description: "from the future", truncated: false, checkedAt: NOW + 10_000 });
+    expect(write("alice", "a1", { description: "after the reset", truncated: false, checkedAt: NOW - 5 })).toBe(true);
+    expect(read("a1")).toMatchObject({ description: "after the reset", checkedAt: NOW - 5 });
+    // A stored time not ahead of now still wins over an older answer.
+    expect(write("alice", "a1", { description: "older", truncated: false, checkedAt: NOW - 6 })).toBe(false);
+  });
+
+  it("writes only the owner's Content outside the trash", () => {
+    expect(write("bob", "a1", { description: "x", truncated: false, checkedAt: T0 + 10 })).toBe(false);
+    expect(write("alice", "missing", { description: "x", truncated: false, checkedAt: T0 + 10 })).toBe(false);
+    expect(read("a1").checkedAt).toBeUndefined();
+    repository.withTransaction((scope) => scope.contents.trash("alice", "a2", T0 + 100));
+    expect(write("alice", "a2", { description: "x", truncated: false, checkedAt: T0 + 10 })).toBe(false);
+    expect(read("a2")).toEqual({ description: undefined, truncated: undefined, checkedAt: undefined, updatedAt: T0 + 2 });
+  });
+});
+
 describe("content repository trash", () => {
   const trash = (owner: string, id: string, at: number) => repository.withTransaction((scope) => scope.contents.trash(owner, id, at));
 
