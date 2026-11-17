@@ -206,6 +206,41 @@ describe("committing a translation draft", () => {
     expect(h.db.pragma("foreign_key_check")).toEqual([]);
   });
 
+  it("joins like the parent: a hand edit of a loosely joined original's translation stays loose", () => {
+    const { h, contentId, fixture } = setup();
+    // Paragraphing the unmarked proofread fixture by hand makes a loosely joined primary.
+    const corrected = segmentsOf(h, fixture.corrected.revision.id);
+    h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: fixture.corrected.revision.id,
+      expectedVersion: null,
+      segments: corrected.map((segment, index) => ({ startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id], paragraphStart: index % 2 === 0 })),
+    });
+    const loose = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: fixture.corrected.revision.id, draftVersion: 1 });
+    expect(loose.looseJoin).toBe(true);
+    const parent = segmentsOf(h, loose.id);
+    const id = h.newId();
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        {
+          id, contentId, kind: "translated", parentRevisionId: loose.id, language: "de", timingFidelity: "segment_only",
+          generation: { kind: "llm", modelRef: MODEL_REF, promptRef: PROMPT_REF, promptSnapshot: "<prompt>" }, segmentCount: parent.length, looseJoin: true, createdAt: 20,
+        },
+        parent.map((source) => ({ ...source, id: h.newId() as SegmentId, revisionId: id, text: `de ${source.ordinal}`, sourceSegmentIds: [source.id] })),
+      );
+      scope.translations.setCurrent(LOCAL.userId, contentId, "de", id, h.newId());
+    });
+    h.translationDrafts.put(LOCAL, contentId, "de", { baseRevisionId: id, expectedVersion: null, segments: edited(h, id) });
+    const committed = h.translationDrafts.commit(LOCAL, contentId, "de", { expectedRevisionId: id, draftVersion: 1 });
+    expect(committed).toMatchObject({ parentRevisionId: loose.id, looseJoin: true });
+    expect(segmentsOf(h, committed.id).every((segment) => segment.looseJoin === true)).toBe(true);
+
+    // A translation of a usually joined original stays usual.
+    const other = setup();
+    other.h.translationDrafts.put(LOCAL, other.contentId, "en", { baseRevisionId: other.en, expectedVersion: null, segments: edited(other.h, other.en) });
+    expect(other.h.translationDrafts.commit(LOCAL, other.contentId, "en", { expectedRevisionId: other.en, draftVersion: 1 })).not.toHaveProperty("looseJoin");
+  });
+
   it("refuses empty sentences and a stored draft whose sentences no longer match the base, writing nothing", async () => {
     const { h, contentId, en, ja } = setup();
     const revisions = countRows(h.db, "transcript_revision");

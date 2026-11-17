@@ -53,7 +53,7 @@ describe("builtin prompts", () => {
   });
 
   it("keeps the replaced builtin versions verbatim and resolvable by id and version", () => {
-    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(16);
+    expect(EXPECTED_PROMPT_HISTORY).toHaveLength(17);
     expect(BUILTIN_PROMPT_HISTORY.map((prompt) => ({ ...prompt.ref, text: prompt.text }))).toEqual(EXPECTED_PROMPT_HISTORY);
     for (const { id, version, text } of EXPECTED_PROMPTS) {
       if (customizablePrompt(id) !== undefined) {
@@ -72,15 +72,37 @@ describe("builtin prompts", () => {
     expect(builtinPromptOf({ id: "custom:chapter.ai", version: 1 })).toBeUndefined();
   });
 
-  it("composes the audio proofreading prompt into exactly the text of its previous version", () => {
-    const v5 = EXPECTED_PROMPT_HISTORY.find((prompt) => prompt.id === "proofread.audio")?.text;
-    expect(composeProofreadAudioPrompt(PROOFREAD_AUDIO_PROMPT.text, PROOFREAD_TEXT_PROMPT.text)).toBe(v5);
+  it("composes the audio proofreading prompt from the preamble and the effective text prompt", () => {
+    const audioV5 = EXPECTED_PROMPT_HISTORY.find((prompt) => prompt.id === "proofread.audio" && prompt.version === 5)?.text;
+    const textV5 = EXPECTED_PROMPT_HISTORY.find((prompt) => prompt.id === "proofread.text" && prompt.version === 5)?.text;
+    const textV6 = EXPECTED_PROMPTS.find((prompt) => prompt.id === "proofread.text" && prompt.version === 6)?.text;
+    const preamble = PROOFREAD_AUDIO_PROMPT.text.replace("\n\n{{proofread_text}}", "");
+    // The builtin pair is the preamble, a blank line and the current text prompt.
+    expect(composeProofreadAudioPrompt(PROOFREAD_AUDIO_PROMPT.text, PROOFREAD_TEXT_PROMPT.text)).toBe(`${preamble}\n\n${textV6}`);
+    // The historical audio v5 is the literal concatenation with the text v5, which the slot reproduces.
+    expect(audioV5).toBe(`${preamble}\n\n${textV5}`);
+    expect(composeProofreadAudioPrompt(PROOFREAD_AUDIO_PROMPT.text, textV5 as string)).toBe(audioV5);
     const values = { terms_section: "【术语表】\nRAG = 检索增强生成", context_before: "（无）", count: "1", target_lines: "[s1] 你好", context_after: "（无）" };
-    expect(renderPrompt(composeProofreadAudioPrompt(PROOFREAD_AUDIO_PROMPT.text, PROOFREAD_TEXT_PROMPT.text), values)).toBe(renderPrompt(v5 as string, values));
+    expect(renderPrompt(composeProofreadAudioPrompt(PROOFREAD_AUDIO_PROMPT.text, textV5 as string), values)).toBe(renderPrompt(audioV5 as string, values));
     // A custom text prompt goes in unrendered, then shares the slot values; `$` patterns stay literal.
     expect(composeProofreadAudioPrompt("前置 $&\n\n{{proofread_text}}", "自定义 {{target_lines}} [s<n>] ¶")).toBe("前置 $&\n\n自定义 {{target_lines}} [s<n>] ¶");
     // A historical audio text has no slot and is sent as it was.
-    expect(composeProofreadAudioPrompt(v5 as string, "ignored")).toBe(v5);
+    expect(composeProofreadAudioPrompt(audioV5 as string, "ignored")).toBe(audioV5);
+  });
+
+  it("resolves the replaced text proofreading prompt for tasks frozen on it", () => {
+    const textV5 = builtinPromptOf({ id: "proofread.text", version: 5 })?.text;
+    expect(textV5).toBe(EXPECTED_PROMPT_HISTORY.find((prompt) => prompt.id === "proofread.text" && prompt.version === 5)?.text);
+    expect(textV5).not.toBe(PROOFREAD_TEXT_PROMPT.text);
+    expect(builtinPromptOf({ id: "proofread.text", version: 6 })?.text).toBe(PROOFREAD_TEXT_PROMPT.text);
+    expect(isBuiltinVersion({ id: "proofread.text", version: 5 }, PROOFREAD_TEXT_PROMPT)).toBe(false);
+    // A user's own text based on the previous version still passes the save check.
+    const entry = customizablePrompt("proofread.text");
+    expect(entry).toBeDefined();
+    expect(validatePromptText(entry as CustomizablePrompt, textV5 as string)).toBeUndefined();
+    expect(validatePromptText(entry as CustomizablePrompt, PROOFREAD_TEXT_PROMPT.text)).toBeUndefined();
+    // The new version adds a rule only: slots and protocol fragments are unchanged.
+    expect(promptSlots(PROOFREAD_TEXT_PROMPT.text)).toEqual(promptSlots(textV5 as string));
   });
 
   it("sends the summary templates verbatim at their current version", () => {
@@ -107,6 +129,9 @@ describe("builtin prompts", () => {
   it("keeps the punctuation and paragraph rules of the proofreading prompt", () => {
     expect(PROOFREAD_TEXT_PROMPT.text).toContain("\n- 依据语义和上下文补全必要的标点（中文用全角标点，英文用半角标点）；补标点不算改写，但不得借此润色或改变表达\n");
     expect(PROOFREAD_TEXT_PROMPT.text).toContain("\n- 按内容划分自然段：");
+    // v6: a reading-length guideline right after the paragraph rule, semantic completeness first.
+    expect(PROOFREAD_TEXT_PROMPT.text).toContain("第一条待校对句若承接前文则不加 ¶\n- 段落长短要便于阅读，以语义完整为先：");
+    expect(PROOFREAD_TEXT_PROMPT.text).toContain("本身就很长的一行可以单独成段\n- 每个句标记 [s<n>] 对应字幕中一个固定的时间片：");
     // v5: every sentence mark is a fixed time slice, fragments included, and the paragraph mark never goes inside a text.
     expect(PROOFREAD_TEXT_PROMPT.text).toContain("\n- 每个句标记 [s<n>] 对应字幕中一个固定的时间片：");
     expect(PROOFREAD_TEXT_PROMPT.text).toContain("\n- ¶ 只能紧跟句标记，表示这一整句是新段落的第一句；");

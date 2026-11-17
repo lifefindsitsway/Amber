@@ -160,6 +160,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.speakers_changed": {},
   // Too few speaker slots are left on the Content for the speakers a comparison transcription or an imported subtitle would add.
   "conflict.speaker_capacity": { detailsKeys: ["room", "required"] },
+  // Deleting a speaker that a sentence of some revision (archived and comparison ones included) or a draft still names.
+  "conflict.speaker_in_use": {},
   // The subtitle file read for an import is not the one its preview was made from.
   "conflict.subtitle_changed": {},
   // The cache check the request refers to has expired, is unknown or no longer matches the request.

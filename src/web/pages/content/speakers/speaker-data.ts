@@ -1,6 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { speakerDtoSchema, speakerListDtoSchema, speakerSuggestionListDtoSchema, type SpeakerCreateRequest, type SpeakerDto, type SpeakerPatchRequest } from "../../../../shared/dto/speaker.ts";
+import { z } from "zod";
+import {
+  speakerDtoSchema,
+  speakerListDtoSchema,
+  speakerSuggestionListDtoSchema,
+  type SpeakerCreateRequest,
+  type SpeakerDto,
+  type SpeakerListDto,
+  type SpeakerPatchRequest,
+} from "../../../../shared/dto/speaker.ts";
+import { normalizeSpeakerName } from "../../../../shared/speakers.ts";
+import { ApiError } from "../../../api/client.ts";
 import { speakerReviewDtoSchema, type SpeakersConfirmedRequest } from "../../../../shared/dto/transcript.ts";
 import { graphemesOf } from "../../../../shared/speakers.ts";
 import { useApi, useContentEvents } from "../../../api/context.tsx";
@@ -28,15 +39,74 @@ export function useSpeakers(contentId: string, enabled = true) {
   });
 }
 
-/** Creates a speaker; other windows are told so they re-read the list. */
+/**
+ * The creation request for what the user typed: a name typed by the user is their own word for
+ * who this is, so it is sent as confirmed; a blank one leaves the speaker unnamed (shown as
+ * 「发言人 N」).
+ */
+export function speakerCreateRequest(typed: string): SpeakerCreateRequest {
+  const name = normalizeSpeakerName(typed);
+  return name === undefined || name === "too_long" ? {} : { name, nameConfirmed: true };
+}
+
+/**
+ * Creates a speaker. The new one is put into the cached list at once (a caller assigning it
+ * right away must find it there), then the list is read again here and in other windows.
+ */
 export function useCreateSpeaker(contentId: string) {
   const client = useApi();
   const queryClient = useQueryClient();
   const events = useContentEvents();
   return useMutation({
     mutationFn: (request: SpeakerCreateRequest) => client.post(speakersPath(contentId), speakerDtoSchema, { body: request }),
-    onSuccess: () => {
+    onSuccess: (speaker) => {
+      queryClient.setQueryData<SpeakerListDto>(contentKeys.speakers(contentId), (list) =>
+        list === undefined ? list : { items: [...list.items.filter((item) => item.id !== speaker.id), speaker].sort((a, b) => a.ordinal - b.ordinal) },
+      );
       publishSpeakersChanged(events, queryClient, contentId);
+      // A named speaker is a suggestion for the user's other Contents.
+      void queryClient.invalidateQueries({ queryKey: speakerSuggestionKeys.all });
+    },
+  });
+}
+
+/** Why a deletion was refused, when the refusal is one the panel explains rather than shows as an error. */
+export type SpeakerDeleteRefusal = "in_use" | "gone";
+
+/** The refusal a failed deletion stands for; `undefined` for any other failure. */
+export function speakerDeleteRefusal(error: unknown): SpeakerDeleteRefusal | undefined {
+  if (!(error instanceof ApiError)) return undefined;
+  if (error.error.code === "conflict.speaker_in_use") return "in_use";
+  if (error.status === 404 || error.error.class === "not_found") return "gone";
+  return undefined;
+}
+
+const forgetSpeaker = (queryClient: QueryClient, contentId: string, speakerId: string): void => {
+  queryClient.setQueryData<SpeakerListDto>(contentKeys.speakers(contentId), (list) => (list === undefined ? list : { items: list.items.filter((item) => item.id !== speakerId) }));
+};
+
+/**
+ * Deletes a speaker nothing refers to. The server checks again in its own transaction: a
+ * speaker some version or draft names after all is refused (`conflict.speaker_in_use`), one
+ * that is already gone is `not_found`; either way the list is read again, so what the panel
+ * shows matches the server. A deletion also changes the name suggestions and what reviews
+ * count, and other windows are told.
+ */
+export function useDeleteSpeaker(contentId: string) {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const events = useContentEvents();
+  return useMutation({
+    mutationFn: (speakerId: string) => client.delete(`${speakersPath(contentId)}/${encodeURIComponent(speakerId)}`, z.undefined()).then(() => speakerId),
+    onSuccess: (speakerId) => {
+      forgetSpeaker(queryClient, contentId, speakerId);
+      publishSpeakersChanged(events, queryClient, contentId);
+      void queryClient.invalidateQueries({ queryKey: speakerSuggestionKeys.all });
+    },
+    onError: (error, speakerId) => {
+      const refusal = speakerDeleteRefusal(error);
+      if (refusal === "gone") forgetSpeaker(queryClient, contentId, speakerId);
+      if (refusal !== undefined) publishSpeakersChanged(events, queryClient, contentId);
     },
   });
 }

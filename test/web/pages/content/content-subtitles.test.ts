@@ -263,8 +263,8 @@ describe("useContentSubtitles", () => {
       "GET /api/contents/c1/speakers": {
         body: {
           items: [
-            { id: "s1", ordinal: 1, name: long, colorIndex: 0, used: true },
-            { id: "s2", ordinal: 2, colorIndex: 1, used: true },
+            { id: "s1", ordinal: 1, name: long, colorIndex: 0, used: true, referenced: true },
+            { id: "s2", ordinal: 2, colorIndex: 1, used: true, referenced: true },
           ],
         },
       },
@@ -295,7 +295,7 @@ describe("useContentSubtitles", () => {
       "GET /api/contents/c1/speakers": () => {
         reads += 1;
         // A new avatar changes the speaker, not the label subtitles show.
-        return { body: { items: [{ id: "s1", ordinal: 1, name: "张三", colorIndex: 0, used: true, ...(reads > 1 ? { avatarVersion: reads } : {}) }] } };
+        return { body: { items: [{ id: "s1", ordinal: 1, name: "张三", colorIndex: 0, used: true, referenced: true, ...(reads > 1 ? { avatarVersion: reads } : {}) }] } };
       },
     });
     writeTrack("u1", "c1", { version: 2, mode: "original", revisionId: "r1" });

@@ -109,6 +109,12 @@ describe("checkTranscriptInvariants", () => {
     expect(rules([segment(0, { paragraphStart: true }), segment(1)])).toEqual(["paragraph_marks_inconsistent"]);
     expect(rules([segment(0, { paragraphStart: false }), segment(1, { paragraphStart: true })])).toEqual(["paragraph_marks_inconsistent"]);
   });
+
+  it("allows loose joining only on a revision with paragraph marks", () => {
+    const rules = (segments: TranscriptSegment[]) => checkTranscriptInvariants(revision({ looseJoin: true }), segments).map((violation) => violation.rule);
+    expect(rules([segment(0, { paragraphStart: true }), segment(1, { paragraphStart: false })])).toEqual([]);
+    expect(rules([segment(0), segment(1)])).toEqual(["loose_join_without_marks"]);
+  });
 });
 
 describe("inheritedParagraphStarts", () => {

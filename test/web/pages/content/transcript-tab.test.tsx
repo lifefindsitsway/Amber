@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useLocation } from "react-router";
-import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT, READER_MARGIN_DEFAULT, READER_MARGIN_MAX } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT, READER_LOCATE_VIEWPORT_RATIO, READER_MARGIN_DEFAULT, READER_MARGIN_MAX } from "../../../../src/shared/defaults.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../src/shared/reader-typography.ts";
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
@@ -1224,7 +1224,8 @@ describe("TranscriptTab sentence menu with speakers", () => {
   it("adds 复制这句（含发言人） in speaker mode, led by the speaker's name", async () => {
     const { reader, writeText } = await open();
     expect(rightClick(reader.querySelector("[data-segment-id='g1']") as HTMLElement)).toBe(true);
-    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）", "复制这句（含发言人）"]);
+    // The last one opens the editor on this sentence with its speaker menu.
+    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）", "复制这句（含发言人）", "更改发言人…"]);
     fireEvent.click(screen.getByTestId("context-menu-item-copy-sentence-with-speaker"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("陈明：今天讲检索。"));
   });
@@ -1687,7 +1688,7 @@ describe("TranscriptTab 只看", () => {
     stubResizeObserver();
   });
 
-  const THIRD = { id: "sp3", ordinal: 3, name: "王芳", colorIndex: 2, used: true };
+  const THIRD = { id: "sp3", ordinal: 3, name: "王芳", colorIndex: 2, used: true, referenced: true };
 
   it("writes the picked speakers into the address in order, then shows only their sentences with a bar", async () => {
     mockApi(speakerRoutes());
@@ -1950,5 +1951,144 @@ describe("TranscriptTab proofread hint about speakers", () => {
     await readerWith("g1");
     await act(async () => undefined);
     expect(screen.queryByTestId("proofread-speakers-not-read")).toBeNull();
+  });
+});
+
+describe("TranscriptTab 定位到播放位置", () => {
+  beforeEach(() => {
+    stubResizeObserver();
+  });
+
+  /** The reader is 400 px tall: the located sentence's first line goes this far below its top. */
+  const READER_HEIGHT = 400;
+  const LOCATE_OFFSET = READER_HEIGHT * READER_LOCATE_VIEWPORT_RATIO;
+
+  /**
+   * Lays the reader out as a 400 px window over rows 100 px apart, following its scroll position:
+   * a sentence's line is 10 px into its row.
+   */
+  function stubScrollingLayout(): void {
+    const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const scroller = this.closest<HTMLElement>("[data-testid='transcript-reader']");
+      if (scroller === this) return DOMRect.fromRect({ x: 0, y: 0, width: 800, height: READER_HEIGHT });
+      const row = this.closest<HTMLElement>("[data-row-index]");
+      if (scroller === null || row === null) return DOMRect.fromRect({ x: 0, y: 0, width: 0, height: 0 });
+      const top = Number(row.dataset["rowIndex"]) * 100 - scroller.scrollTop;
+      return this.hasAttribute("data-segment-id") ? DOMRect.fromRect({ x: 0, y: top + 10, width: 400, height: 20 }) : DOMRect.fromRect({ x: 0, y: top, width: 800, height: 100 });
+    });
+    const height = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("data-testid") === "transcript-reader" ? READER_HEIGHT : 0;
+    });
+    // Long enough that no goal here is clamped at the end of the text.
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute("data-testid") === "transcript-reader" ? 10_000 : 0;
+    });
+    onTestFinished(() => {
+      spy.mockRestore();
+      height.mockRestore();
+      scrollHeight.mockRestore();
+    });
+  }
+
+  function mount(route: string, capabilities = CAPABILITIES.local) {
+    const seeks: number[] = [];
+    const controller = new PlayerController();
+    controller.attach({ capabilities, seek: (ms) => seeks.push(ms) });
+    renderApp(
+      <PlayerControllerProvider controller={controller}>
+        <ContentPageProvider value={pageState()}>
+          <TranscriptTab />
+          <LocationProbe />
+        </ContentPageProvider>
+      </PlayerControllerProvider>,
+      { route, path: "/contents/:id" },
+    );
+    return { controller, seeks };
+  }
+
+  /** The conversation's speakers as the server lists them, so the reader reads it in speaker turns. */
+  const SPEAKERS = [CHEN, UNNAMED].map((speaker) => ({ ...speaker, referenced: true }));
+  const locateButton = (): HTMLElement => screen.getByTestId("reader-locate");
+  const pulsing = (reader: HTMLElement): Array<string | null> => [...reader.querySelectorAll("[data-locate-pulse]")].map((node) => node.getAttribute("data-segment-id"));
+
+  it("is not there with a player that cannot tell the time", async () => {
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    mount("/contents/c1?tab=transcript&revision=r1", CAPABILITIES.bilibili);
+    await readerWith("g1");
+    expect(screen.getByTestId("reader-to-top")).toBeTruthy();
+    expect(screen.queryByTestId("reader-locate")).toBeNull();
+  });
+
+  it("is disabled until the player has a time, 0 ms included", async () => {
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    const { controller } = mount("/contents/c1?tab=transcript&revision=r1");
+    await readerWith("g1");
+    expect(locateButton().getAttribute("aria-disabled")).toBe("true");
+    expect(locateButton().title).toBe("还没有播放位置，开始播放后可用");
+    act(() => controller.reportTime(0));
+    expect(locateButton().hasAttribute("aria-disabled")).toBe(false);
+    expect(locateButton().title).toBe("定位到播放位置");
+  });
+
+  it("puts the playing sentence's first line at the set height, fades it once, and neither seeks, selects nor changes the address", async () => {
+    stubScrollingLayout();
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    const { controller, seeks } = mount("/contents/c1?tab=transcript&revision=r1");
+    const reader = await readerWith("g7");
+    act(() => controller.reportTime(77_000));
+    const address = screen.getByTestId("location").textContent;
+    fireEvent.click(locateButton());
+    const want = rowOf(reader, "g7") * 100 + 10 - LOCATE_OFFSET;
+    expect(want).toBeGreaterThan(0);
+    expect(reader.scrollTop).toBe(want);
+    await waitFor(() => expect(pulsing(reader)).toEqual(["g7"]));
+    expect(seeks).toEqual([]);
+    expect(reader.querySelector("[aria-current]")).toBeNull();
+    expect(screen.getByTestId("location").textContent).toBe(address);
+  });
+
+  it("in a pause, goes to the nearest sentence", async () => {
+    stubScrollingLayout();
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    const { controller } = mount("/contents/c1?tab=transcript&revision=r1");
+    const reader = await readerWith("g7");
+    // g6 ends at 34 s and g7 starts at 75 s.
+    act(() => controller.reportTime(70_000));
+    fireEvent.click(locateButton());
+    expect(reader.scrollTop).toBe(rowOf(reader, "g7") * 100 + 10 - LOCATE_OFFSET);
+  });
+
+  it("with 「只看」 hiding the playing sentence, says so, clears the filter and then arrives", async () => {
+    stubScrollingLayout();
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    const { controller } = mount("/contents/c1?tab=transcript&revision=r1&speaker=sp2");
+    const reader = await readerWith("g3");
+    // Read in speaker turns, as the filter is offered only then.
+    expect(reader.querySelector("[data-turn-key]")).not.toBeNull();
+    act(() => controller.reportTime(31_000));
+    expect(locateButton().title).toBe("定位到播放位置（将显示全部发言人）");
+    expect(locateButton().getAttribute("aria-label")).toBe("定位到播放位置");
+    fireEvent.click(locateButton());
+    await waitFor(() => expect(shownSentences(reader)).toContain("g6"));
+    expect(addressSpeakers()).toEqual([]);
+    await waitFor(() => expect(reader.scrollTop).toBe(rowOf(reader, "g6") * 100 + 10 - LOCATE_OFFSET));
+    expect(rowOf(reader, "g6")).toBeGreaterThan(1);
+    expect(locateButton().title).toBe("定位到播放位置");
+  });
+
+  it("with 「只看」 hiding the playing sentence, a wheel before the text comes back keeps the view where the user put it", async () => {
+    stubScrollingLayout();
+    mockApi(speakerRoutes({ speakers: SPEAKERS }));
+    const { controller } = mount("/contents/c1?tab=transcript&revision=r1&speaker=sp2");
+    const reader = await readerWith("g3");
+    act(() => controller.reportTime(31_000));
+    act(() => {
+      locateButton().click();
+      reader.dispatchEvent(new Event("wheel", { bubbles: true }));
+    });
+    await waitFor(() => expect(shownSentences(reader)).toContain("g6"));
+    await act(async () => undefined);
+    expect(reader.scrollTop).not.toBe(rowOf(reader, "g6") * 100 + 10 - LOCATE_OFFSET);
+    expect(pulsing(reader)).toEqual([]);
   });
 });

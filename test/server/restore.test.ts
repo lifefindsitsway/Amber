@@ -823,8 +823,8 @@ describe("backup export → restore round trip", () => {
     const restored = await composeOn(dataDir);
     const listed = (await restored.send({ method: "GET", url: `/api/contents/${library.contentId}/speakers` })).json() as { items: Array<Record<string, unknown>> };
     expect(listed.items).toEqual([
-      { id: named, ordinal: 1, name: "Ann", colorIndex: 5, avatarVersion: 1, used: true },
-      { id: plain, ordinal: 2, colorIndex: 1, used: false },
+      { id: named, ordinal: 1, name: "Ann", colorIndex: 5, avatarVersion: 1, used: true, referenced: true },
+      { id: plain, ordinal: 2, colorIndex: 1, used: false, referenced: false },
     ]);
     const avatar = await restored.send({ method: "GET", url: `/api/contents/${library.contentId}/speakers/${named}/avatar` });
     expect([avatar.statusCode, avatar.headers["content-type"], avatar.rawPayload.equals(photo)]).toEqual([200, "image/png", true]);

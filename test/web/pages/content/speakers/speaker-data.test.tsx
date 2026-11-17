@@ -6,8 +6,12 @@ import { useContentEvents } from "../../../../../src/web/api/context.tsx";
 import type { ContentEvent } from "../../../../../src/web/api/content-events.ts";
 import { SPEAKER_NAME_MAX_GRAPHEMES } from "../../../../../src/shared/defaults.ts";
 import { normalizeSpeakerName } from "../../../../../src/shared/speakers.ts";
+import { ApiError } from "../../../../../src/web/api/client.ts";
 import {
+  speakerCreateRequest,
+  speakerDeleteRefusal,
   speakerLabel,
+  useDeleteSpeaker,
   speakerNameLength,
   useCreateSpeaker,
   usePatchSpeaker,
@@ -19,8 +23,8 @@ import {
 import { renderApp } from "../../../../fixtures/web/render.tsx";
 import { stubFetch } from "../../../../fixtures/web/speaker-fetch.ts";
 
-const ONE = { id: "s1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-const TWO = { id: "s2", ordinal: 2, colorIndex: 1, used: true };
+const ONE = { id: "s1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+const TWO = { id: "s2", ordinal: 2, colorIndex: 1, used: true, referenced: true };
 
 function Probe(props: { onEvent?: (event: ContentEvent) => void; query?: string }) {
   const speakers = useSpeakers("c1");
@@ -105,6 +109,78 @@ describe("speaker data hooks", () => {
     await act(async () => undefined);
     await act(async () => undefined);
     expect(onEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleting a speaker", () => {
+  function DeleteProbe(props: { onEvent: (event: ContentEvent) => void }) {
+    const speakers = useSpeakers("c1");
+    const remove = useDeleteSpeaker("c1");
+    const events = useContentEvents();
+    useEffect(() => events.subscribe((event) => props.onEvent(event)), [events, props]);
+    return (
+      <div>
+        <p data-testid="names">{(speakers.data?.items ?? []).map((item) => item.name ?? `#${item.ordinal}`).join(",")}</p>
+        <p data-testid="refusal">{remove.error === null ? "" : (speakerDeleteRefusal(remove.error) ?? "other")}</p>
+        <button onClick={() => remove.mutate("s2")}>delete</button>
+      </div>
+    );
+  }
+
+  it("takes the speaker off the list at once, then tells this and the other windows and refreshes the suggestions", async () => {
+    let items = [ONE, TWO];
+    const calls = stubFetch({
+      "GET /api/contents/c1/speakers": () => ({ json: { items } }),
+      "GET /api/speakers/suggestions": { json: { items: [] } },
+      "DELETE /api/contents/c1/speakers/s2": () => {
+        items = [ONE];
+        return { status: 204 };
+      },
+    });
+    const onEvent = vi.fn();
+    renderApp(<DeleteProbe onEvent={onEvent} />);
+    await waitFor(() => expect(screen.getByTestId("names").textContent).toBe("陈明,#2"));
+    fireEvent.click(screen.getByText("delete"));
+    await waitFor(() => expect(screen.getByTestId("names").textContent).toBe("陈明"));
+    expect(onEvent).toHaveBeenCalledWith({ type: "speakersChanged", contentId: "c1" });
+    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1/speakers/s2"]);
+  });
+
+  it("reads the list again when the server refuses because something refers to the speaker", async () => {
+    const calls = stubFetch({
+      "GET /api/contents/c1/speakers": { json: { items: [ONE, TWO] } },
+      "DELETE /api/contents/c1/speakers/s2": { status: 409, json: { error: { class: "conflict", code: "conflict.speaker_in_use", retryDisposition: "never", userMessage: "" } } },
+    });
+    renderApp(<DeleteProbe onEvent={() => undefined} />);
+    await waitFor(() => expect(screen.getByTestId("names").textContent).toBe("陈明,#2"));
+    fireEvent.click(screen.getByText("delete"));
+    await waitFor(() => expect(screen.getByTestId("refusal").textContent).toBe("in_use"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.path === "/api/contents/c1/speakers").length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByTestId("names").textContent).toBe("陈明,#2");
+  });
+
+  it("drops a speaker that is already gone", async () => {
+    stubFetch({
+      "GET /api/contents/c1/speakers": { json: { items: [ONE, TWO] } },
+      "DELETE /api/contents/c1/speakers/s2": { status: 404, json: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } },
+    });
+    renderApp(<DeleteProbe onEvent={() => undefined} />);
+    await waitFor(() => expect(screen.getByTestId("names").textContent).toBe("陈明,#2"));
+    fireEvent.click(screen.getByText("delete"));
+    await waitFor(() => expect(screen.getByTestId("refusal").textContent).toBe("gone"));
+  });
+
+  it("tells other failures apart from the refusals the panel explains", () => {
+    expect(speakerDeleteRefusal(new ApiError(500, { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" }))).toBeUndefined();
+    expect(speakerDeleteRefusal(new Error("offline"))).toBeUndefined();
+  });
+});
+
+describe("speakerCreateRequest", () => {
+  it("sends a typed name as confirmed, cleaned as it will be stored, and nothing for a blank one", () => {
+    expect(speakerCreateRequest("  王 教授 ")).toEqual({ name: "王 教授", nameConfirmed: true });
+    expect(speakerCreateRequest("   ")).toEqual({});
+    expect(speakerCreateRequest("")).toEqual({});
   });
 });
 

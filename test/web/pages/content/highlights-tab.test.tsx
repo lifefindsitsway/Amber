@@ -122,8 +122,8 @@ describe("HighlightsTab context menu", () => {
 });
 
 describe("HighlightsTab speakers", () => {
-  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true };
+  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true, referenced: true };
 
   function routes(options: { confirmed?: boolean; speakerContext?: Record<string, unknown>; stale?: boolean } = {}) {
     const primary = revision("r1", options.confirmed === true ? { speakersConfirmedAt: 5 } : {});

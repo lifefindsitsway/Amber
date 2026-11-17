@@ -404,6 +404,12 @@ export const contentView = {
     chapterPlay: "从 {{time}} 播放",
     toTop: "去顶部",
     toBottom: "去底部",
+    /** The floating button that scrolls the reader back to the sentence playing now; never seeks. */
+    locate: "定位到播放位置",
+    /** Its tooltip while the player can tell the time but nothing has played or been sought yet. */
+    locateWaiting: "还没有播放位置，开始播放后可用",
+    /** Its tooltip while 「只看」 hides the playing sentence: locating clears the filter first. */
+    locateShowsAll: "定位到播放位置（将显示全部发言人）",
   },
   draft: {
     autosave: "编辑会自动保存为草稿",

@@ -110,7 +110,7 @@ describe("format", () => {
   });
 
   it("refuses a package of a newer format version with its own code", () => {
-    const newer = PACKAGE.replace('"formatVersion":1', '"formatVersion":2');
+    const newer = PACKAGE.replace('"formatVersion":1', '"formatVersion":3');
     expect(codeOf(() => read(newer))).toBe("invalid_request.subtitle_newer");
   });
 });
@@ -595,6 +595,28 @@ describe("restore data", () => {
     expect(inspection.package?.language).toBe("zh-CN");
   });
 
+  it("restores a version-2 package of a loosely joined original from a styled ASS", () => {
+    const marked = [
+      segment("x1", 0, 0, 1000, "第一句", { speakerId: "a", paragraphStart: true }),
+      segment("x2", 1, 500, 2000, "第二句", { speakerId: "b", paragraphStart: false }),
+    ];
+    const loose = buildSubtitlePackage({
+      revision: { language: "zh-CN", looseJoin: true },
+      segments: marked,
+      speakers: [
+        { id: "a", ordinal: 1, name: "张三", colorIndex: 3 },
+        { id: "b", ordinal: 2, colorIndex: 1 },
+      ],
+      translations: [{ language: "en", segments: [segment("t1", 0, 0, 1000, "First", { sourceSegmentIds: ["x1"] as TranscriptSegment["sourceSegmentIds"] })] }],
+      version: "0.7.0",
+    });
+    expect(loose.formatVersion).toBe(2);
+    const document = read(withAssRestoreData(plain, serializeSubtitlePackage(loose)));
+    expect(document.restoreDataMismatch).toBeUndefined();
+    expect(document.package).toMatchObject({ formatVersion: 2, original: { looseJoin: true, paragraphMarks: true } });
+    expect(planSubtitleImport(document, {})).toMatchObject({ format: "ass", looseJoin: true, paragraphMarks: true });
+  });
+
   it("reads a large package across many chunks", () => {
     const long = buildSubtitlePackage({
       revision: { language: "en" },
@@ -740,6 +762,14 @@ describe("package", () => {
       package: { formatVersion: 1, generator: { app: "Amber", version: "0.7.0" }, language: "zh-CN", segmentCount: 4, speakerCount: 3, translationLanguages: ["en", "ja"] },
       limits: ["package_scope"],
     });
+  });
+
+  it("plans loose joining from a version-2 package and previews its version", () => {
+    const loose = read(serializeSubtitlePackage({ ...PACKAGE, formatVersion: 2, original: { ...PACKAGE.original, looseJoin: true } }));
+    const plan = planSubtitleImport(loose, {});
+    expect(plan).toEqual({ ...planSubtitleImport(document, {}), looseJoin: true });
+    expect(inspectSubtitleDocument(loose).package?.formatVersion).toBe(2);
+    expect(planSubtitleImport(document, {})).not.toHaveProperty("looseJoin");
   });
 
   it("leaves paragraph marks out when the package has none", () => {

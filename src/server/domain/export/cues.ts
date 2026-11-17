@@ -8,8 +8,10 @@ export interface ExportCue {
   /** Present only for sentences of an `exact_words` revision. */
   words?: readonly TranscriptWord[];
   speakerId?: string;
-  /** The sentence's semantic paragraph mark, when its revision has them. */
+  /** The sentence's paragraph mark, when its revision has them. */
   paragraphStart?: boolean;
+  /** The revision's `looseJoin`: with marks, its sentences still join as unmarked ones do. */
+  looseJoin?: true;
   translation?: string;
 }
 

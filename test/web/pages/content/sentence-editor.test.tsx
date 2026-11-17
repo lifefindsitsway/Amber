@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, within } from "@testing-library/react"
 import { useRef, useState, type ReactNode } from "react";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../../src/shared/defaults.ts";
-import { INITIAL_SCROLL_ATTRIBUTE, type InitialScroll } from "../../../../src/web/pages/content/edit-position.ts";
+import { INITIAL_SCROLL_ATTRIBUTE, type InitialScroll, type InitialScrollOutcome } from "../../../../src/web/pages/content/edit-position.ts";
 import { isChineseLanguage, SentenceEditor, withTexts, type SentenceEditorHandle } from "../../../../src/web/pages/content/sentence-editor.tsx";
 import type { DraftSyncSnapshot } from "../../../../src/web/pages/content/use-draft-sync.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -10,6 +10,7 @@ import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 interface Item {
   id: string;
   text: string;
+  paragraphStart?: boolean;
 }
 
 const SAVED: DraftSyncSnapshot = { phase: "editing", save: "saved", version: 1, conflict: undefined, unsaved: false };
@@ -483,7 +484,13 @@ describe("SentenceEditor initial scroll", () => {
 
   const control: { setOpening?: (value: InitialScroll | undefined) => void } = {};
 
-  function Opening(props: { texts: string[]; initialScroll?: InitialScroll; visible?: ReadonlySet<number>; onItems?: (items: readonly Item[]) => void }) {
+  function Opening(props: {
+    texts: string[];
+    initialScroll?: InitialScroll;
+    visible?: ReadonlySet<number>;
+    onItems?: (items: readonly Item[]) => void;
+    onDone?: (outcome: InitialScrollOutcome | "none") => void;
+  }) {
     const [items, setItems] = useState<readonly Item[]>(() => props.texts.map((text, index) => ({ id: `s${index + 1}`, text })));
     const [opening, setOpening] = useState(props.initialScroll);
     control.setOpening = setOpening;
@@ -510,6 +517,7 @@ describe("SentenceEditor initial scroll", () => {
         busy={false}
         {...(props.visible === undefined ? {} : { visible: props.visible })}
         {...(opening === undefined ? {} : { initialScroll: opening })}
+        {...(props.onDone === undefined ? {} : { onInitialScrollDone: props.onDone })}
       />
     );
   }
@@ -655,14 +663,170 @@ describe("SentenceEditor initial scroll", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  it("tells the caller how the opening went, once", () => {
+    const frames = manualFrames();
+    const onDone = vi.fn();
+    open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: false }, onDone });
+    expect(onDone).not.toHaveBeenCalled();
+    frames.run(5);
+    expect(onDone.mock.calls).toEqual([["settled"]]);
+  });
+
+  it("tells the caller the opening was a cancel when the user acted first", () => {
+    const frames = manualFrames();
+    const onDone = vi.fn();
+    const { list } = open({ texts: TEXTS, initialScroll: { index: 2, offset: 0, focus: true }, onDone });
+    fireEvent.wheel(list);
+    frames.run(3);
+    expect(onDone.mock.calls).toEqual([["cancelled"]]);
+  });
+
+  it("says there was no opening at once when there is no target, or its row is not shown", () => {
+    const frames = manualFrames();
+    const none = vi.fn();
+    open({ texts: TEXTS, onDone: none });
+    expect(none.mock.calls).toEqual([["none"]]);
+    // A target arriving later is not an opening any more; it is not reported again.
+    act(() => control.setOpening?.({ index: 1, offset: 0, focus: false }));
+    frames.run(3);
+    expect(none.mock.calls).toEqual([["none"]]);
+    cleanup();
+    const hidden = vi.fn();
+    open({ texts: TEXTS, visible: new Set([0, 1]), initialScroll: { index: 2, offset: 0, focus: true }, onDone: hidden });
+    expect(hidden.mock.calls).toEqual([["none"]]);
+  });
+
   it("stops on unmount without reporting", () => {
     const frames = manualFrames();
     mockApi({});
-    const view = renderApp(<Opening texts={TEXTS} initialScroll={{ index: 2, offset: 0, focus: true }} />);
+    const onDone = vi.fn();
+    const view = renderApp(<Opening texts={TEXTS} initialScroll={{ index: 2, offset: 0, focus: true }} onDone={onDone} />);
     const list = screen.getByTestId("sentence-rows");
     expect(frames.pending()).toBe(1);
     view.unmount();
     expect(frames.pending()).toBe(0);
     expect(list.hasAttribute(INITIAL_SCROLL_ATTRIBUTE)).toBe(false);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe("SentenceEditor paragraphs and undo history", () => {
+  function Paragraphed(props: { items: Item[]; starts?: boolean[]; visible?: ReadonlySet<number>; handle?: { current: SentenceEditorHandle<Item> | null }; onItems?: (items: readonly Item[]) => void }) {
+    const [items, setItems] = useState<readonly Item[]>(props.items);
+    const ownHandle = useRef<SentenceEditorHandle<Item>>(null);
+    return (
+      <SentenceEditor
+        items={items}
+        onItemsChange={(next) => {
+          setItems(next);
+          props.onItems?.(next);
+        }}
+        keyOf={keyOf}
+        renderHeader={header}
+        textLabel={label}
+        layout="compact"
+        fillers
+        deleteWholeSentences
+        sync={SAVED}
+        onRetry={vi.fn()}
+        onLoadLatest={vi.fn()}
+        onKeepMine={vi.fn()}
+        onDiscard={vi.fn()}
+        onExit={vi.fn()}
+        onCommit={vi.fn()}
+        busy={false}
+        handleRef={props.handle ?? ownHandle}
+        {...(props.starts === undefined ? {} : { paragraphStarts: props.starts })}
+        {...(props.visible === undefined ? {} : { visible: props.visible })}
+      />
+    );
+  }
+
+  const row = (index: number): HTMLElement => document.querySelector(`[data-sentence-index="${index}"]`) as HTMLElement;
+
+  it("spaces a row that opens a paragraph and describes it as one, but not the first row shown", () => {
+    mockApi({});
+    const items = ["一", "二", "三", "四"].map((text, index) => ({ id: `s${index + 1}`, text }));
+    renderApp(<Paragraphed items={items} starts={[true, false, true, false]} />);
+    expect(row(0).className).toContain("my-0.5");
+    expect(row(1).className).toContain("my-0.5");
+    expect(row(2).className).toContain("mt-5");
+    expect(row(2).getAttribute("data-paragraph-start")).toBe("true");
+    expect(row(1).hasAttribute("data-paragraph-start")).toBe(false);
+    expect(screen.getByLabelText("s3").getAttribute("aria-description")).toBe("段首");
+    expect(screen.getByLabelText("s2").hasAttribute("aria-description")).toBe(false);
+    cleanup();
+    mockApi({});
+    renderApp(<Paragraphed items={items} starts={[true, false, true, false]} visible={new Set([2, 3])} />);
+    expect(row(2).className).toContain("my-0.5");
+    expect(row(2).getAttribute("data-paragraph-start")).toBe("true");
+  });
+
+  it("spaces a shown row after hidden rows of which one opened a paragraph", () => {
+    mockApi({});
+    const items = ["一", "二", "三", "四"].map((text, index) => ({ id: `s${index + 1}`, text }));
+    // Rows 1 and 3 shown; row 2 (hidden) opens a paragraph, so row 3 is not in row 1's paragraph.
+    renderApp(<Paragraphed items={items} starts={[true, false, true, false]} visible={new Set([1, 3])} />);
+    expect(row(1).className).toContain("my-0.5");
+    expect(row(3).className).toContain("mt-5");
+    expect(row(3).hasAttribute("data-paragraph-start")).toBe(false);
+  });
+
+  it("shows no paragraphs without starts (a translation)", () => {
+    mockApi({});
+    renderApp(<Paragraphed items={[{ id: "s1", text: "一" }, { id: "s2", text: "二" }]} />);
+    expect(document.querySelector("[data-paragraph-start]")).toBeNull();
+    expect(document.querySelector("[aria-description]")).toBeNull();
+  });
+
+  it("hands the start of a deleted paragraph opener to the next sentence kept, and undoes to the snapshot", () => {
+    mockApi({});
+    const onItems = vi.fn();
+    const items: Item[] = [
+      { id: "s1", text: "开头。", paragraphStart: true },
+      { id: "s2", text: "嗯。", paragraphStart: true },
+      { id: "s3", text: "第二段。", paragraphStart: false },
+      { id: "s4", text: "接着。", paragraphStart: false },
+    ];
+    renderApp(<Paragraphed items={items} starts={items.map((item) => item.paragraphStart === true)} onItems={onItems} />);
+    openFind();
+    fireEvent.click(screen.getByTestId("find-mode-filler"));
+    fireEvent.click(screen.getByTestId("filler-whole"));
+    fireEvent.click(screen.getByTestId("filler-review"));
+    fireEvent.click(screen.getByTestId("filler-apply"));
+    const deleted = onItems.mock.lastCall?.[0] as Item[];
+    expect(deleted.map((item) => [item.id, item.paragraphStart])).toEqual([
+      ["s1", true],
+      ["s3", true],
+      ["s4", false],
+    ]);
+    // Untouched sentences stay the same objects.
+    expect(deleted[2]).toBe(items[3]);
+    fireEvent.click(screen.getByTestId("editor-undo"));
+    expect(onItems.mock.lastCall?.[0]).toEqual(items);
+  });
+
+  it("answers whether an undo step holds something, and drops the newest such step with everything older", () => {
+    mockApi({});
+    const handle: { current: SentenceEditorHandle<Item> | null } = { current: null };
+    renderApp(<Paragraphed items={[{ id: "s1", text: "零" }]} handle={handle} />);
+    const step = (text: string): void => act(() => handle.current?.applyBatch([{ id: "s1", text }], text));
+    step("一");
+    step("二");
+    step("三");
+    // The stack now holds 零, 一, 二 (what each step replaced).
+    const holds = (text: string) => (items: readonly Item[]) => items[0]?.text === text;
+    expect(handle.current?.hasUndo(holds("一"))).toBe(true);
+    expect(handle.current?.hasUndo(holds("三"))).toBe(false);
+    act(() => handle.current?.dropUndo(holds("一")));
+    expect(handle.current?.hasUndo(holds("零"))).toBe(false);
+    expect(handle.current?.hasUndo(holds("一"))).toBe(false);
+    expect(handle.current?.hasUndo(holds("二"))).toBe(true);
+    // Dropping what is not there changes nothing.
+    act(() => handle.current?.dropUndo(holds("九")));
+    expect(handle.current?.hasUndo(holds("二"))).toBe(true);
+    fireEvent.click(screen.getByTestId("editor-undo"));
+    expect(values()).toEqual(["二"]);
+    expect((screen.getByTestId("editor-undo") as HTMLButtonElement).disabled).toBe(true);
   });
 });

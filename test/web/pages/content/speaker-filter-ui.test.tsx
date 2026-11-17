@@ -17,9 +17,9 @@ import {
 import { segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
-const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-const UNNAMED: SpeakerDto = { id: "sp2", ordinal: 2, colorIndex: 1, used: true };
-const LI: SpeakerDto = { id: "sp3", ordinal: 3, name: "李华", colorIndex: 2, used: true };
+const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+const UNNAMED: SpeakerDto = { id: "sp2", ordinal: 2, colorIndex: 1, used: true, referenced: true };
+const LI: SpeakerDto = { id: "sp3", ordinal: 3, name: "李华", colorIndex: 2, used: true, referenced: true };
 const ROSTER = [LI, CHEN, UNNAMED];
 
 const say = (id: string, index: number, startMs: number, endMs: number, speakerId: string | undefined): TranscriptSegmentDto =>

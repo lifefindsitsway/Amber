@@ -186,6 +186,8 @@ export class TranslationDraftService {
         timingFidelity: timingFidelityFor("translated"),
         generation: origin === undefined ? { kind: "manual" } : { kind: "manual", origin },
         segmentCount: segments.length,
+        // Sentences and paragraph marks are the base's, so its joining is too.
+        ...(base.looseJoin === true ? { looseJoin: true } : {}),
         createdAt: this.now(),
       };
       // The insert checks the transcript invariants (timing, ordinals, one source per

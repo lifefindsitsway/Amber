@@ -4,8 +4,8 @@ import type { SpeakerDto } from "../../../../src/shared/dto/speaker.ts";
 import { revision, segment } from "../../../fixtures/web/content-data.ts";
 import { editorRoutes, mockApi, puts, renderSpeakerEditor, SPEAKER_A, SPEAKER_B } from "../../../fixtures/web/speaker-editor.tsx";
 
-const X1: SpeakerDto = { id: "spk-x1", ordinal: 3, colorIndex: 2, used: true };
-const X2: SpeakerDto = { id: "spk-x2", ordinal: 4, colorIndex: 3, used: true };
+const X1: SpeakerDto = { id: "spk-x1", ordinal: 3, colorIndex: 2, used: true, referenced: true };
+const X2: SpeakerDto = { id: "spk-x2", ordinal: 4, colorIndex: 3, used: true, referenced: true };
 
 /** The current version: five sentences, A A B B B. */
 function target() {

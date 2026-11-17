@@ -16,6 +16,8 @@ export type SpeakerAvatarMime = (typeof SPEAKER_AVATAR_MIMES)[number];
  * `nameConfirmed`: the name was saved as the person's confirmed name, which is what lets an
  * AI request use it; absent = not confirmed. `comparisonOnly`: only transcriptions made for
  * comparison name the speaker, so rosters and pickers leave it out; absent = false.
+ * `referenced`: any revision of the Content (archived and comparison ones included) or any of
+ * its drafts names the speaker; only a speaker that is not referenced may be deleted.
  */
 export const speakerDtoSchema = z.object({
   id: idSchema,
@@ -26,6 +28,7 @@ export const speakerDtoSchema = z.object({
   used: z.boolean(),
   nameConfirmed: z.boolean().exactOptional(),
   comparisonOnly: z.boolean().exactOptional(),
+  referenced: z.boolean(),
 });
 export type SpeakerDto = z.infer<typeof speakerDtoSchema>;
 

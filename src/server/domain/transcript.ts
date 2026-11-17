@@ -86,6 +86,13 @@ export interface TranscriptRevision {
   timingFidelity: TimingFidelity;
   generation: TranscriptGeneration;
   segmentCount: number;
+  /**
+   * The revision has paragraph marks but its sentences join as an unmarked revision's do: a
+   * transcript paragraphed by hand without proofreading, whose text and separators stay what
+   * they were and only the paragraph breaks move. Absent = false. Only on a revision whose
+   * sentences carry `paragraphStart`.
+   */
+  looseJoin?: true;
   createdAt: number;
 }
 
@@ -118,6 +125,12 @@ export interface TranscriptSegment {
    * always a start, so readers tell "not a start" from "never paragraphed".
    */
   paragraphStart?: boolean;
+  /**
+   * The revision's `looseJoin`, repeated on each sentence read from storage so joining rules
+   * can be applied sentence by sentence. Not stored per sentence: an insert takes the value
+   * from the revision only and ignores this field.
+   */
+  looseJoin?: true;
   /** Source sentences in the parent revision: exactly one for proofreading and translation, possibly several for manual merges. */
   sourceSegmentIds: SegmentId[];
 }
@@ -154,6 +167,11 @@ export interface TranscriptDraft {
     speakerId?: string | null;
     /** How applying speakers left the sentence; never reaches a revision. */
     speakerReview?: SpeakerReviewState;
+    /**
+     * Transcript drafts only: explicit paragraphs, on every sentence (the first `true`) or on
+     * none, in which case a commit inherits the base's marks through the sources.
+     */
+    paragraphStart?: boolean;
   }>;
   updatedAt: number;
 }
@@ -201,15 +219,16 @@ export interface TranscriptInvariantViolation {
     | "ordinal_not_increasing"
     | "words_without_exact_timing"
     | "source_count_mismatch"
-    | "paragraph_marks_inconsistent";
+    | "paragraph_marks_inconsistent"
+    | "loose_join_without_marks";
 }
 
 /**
  * Checks a revision about to be committed: the segment count matches, every segment
  * belongs to the revision, has a ULID id and valid integer timing, ordinals strictly
  * increase, only `exact_words` revisions carry words, corrected and translated sentences
- * have exactly one source while root kinds have none, and paragraph marks are
- * all-or-nothing with the first sentence marked. Returns every violation found rather
+ * have exactly one source while root kinds have none, paragraph marks are all-or-nothing
+ * with the first sentence marked, and only a revision with marks joins loosely. Returns every violation found rather
  * than throwing, so callers can report them together.
  */
 export function checkTranscriptInvariants(
@@ -253,54 +272,16 @@ export function checkTranscriptInvariants(
   if (marked > 0 && (marked !== segments.length || segments[0]?.paragraphStart !== true)) {
     violations.push({ rule: "paragraph_marks_inconsistent" });
   }
+  // Loose joining only changes how marked sentences join; on a revision without marks it
+  // would mean nothing, and readers could not tell it from a mark-less revision.
+  if (revision.looseJoin === true && marked === 0) {
+    violations.push({ rule: "loose_join_without_marks" });
+  }
   return violations;
 }
 
-/**
- * The paragraph marks a manual revision inherits from its base: a sentence
- * takes the mark of its first source sentence; when one source was split into several
- * sentences only the first of them may open a paragraph; a sentence without sources opens
- * none; the first sentence always does. When the draft dropped a sentence that opened a
- * paragraph, the next base sentence the draft still uses opens it instead, so deleting a
- * paragraph's first sentence does not merge the rest into the paragraph before (several
- * dropped openers in a row still open one paragraph). A base without marks yields none, so
- * an edit never invents paragraphs the model did not see.
- *
- * `base` must iterate in sentence order: "the next base sentence" is taken from it.
- */
-export function inheritedParagraphStarts(
-  base: ReadonlyMap<string, Pick<TranscriptSegment, "paragraphStart">>,
-  drafted: ReadonlyArray<{ sourceSegmentIds: readonly string[] }>,
-): Array<boolean | undefined> {
-  let marked = false;
-  for (const segment of base.values()) {
-    marked ||= segment.paragraphStart !== undefined;
-  }
-  if (!marked) {
-    return drafted.map(() => undefined);
-  }
-  const kept = new Set(drafted.flatMap((segment) => segment.sourceSegmentIds));
-  const opens = new Set<string>();
-  let carried = false;
-  for (const [id, segment] of base) {
-    const start = segment.paragraphStart === true;
-    if (kept.has(id)) {
-      if (start || carried) {
-        opens.add(id);
-      }
-      carried = false;
-    } else {
-      carried ||= start;
-    }
-  }
-  let previousFirst: string | undefined;
-  return drafted.map((segment, index) => {
-    const first = segment.sourceSegmentIds[0];
-    const inherited = first !== undefined && first !== previousFirst && opens.has(first);
-    previousFirst = first;
-    return index === 0 || inherited;
-  });
-}
+/** The paragraph marks a manual revision inherits from its base; shared with the editor. */
+export { inheritedParagraphStarts } from "../../shared/paragraph-marks.ts";
 
 function isValidSpan(startMs: number, endMs: number): boolean {
   return Number.isInteger(startMs) && Number.isInteger(endMs) && startMs >= 0 && startMs < endMs;

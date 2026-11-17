@@ -14,8 +14,9 @@ export interface BuiltinPrompt {
 }
 
 /**
- * The text of `proofread.text` v5, kept apart from the prompt so that the historical
- * `proofread.audio` v5 (its literal concatenation) stays verbatim when the text prompt moves on.
+ * The text of `proofread.text` v5, kept apart from the prompt so that its own history entry and
+ * the historical `proofread.audio` v5 (its literal concatenation) stay verbatim now that the
+ * text prompt has moved on.
  */
 const PROOFREAD_TEXT_V5_TEXT = `你是字幕校对员。下面是一段语音识别得到的字幕，每行以句标记 [s<n>] 开头。请逐句校正识别错误，并标出自然段的开头。
 
@@ -41,10 +42,41 @@ const PROOFREAD_TEXT_V5_TEXT = `你是字幕校对员。下面是一段语音识
 【只读上下文（后）】
 {{context_after}}`;
 
-/** The `proofread.text` prompt, v5. */
+/**
+ * The text of `proofread.text` v6: v5 plus one paragraph-length guideline, right after the
+ * paragraph rule. With long subtitle slices v5 marked paragraphs far too long to read; the
+ * guideline asks for readable lengths while keeping semantic completeness first, instead of a
+ * cap on lines or the program splitting paragraphs itself.
+ */
+const PROOFREAD_TEXT_V6_TEXT = `你是字幕校对员。下面是一段语音识别得到的字幕，每行以句标记 [s<n>] 开头。请逐句校正识别错误，并标出自然段的开头。
+
+要求：
+- 只修正识别错误（错字、同音字、专有名词、数字、英文缩写），不改变说话人的表达方式、语气与句式
+- 依据语义和上下文补全必要的标点（中文用全角标点，英文用半角标点）；补标点不算改写，但不得借此润色或改变表达
+- 保留口语化表达；仅当同一行内的「嗯」「呃」等犹豫词或机械性口吃重复（例：「这个这个问题」）明显不承载语义、删除后不改变含义、语气与强调程度时才可删除；强调性重复、引用他人原话、术语、代码、公式以及无法确定的情形一律保留；不得因删除而省掉整行：若该行删除后没有剩余文字，就原样输出该行；不要把文字移动到其它句标记，也不要改写句子
+- 保持原文的数字写法：原文是汉字数字就保持汉字，是阿拉伯数字就保持阿拉伯数字（例：「一个」「第一台」「三个字母」不要改成「1个」「第1台」「3个字母」）；只有数字本身识别错了才改
+- 术语表中的写法优先；标注「保持原文」的术语不要翻译或改写
+- 按内容划分自然段：话题、例子、步骤或论点转换处的那一句是段首，在其句标记后加 ¶（例：[s12] ¶ 接下来看第二个问题。），其余句不加；一个自然段通常由若干句组成，不要逐句分段，也不要整块不分段；第一条待校对句若承接前文则不加 ¶
+- 段落长短要便于阅读，以语义完整为先：一个自然段通常是 3～8 个完整的句子，中文约 100～300 字（英文等按词计，约 60～180 词）；句标记 [s<n>] 是字幕时间片，不等于完整的句子，按内容而不是按行数判断；一段明显变长（超过约 400 字）时，在论点结束、例子转换或层次递进最自然的那一行另起一段；不要为了凑句数或字数在一个完整论述的中间换段；一句有分量的回答、独立的结论或明确的话题转换可以单独成段，除此之外不必把零散短句各自分段；本身就很长的一行可以单独成段
+- 每个句标记 [s<n>] 对应字幕中一个固定的时间片：每一行输入必须对应一行输出，行首保留原句标记，只修改该行自己的文字；不要合并、拆分、增删任何一行；即使某行只有一两个字、与相邻行重复、是被截断的半句话或半个词语、看起来不通顺，也必须单独输出该行（例：输入「[s7] 我们来看第二个」「[s8] 第二个问题」就输出两行，不要并成一行）；一句只占一行，不要在句内换行
+- ¶ 只能紧跟句标记，表示这一整句是新段落的第一句；若段落在某行中间转换，不要在该行正文中插入 ¶，把下一目标行标为段首即可；若下一行属于只读上下文，本块不输出这个段首标记；不要单独输出只有 ¶ 的行
+- 直接输出校正后的全部目标句，不要添加说明、标题或空行
+
+{{terms_section}}
+
+【只读上下文（前）】
+{{context_before}}
+
+【待校对（请逐行输出这些句，共 {{count}} 句）】
+{{target_lines}}
+
+【只读上下文（后）】
+{{context_after}}`;
+
+/** The `proofread.text` prompt, v6. */
 export const PROOFREAD_TEXT_PROMPT: BuiltinPrompt = {
-  ref: { id: "proofread.text", version: 5 },
-  text: PROOFREAD_TEXT_V5_TEXT,
+  ref: { id: "proofread.text", version: 6 },
+  text: PROOFREAD_TEXT_V6_TEXT,
 };
 
 const PROOFREAD_AUDIO_PREAMBLE = "我会同时提供这段字幕对应的音频和识别文本。请对照音频校正文本。音频是 ground truth：文本与音频不一致时，以音频为准。";
@@ -537,6 +569,10 @@ const CITATION_RULES_V1_TEXT = `引用规则：
  * Task frozen on one runs with the exact text it was submitted with.
  */
 export const BUILTIN_PROMPT_HISTORY: readonly BuiltinPrompt[] = [
+  {
+    ref: { id: "proofread.text", version: 5 },
+    text: PROOFREAD_TEXT_V5_TEXT,
+  },
   {
     ref: { id: "proofread.audio", version: 5 },
     text: `${PROOFREAD_AUDIO_PREAMBLE}\n\n${PROOFREAD_TEXT_V5_TEXT}`,

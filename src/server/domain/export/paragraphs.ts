@@ -13,8 +13,9 @@ export interface Paragraph {
  * Groups sentences into paragraphs exactly the way the transcript view reads them: the
  * break and joining rules are the shared `ReadingBreaks` /
  * `readingSeparator`, so a TXT export and the reading view never disagree. Sentences must
- * keep their `paragraphStart`, since it decides both the breaks and how a sentence without
- * closing punctuation joins the next. Sentences are fed one at a time, so a long transcript
+ * keep their `paragraphStart`, which decides the breaks, and their revision's `looseJoin`,
+ * which with it decides how a sentence without closing punctuation joins the next (a
+ * transcript paragraphed by hand without proofreading joins as an unmarked one). Sentences are fed one at a time, so a long transcript
  * never has to be held whole.
  */
 export class ParagraphBuilder {
@@ -22,7 +23,7 @@ export class ParagraphBuilder {
   private current: Paragraph | undefined;
 
   /** Adds a sentence; returns the paragraph it closed, if any. */
-  push(sentence: { startMs: number; endMs: number; text: string; speakerId?: string; paragraphStart?: boolean }): Paragraph | undefined {
+  push(sentence: { startMs: number; endMs: number; text: string; speakerId?: string; paragraphStart?: boolean; looseJoin?: boolean }): Paragraph | undefined {
     const text = oneLine(sentence.text).trim();
     let closed: Paragraph | undefined;
     if (this.breaks.push({ ...sentence, text }) && this.current !== undefined) {

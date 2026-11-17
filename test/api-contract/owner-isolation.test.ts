@@ -280,6 +280,7 @@ const MATRIX: Record<string, Entry> = {
     { method: "PATCH", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}`, payload: { avatar: null } },
     { method: "PATCH", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}`, payload: { copyFrom: { contentId: ids.contentId, speakerId: ids.speakerId } } },
   ]),
+  "DELETE /api/contents/:id/speakers/:sid": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}/speakers/${ids.speakerId}` }]),
   "GET /api/contents/:id/speakers/:sid/avatar": owned((ids) => [get(`/api/contents/${ids.contentId}/speakers/${ids.speakerId}/avatar`)]),
   "GET /api/speakers/suggestions": {
     kind: "self",

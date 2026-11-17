@@ -47,7 +47,14 @@ const CROSSES_GAP_REASON = "选区包含未显示的原文，请显示完整原�
 const TOO_LONG_REASON = `一条笔记最多跨 ${NOTE_SPAN_MAX_SEGMENTS} 句`;
 /** The rows a selection offers in the context menu, in order. */
 const SELECTION_ITEMS = ["context-menu-item-copy-selection", "context-menu-item-explain-selection"];
-const SENTENCE_ITEMS = ["context-menu-item-play-from-here", "context-menu-item-copy-sentence", "context-menu-item-copy-sentence-with-time", "context-menu-item-copy-sentence-with-speaker"];
+/** A sentence's rows in the speakers lecture, which can be edited: the last one opens the editor at the sentence's speaker. */
+const SENTENCE_ITEMS = [
+  "context-menu-item-play-from-here",
+  "context-menu-item-copy-sentence",
+  "context-menu-item-copy-sentence-with-time",
+  "context-menu-item-copy-sentence-with-speaker",
+  "context-menu-item-change-speaker",
+];
 /** Two chapters around the student's question in the default lecture. */
 const CHAPTERS = [
   { start: 0, title: "开场白" },

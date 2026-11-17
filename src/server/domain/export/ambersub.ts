@@ -5,7 +5,7 @@ import {
   ASS_RESTORE_PROTOCOL,
   assDialogueDigest,
   SUBTITLE_PACKAGE_FORMAT,
-  SUBTITLE_PACKAGE_VERSION,
+  subtitlePackageVersionFor,
   type SubtitlePackage,
   type SubtitlePackageSegment,
   type SubtitlePackageSpeaker,
@@ -15,7 +15,8 @@ import type { TranscriptRevision, TranscriptSegment } from "../transcript.ts";
 
 /** What a package is built from: one original revision, its Content's speakers and translations made from it. */
 export interface SubtitlePackageSource {
-  revision: Pick<TranscriptRevision, "language">;
+  /** `looseJoin` is read from the revision itself, never from its sentences. */
+  revision: Pick<TranscriptRevision, "language" | "looseJoin">;
   /** The revision's sentences; written in ordinal order whatever order they come in. */
   segments: readonly TranscriptSegment[];
   /** The Content's speakers; only those a sentence names are written. */
@@ -85,11 +86,14 @@ export function buildSubtitlePackage(source: SubtitlePackageSource): SubtitlePac
         return sourceKey === undefined || line.text.trim() === "" ? [] : [{ sourceSegmentKey: sourceKey, text: line.text }];
       }),
     }));
+  // Loose joining only means something with marks. A stored revision never has it without
+  // them; checking again keeps a package from ever claiming it without them, which no reader takes.
+  const looseJoin = source.revision.looseJoin === true && paragraphMarks;
   return {
     format: SUBTITLE_PACKAGE_FORMAT,
-    formatVersion: SUBTITLE_PACKAGE_VERSION,
+    formatVersion: subtitlePackageVersionFor(looseJoin),
     generator: { app: "Amber", version: source.version },
-    original: { language: source.revision.language, paragraphMarks, speakers, segments },
+    original: { language: source.revision.language, paragraphMarks, ...(looseJoin ? { looseJoin: true } : {}), speakers, segments },
     translations,
   };
 }

@@ -10,7 +10,7 @@ import type { Content } from "../../../src/server/domain/content.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { withAssRestoreData } from "../../../src/server/domain/export/ambersub.ts";
 import type { SubtitleImportPlan } from "../../../src/server/domain/subtitle-document.ts";
-import { serializeSubtitlePackage, subtitleTextDigest, SUBTITLE_PACKAGE_FORMAT, SUBTITLE_PACKAGE_VERSION, type SubtitlePackage } from "../../../src/server/domain/subtitle-package.ts";
+import { serializeSubtitlePackage, subtitleTextDigest, SUBTITLE_PACKAGE_BASE_VERSION, SUBTITLE_PACKAGE_FORMAT, type SubtitlePackage } from "../../../src/server/domain/subtitle-package.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import { FILE_GRANT_TTL_MS, SPEAKERS_PER_CONTENT_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../../src/shared/defaults.ts";
 import type { RepositoryScope } from "../../../src/server/ports/repository.ts";
@@ -244,6 +244,21 @@ describe("writeSubtitleImport into a new Content", () => {
     ]);
     expect(read(h, (scope) => scope.translations.listArtifacts(OWNER, content.id))).toEqual([]);
     expect(read(h, (scope) => scope.transcripts.getRevision(OWNER, written.revisionId))?.generation).toEqual({ kind: "imported", format: "srt" });
+  });
+
+  it("gives the original and its translations the package's loose joining", () => {
+    const h = harness();
+    const content = insertContent(h);
+    const written = write(h, { contentId: content.id, newContent: true, plan: samplePlan({ looseJoin: true }) });
+    const translationId = written.translationRevisionIds["zh-CN"] as string;
+    for (const id of [written.revisionId, translationId]) {
+      expect(read(h, (scope) => scope.transcripts.getRevision(OWNER, id))?.looseJoin).toBe(true);
+      expect(read(h, (scope) => scope.transcripts.listSegments(OWNER, id)).every((segment) => segment.looseJoin === true)).toBe(true);
+    }
+    const strict = write(h, { contentId: insertContent(h).id, newContent: true, plan: samplePlan() });
+    for (const id of [strict.revisionId, strict.translationRevisionIds["zh-CN"] as string]) {
+      expect(read(h, (scope) => scope.transcripts.getRevision(OWNER, id))).not.toHaveProperty("looseJoin");
+    }
   });
 
   it("warns about dropped cues and a timeline that does not fit the known duration", () => {
@@ -600,7 +615,7 @@ const WATCH = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 
 const PACKAGE: SubtitlePackage = {
   format: SUBTITLE_PACKAGE_FORMAT,
-  formatVersion: SUBTITLE_PACKAGE_VERSION,
+  formatVersion: SUBTITLE_PACKAGE_BASE_VERSION,
   generator: { app: "Amber", version: "0.7.0" },
   original: {
     language: "en",

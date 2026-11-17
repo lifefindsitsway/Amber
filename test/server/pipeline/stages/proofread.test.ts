@@ -287,7 +287,7 @@ describe("proofread stage", () => {
     expect(out.generation).toMatchObject({
       kind: "llm",
       modelRef: { ...s.modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: s.modelRef.modelId },
-      promptRef: { id: "proofread.text", version: 5 },
+      promptRef: { id: "proofread.text", version: 6 },
     });
     expect(segments).toHaveLength(base.segments.length);
     const parentIds = new Set(base.segments.map((segment) => segment.id));
@@ -307,7 +307,7 @@ describe("proofread stage", () => {
 
     expect(result).toMatchObject({ baseRevisionId: base.revision.id, reasons: [] });
     // A chunk never split reads as before, with where it lies and that it was proofread whole.
-    const whole = { split: false, acceptedLeafCount: 1, promptRef: { id: "proofread.text", version: 5 }, audio: false, audioMode: "text" };
+    const whole = { split: false, acceptedLeafCount: 1, promptRef: { id: "proofread.text", version: 6 }, audio: false, audioMode: "text" };
     expect(result.chunks).toEqual([
       { i: 0, firstAlias: 1, lastAlias: PROOFREAD_CHUNK_SENTENCES, ...whole },
       { i: 1, firstAlias: PROOFREAD_CHUNK_SENTENCES + 1, lastAlias: TWO_CHUNKS, ...whole },
@@ -609,10 +609,10 @@ describe("proofread prompt version", () => {
           }),
         )
         .digest("hex")}`;
-    expect(PROOFREAD_TEXT_PROMPT.ref).toEqual({ id: "proofread.text", version: 5 });
+    expect(PROOFREAD_TEXT_PROMPT.ref).toEqual({ id: "proofread.text", version: 6 });
     expect(unit?.key).toBe("proofread:range:1-3");
     expect(unit?.inputDigest).toBe(digestWith(PROOFREAD_TEXT_PROMPT.ref));
-    expect(unit?.inputDigest).not.toBe(digestWith({ id: "proofread.text", version: 4 }));
+    expect(unit?.inputDigest).not.toBe(digestWith({ id: "proofread.text", version: 5 }));
   });
 });
 
@@ -729,7 +729,7 @@ describe("stripInlineParagraphMarks", () => {
   });
 });
 
-describe("paragraph marks (the `proofread.text` prompt, v5)", () => {
+describe("paragraph marks (the `proofread.text` prompt, v6)", () => {
   /** Marks every fourth sentence but the first, one without spaces, one with an empty text; the rest unmarked. */
   const marking: Answer = (targets) =>
     targets
@@ -761,6 +761,42 @@ describe("paragraph marks (the `proofread.text` prompt, v5)", () => {
     expect(result.reasons).toEqual(["proofread_empty_lines"]);
     expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toContain("\n- 按内容划分自然段：");
     expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toContain("¶ 只能紧跟句标记，表示这一整句是新段落的第一句");
+  });
+
+  it("publishes a proofread revision that joins as proofread even from a loosely joined base", async () => {
+    const s = setup(fakeProvider(marking));
+    const original = seedContent(s.h, 6);
+    const looseId = s.h.newId();
+    const loose: TranscriptRevision = {
+      id: looseId,
+      contentId: original.contentId,
+      kind: "manual",
+      parentRevisionId: original.revision.id,
+      language: "zh-CN",
+      timingFidelity: "inherited_segment",
+      generation: { kind: "manual" },
+      segmentCount: original.segments.length,
+      looseJoin: true,
+      createdAt: 3,
+    };
+    const looseSegments: TranscriptSegment[] = original.segments.map((segment) => ({
+      ...segment,
+      id: s.h.newId() as SegmentId,
+      revisionId: looseId,
+      paragraphStart: segment.ordinal % 3 === 0,
+      sourceSegmentIds: [segment.id],
+    }));
+    s.h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(LOCAL.userId, loose, looseSegments);
+      scope.contents.setPrimaryTranscript(LOCAL.userId, original.contentId, looseId, 4);
+    });
+    expect(revision(s.h, looseId).segments.every((segment) => segment.looseJoin === true)).toBe(true);
+    const taskId = reproofread(s, original.contentId, looseId);
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    const published = revision(s.h, resultOf(s.h, taskId).revisionId);
+    expect(published.revision.looseJoin).toBeUndefined();
+    expect(published.segments.every((segment) => typeof segment.paragraphStart === "boolean" && segment.looseJoin === undefined)).toBe(true);
   });
 
   it("rejects a line that is only a mark as output_mismatch.proofread_lines, with a text-free diagnostic, after RETRY_MAX retries", async () => {
@@ -1437,15 +1473,31 @@ describe("custom proofread prompts", () => {
     expect(resultOf(s.h, taskId).ranges.map((range) => [range.promptRef, range.audio])).toEqual([[audioRef, true]]);
   });
 
-  it("the builtin audio prompt composes to exactly the text of the historical proofread.audio v5", async () => {
-    const historical = BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === "proofread.audio" && prompt.ref.version === 5);
-    expect(historical).toBeDefined();
+  it("the builtin audio prompt is the preamble and the current text prompt", async () => {
     const { s, base } = prepared(fakeProvider(corrected, ["audio/wav"]), { audio: true });
     const taskId = await submit(s, base.contentId);
     s.h.scheduler.start();
     expect(await settled(s.h, taskId)).toBe("succeeded");
-    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(renderPrompt(historical?.text as string, slotsOf(base.segments)));
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(`${BUILTIN_PREAMBLE}\n\n${renderPrompt(PROOFREAD_TEXT_PROMPT.text, slotsOf(base.segments))}`);
     expect(generationOf(s.h, taskId).promptRefs).toEqual([PROOFREAD_AUDIO_PROMPT.ref, PROOFREAD_TEXT_PROMPT.ref]);
+  });
+
+  it("a Task frozen on the previous text prompt sends exactly the text of the historical proofread.audio v5", async () => {
+    const historical = BUILTIN_PROMPT_HISTORY.find((prompt) => prompt.ref.id === "proofread.audio" && prompt.ref.version === 5);
+    const textV5 = { id: "proofread.text", version: 5 };
+    expect(historical).toBeDefined();
+    expect(PROOFREAD_TEXT_PROMPT.ref).not.toEqual(textV5);
+    const { s, base } = prepared(fakeProvider(corrected, ["audio/wav"]), { audio: true });
+    const taskId = createTaskOfKind(
+      s.h,
+      "reproofread",
+      { modelRef: s.modelRef, baseRevisionId: base.revision.id, promptRefs: { "proofread.text": textV5, "proofread.audio": PROOFREAD_AUDIO_PROMPT.ref } },
+      { contentId: base.contentId },
+    );
+    s.h.scheduler.start();
+    expect(await settled(s.h, taskId)).toBe("succeeded");
+    expect(promptOf(s.fake.calls[0]?.request as LlmRequest)).toBe(renderPrompt(historical?.text as string, slotsOf(base.segments)));
+    expect(generationOf(s.h, taskId).promptRefs).toEqual([PROOFREAD_AUDIO_PROMPT.ref, textV5]);
   });
 
   it.each([
@@ -1634,12 +1686,13 @@ describe("speakers given to a reproofread", () => {
   }
 
   /**
-   * The exact traffic without speakers, captured from the stage before it could read them:
-   * a request that reads none stays byte-identical to it, unit digests included.
+   * The exact traffic without speakers, captured from the stage before it could read them and
+   * recaptured only when a builtin proofreading prompt moves to a new version: a request that
+   * reads none stays byte-identical to it, unit digests included.
    */
   const BASELINE = {
-    text: "32513c15f22d40f1e3416e30ff4ce28c71cb44cf133df248f16ae86b1a4cfa4c",
-    audio: "1047e90243b6712a6bf60fb1877ddc12716a16a2e1698fafcf797653eb0cb4fb",
+    text: "b3bab14243936d6b4952ba578675d5f19f75fa51ccaaa7d41395e1f16f3c83e9",
+    audio: "5af228c14acad22f15190e39120e6d699fb6d89f973826cc4b6228f679370147",
   };
 
   for (const variant of ["text", "audio"] as const) {

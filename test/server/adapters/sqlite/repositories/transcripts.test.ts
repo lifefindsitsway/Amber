@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import type { TranscriptDraft, TranscriptRevision, TranscriptSegment } from "../../../../../src/server/domain/transcript.ts";
+import type { RepositoryScope } from "../../../../../src/server/ports/repository.ts";
 import type { SegmentId } from "../../../../../src/shared/ids.ts";
 import { insertRow, openTempDatabase, reopenTempDatabase } from "../../../../tools/sqlite.ts";
 import { lectureTranscripts, type TranscriptFixture } from "../../../../fixtures/transcripts/lecture.ts";
@@ -207,5 +208,71 @@ describe("transcript revisions: speaker records in the generation", () => {
     const plain = repository.withTransaction((scope) => scope.transcripts.getRevision("alice", lecture.corrected.revision.id));
     expect(plain?.generation).toEqual(lecture.corrected.revision.generation);
     expect(plain?.generation !== undefined && "speakerContext" in plain.generation).toBe(false);
+  });
+});
+
+describe("transcript revisions: loose joining", () => {
+  const nextId = monotonicFactory();
+  /** An imported root of three sentences, with paragraph marks when `marks` is set. */
+  function imported(options: { marks: boolean; looseJoin?: true }): { revision: TranscriptRevision; segments: TranscriptSegment[] } {
+    const revisionId = nextId();
+    const segments: TranscriptSegment[] = ["甲", "乙", "丙"].map((text, ordinal) => ({
+      id: nextId() as SegmentId,
+      revisionId,
+      ordinal,
+      startMs: ordinal * 1000,
+      endMs: ordinal * 1000 + 900,
+      text,
+      ...(options.marks ? { paragraphStart: ordinal !== 1 } : {}),
+      sourceSegmentIds: [],
+    }));
+    const revision: TranscriptRevision = {
+      id: revisionId,
+      contentId: "c",
+      kind: "imported",
+      language: "zh-CN",
+      timingFidelity: "segment_only",
+      generation: { kind: "imported", format: "ambersub" },
+      segmentCount: segments.length,
+      ...(options.looseJoin === undefined ? {} : { looseJoin: options.looseJoin }),
+      createdAt: T0 + 5,
+    };
+    return { revision, segments };
+  }
+  const insert = (entry: { revision: TranscriptRevision; segments: TranscriptSegment[] }) =>
+    repository.withTransaction((scope) => scope.transcripts.insertRevision("alice", entry.revision, entry.segments));
+
+  it("stores the flag on the revision and projects it onto every sentence on all three read paths, across a reopen", () => {
+    const loose = imported({ marks: true, looseJoin: true });
+    insert(loose);
+    reopen();
+    const read = <T>(work: (scope: RepositoryScope) => T): T => repository.withTransaction((scope) => work(scope) as never) as T;
+    expect(read((scope) => scope.transcripts.getRevision("alice", loose.revision.id))).toEqual(loose.revision);
+    expect(read((scope) => scope.transcripts.listRevisions("alice", "c")).find((revision) => revision.id === loose.revision.id)?.looseJoin).toBe(true);
+    const expected = loose.segments.map((segment) => ({ ...segment, looseJoin: true }));
+    expect(read((scope) => scope.transcripts.listSegments("alice", loose.revision.id))).toEqual(expected);
+    expect(read((scope) => scope.transcripts.listSegments("alice", loose.revision.id, { afterOrdinal: 0, limit: 2 }))).toEqual(expected.slice(1));
+    expect(read((scope) => scope.transcripts.getSegment("alice", loose.segments[2]?.id as string))).toEqual(expected[2]);
+    expect(db.prepare("SELECT loose_join FROM transcript_revision WHERE id = ?").get(loose.revision.id)).toEqual({ loose_join: 1 });
+
+    // Revisions without it read exactly as before: no field at all.
+    const strict = imported({ marks: true });
+    insert(strict);
+    expect(read((scope) => scope.transcripts.getRevision("alice", strict.revision.id))).not.toHaveProperty("looseJoin");
+    expect(read((scope) => scope.transcripts.listSegments("alice", strict.revision.id))).toEqual(strict.segments);
+    expect(read((scope) => scope.transcripts.getSegment("alice", strict.segments[0]?.id as string))).not.toHaveProperty("looseJoin");
+    expect(read((scope) => scope.transcripts.listSegments("alice", lecture.corrected.revision.id, { limit: 2 })).some((segment) => "looseJoin" in segment)).toBe(false);
+  });
+
+  it("takes the flag from the revision only, never from the sentences given", () => {
+    const strict = imported({ marks: true });
+    insert({ revision: strict.revision, segments: strict.segments.map((segment) => ({ ...segment, looseJoin: true })) });
+    expect(repository.withTransaction((scope) => scope.transcripts.listSegments("alice", strict.revision.id))).toEqual(strict.segments);
+  });
+
+  it("refuses loose joining on a revision without paragraph marks, writing nothing", () => {
+    const bare = imported({ marks: false, looseJoin: true });
+    expect(() => insert(bare)).toThrow(/loose_join_without_marks/);
+    expect(db.prepare("SELECT count(*) AS n FROM transcript_revision WHERE id = ?").get(bare.revision.id)).toEqual({ n: 0 });
   });
 });

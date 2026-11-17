@@ -38,7 +38,7 @@ import {
   visibleRevisions,
   type Paragraph,
 } from "./content-data.ts";
-import { DraftEditor } from "./draft-editor.tsx";
+import { DraftEditor, type SpeakerIntent } from "./draft-editor.tsx";
 import { RETURN_RESTORE_ATTRIBUTE, type EditorCloseResult, type EditTarget, type ReturnPosition, type ReturnRestoreOutcome, type SentenceRef } from "./edit-position.ts";
 import { revisionLabel } from "./labels.ts";
 import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
@@ -46,6 +46,7 @@ import { captureEditEntry, mapAfterCommit, nearestByTime, nearestShownSentence }
 import { readerSections, readingText, readingTextWithSpeakers, viewRowKey, viewRows } from "./reader-rows.ts";
 import { ChapterHeading } from "./reader-chapter.tsx";
 import { ReaderJumpButtons } from "./reader-jump.tsx";
+import { useReaderLocate } from "./reader-locate.ts";
 import { useReaderSelection } from "./reader-selection-controller.ts";
 import { selectionRows } from "./reader-selection.ts";
 import { PARAGRAPH_GAP_EM, READER_COLUMN_CLASS, READER_INDENT_ATTRIBUTE, READER_SCROLLER_CLASS, ReaderTime, readerBodyStyle, SentenceRuns, type SentenceViewProps } from "./reader-sentences.tsx";
@@ -64,6 +65,7 @@ import { filteredRowKey, filteredViewRows, rowIndexOfSegment, sentenceCounts, ty
 import { SpeakerFilterBar, SpeakerFilterButton, SpeakerFilterEmpty, SpeakerGap, useScrollToSegment, useSkippedText, useSpeakerFilter } from "./speaker-filter-ui.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { SpeakerReviewControl } from "./speakers/review/speaker-review-panel.tsx";
+import { LabelSpeakersButton } from "./speakers/label-speakers-button.tsx";
 import { ComparisonSummary } from "./speakers/compare/comparison-summary.tsx";
 import { VirtualRows, type VirtualRowsHandle } from "./virtual-rows.tsx";
 
@@ -149,6 +151,8 @@ export function TranscriptTab() {
   const [applyFrom, setApplyFrom] = useState<string | undefined>(undefined);
   // The review panel's 「去编辑器查看」 opens the editor on the cross-recognition comparison.
   const [compareOnOpen, setCompareOnOpen] = useState(false);
+  // What a speaker entry of the reader asks the editor to open once it is in place.
+  const [speakerIntent, setSpeakerIntent] = useState<SpeakerIntent | undefined>(undefined);
   // The 「编辑」 session, taken on the click and spent when the editor closes.
   const session = useRef<EditSession | undefined>(undefined);
   const [transition, setTransition] = useState<Transition | undefined>(undefined);
@@ -253,6 +257,7 @@ export function TranscriptTab() {
     setEditing(false);
     setApplyFrom(undefined);
     setCompareOnOpen(false);
+    setSpeakerIntent(undefined);
     if (result.kind === "committed" || result.kind === "reload") {
       void finish({ result, session: spent, navigation: page.navigation });
       return;
@@ -314,6 +319,7 @@ export function TranscriptTab() {
         {...(applyFrom === undefined ? {} : { applySpeakersFrom: applyFrom })}
         {...(compareOnOpen ? { openComparison: true } : {})}
         {...(target === undefined ? {} : { initialTarget: target })}
+        {...(speakerIntent === undefined || applyFrom !== undefined || compareOnOpen ? {} : { speakerIntent })}
         onClose={onEditorClose}
       />
     );
@@ -350,10 +356,11 @@ export function TranscriptTab() {
       centring={centring}
       {...(returnPlan === undefined ? {} : { returnPlan })}
       onReturnTaken={() => setReturnPlan(undefined)}
-      onEdit={(entry) => {
+      onEdit={(entry, intent) => {
         session.current = entry;
         setApplyFrom(undefined);
         setCompareOnOpen(false);
+        setSpeakerIntent(intent);
         setEditing(true);
       }}
       onCompare={() => {
@@ -449,7 +456,8 @@ function TranscriptReader(props: {
   search: string;
   onPick: (id: string) => void;
   /** 「编辑」, with where the editor is to open and where to come back to. */
-  onEdit: (entry: EditSession) => void;
+  /** Opens the editor; `intent` when a speaker entry asked for it (what to open once it is in place). */
+  onEdit: (entry: EditSession, intent?: SpeakerIntent) => void;
   /** Whether the selected sentence is centred when it changes; off right after coming back from the editor. */
   centring: boolean;
   /** Where to put the screen once the rows are ready, after the editor closed; taken once. */
@@ -567,6 +575,7 @@ function TranscriptReader(props: {
   const returnTo = useScrollToSegment(shownRows, scrollToRow);
   // Scrolls to a sentence; one the filter hides brings the whole text back first.
   const locate = (segmentId: string): boolean => {
+    locator.cancel();
     const index = rowIndexOfSegment(shownRows, segmentId);
     if (index >= 0) {
       reader.current?.scrollToIndex(index);
@@ -732,6 +741,34 @@ function TranscriptReader(props: {
   useEffect(() => {
     if (returning.current !== undefined && returning.current.navigation !== page.navigation) reader.current?.cancelRestore();
   }, [page.navigation]);
+  // 「定位到播放位置」. It is a navigation of its own: the return after editing, still to run or
+  // still correcting the position, is dropped first, so it cannot pull the view back later.
+  const locator = useReaderLocate({
+    reader,
+    area: host,
+    scroller: () => host?.querySelector<HTMLElement>('[data-testid="transcript-reader"]') ?? null,
+    revisionId: revision.id,
+    segments: list,
+    tracking,
+    time,
+    pinnedId,
+    rows: shownRows,
+    rowKey: (row) => filteredRowKey(row, viewRowKey),
+    filter: { active: filter.active, key: filter.selected.join(","), clear: filter.clear },
+    navigation: page.navigation,
+    onNavigate: () => {
+      if (pendingReturn.current !== undefined) {
+        pendingReturn.current = undefined;
+        onReturnTaken();
+        setReturnOutcome("cancelled");
+      }
+      if (returning.current !== undefined) {
+        returning.current = undefined;
+        reader.current?.cancelRestore();
+        setReturnOutcome("cancelled");
+      }
+    },
+  });
 
   const turnContext = useMemo<TurnContext>(
     () => ({ contentId: page.content.id, speakers: speakerById, shares, typography: { fontSize: typography.fontSize, lineHeight: typography.lineHeight }, narrow }),
@@ -771,8 +808,13 @@ function TranscriptReader(props: {
     // `locate` is rebuilt every render; what it reads is listed instead.
     [notesUi, revision.id, rows, shownRows, filter.active],
   );
-  /** 「编辑」: notes the sentence to open the editor on and the screen to come back to. */
-  const startEdit = (): void => {
+  /**
+   * 「编辑」: notes the sentence to open the editor on and the screen to come back to. The speaker
+   * entries go the same way and say what to open in the editor; 「更改发言人…」 names the sentence
+   * it was asked on, which then is the target ahead of the playing one.
+   */
+  const startEdit = (intent?: SpeakerIntent): void => {
+    const asked = intent?.kind === "menu" ? intent.segmentId : undefined;
     const scroller = host?.querySelector<HTMLElement>('[data-testid="transcript-reader"]') ?? null;
     const back: ReturnPosition = { revisionId: revision.id, anchor: undefined, top: undefined, navigation: page.navigation };
     const entry =
@@ -782,11 +824,11 @@ function TranscriptReader(props: {
             revisionId: revision.id,
             navigation: page.navigation,
             segments: list,
-            playback: tracking && time !== undefined ? { known: true, currentId: current?.id } : { known: false },
-            clickedId: located.segmentId,
+            playback: asked === undefined && tracking && time !== undefined ? { known: true, currentId: current?.id } : { known: false },
+            clickedId: asked ?? located.segmentId,
           });
     const picked = page.selection?.revisionId === revision.id ? list.find((segment) => segment.id === page.selection?.segmentId) : undefined;
-    props.onEdit({ ...entry, selected: picked === undefined ? undefined : { segmentId: picked.id, startMs: picked.startMs, endMs: picked.endMs } });
+    props.onEdit({ ...entry, selected: picked === undefined ? undefined : { segmentId: picked.id, startMs: picked.startMs, endMs: picked.endMs } }, intent);
   };
   const onOpenNotes = (segmentId: string, noteIds: string[]): void => {
     notesUi?.openView({ noteIds, segmentId, revisionId: revision.id });
@@ -815,6 +857,7 @@ function TranscriptReader(props: {
       if (segment !== undefined) onSentence(segment);
     },
     ...(speakerMode ? { speakerPrefixOf: (segmentId: string) => speakerPrefix(segments.data?.find((segment) => segment.id === segmentId)?.speakerId) } : {}),
+    ...(canEdit && speakerMode ? { onChangeSpeaker: (segmentId: string) => startEdit({ kind: "menu", segmentId }) } : {}),
   });
 
   /** One row of the reader, before it is set in the reading column. */
@@ -824,6 +867,7 @@ function TranscriptReader(props: {
         <SpeakerGap
           gap={row}
           onReturn={(segmentId) => {
+            locator.cancel();
             filter.clear();
             returnTo(segmentId);
           }}
@@ -886,6 +930,7 @@ function TranscriptReader(props: {
           speakersConfirmedAt={revision.speakersConfirmedAt}
           sentences={segments.data}
           onLocate={(segmentId) => void locate(segmentId)}
+          {...(canEdit ? { onManageSpeakers: () => startEdit({ kind: "panel" }) } : {})}
           crossCheck={<ComparisonSummary revisionId={revision.id} revisions={props.readable} onOpenEditor={canEdit ? props.onCompare : undefined} />}
         />
         <RevisionActions contentId={page.content.id} revision={revision} revisions={props.readable} primaryId={props.primaryId} onDeleted={props.onDeleted} />
@@ -911,8 +956,14 @@ function TranscriptReader(props: {
           </Button>
         )}
         {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={props.primaryId} testId="proofread-speakers-not-read" /> : null}
-        <ChapterOutline entries={outline} onPick={(index) => reader.current?.scrollToIndex(index, "start")} />
-        <Button size="sm" variant="ghost" onClick={startEdit} disabled={!canEdit} data-testid="transcript-edit">
+        <ChapterOutline
+          entries={outline}
+          onPick={(index) => {
+            locator.cancel();
+            reader.current?.scrollToIndex(index, "start");
+          }}
+        />
+        <Button size="sm" variant="ghost" onClick={() => startEdit()} disabled={!canEdit} data-testid="transcript-edit">
           <Pencil size={14} />
           {t("common.action.edit")}
         </Button>
@@ -944,6 +995,9 @@ function TranscriptReader(props: {
         )}
         {speakerMode ? (
           <SpeakerFilterButton contentId={page.content.id} speakers={speakerList ?? []} counts={counts} selected={filter.selected} onChange={filter.set} />
+        ) : canEdit ? (
+          // Without speakers to read by, the same place offers to start labelling them.
+          <LabelSpeakersButton onClick={() => startEdit({ kind: "panel" })} />
         ) : null}
         <ReaderTypographyPopover
           value={typography}
@@ -1034,7 +1088,19 @@ function TranscriptReader(props: {
             )}
           />
           {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
-          {shownRows.length > 0 ? <ReaderJumpButtons onTop={() => reader.current?.scrollToTop()} onBottom={() => reader.current?.scrollToBottom()} /> : null}
+          {shownRows.length > 0 ? (
+            <ReaderJumpButtons
+              onTop={() => {
+                locator.cancel();
+                reader.current?.scrollToTop();
+              }}
+              onBottom={() => {
+                locator.cancel();
+                reader.current?.scrollToBottom();
+              }}
+              locate={locator.button}
+            />
+          ) : null}
         </div>
       )}
     </div>

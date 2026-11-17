@@ -314,7 +314,7 @@ export async function installSubtitleImport(
         for (const candidate of created) {
           const ordinal = Math.max(0, ...state.speakers.map((speaker) => speaker.ordinal)) + 1;
           const name = /^发言人 \d+$/u.test(candidate.label) ? undefined : candidate.label;
-          state.speakers.push({ id: newId("SPK"), ordinal, ...(name === undefined ? {} : { name }), colorIndex: (ordinal - 1) % 8, used: true });
+          state.speakers.push({ id: newId("SPK"), ordinal, ...(name === undefined ? {} : { name }), colorIndex: (ordinal - 1) % 8, used: true, referenced: true });
         }
         const languages =
           options === undefined

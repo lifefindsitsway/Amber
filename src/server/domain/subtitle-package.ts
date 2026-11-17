@@ -13,8 +13,22 @@ import { canonicalLanguageTag } from "./subtitle-file.ts";
  */
 
 export const SUBTITLE_PACKAGE_FORMAT = "amber-subtitle";
-/** Raised only for changes an older reader must refuse; optional fields are added within a version. */
-export const SUBTITLE_PACKAGE_VERSION = 1;
+/**
+ * Format versions are raised only for changes an older reader must refuse; optional fields
+ * are added within a version. Version 2 marks an original whose sentences join loosely
+ * (`original.looseJoin`): a reader that ignored the field would silently join the text the
+ * other way, so a version-1 reader has to refuse such a package instead.
+ */
+export const SUBTITLE_PACKAGE_BASE_VERSION = 1;
+export const SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION = 2;
+/** The newest version this build reads; a writer still writes the oldest version that holds the package. */
+export const SUBTITLE_PACKAGE_MAX_VERSION = SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION;
+export type SubtitlePackageVersion = typeof SUBTITLE_PACKAGE_BASE_VERSION | typeof SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION;
+
+/** The version a package is written in: version 2 only when the original joins loosely, so every other package stays byte for byte what it was. */
+export function subtitlePackageVersionFor(looseJoin: boolean): SubtitlePackageVersion {
+  return looseJoin ? SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION : SUBTITLE_PACKAGE_BASE_VERSION;
+}
 export const SUBTITLE_PACKAGE_EXTENSION = "ambersub";
 
 export interface SubtitlePackageSpeaker {
@@ -44,11 +58,13 @@ export interface SubtitlePackageTranslation {
 
 export interface SubtitlePackage {
   format: typeof SUBTITLE_PACKAGE_FORMAT;
-  formatVersion: number;
+  formatVersion: SubtitlePackageVersion;
   generator: { app: string; version: string };
   original: {
     language: string;
     paragraphMarks: boolean;
+    /** Version 2 only, and then always `true`: the original has paragraph marks but joins its sentences as an unmarked one does. */
+    looseJoin?: true;
     speakers: SubtitlePackageSpeaker[];
     segments: SubtitlePackageSegment[];
   };
@@ -59,14 +75,19 @@ const KEY_MAX = 64;
 const keySchema = z.string().min(1).max(KEY_MAX);
 const timeSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
-/** Unknown fields are dropped (not refused) so a reader of this version accepts optional additions. */
+/**
+ * Unknown fields are dropped (not refused) so a reader of this version accepts optional
+ * additions. `looseJoin` is read as anything so its presence in a version-1 package can be
+ * refused below rather than silently dropped.
+ */
 const packageSchema = z.object({
   format: z.literal(SUBTITLE_PACKAGE_FORMAT),
-  formatVersion: z.literal(SUBTITLE_PACKAGE_VERSION),
+  formatVersion: z.union([z.literal(SUBTITLE_PACKAGE_BASE_VERSION), z.literal(SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION)]),
   generator: z.object({ app: z.string().max(100), version: z.string().max(100) }),
   original: z.object({
     language: z.string().min(1).max(100),
     paragraphMarks: z.boolean(),
+    looseJoin: z.unknown().optional(),
     speakers: z
       .array(
         z.object({
@@ -114,9 +135,10 @@ function primarySubtag(tag: string): string {
  * Reads and checks a package. Every rule the format states is enforced here — structure,
  * ranges, timing, unique keys that all resolve, distinct ordinals, palette indexes,
  * normalized names, canonical languages, at most one translation per sentence, paragraph
- * marks all-or-none with the first sentence starting one — so nothing downstream trusts the
- * file. Sentence order is kept as written. A newer `formatVersion` is
- * `invalid_request.subtitle_newer`; anything else wrong is `invalid_request.subtitle_format`.
+ * marks all-or-none with the first sentence starting one, `looseJoin` absent from version 1
+ * and `true` with paragraph marks in version 2 — so nothing downstream trusts the file.
+ * Sentence order is kept as written. A `formatVersion` newer than `SUBTITLE_PACKAGE_MAX_VERSION`
+ * is `invalid_request.subtitle_newer`; anything else wrong is `invalid_request.subtitle_format`.
  */
 export function parseSubtitlePackage(text: string): SubtitlePackage {
   let raw: unknown;
@@ -127,10 +149,10 @@ export function parseSubtitlePackage(text: string): SubtitlePackage {
   }
   if (typeof raw === "object" && raw !== null && (raw as { format?: unknown }).format === SUBTITLE_PACKAGE_FORMAT) {
     const version = (raw as { formatVersion?: unknown }).formatVersion;
-    if (typeof version === "number" && Number.isInteger(version) && version > SUBTITLE_PACKAGE_VERSION) {
+    if (typeof version === "number" && Number.isInteger(version) && version > SUBTITLE_PACKAGE_MAX_VERSION) {
       throw amberError("invalid_request", "subtitle package is newer than this build reads", {
         code: "invalid_request.subtitle_newer",
-        details: { formatVersion: version, supportedVersion: SUBTITLE_PACKAGE_VERSION },
+        details: { formatVersion: version, supportedVersion: SUBTITLE_PACKAGE_MAX_VERSION },
       });
     }
   }
@@ -139,6 +161,15 @@ export function parseSubtitlePackage(text: string): SubtitlePackage {
     throw invalidPackage("subtitle package does not match its format");
   }
   const body = parsed.data;
+  // Version 1 has no loose joining; a version-1 package naming it was not written by a
+  // reader that knows what it means, so it is refused rather than read the other way.
+  if (body.formatVersion === SUBTITLE_PACKAGE_BASE_VERSION && body.original.looseJoin !== undefined) {
+    throw invalidPackage("subtitle package version 1 cannot join loosely");
+  }
+  if (body.formatVersion === SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION && (body.original.looseJoin !== true || !body.original.paragraphMarks)) {
+    throw invalidPackage("subtitle package version 2 needs loose joining and paragraph marks");
+  }
+  const looseJoin = body.formatVersion === SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION;
   const language = canonicalLanguageTag(body.original.language);
   if (language === undefined) {
     throw invalidPackage("subtitle package language is not a BCP-47 tag");
@@ -212,15 +243,19 @@ export function parseSubtitlePackage(text: string): SubtitlePackage {
 
   return {
     format: SUBTITLE_PACKAGE_FORMAT,
-    formatVersion: SUBTITLE_PACKAGE_VERSION,
+    formatVersion: body.formatVersion,
     generator: { app: body.generator.app, version: body.generator.version },
-    original: { language, paragraphMarks: marks, speakers, segments },
+    original: { language, paragraphMarks: marks, ...(looseJoin ? { looseJoin: true } : {}), speakers, segments },
     translations,
   };
 }
 
 /** Compact JSON in a fixed key order, so the same revision always serializes to the same bytes. */
 export function serializeSubtitlePackage(pkg: SubtitlePackage): string {
+  // A package whose version and loose joining disagree would be refused by every reader, this one included.
+  if ((pkg.original.looseJoin === true) !== (pkg.formatVersion === SUBTITLE_PACKAGE_LOOSE_JOIN_VERSION)) {
+    throw new Error("subtitle package version does not match its loose joining");
+  }
   const ordered = {
     format: pkg.format,
     formatVersion: pkg.formatVersion,
@@ -228,6 +263,7 @@ export function serializeSubtitlePackage(pkg: SubtitlePackage): string {
     original: {
       language: pkg.original.language,
       paragraphMarks: pkg.original.paragraphMarks,
+      ...(pkg.original.looseJoin === true ? { looseJoin: true } : {}),
       speakers: pkg.original.speakers.map((speaker) => ({
         key: speaker.key,
         ordinal: speaker.ordinal,

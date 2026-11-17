@@ -57,6 +57,7 @@ function transcript(
   contentId: string,
   texts: readonly string[],
   paragraphStarts?: readonly boolean[],
+  looseJoin?: true,
 ): { revision: TranscriptRevision; segments: TranscriptSegment[] } {
   const revisionId = h.newId();
   const segments: TranscriptSegment[] = texts.map((text, ordinal) => ({
@@ -78,6 +79,7 @@ function transcript(
     timingFidelity: "segment_only",
     generation: { kind: "imported", format: "srt" },
     segmentCount: segments.length,
+    ...(looseJoin === undefined ? {} : { looseJoin }),
     createdAt: 1,
   };
   h.repository.withTransaction((scope) => {
@@ -249,6 +251,27 @@ describe("translate stage", () => {
     expect(await settled(s.h, translate(s, contentId, plain.revision.id, ["ja"]))).toBe("succeeded");
     const japanese = s.h.translations.get(LOCAL, contentId).translations.find((entry) => entry.targetLanguage === "ja")?.current;
     expect(translatedSegments(s.h, japanese?.id as string).map((segment) => segment.paragraphStart)).toEqual([undefined, undefined]);
+  });
+
+  it("joins like the parent: loosely for a loosely joined parent, as usual otherwise", async () => {
+    const s = setup();
+    const contentId = createLocalContent(s.h);
+    const loose = transcript(s.h, contentId, ["第一句", "第二句"], [true, false], true);
+    answerAll(s.fake, 1);
+    expect(await settled(s.h, translate(s, contentId, loose.revision.id, ["en"]))).toBe("succeeded");
+    const english = s.h.translations.get(LOCAL, contentId).translations.find((entry) => entry.targetLanguage === "en")?.current;
+    expect(english?.looseJoin).toBe(true);
+    expect(translatedSegments(s.h, english?.id as string).map((segment) => [segment.paragraphStart, segment.looseJoin])).toEqual([
+      [true, true],
+      [false, true],
+    ]);
+
+    const strict = transcript(s.h, contentId, ["第一句", "第二句"], [true, false]);
+    answerAll(s.fake, 1);
+    expect(await settled(s.h, translate(s, contentId, strict.revision.id, ["ja"]))).toBe("succeeded");
+    const japanese = s.h.translations.get(LOCAL, contentId).translations.find((entry) => entry.targetLanguage === "ja")?.current;
+    expect(japanese).not.toHaveProperty("looseJoin");
+    expect(translatedSegments(s.h, japanese?.id as string).some((segment) => "looseJoin" in segment)).toBe(false);
   });
 
   it("re-asks a batch whose answer has a wrong count, a duplicate number or an empty line, then succeeds", async () => {

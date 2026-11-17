@@ -68,8 +68,8 @@ describe("explainSelectionEntries", () => {
 
 const SENTENCES: Record<string, SentenceData> = { s1: { text: "先看召回。", startMs: 0 } };
 
-function SentenceList() {
-  const ref = useSentenceMenu<HTMLDivElement>((id) => SENTENCES[id], { explainSentence: false });
+function SentenceList(props: { onChangeSpeaker?: (segmentId: string) => void }) {
+  const ref = useSentenceMenu<HTMLDivElement>((id) => SENTENCES[id], { explainSentence: false, ...(props.onChangeSpeaker === undefined ? {} : { onChangeSpeaker: props.onChangeSpeaker }) });
   return (
     <div ref={ref} data-testid="list" data-revision-id="r1" data-explainable>
       <h3 data-testid="title">正文</h3>
@@ -80,8 +80,8 @@ function SentenceList() {
   );
 }
 
-function mount(withComposer = true) {
-  const list = <SentenceList />;
+function mount(withComposer = true, onChangeSpeaker?: (segmentId: string) => void) {
+  const list = <SentenceList {...(onChangeSpeaker === undefined ? {} : { onChangeSpeaker })} />;
   render(
     <MemoryRouter>
       <ContextMenuHost blockNative={false}>
@@ -142,5 +142,22 @@ describe("useSentenceMenu", () => {
     mount();
     selectAll(READ);
     expect(rightClick(document.querySelector("[data-segment-id='s1']") as Element)).toEqual(["copy-selection", "explain-selection", "play-from-here", "copy-sentence", "copy-sentence-with-time"]);
+  });
+
+  it("offers 「更改发言人…」 for the right-clicked sentence only where the view can change it", () => {
+    const changeSpeaker = vi.fn();
+    mount(true, changeSpeaker);
+    const sentence = document.querySelector("[data-segment-id='s1']") as Element;
+    expect(rightClick(sentence)).toEqual(["play-from-here", "copy-sentence", "copy-sentence-with-time", "change-speaker"]);
+    expect(screen.getByTestId("context-menu-item-change-speaker").textContent).toContain("更改发言人…");
+    act(() => {
+      screen.getByTestId("context-menu-item-change-speaker").click();
+    });
+    expect(changeSpeaker).toHaveBeenCalledWith("s1");
+  });
+
+  it("has no 「更改发言人…」 without the way to change it", () => {
+    mount();
+    expect(rightClick(document.querySelector("[data-segment-id='s1']") as Element)).toEqual(["play-from-here", "copy-sentence", "copy-sentence-with-time"]);
   });
 });

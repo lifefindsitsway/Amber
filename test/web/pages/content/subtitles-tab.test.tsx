@@ -458,8 +458,8 @@ describe("SubtitlesTab translation editing", () => {
 
 describe("SubtitlesTab speakers", () => {
   const speakers = [
-    { id: "p1", ordinal: 1, name: "林老师", colorIndex: 0, used: true },
-    { id: "p2", ordinal: 2, colorIndex: 1, used: true },
+    { id: "p1", ordinal: 1, name: "林老师", colorIndex: 0, used: true, referenced: true },
+    { id: "p2", ordinal: 2, colorIndex: 1, used: true, referenced: true },
   ];
   const rows = [
     segment("s1", 0, 0, 4_000, "今天讲检索。", { speakerId: "p1" }),
@@ -806,7 +806,7 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
 
 describe("importing a subtitle into the Content", () => {
   const SRT = "1\n00:00:00,000 --> 00:00:01,000\n张三：你好\n";
-  const ZHANG = { id: "sp1", ordinal: 1, name: "张三", colorIndex: 0, used: true };
+  const ZHANG = { id: "sp1", ordinal: 1, name: "张三", colorIndex: 0, used: true, referenced: true };
 
   function routes(extra: Record<string, unknown> = {}) {
     return {

@@ -201,7 +201,7 @@ describe("TranslationDraftEditor", () => {
 
 describe("TranslationDraftEditor and speakers", () => {
   it("has no speaker column, split action, filter or panel: speakers belong to the original transcript", async () => {
-    const { calls } = mockApi({ ...routes(), [`PUT ${URL}`]: saved(1), "GET /api/contents/c1/speakers": { body: { items: [{ id: "spk-a", ordinal: 1, name: "陈明", colorIndex: 0, used: true }] } } });
+    const { calls } = mockApi({ ...routes(), [`PUT ${URL}`]: saved(1), "GET /api/contents/c1/speakers": { body: { items: [{ id: "spk-a", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true }] } } });
     renderEditor();
     await screen.findByDisplayValue("Today: retrieval.");
     expect(screen.queryByTestId("speaker-lead")).toBeNull();
@@ -210,5 +210,17 @@ describe("TranslationDraftEditor and speakers", () => {
     fireEvent.focus(screen.getByDisplayValue("Today: retrieval."));
     expect(screen.queryByTestId("split-button")).toBeNull();
     expect(calls.some((call) => call.path.includes("/speakers"))).toBe(false);
+  });
+});
+
+describe("TranslationDraftEditor and paragraphs", () => {
+  it("offers no paragraph action and shows no paragraph spacing: paragraphs are edited in the original", async () => {
+    mockApi({ ...routes(), [`PUT ${URL}`]: saved(1) });
+    renderEditor();
+    const input = await screen.findByDisplayValue("Today: retrieval.");
+    fireEvent.focus(input);
+    expect(screen.queryByTestId("paragraph-action")).toBeNull();
+    expect(document.querySelector("[data-paragraph-start]")).toBeNull();
+    expect(document.querySelector("[aria-description]")).toBeNull();
   });
 });

@@ -9,6 +9,7 @@ import type {
 } from "../../shared/dto/transcript.ts";
 import type { TranscriptRevisionDto, TranscriptRevisionListItemDto } from "../../shared/dto/content.ts";
 import type { SegmentId } from "../../shared/ids.ts";
+import { hasExplicitParagraphs, validateParagraphState } from "../../shared/paragraph-marks.ts";
 import type { Content } from "../domain/content.ts";
 import { isComparisonRevision, isPermanentRevision, isRecyclableSpeaker } from "../domain/comparison-revision.ts";
 import { amberError } from "../domain/errors.ts";
@@ -57,6 +58,7 @@ export function transcriptSegmentDto(segment: TranscriptSegment): TranscriptSegm
     ...(segment.words === undefined ? {} : { words: segment.words.map((word) => ({ ...word })) }),
     ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
     ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
+    ...(segment.looseJoin === true ? { looseJoin: true } : {}),
     sourceSegmentIds: [...segment.sourceSegmentIds],
   };
 }
@@ -75,6 +77,7 @@ function draftDto(draft: TranscriptDraft): TranscriptDraftDto {
       sourceSegmentIds: [...segment.sourceSegmentIds],
       ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
       ...(segment.speakerReview === undefined ? {} : { speakerReview: segment.speakerReview }),
+      ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
     })),
     updatedAt: draft.updatedAt,
   };
@@ -111,6 +114,25 @@ export function draftChanged(currentVersion: number | null): never {
 
 function invalidDraft(detail: string, reason: string): never {
   throw amberError("invalid_request", `draft cannot be committed: ${reason}`, { params: { detail } });
+}
+
+/**
+ * Refuses draft sentences whose paragraph marks are neither absent everywhere nor present
+ * everywhere with the first sentence opening a paragraph. Checked when a draft is saved and
+ * again when it is committed, so no revision is ever written from a half-marked draft.
+ */
+function checkDraftParagraphs(segments: ReadonlyArray<{ paragraphStart?: boolean }>, action: string): void {
+  const problem = validateParagraphState(segments);
+  if (problem === "mixed") {
+    throw amberError("invalid_request", `draft cannot be ${action}: paragraph marks must be on every sentence or on none`, {
+      params: { detail: "segments.paragraphStart" },
+    });
+  }
+  if (problem === "first_not_start") {
+    throw amberError("invalid_request", `draft cannot be ${action}: the first sentence must open a paragraph`, {
+      params: { detail: "segments.0.paragraphStart" },
+    });
+  }
 }
 
 /**
@@ -170,13 +192,16 @@ export class TranscriptService {
    * commit or discard is refused instead of overwriting or reviving the draft. Only the shape
    * and the base revision are checked here; timing, sources and speakers are checked when the
    * draft is committed, so a draft may pass through intermediate states while it is being
-   * edited. Speaker fields are stored exactly as sent.
+   * edited. Speaker fields are stored exactly as sent. Paragraph marks are the exception: a
+   * draft whose marks are neither all absent nor all present with the first one `true` is
+   * refused here already, since no edit ever passes through such a state.
    */
   putDraft(principal: RequestPrincipal, contentId: string, body: TranscriptDraftRequest): TranscriptDraftDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
       ownedContent(scope, owner, contentId);
       editableBase(scope, owner, contentId, body.baseRevisionId);
+      checkDraftParagraphs(body.segments, "saved");
       const draft: TranscriptDraft = {
         id: this.newId(),
         contentId,
@@ -190,6 +215,7 @@ export class TranscriptService {
           sourceSegmentIds: segment.sourceSegmentIds as SegmentId[],
           ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
           ...(segment.speakerReview === undefined ? {} : { speakerReview: segment.speakerReview }),
+          ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
         })),
         updatedAt: this.now(),
       };
@@ -225,6 +251,12 @@ export class TranscriptService {
    * are committed (suggested or unassigned). Separately, the revision records how many
    * sentences changed hands compared with its parent (the anchor, when revisions are folded),
    * for the history only; the two counts answer different questions and are never mixed.
+   *
+   * Paragraphs: a draft with explicit paragraphs commits them as they are; one without
+   * inherits the base's marks through the sources (none when the base has none). The new
+   * revision joins its sentences loosely when the base does, or when explicit paragraphs were
+   * given to a base without marks, so paragraphing an unproofread transcript by hand never
+   * changes how its text reads.
    */
   commitDraft(principal: RequestPrincipal, contentId: string, body: DraftCommitRequest): TranscriptRevisionDto {
     const owner = principal.userId;
@@ -246,6 +278,7 @@ export class TranscriptService {
       if (draft.segments.length === 0) {
         invalidDraft("segments", "a revision needs at least one segment");
       }
+      checkDraftParagraphs(draft.segments, "committed");
       const baseConfirmedAt = scope.speakerConfirmations.confirmedAt(owner, base.id);
       if (body.speakersConfirmed === true && baseConfirmedAt === undefined) {
         invalidDraft("speakersConfirmed", "the base revision's speakers are not reviewed");
@@ -289,8 +322,17 @@ export class TranscriptService {
       );
 
       const revisionId = this.newId();
-      // The editor works sentence by sentence; paragraphing is carried over from the base.
-      const paragraphStarts = inheritedParagraphStarts(baseSegments, draft.segments);
+      // A draft with explicit paragraphs keeps them as they are; one without carries the
+      // base's marks over through its sentences' sources.
+      const explicit = hasExplicitParagraphs(draft.segments);
+      const paragraphStarts = explicit ? draft.segments.map((segment) => segment.paragraphStart) : inheritedParagraphStarts(baseSegments, draft.segments);
+      // How the new revision joins its sentences. Inherited marks keep the base's joining.
+      // Explicit paragraphs on a base with marks keep it too; on a base without marks they are
+      // the user's paragraphing of text nobody proofread, which must read exactly as before,
+      // so the revision joins loosely. Decided by the draft's own base, which may be folded
+      // away below.
+      const baseMarked = [...baseSegments.values()].some((segment) => segment.paragraphStart !== undefined);
+      const looseJoin = explicit && !baseMarked ? true : base.looseJoin;
       const acceptSuggestions = body.speakerReview === "accept_suggestions";
       let acceptedSuggestions = 0;
       const segments: TranscriptSegment[] = draft.segments.map((segment, ordinal) => {
@@ -347,6 +389,7 @@ export class TranscriptService {
         timingFidelity: timingFidelityFor("manual"),
         generation,
         segmentCount: segments.length,
+        ...(looseJoin === true ? { looseJoin } : {}),
         createdAt: now,
       };
       // A revision whose sentences name nobody has no speakers to vouch for, and the mark

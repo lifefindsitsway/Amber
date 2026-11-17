@@ -28,17 +28,36 @@ export interface SpeakerAvatarFile extends SpeakerAvatar {
   version: number;
 }
 
-function speakerDto(speaker: ContentSpeaker, used: boolean, comparisonOnly: boolean): SpeakerDto {
+/** What the DTO says about a speaker beyond its own row; each set is computed once for the whole Content. */
+interface SpeakerUsage {
+  used: boolean;
+  comparisonOnly: boolean;
+  referenced: boolean;
+}
+
+function speakerDto(speaker: ContentSpeaker, usage: SpeakerUsage): SpeakerDto {
   return {
     id: speaker.id,
     ordinal: speaker.ordinal,
     ...(speaker.name === undefined ? {} : { name: speaker.name }),
     colorIndex: speaker.colorIndex,
     ...(speaker.avatar === undefined ? {} : { avatarVersion: speaker.avatar.version }),
-    used,
+    used: usage.used,
     ...(nameIsConfirmed(speaker) ? { nameConfirmed: true } : {}),
-    ...(comparisonOnly ? { comparisonOnly: true } : {}),
+    ...(usage.comparisonOnly ? { comparisonOnly: true } : {}),
+    referenced: usage.referenced,
   };
+}
+
+/**
+ * How each speaker of the Content is used, read with one query per flag for the whole Content
+ * rather than one per speaker, so a long roster costs the same few statements.
+ */
+function usageOf(scope: RepositoryScope, owner: string, contentId: string): (speakerId: string) => SpeakerUsage {
+  const used = scope.speakers.usedIds(owner, contentId);
+  const comparisonOnly = scope.speakers.comparisonOnlyIds(owner, contentId);
+  const referenced = scope.speakers.referencedIds(owner, contentId);
+  return (speakerId) => ({ used: used.has(speakerId), comparisonOnly: comparisonOnly.has(speakerId), referenced: referenced.has(speakerId) });
 }
 
 /**
@@ -80,9 +99,10 @@ function ownedSpeaker(scope: RepositoryScope, owner: string, contentId: string, 
 }
 
 /**
- * Speaker identities of a Content: naming, coloring and photographing them, and copying one
- * from another of the user's Contents. Every call is scoped to the principal; a foreign or
- * trashed Content, or a speaker of another Content, is `not_found`.
+ * Speaker identities of a Content: naming, coloring and photographing them, copying one
+ * from another of the user's Contents, and deleting one nothing references. Every call is
+ * scoped to the principal; a foreign or trashed Content, or a speaker of another Content, is
+ * `not_found`.
  */
 export class SpeakerService {
   private readonly options: SpeakerServiceOptions;
@@ -97,15 +117,15 @@ export class SpeakerService {
 
   /**
    * In `ordinal` order; `used` marks the ones some unarchived revision or the draft names,
-   * `comparisonOnly` the ones only comparison transcriptions name.
+   * `comparisonOnly` the ones only comparison transcriptions name, `referenced` the ones any
+   * revision or draft names (only the others may be deleted).
    */
   list(principal: RequestPrincipal, contentId: string): SpeakerListDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => {
       ownedContent(scope, owner, contentId);
-      const used = scope.speakers.usedIds(owner, contentId);
-      const comparisonOnly = scope.speakers.comparisonOnlyIds(owner, contentId);
-      return { items: scope.speakers.list(owner, contentId).map((speaker) => speakerDto(speaker, used.has(speaker.id), comparisonOnly.has(speaker.id))) };
+      const usage = usageOf(scope, owner, contentId);
+      return { items: scope.speakers.list(owner, contentId).map((speaker) => speakerDto(speaker, usage(speaker.id))) };
     });
   }
 
@@ -131,7 +151,8 @@ export class SpeakerService {
         ],
         now,
       );
-      return speakerDto(created as ContentSpeaker, false, false);
+      // A freshly minted id cannot be named by anything yet.
+      return speakerDto(created as ContentSpeaker, { used: false, comparisonOnly: false, referenced: false });
     });
   }
 
@@ -153,7 +174,27 @@ export class SpeakerService {
         change.nameConfirmedAt = confirmedAt;
       }
       const updated = scope.speakers.update(owner, contentId, speakerId, change, now) ?? current;
-      return speakerDto(updated, scope.speakers.usedIds(owner, contentId).has(updated.id), scope.speakers.comparisonOnlyIds(owner, contentId).has(updated.id));
+      return speakerDto(updated, usageOf(scope, owner, contentId)(updated.id));
+    });
+  }
+
+  /**
+   * Deletes a speaker nothing references: no sentence of any revision of the Content (archived
+   * and comparison ones included) and no draft names it. The check runs in the same transaction
+   * as the delete, so a revision or draft written meanwhile cannot be left naming a missing
+   * speaker; a referenced speaker is refused with `conflict.speaker_in_use`, never cascaded.
+   * Sentences are not touched, and AI artifacts keep the speaker labels they copied. A foreign,
+   * trashed or missing Content, or a missing speaker (one already deleted included), is `not_found`.
+   */
+  delete(principal: RequestPrincipal, contentId: string, speakerId: string): void {
+    const owner = principal.userId;
+    this.options.repository.withTransaction((scope) => {
+      ownedContent(scope, owner, contentId);
+      ownedSpeaker(scope, owner, contentId, speakerId);
+      if (scope.speakers.referencedAmong(owner, contentId, [speakerId]).has(speakerId)) {
+        throw amberError("conflict", "the speaker is still named by a revision or a draft", { code: "conflict.speaker_in_use" });
+      }
+      scope.speakers.delete(owner, contentId, [speakerId]);
     });
   }
 

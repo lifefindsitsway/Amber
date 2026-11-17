@@ -6,8 +6,13 @@ export interface ReadingSentence {
   endMs: number;
   text: string;
   speakerId?: string;
-  /** Semantic paragraph start as proofreading marked it; absent on revisions without marks. */
+  /** Paragraph start as proofreading or a manual edit marked it; absent on revisions without marks. */
   paragraphStart?: boolean;
+  /**
+   * The sentence's revision has paragraph marks but joins its sentences as an unmarked one
+   * does (an unproofread transcript paragraphed by hand). Absent = false.
+   */
+  looseJoin?: boolean;
 }
 
 /** CJK letters and the full-width punctuation blocks: text that runs on without spaces. */
@@ -49,12 +54,22 @@ function lastContentChar(text: string): string {
 }
 
 /**
- * Whether the revision a sentence belongs to carries semantic paragraph marks, i.e. was
- * proofread with punctuation restored. Marks are all-or-nothing within a
- * revision, so any one of its sentences answers for all of them.
+ * Whether the revision a sentence belongs to carries paragraph marks, which then decide where
+ * its paragraphs break. Marks are all-or-nothing within a revision, so any one of its
+ * sentences answers for all of them.
  */
-export function isMarked(sentence: { paragraphStart?: boolean }): boolean {
+export function hasParagraphs(sentence: { paragraphStart?: boolean }): boolean {
   return sentence.paragraphStart !== undefined;
+}
+
+/**
+ * Whether a sentence's revision joins its sentences as a proofread one does: it has paragraph
+ * marks and is not loosely joined. Proofreading restored the punctuation, so a bare sentence
+ * end there means one sentence runs across two time slices. A transcript paragraphed by hand
+ * without proofreading keeps the unmarked joining, so its text reads exactly as before.
+ */
+export function isMarked(sentence: { paragraphStart?: boolean; looseJoin?: boolean }): boolean {
+  return sentence.paragraphStart !== undefined && sentence.looseJoin !== true;
 }
 
 /**
@@ -96,8 +111,8 @@ export function joinReading(texts: readonly string[], marked: boolean): string {
 
 /**
  * Decides where reading paragraphs break. Paragraphs follow the
- * content: a revision whose sentences carry `paragraphStart` (proofreading marked them)
- * breaks exactly at the marked sentences and at a change of speaker, which the
+ * content: a revision whose sentences carry `paragraphStart` (proofreading or a manual edit
+ * marked them) breaks exactly at the marked sentences and at a change of speaker, which the
  * proofreading protocol cannot see; pauses and length play no part. A revision without marks
  * falls back to readability rules so an unproofread transcript is not one wall of text: a
  * pause longer than `PARAGRAPH_GAP_MS` or a change of speaker; once a paragraph holds
@@ -115,7 +130,7 @@ export class ReadingBreaks {
   /** Feeds the next sentence; `true` when it starts a new paragraph (always for the first). */
   push(sentence: ReadingSentence): boolean {
     if (this.last === undefined) {
-      this.semantic = isMarked(sentence);
+      this.semantic = hasParagraphs(sentence);
     }
     const breaks = this.last === undefined || this.breaksAfter(this.last, sentence);
     if (breaks) {

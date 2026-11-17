@@ -1,17 +1,26 @@
-import { ChevronsDown, ChevronsUp } from "lucide-react";
+import { ChevronsDown, ChevronsUp, LocateFixed } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import type { LocateButton } from "./reader-locate.ts";
 import { READER_SCROLLER_CLASS } from "./reader-sentences.tsx";
 
-/** A round button floating over the reader's corner; translucent so it hides little text. */
-function ReaderJump(props: { label: string; onClick: () => void; testId: string; children: ReactNode }) {
+/**
+ * A round button floating over the reader's corner; translucent so it hides little text. An
+ * inactive one stays focusable and keeps its tooltip (`aria-disabled`, not `disabled`, which
+ * would also swallow the hover that shows why), and ignores clicks.
+ */
+function ReaderJump(props: { label: string; title?: string; inactive?: boolean; onClick: () => void; testId: string; children: ReactNode }) {
+  const look = props.inactive === true ? "cursor-not-allowed opacity-50" : "hover:bg-sunken hover:text-ink";
   return (
     <button
       type="button"
       aria-label={props.label}
-      title={props.label}
-      className="flex size-[28px] items-center justify-center rounded-full border border-line bg-surface/90 text-muted shadow hover:bg-sunken hover:text-ink"
-      onClick={props.onClick}
+      title={props.title ?? props.label}
+      {...(props.inactive === true ? { "aria-disabled": true } : {})}
+      className={`flex size-[28px] items-center justify-center rounded-full border border-line bg-surface/90 text-muted shadow ${look}`}
+      onClick={() => {
+        if (props.inactive !== true) props.onClick();
+      }}
       data-testid={props.testId}
     >
       {props.children}
@@ -20,7 +29,8 @@ function ReaderJump(props: { label: string; onClick: () => void; testId: string;
 }
 
 /**
- * The 「去顶部 / 去底部」 buttons in the reader's bottom right corner.
+ * The 「去顶部 / 定位到播放位置 / 去底部」 buttons in the reader's bottom right corner; the middle
+ * one only with a player that can tell the playing time (`locate`).
  *
  * The reading text keeps its side margin from the inside of the scroller's scrollbar gutters, and
  * how wide those gutters are depends on the platform's scrollbars. So the buttons are placed in a
@@ -37,15 +47,24 @@ function ReaderJump(props: { label: string; onClick: () => void; testId: string;
  * The copy lets pointer input through to the rows below except on the buttons. It stacks above
  * the rows and the sticky speaker marker and below anything that floats over the reader.
  */
-export function ReaderJumpButtons(props: { onTop: () => void; onBottom: () => void }) {
+export function ReaderJumpButtons(props: { onTop: () => void; onBottom: () => void; locate?: LocateButton | undefined }) {
   const { t } = useTranslation();
+  const { locate } = props;
+  const locateLabel = t("contentView.transcript.locate");
+  const locateTitle =
+    locate === undefined ? locateLabel : locate.waiting ? t("contentView.transcript.locateWaiting") : locate.showsAll ? t("contentView.transcript.locateShowsAll") : locateLabel;
   return (
     <div className={`${READER_SCROLLER_CLASS} pointer-events-none absolute inset-0 z-20 overflow-hidden`} data-testid="reader-jump-layer">
-      {/* One tight box, the direct parent of both buttons, so its bounds are the buttons' bounds. */}
+      {/* One tight box, the direct parent of every button, so its bounds are the buttons' bounds. */}
       <div className="pointer-events-auto absolute right-[8px] bottom-[16px] flex flex-col gap-[8px]">
         <ReaderJump label={t("contentView.transcript.toTop")} onClick={props.onTop} testId="reader-to-top">
           <ChevronsUp size={16} />
         </ReaderJump>
+        {locate === undefined ? null : (
+          <ReaderJump label={locateLabel} title={locateTitle} inactive={locate.waiting} onClick={locate.onLocate} testId="reader-locate">
+            <LocateFixed size={16} />
+          </ReaderJump>
+        )}
         <ReaderJump label={t("contentView.transcript.toBottom")} onClick={props.onBottom} testId="reader-to-bottom">
           <ChevronsDown size={16} />
         </ReaderJump>

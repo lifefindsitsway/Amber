@@ -281,7 +281,7 @@ describe("TranslationTab edit entries", () => {
 
 describe("TranslationTab speakers", () => {
   it("tells beside 开始翻译 that unreviewed speakers are not read, and nothing once reviewed", async () => {
-    const speakers = { body: { items: [{ id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true }] } };
+    const speakers = { body: { items: [{ id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true }] } };
     const spoken = (confirmed: boolean) => {
       const primary = revision("r1", confirmed ? { speakersConfirmedAt: 5 } : {});
       return {

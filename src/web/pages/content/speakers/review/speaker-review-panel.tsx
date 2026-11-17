@@ -28,6 +28,8 @@ export interface SpeakerReviewTarget {
   onLocate: (segmentId: string) => void;
   /** The cross-recognition summary shown under 「辅助核对」, when there is one to show. */
   crossCheck?: ReactNode;
+  /** Takes the user to the editor's speaker panel; present where that way is open, which adds 「管理发言人…」 beside the roster. */
+  onManageSpeakers?: () => void;
 }
 
 /** The share of the speaker's assigned time as the roster writes it. */
@@ -136,9 +138,21 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
         </ul>
       )}
       <section className="border-t border-line py-1.5" aria-labelledby={`${titleId}-roster`}>
-        <h4 id={`${titleId}-roster`} className="px-3 pb-1 text-xs font-medium text-muted">
-          {t("speakerReview.panel.roster")}
-        </h4>
+        <div className="flex items-center gap-2 px-3 pb-1">
+          <h4 id={`${titleId}-roster`} className="min-w-0 flex-1 text-xs font-medium text-muted">
+            {t("speakerReview.panel.roster")}
+          </h4>
+          {props.onManageSpeakers === undefined ? null : (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+              onClick={props.onManageSpeakers}
+              data-testid="speaker-review-manage"
+            >
+              {t("speakerReview.panel.manage")}
+            </button>
+          )}
+        </div>
         <ul data-testid="speaker-review-roster">
           {data.speakers.map((entry) => {
             const speaker = speakers.get(entry.id);
@@ -251,7 +265,7 @@ export function SpeakerReviewControl(props: SpeakerReviewTarget & { speakerMode:
   const review = useSpeakerReview(props.contentId, props.speakerMode ? props.revisionId : undefined);
   if (!props.speakerMode || review.isError) return null;
   const confirmed = review.data === undefined ? props.speakersConfirmedAt !== undefined : review.data.confirmedAt !== undefined;
-  const { onLocate } = props;
+  const { onLocate, onManageSpeakers } = props;
   return (
     <Popover.Root open={open} onOpenChange={setOpen} modal={false}>
       <Popover.Trigger asChild>
@@ -274,6 +288,15 @@ export function SpeakerReviewControl(props: SpeakerReviewTarget & { speakerMode:
               setOpen(false);
               onLocate(segmentId);
             }}
+            {...(onManageSpeakers === undefined
+              ? {}
+              : {
+                  onManageSpeakers: () => {
+                    // The panel goes first: what opens next (the editor) takes the focus.
+                    setOpen(false);
+                    onManageSpeakers();
+                  },
+                })}
           />
         </Popover.Content>
       </Popover.Portal>

@@ -149,6 +149,8 @@ export class TranslateStageExecutor implements StageExecutor {
           ...(speakers === undefined ? {} : { speakerContext: speakers.snapshot }),
         },
         segmentCount: translated.length,
+        // The parent's paragraphing holds, and so does how its sentences join.
+        ...(base.looseJoin === true ? { looseJoin: true } : {}),
         createdAt,
       };
       return { language, revision, segments: translated, artifactId: this.newId(), invocationIds: own.map((payload) => payload.invocationId) };

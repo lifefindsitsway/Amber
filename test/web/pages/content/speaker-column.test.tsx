@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { segment } from "../../../fixtures/web/content-data.ts";
-import { editorRoutes, mockApi, puts, renderSpeakerEditor, SPEAKER_A, SPEAKER_B, SPEAKER_C, talk } from "../../../fixtures/web/speaker-editor.tsx";
+import { mockApi, puts, renderSpeakerEditor, SPEAKER_A, SPEAKER_B, SPEAKER_C, talk } from "../../../fixtures/web/speaker-editor.tsx";
+import { creations, managedRoutes } from "../../../fixtures/web/speaker-management.ts";
 
 // Every render of a speaker column asks for its speaker's label, which makes renders countable.
 const rendered = vi.hoisted(() => ({ labels: 0 }));
@@ -28,7 +29,7 @@ describe("the speaker column", () => {
   it("names the speaker on the first sentence of a run and mutes the follow-ups; unassigned shows a dashed avatar", async () => {
     const base = talk();
     base[5] = { ...base[5], speakerId: undefined } as never;
-    mockApi(editorRoutes(base));
+    mockApi(managedRoutes({ base }).routes);
     renderSpeakerEditor();
     await ready();
     expect(screen.getAllByTestId("speaker-lead-name").map((node) => node.textContent)).toEqual(["陈明", "林雪", "未分配"]);
@@ -47,39 +48,57 @@ describe("the speaker column", () => {
   });
 
   it("keeps one speaker column in the tab order", async () => {
-    mockApi(editorRoutes());
+    mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     expect(leads().filter((lead) => lead.tabIndex === 0)).toHaveLength(1);
   });
 
-  it("opens a menu that states the scope: one sentence, a run, or the selection", async () => {
-    mockApi(editorRoutes());
+  it("offers three reaches with their sentences and times, the sentence itself checked first", async () => {
+    mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
-    fireEvent.keyDown(leads()[1] as HTMLElement, { key: "Enter" });
-    expect((await screen.findByTestId("speaker-menu-scope")).textContent).toBe("本句");
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByTestId("speaker-menu")).toBeNull());
+    // The fourth sentence is the middle of the second speaker's turn (sentences 3–5, 4 s each).
+    fireEvent.keyDown(leads()[3] as HTMLElement, { key: "Enter" });
+    const menu = await screen.findByTestId("speaker-menu");
+    const options = within(menu).getAllByRole("menuitemradio");
+    expect(options.map((option) => option.textContent)).toEqual(["本句1 句 · 0:12–0:16", "本句到本轮结束2 句 · 0:12–0:20", "整轮3 句 · 0:08–0:20"]);
+    expect(options.map((option) => option.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
+    // Picking a reach keeps the menu open for the speaker.
+    fireEvent.click(within(menu).getByTestId("speaker-menu-scope-rest"));
+    await waitFor(() => expect(within(menu).getByTestId("speaker-menu-scope-rest").getAttribute("aria-checked")).toBe("true"));
+    expect(screen.getByTestId("speaker-menu")).toBe(menu);
+  });
 
-    // Even the first sentence of a run starts with itself; the whole turn is asked for in the menu.
-    fireEvent.keyDown(leads()[0] as HTMLElement, { key: "Enter" });
-    expect((await screen.findByTestId("speaker-menu-scope")).textContent).toBe("本句");
-    expect(screen.getByTestId("speaker-menu-scope-toggle").textContent).toBe("改整轮（2 句）");
-    fireEvent.click(screen.getByTestId("speaker-menu-scope-toggle"));
-    await waitFor(() => expect(screen.getByTestId("speaker-menu-scope").textContent).toBe("本轮 2 句"));
-    expect(screen.getByTestId("speaker-menu-scope-toggle").textContent).toBe("只改本句");
+  it("gives the rest of the turn from the menu, leaving its earlier sentences alone", async () => {
+    const { calls } = mockApi(managedRoutes().routes);
+    renderSpeakerEditor();
+    await ready();
+    fireEvent.keyDown(leads()[3] as HTMLElement, { key: "Enter" });
+    const menu = await screen.findByTestId("speaker-menu");
+    fireEvent.click(within(menu).getByTestId("speaker-menu-scope-rest"));
+    await waitFor(() => expect(within(menu).getByTestId("speaker-menu-scope-rest").getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(within(menu).getByTestId(`speaker-menu-item-${SPEAKER_A.id}`));
+    await waitFor(() => expect(lastSaved(calls)).toEqual(["spk-a", "spk-a", "spk-b", "spk-a", "spk-a", "spk-a"]), { timeout: 3000 });
+  });
+
+  it("states a turn of one sentence without a choice of reach", async () => {
+    mockApi(managedRoutes().routes);
+    renderSpeakerEditor();
+    await ready();
+    fireEvent.keyDown(leads()[5] as HTMLElement, { key: "Enter" });
+    expect((await screen.findByTestId("speaker-menu-scope")).textContent).toBe("本句0:20–0:24");
+    expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
   });
 
   it("assigns the run from the menu as one undoable step, numbering the speakers in use", async () => {
-    const { calls } = mockApi(editorRoutes());
+    const { calls } = mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     fireEvent.keyDown(leads()[2] as HTMLElement, { key: "Enter" });
     const menu = await screen.findByTestId("speaker-menu");
-    expect(within(menu).getByTestId("speaker-menu-scope").textContent).toBe("本句");
-    fireEvent.click(within(menu).getByTestId("speaker-menu-scope-toggle"));
-    await waitFor(() => expect(within(menu).getByTestId("speaker-menu-scope").textContent).toBe("本轮 3 句"));
+    fireEvent.click(within(menu).getByTestId("speaker-menu-scope-run"));
+    await waitFor(() => expect(within(menu).getByTestId("speaker-menu-scope-run").getAttribute("aria-checked")).toBe("true"));
     // Only the speakers the draft uses are numbered; the unused one is behind 「更多发言人」.
     expect(within(menu).getByTestId(`speaker-menu-item-${SPEAKER_A.id}`).textContent).toContain("1");
     expect(within(menu).getByTestId(`speaker-menu-item-${SPEAKER_B.id}`).textContent).toContain("2");
@@ -93,7 +112,7 @@ describe("the speaker column", () => {
   });
 
   it("assigns by digit keys only while focus is in the column, 0 unassigns, and 9 beyond the list does nothing", async () => {
-    mockApi(editorRoutes());
+    mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     const lead = leads()[3] as HTMLElement;
@@ -115,7 +134,7 @@ describe("the speaker column", () => {
   });
 
   it("extends the selection with Shift+arrows and Shift+click, and applies to the selection", async () => {
-    const { calls } = mockApi(editorRoutes());
+    const { calls } = mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     const first = leads()[0] as HTMLElement;
@@ -131,13 +150,14 @@ describe("the speaker column", () => {
     await waitFor(() => expect(screen.getByTestId("speaker-selection-bar").textContent).toContain("已选 5 句"));
 
     fireEvent.keyDown(leads()[4] as HTMLElement, { key: "Enter" });
-    expect((await screen.findByTestId("speaker-menu-scope")).textContent).toBe("所选 5 句");
+    expect((await screen.findByTestId("speaker-menu-scope")).textContent).toBe("所选 5 句0:00–0:20");
+    expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
     fireEvent.click(screen.getByTestId("speaker-menu-unassign"));
     await waitFor(() => expect(lastSaved(calls)).toEqual([null, null, null, null, null, "spk-a"]), { timeout: 3000 });
   });
 
   it("drops the selection when the filter changes, so it never names sentences out of sight", async () => {
-    mockApi(editorRoutes());
+    mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     const first = leads()[0] as HTMLElement;
@@ -150,7 +170,7 @@ describe("the speaker column", () => {
   });
 
   it("registers no global shortcut: digits outside the column leave the draft alone", async () => {
-    mockApi(editorRoutes());
+    mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     fireEvent.keyDown(document.body, { key: "0" });
@@ -158,24 +178,75 @@ describe("the speaker column", () => {
     expect(leads().map((lead) => lead.getAttribute("aria-label"))).toEqual(["发言人：陈明", "发言人：陈明", "发言人：林雪", "发言人：林雪", "发言人：林雪", "发言人：陈明"]);
   });
 
-  it("creates a new speaker and gives it to the scope", async () => {
-    const { calls } = mockApi({
-      ...editorRoutes(),
-      "POST /api/contents/c1/speakers": { status: 201, body: { id: "spk-new", ordinal: 4, colorIndex: 3, used: false } },
-    });
+  it("creates a new speaker, gives it to the scope, then asks for its name beside the column: Enter saves it as confirmed", async () => {
+    const { calls } = mockApi(managedRoutes().routes);
     renderSpeakerEditor();
     await ready();
     fireEvent.keyDown(leads()[5] as HTMLElement, { key: "Enter" });
     fireEvent.click(await screen.findByTestId("speaker-menu-new"));
     await waitFor(() => expect(leads()[5]?.getAttribute("aria-label")).toBe("发言人：发言人 4"));
-    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/api/contents/c1/speakers"]);
-    await waitFor(() => expect(lastSaved(calls)?.[5]).toBe("spk-new"), { timeout: 3000 });
+    expect(creations(calls)).toEqual([{}]);
+    const naming = await screen.findByTestId("speaker-naming");
+    const input = within(naming).getByTestId("speaker-naming-input");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(input.getAttribute("placeholder")).toBe("发言人 4");
+    fireEvent.change(input, { target: { value: "王教授" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByTestId("speaker-naming")).toBeNull());
+    expect(calls.filter((call) => call.method === "PATCH").map((call) => [call.path, call.body])).toEqual([["/api/contents/c1/speakers/spk-new-1", { name: "王教授", nameConfirmed: true }]]);
+    await waitFor(() => expect(leads()[5]?.getAttribute("aria-label")).toBe("发言人：王教授"));
+    await waitFor(() => expect(document.activeElement).toBe(leads()[5]));
+    await waitFor(() => expect(lastSaved(calls)?.[5]).toBe("spk-new-1"), { timeout: 3000 });
+  });
+
+  it("leaves a new speaker unnamed when its naming is skipped with Esc, and the focus goes back to the column", async () => {
+    const { calls } = mockApi(managedRoutes().routes);
+    renderSpeakerEditor();
+    await ready();
+    fireEvent.keyDown(leads()[2] as HTMLElement, { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("speaker-menu-new"));
+    const input = await screen.findByTestId("speaker-naming-input");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("speaker-naming")).toBeNull());
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(leads()[2]));
+    expect(leads()[2]?.getAttribute("aria-label")).toBe("发言人：发言人 4");
+  });
+
+  it("keeps the numbers of the roster for the session: a new speaker is numbered after the others", async () => {
+    mockApi(managedRoutes().routes);
+    renderSpeakerEditor();
+    await ready();
+    // A speaker created in the panel, unused: it still gets the next number.
+    fireEvent.click(screen.getByTestId("speaker-panel-toggle"));
+    fireEvent.click(await screen.findByTestId("speaker-panel-add"));
+    fireEvent.change(await screen.findByTestId("speaker-panel-add-input"), { target: { value: "王教授" } });
+    fireEvent.click(screen.getByTestId("speaker-panel-add-confirm"));
+    await waitFor(() => expect(screen.getByText("本稿未使用 · 2")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("speaker-panel-toggle"));
+    await waitFor(() => expect(screen.queryByTestId("speaker-panel")).toBeNull());
+    // Every sentence of the second speaker goes to the first: the second keeps its number.
+    for (const index of [2, 3, 4]) fireEvent.keyDown(leads()[index] as HTMLElement, { key: "1" });
+    await waitFor(() => expect(leads()[4]?.getAttribute("aria-label")).toBe("发言人：陈明"));
+    fireEvent.keyDown(leads()[0] as HTMLElement, { key: "Enter" });
+    const menu = await screen.findByTestId("speaker-menu");
+    const digit = (id: string) => within(menu).getByTestId(`speaker-menu-item-${id}`).querySelector("kbd")?.textContent;
+    expect([digit("spk-a"), digit("spk-b"), digit("spk-new-1")]).toEqual(["1", "2", "3"]);
+    expect(within(menu).queryByTestId(`speaker-menu-item-${SPEAKER_C.id}`)).toBeNull();
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("speaker-menu")).toBeNull());
+    // The digit reaches the new speaker from the column too.
+    fireEvent.keyDown(leads()[5] as HTMLElement, { key: "3" });
+    await waitFor(() => expect(leads()[5]?.getAttribute("aria-label")).toBe("发言人：王教授"));
   });
 
   it("clears the review mark of a sentence the user assigns", async () => {
     const draft = talk().map((segment) => ({ id: segment.id, startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id], speakerId: "spk-a", speakerReview: segment.id === "t2" ? "needs_review" : "auto" }));
     const { calls } = mockApi({
-      ...editorRoutes(),
+      ...managedRoutes().routes,
       "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "r1", version: 4, segments: draft, updatedAt: 1 } },
     });
     renderSpeakerEditor();
@@ -193,7 +264,7 @@ describe("the speaker column", () => {
 
   it("does not render the other columns again when a sentence's text is typed in a large draft", async () => {
     const base = Array.from({ length: 400 }, (_, i) => segment(`n${i}`, i, i * 1_000, i * 1_000 + 900, `第${i}句。`, { speakerId: i % 5 < 2 ? "spk-a" : "spk-b" }));
-    mockApi(editorRoutes(base));
+    mockApi(managedRoutes({ base }).routes);
     renderSpeakerEditor();
     const input = await screen.findByDisplayValue("第7句。");
     await waitFor(() => expect(leads()).toHaveLength(400));
@@ -207,7 +278,7 @@ describe("the speaker column", () => {
 /** Six sentences of one speaker; the second, third and fifth are waiting for review. */
 function reviewDraft() {
   return {
-    ...editorRoutes(),
+    ...managedRoutes().routes,
     "GET /api/contents/c1/transcript/draft": {
       body: {
         id: "d1",
@@ -254,10 +325,9 @@ describe("the speaker column under a filter", () => {
     await reviewOnly();
     fireEvent.keyDown(leads()[0] as HTMLElement, { key: "Enter" });
     // Sentences 2 and 3 are next to each other on screen; 5 is cut off from them by a hidden one.
-    expect(await screen.findByTestId("speaker-menu-scope-toggle")).toBeTruthy();
-    expect(screen.getByTestId("speaker-menu-scope-toggle").textContent).toBe("改整轮（2 句）");
-    fireEvent.click(screen.getByTestId("speaker-menu-scope-toggle"));
-    await waitFor(() => expect(screen.getByTestId("speaker-menu-scope").textContent).toBe("本轮 2 句"));
+    expect((await screen.findByTestId("speaker-menu-scope-run")).textContent).toBe("整轮2 句 · 0:04–0:12");
+    fireEvent.click(screen.getByTestId("speaker-menu-scope-run"));
+    await waitFor(() => expect(screen.getByTestId("speaker-menu-scope-run").getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(screen.getByTestId(`speaker-menu-item-${SPEAKER_B.id}`));
     await waitFor(() => expect(puts(calls)).toHaveLength(1), { timeout: 3000 });
     const saved = puts(calls)[0]?.segments ?? [];

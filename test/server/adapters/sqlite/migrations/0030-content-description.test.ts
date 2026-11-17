@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../../../../src/server/adapters/sqlite/database.ts";
-import { latestSchemaVersion, MIGRATIONS } from "../../../../../src/server/adapters/sqlite/migrations.ts";
+import { latestSchemaVersion, migrate, MIGRATIONS } from "../../../../../src/server/adapters/sqlite/migrations.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { insertRow, tempDataDir } from "../../../../tools/sqlite.ts";
@@ -42,6 +42,8 @@ describe("migration 0030: content description", () => {
       expect.objectContaining({ name: "description_truncated", notnull: 1, dflt_value: "0" }),
       expect.objectContaining({ name: "description_checked_at", notnull: 0, dflt_value: null }),
     ]);
+    // The repository is written for the latest schema; later migrations leave `content` alone.
+    migrate(db);
     const repository = new SqliteRepository(db);
     const content = repository.withTransaction((scope) => scope.contents.get("alice", "c1"));
     expect(content).not.toHaveProperty("description");

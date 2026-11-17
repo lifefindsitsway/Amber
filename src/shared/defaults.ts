@@ -327,8 +327,10 @@ export const SPEAKER_SUGGESTIONS_MAX = 8;
 export const SPEAKER_ALIGN_MIN_SHARE = 0.7;
 /** Below this share of sentences overlapping the source at all, the two timelines probably disagree. */
 export const SPEAKER_ALIGN_MIN_COVERAGE = 0.6;
-/** Shortest half a sentence split between two speakers may leave. */
+/** Shortest half a sentence split in the editor may leave. */
 export const SPEAKER_SPLIT_MIN_MS = 300;
+/** Speakers of the editor's panel group "not used in this draft" shown before it folds. */
+export const SPEAKER_PANEL_UNUSED_VISIBLE = 6;
 /** Fewest grapheme clusters of a question's text that may be taken for a speaker's name. */
 export const SPEAKER_MENTION_MIN_GRAPHEMES = 2;
 /** Clips per speaker the review panel offers for listening. */
@@ -355,6 +357,10 @@ export const READER_MARGIN_MAX = 200;
 export const READER_MARGIN_STEP = 4;
 /** Side margin the reading view starts with, in px: from here up the floating jump buttons stay clear of the text. */
 export const READER_MARGIN_DEFAULT = 44;
+/** Share of the reading area's height, from its top, where "locate the playing sentence" puts the sentence's first line. */
+export const READER_LOCATE_VIEWPORT_RATIO = 0.3;
+/** How long the sentence "locate the playing sentence" arrived at keeps fading its highlight, in ms. */
+export const READER_LOCATE_PULSE_MS = 900;
 /** Longest name of a reading font the user types in, in characters. */
 export const READER_FONT_NAME_MAX_CHARS = 64;
 

@@ -68,6 +68,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "GET", path: "/contents/:id/speakers", modes: BOTH },
   { method: "POST", path: "/contents/:id/speakers", modes: BOTH },
   { method: "PATCH", path: "/contents/:id/speakers/:sid", modes: BOTH },
+  { method: "DELETE", path: "/contents/:id/speakers/:sid", modes: BOTH },
   { method: "GET", path: "/contents/:id/speakers/:sid/avatar", modes: BOTH },
   { method: "GET", path: "/speakers/suggestions", modes: BOTH },
   // summaries

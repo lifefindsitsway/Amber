@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { PARAGRAPH_GAP_MS, PARAGRAPH_MAX_CHARS } from "../../src/shared/defaults.ts";
+import { JOIN_SAMPLES } from "../fixtures/transcripts/reading-join.ts";
 import {
   ReadingBreaks,
   endsSentence,
+  hasParagraphs,
   isMarked,
   isOnlyPunctuationChange,
   joinReading,
@@ -86,11 +88,26 @@ describe("readingSeparator / joinReading", () => {
   });
 });
 
-describe("isMarked", () => {
+describe("isMarked / hasParagraphs", () => {
   it("is true for any sentence of a revision with paragraph marks", () => {
     expect(isMarked({ paragraphStart: true })).toBe(true);
     expect(isMarked({ paragraphStart: false })).toBe(true);
     expect(isMarked({})).toBe(false);
+  });
+
+  it("separates having paragraphs from joining as a proofread revision", () => {
+    expect(hasParagraphs({ paragraphStart: false })).toBe(true);
+    expect(isMarked({ paragraphStart: false, looseJoin: true })).toBe(false);
+    expect(isMarked({ paragraphStart: true, looseJoin: false })).toBe(true);
+    expect(hasParagraphs({})).toBe(false);
+  });
+
+  it("joins the golden samples: marked as proofread, loose and unmarked alike", () => {
+    for (const sample of JOIN_SAMPLES) {
+      expect(joinReading(sample.texts, true), sample.name).toBe(sample.marked);
+      expect(joinReading(sample.texts, false), sample.name).toBe(sample.unmarked);
+      expect(joinReading(sample.texts, isMarked({ paragraphStart: true, looseJoin: true })), sample.name).toBe(sample.unmarked);
+    }
   });
 });
 
@@ -165,6 +182,11 @@ describe("readingParagraphs with paragraph marks", () => {
     expect(readingParagraphs(marked([true, false, false], { gapMs: PARAGRAPH_GAP_MS * 10 }))).toHaveLength(1);
     const speakers = marked([true, false, false]).map((sentence, index) => ({ ...sentence, speakerId: index === 2 ? "b" : "a" }));
     expect(readingParagraphs(speakers).map((p) => p.segments.length)).toEqual([2, 1]);
+  });
+
+  it("breaks a loosely joined revision at its marks too, never by pause or length", () => {
+    const loose = marked([true, false, false, true], { gapMs: PARAGRAPH_GAP_MS * 10 }).map((sentence) => ({ ...sentence, looseJoin: true }));
+    expect(readingParagraphs(loose).map((p) => p.segments.length)).toEqual([3, 1]);
   });
 
   it("decides the mode by the first sentence, since marks are all-or-nothing within a revision", () => {

@@ -19,6 +19,7 @@ export const speakerReview = {
     acceptedSuggestions: "{{count}} 句按建议归属",
     draftNeedsReview: "草稿里还有 {{count}} 句待处理",
     roster: "名单（按出场顺序）",
+    manage: "管理发言人…",
     locate: "定位到 {{name}} 的第一轮",
     sentences: "{{count}} 句",
     share: "占已标注时长 {{percent}}%",

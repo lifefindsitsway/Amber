@@ -267,7 +267,12 @@ export class ExportService {
       const originalId = mode === "translation" ? undefined : revision.id;
       const translationId = mode === "translation" ? revision.id : translation?.id;
       const restore: RestoreData | undefined = restoreData
-        ? { language: revision.language, ...(translation === undefined ? {} : { translationLanguage: translation.language }), speakers: scope.speakers.list(owner, content.id) }
+        ? {
+            language: revision.language,
+            ...(revision.looseJoin === true ? { looseJoin: true as const } : {}),
+            ...(translation === undefined ? {} : { translationLanguage: translation.language }),
+            speakers: scope.speakers.list(owner, content.id),
+          }
         : undefined;
       return { filename, contentType: file.contentType, body: this.styledAss(owner, mode, originalId, translationId, options, speakers?.names, labels, restore) };
     }
@@ -342,7 +347,7 @@ export class ExportService {
       return;
     }
     const pkg = buildSubtitlePackage({
-      revision: { language: restore.language },
+      revision: { language: restore.language, ...(restore.looseJoin === true ? { looseJoin: true } : {}) },
       segments: shown,
       speakers: restore.speakers,
       translations: mode === "bilingual" && restore.translationLanguage !== undefined ? [{ language: restore.translationLanguage, segments: translation }] : [],
@@ -565,6 +570,7 @@ export class ExportService {
         ...(segment.words === undefined ? {} : { words: segment.words }),
         ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
         ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
+        ...(segment.looseJoin === true ? { looseJoin: true } : {}),
         ...(translation === undefined ? {} : { translation }),
       };
     }
@@ -605,10 +611,12 @@ function allSegments(scope: RepositoryScope, owner: string, revisionId: string):
 
 /**
  * What a styled ASS download needs besides its sentences to embed restore data: the shown
- * revision's language, the paired translation's language when bilingual, and the speakers.
+ * revision's language and joining, the paired translation's language when bilingual, and the speakers.
  */
 interface RestoreData {
   language: string;
+  /** The shown revision's `looseJoin`: the package takes it from the revision, not from its sentences. */
+  looseJoin?: true;
   translationLanguage?: string;
   speakers: readonly ContentSpeaker[];
 }

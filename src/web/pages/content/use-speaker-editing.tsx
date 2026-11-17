@@ -1,12 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent, type ReactNode, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import type { SpeakerDto, SpeakerListDto } from "../../../shared/dto/speaker.ts";
+import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
+import { hasExplicitParagraphs, splitSentenceWithParagraphs } from "../../../shared/paragraph-marks.ts";
 import type { AlignResult } from "../../../shared/speaker-align.ts";
 import type { SpeakerReviewState } from "../../../shared/speakers.ts";
 import { useOptionalPlayerController } from "../../player/player-controller.tsx";
-import { contentKeys } from "./content-data.ts";
 import type { SentenceEditorHandle } from "./sentence-editor.tsx";
 import {
   applyAlignment,
@@ -23,7 +22,8 @@ import {
   type SpeakerFilter,
   type SplitRequest,
 } from "./speaker-draft.ts";
-import { useCreateSpeaker } from "./speakers/speaker-data.ts";
+import { NamingStore, NewSpeakerNaming } from "./speakers/new-speaker.tsx";
+import { useCreateSpeaker, useSpeakers } from "./speakers/speaker-data.ts";
 
 /** What one sentence's speaker column shows. */
 export interface LeadView {
@@ -99,25 +99,98 @@ export class LeadStore {
   }
 }
 
+/**
+ * Asks one sentence's speaker column to open its menu. Every column reads the request, and only
+ * the one it names sees a value change, so a request renders that column alone.
+ */
+export class MenuSignal {
+  private target: number | undefined;
+  private nonce = 0;
+  private readonly listeners = new Set<() => void>();
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  /** A number that changes with every request for this column; 0 when none is waiting. */
+  nonceFor = (index: number): number => (this.target === index ? this.nonce : 0);
+
+  request(index: number): void {
+    this.target = index;
+    this.nonce += 1;
+    this.emit();
+  }
+
+  /** The column took the request: a later remount must not open the menu again. */
+  consume(index: number): void {
+    if (this.target !== index) return;
+    this.target = undefined;
+    this.emit();
+  }
+
+  private emit(): void {
+    for (const listener of [...this.listeners]) listener();
+  }
+}
+
+/**
+ * The speakers numbered in the menu and on the keys `1`–`9`, kept stable for the whole editing
+ * session: the order is fixed by ordinal when the speakers are first known, and a speaker that
+ * becomes eligible later (newly created, or first given a sentence) is only appended. A speaker
+ * leaves only when it is no longer offered at all (deleted). Returns `previous` itself when
+ * nothing changes.
+ */
+export function nextRoster(previous: readonly string[], offered: readonly SpeakerDto[], eligible: (speaker: SpeakerDto) => boolean): readonly string[] {
+  const present = new Set(offered.map((speaker) => speaker.id));
+  const kept = previous.filter((id) => present.has(id));
+  const known = new Set(kept);
+  const added = offered
+    .filter((speaker) => !known.has(speaker.id) && eligible(speaker))
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map((speaker) => speaker.id);
+  if (added.length === 0 && kept.length === previous.length) return previous;
+  return [...kept, ...added];
+}
+
+/** How many sentences name a speaker that is not in `known`: a speaker deleted, here or in another window. */
+export function countMissingSpeakers(resolved: ReadonlyArray<string | null>, known: { has(id: string): boolean }): number {
+  let count = 0;
+  for (const id of resolved) if (id !== null && !known.has(id)) count += 1;
+  return count;
+}
+
+/** How far a change of speaker made from one sentence's menu reaches. */
+export type ScopeMode = "sentence" | "rest" | "run";
+
 /** The sentences one change of speaker applies to, by key so it survives edits made meanwhile. */
 export interface LeadScope {
-  kind: "sentence" | "run" | "selection";
+  /** `rest`: from this sentence to the end of its turn; `run`: the whole turn. */
+  kind: "sentence" | "rest" | "run" | "selection";
   keys: string[];
   /** The sentence whose column the change was made from; focus stays there. */
   origin: number;
   /** The one speaker all of them have now (`null` = unassigned); `undefined` when they differ. */
   common: string | null | undefined;
+  /** Where the first of them starts and the last ends, in media ms. */
+  startMs: number;
+  endMs: number;
 }
 
 /** What the sentence's own speaker column and split control may ask the editor to do. */
 export interface SpeakerEditingActions {
   /**
    * The sentences a change made from this one covers: the selection it is in, else only
-   * itself. With `mode: "run"` (asked for explicitly in the menu), its turn: the neighbours of
-   * the same speaker that are on screen.
+   * itself. Asked for explicitly in the menu, `mode: "run"` is its turn (the neighbours of the
+   * same speaker that are on screen) and `mode: "rest"` that turn from this sentence on.
    */
-  scope(index: number, mode?: "sentence" | "run"): LeadScope;
+  scope(index: number, mode?: ScopeMode): LeadScope;
   assign(scope: LeadScope, speakerId: string | null): void;
+  /**
+   * Creates an unnamed speaker, gives it the scope and, once the focus is back on the column,
+   * opens the naming popover there. If the assignment does not happen (the editor is busy), the
+   * speaker stays, unused.
+   */
   createAndAssign(scope: LeadScope): void;
   /** A click on the column: with Shift it selects the range from the last one; otherwise it leaves the selection unless it is in it. */
   pointer(index: number, shift: boolean): void;
@@ -129,7 +202,19 @@ export interface SpeakerEditingActions {
   moveFocus(index: number, delta: 1 | -1): void;
   /** What splitting a sentence knows beyond its text: where the recognizer heard a change, the playhead, who the neighbours are. */
   splitContext(index: number): { changeAtMs: number | undefined; playheadMs: number | undefined; currentSpeakerId: string | null; nextSpeakerId: string | null };
-  split(index: number, request: Omit<SplitRequest, "newId">): boolean;
+  /**
+   * Cuts the sentence in two (see `splitSegment`). `paragraph.rightStarts` makes the right half
+   * open a paragraph; a draft without explicit paragraphs is first given them by
+   * `paragraph.materialize`, which must then be passed. Without `paragraph` the right half stays
+   * in the left half's paragraph.
+   */
+  split(index: number, request: Omit<SplitRequest, "newId">, paragraph?: SplitParagraph): boolean;
+}
+
+/** How a split treats paragraphs: whether the right half opens one, and how a draft gets explicit paragraphs first. */
+export interface SplitParagraph {
+  rightStarts: boolean;
+  materialize?: (segments: readonly DraftSegment[]) => DraftSegment[];
 }
 
 export interface SpeakerEditing {
@@ -137,17 +222,29 @@ export interface SpeakerEditing {
   t: TFunction;
   store: LeadStore;
   speakers: ReadonlyMap<string, SpeakerDto>;
-  /** The speakers in use, in ordinal order: numbered in the menu, `1`–`9` on the keyboard. */
+  /** The numbered roster (see `nextRoster`): numbered in the menu, `1`–`9` on the keyboard. */
   current: readonly SpeakerDto[];
-  /** The speakers nobody uses: one step further away, in the menu's 「更多发言人」. */
+  /** The other speakers on offer: one step further away, in the menu's 「更多发言人」. */
   others: readonly SpeakerDto[];
   actions: SpeakerEditingActions;
+  /** Requests for a column to open its menu. */
+  menus: MenuSignal;
+  /** The naming popover of a speaker just created from a column. */
+  naming: NamingStore;
+  /** The speaker column of the sentence with this draft key, when it is in the DOM. */
+  leadOf: (key: string) => HTMLElement | null;
 }
 
 const EditingContext = createContext<SpeakerEditing | undefined>(undefined);
 
+/** Gives the columns their editing context; also holds the editor's single naming popover. */
 export function SpeakerEditingProvider(props: { value: SpeakerEditing; children: ReactNode }) {
-  return <EditingContext.Provider value={props.value}>{props.children}</EditingContext.Provider>;
+  return (
+    <EditingContext.Provider value={props.value}>
+      {props.children}
+      <NewSpeakerNaming contentId={props.value.contentId} store={props.value.naming} anchorOf={props.value.leadOf} />
+    </EditingContext.Provider>
+  );
 }
 
 export function useSpeakerEditingContext(): SpeakerEditing {
@@ -195,22 +292,32 @@ export function useSpeakerEditing(args: {
 }) {
   const { t } = useTranslation();
   const { contentId, segments, baseSpeakers, speakers, handleRef } = args;
-  const queryClient = useQueryClient();
   const create = useCreateSpeaker(contentId);
+  // Read here only to know whether the list has arrived: before that, every speaker would look
+  // deleted and the roster would be fixed on nobody.
+  const listed = useSpeakers(contentId).data !== undefined;
   const player = useOptionalPlayerController();
   const [store] = useState(() => new LeadStore());
+  const [menus] = useState(() => new MenuSignal());
+  const [naming] = useState(() => new NamingStore());
   const [filter, setFilterState] = useState<SpeakerFilter>(FILTER_ALL);
   const [changedKeys, setChangedKeys] = useState<ReadonlySet<string>>(NO_KEYS);
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   const [active, setActive] = useState<number | undefined>(undefined);
   const [summary, setSummary] = useState<{ auto: number; needsReview: number; unassigned: number } | undefined>(undefined);
   const wrapper = useRef<HTMLDivElement>(null);
+  const leadAt = useCallback((index: number): HTMLElement | null => wrapper.current?.querySelector<HTMLElement>(`[data-sentence-index="${index}"] [data-speaker-lead]`) ?? null, []);
   /** Where the recognizer heard the speaker change inside a sentence needing review, by sentence key. */
   const changeAt = useRef(new Map<string, number>());
   /** The draft before the last application of speakers: getting it back by undo ends that application's filters. */
   const appliedFrom = useRef<readonly DraftSegment[] | undefined>(undefined);
   /** Where focus goes once the draft this change produced is on screen: a hidden row would drop it. */
   const pendingFocus = useRef<{ next: readonly DraftSegment[]; target: { lead: number } | { sentence: string } } | undefined>(undefined);
+  /** A speaker created from a column, to be named once the draft that assigns it is on screen and the focus is back. */
+  const pendingNaming = useRef<{ next: readonly DraftSegment[]; speaker: SpeakerDto } | undefined>(undefined);
+  /** The speakers the list held when it first arrived; any other one is new in this session. */
+  const initialIds = useRef<ReadonlySet<string> | undefined>(undefined);
+  const roster = useRef<readonly string[]>([]);
 
   const resolved = useMemo(() => effectiveSpeakers(segments, baseSpeakers), [segments, baseSpeakers]);
   const visible = useMemo(() => filterVisible(segments, resolved, filter, changedKeys), [segments, resolved, filter, changedKeys]);
@@ -238,6 +345,9 @@ export function useSpeakerEditing(args: {
   const usedSignature = useMemo(() => [...new Set(resolved.filter((id): id is string => id !== null))].sort().join("\n"), [resolved]);
   const used = useMemo(() => new Set(usedSignature === "" ? [] : usedSignature.split("\n")), [usedSignature]);
   const speakerMap = useMemo(() => new Map(speakers.map((speaker) => [speaker.id, speaker])), [speakers]);
+  /** The speakers as listed now, for actions run later; `undefined` until the list has arrived. */
+  const known = useRef<ReadonlyMap<string, SpeakerDto> | undefined>(undefined);
+  known.current = listed ? speakerMap : undefined;
   const drafted = useMemo(() => speakers.filter((speaker) => used.has(speaker.id)), [speakers, used]);
   // Speakers only comparison transcriptions name belong to the comparison view: no picker or
   // roster here offers them, unless the draft itself already names one.
@@ -245,8 +355,24 @@ export function useSpeakerEditing(args: {
   const rest = useMemo(() => offered.filter((speaker) => !used.has(speaker.id)), [offered, used]);
   // The numbered speakers are those somebody uses (the draft or any version), so numbers stay
   // put when a speaker's last sentence moves; the unused ones are one step further away.
-  const current = useMemo(() => offered.filter((speaker) => speaker.used || used.has(speaker.id)), [offered, used]);
-  const others = useMemo(() => offered.filter((speaker) => !speaker.used && !used.has(speaker.id)), [offered, used]);
+  if (listed && initialIds.current === undefined) initialIds.current = new Set(speakers.map((speaker) => speaker.id));
+  // Eligible for a number: somebody uses it (the draft or any version), so numbers stay put when
+  // a speaker's last sentence moves; or it appeared during this session. Computing the roster
+  // only extends the ref, so a repeated render gives the same answer.
+  const rosterIds = useMemo(() => {
+    const initial = initialIds.current;
+    if (initial === undefined) return roster.current;
+    roster.current = nextRoster(roster.current, offered, (speaker) => speaker.used || used.has(speaker.id) || !initial.has(speaker.id));
+    return roster.current;
+  }, [offered, used, listed]);
+  const current = useMemo(() => rosterIds.flatMap((id) => speakerMap.get(id) ?? []), [rosterIds, speakerMap]);
+  const others = useMemo(() => {
+    const numbered = new Set(rosterIds);
+    return offered.filter((speaker) => !numbered.has(speaker.id));
+  }, [offered, rosterIds]);
+  // Sentences naming a speaker the list no longer has; nothing is missing before the list arrives.
+  const missingIds = useMemo(() => (listed ? [...used].filter((id) => !speakerMap.has(id)) : []), [listed, used, speakerMap]);
+  const missingCount = useMemo(() => (missingIds.length === 0 ? 0 : countMissingSpeakers(resolved, speakerMap)), [missingIds, resolved, speakerMap]);
 
   const actions = useMemo<SpeakerEditingActions>(() => {
     const now = () => latest.current;
@@ -272,13 +398,19 @@ export function useSpeakerEditing(args: {
       return undefined;
     };
     const focusLead = (index: number): void => {
-      wrapper.current?.querySelector<HTMLElement>(`[data-sentence-index="${index}"] [data-speaker-lead]`)?.focus();
+      leadAt(index)?.focus();
     };
-    const assign = (scope: LeadScope, speakerId: string | null): void => {
+    /**
+     * Gives the scope the speaker as one undoable step. `created` asks for the speaker to be
+     * named once that step is on screen; it is noted before the step is applied, since the
+     * editor may render it at once.
+     */
+    const assign = (scope: LeadScope, speakerId: string | null, created?: SpeakerDto, takeFocus = true): void => {
       const indices = indicesOf(scope.keys);
       const next = assignSpeaker(now().segments, indices, speakerId);
       if (next === now().segments) return;
-      pendingFocus.current = { next, target: { lead: scope.origin } };
+      pendingFocus.current = takeFocus ? { next, target: { lead: scope.origin } } : undefined;
+      pendingNaming.current = created === undefined ? undefined : { next, speaker: created };
       batch(next, t("speakerEditor.undo.assign", { count: indices.length }));
     };
     return {
@@ -290,36 +422,48 @@ export function useSpeakerEditing(args: {
           const first = speakersOf[indices[0] ?? index] ?? null;
           return indices.every((at) => (speakersOf[at] ?? null) === first) ? first : undefined;
         };
+        const spanOf = (from: number, to: number): { startMs: number; endMs: number } => ({ startMs: all[from]?.startMs ?? 0, endMs: all[to]?.endMs ?? 0 });
         if (picked.keys.size > 1 && picked.keys.has(key)) {
           // Only what is on screen: a selection can outlive the change that took rows off it.
           const indices = all.flatMap((segment, at) => (onScreen(at) && picked.keys.has(draftKey(segment, at)) ? [at] : []));
-          return { kind: "selection", keys: indices.map(keyAt), origin: index, common: commonOf(indices) };
+          return { kind: "selection", keys: indices.map(keyAt), origin: index, common: commonOf(indices), ...spanOf(indices[0] ?? index, indices.at(-1) ?? index) };
         }
-        if (mode === "run") {
+        if (mode === "run" || mode === "rest") {
           // A turn is the neighbours of one speaker that are on screen, no hidden sentence in between.
           const speaker = speakersOf[index] ?? null;
           let start = index;
           let end = index;
-          while (start > 0 && onScreen(start - 1) && (speakersOf[start - 1] ?? null) === speaker) start -= 1;
+          if (mode === "run") while (start > 0 && onScreen(start - 1) && (speakersOf[start - 1] ?? null) === speaker) start -= 1;
           while (end < all.length - 1 && onScreen(end + 1) && (speakersOf[end + 1] ?? null) === speaker) end += 1;
           if (end > start) {
             const indices = Array.from({ length: end - start + 1 }, (_, at) => start + at);
-            return { kind: "run", keys: indices.map(keyAt), origin: index, common: speaker };
+            return { kind: mode, keys: indices.map(keyAt), origin: index, common: speaker, ...spanOf(start, end) };
           }
         }
-        return { kind: "sentence", keys: [key], origin: index, common: speakersOf[index] ?? null };
+        return { kind: "sentence", keys: [key], origin: index, common: speakersOf[index] ?? null, ...spanOf(index, index) };
       },
-      assign,
+      assign(scope, speakerId) {
+        assign(scope, speakerId);
+      },
       createAndAssign(scope) {
+        // The sentence asked from, by key: rows above it may be split or deleted while the
+        // creation is under way.
+        const originKey = keyAt(scope.origin);
         void (async () => {
+          let speaker: SpeakerDto;
           try {
-            const speaker = await now().create.mutateAsync({});
-            // Shown at once; the refetch the creation triggers brings the server's view.
-            queryClient.setQueryData<SpeakerListDto>(contentKeys.speakers(contentId), (list) => ({ items: [...(list?.items.filter((item) => item.id !== speaker.id) ?? []), { ...speaker, used: true }] }));
-            assign(scope, speaker.id);
+            // The creation puts the speaker into the cached list, so the column can name it at once.
+            speaker = await now().create.mutateAsync({});
           } catch {
             // The failure is shown by the editor's notices (`createError`).
+            return;
           }
+          const origin = indexOfKey(originKey);
+          // Someone typing elsewhere by now keeps their focus: the speaker is assigned, unnamed,
+          // and can be named in the panel later.
+          const active = document.activeElement;
+          const typing = active instanceof HTMLElement && (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement || active.isContentEditable);
+          assign({ ...scope, origin: origin >= 0 ? origin : scope.origin }, speaker.id, typing ? undefined : speaker, !typing);
         })();
       },
       pointer(index, shift) {
@@ -360,9 +504,15 @@ export function useSpeakerEditing(args: {
           nextSpeakerId: speakersOf[index + 1] ?? null,
         };
       },
-      split(index, request) {
-        const done = splitSegment(now().segments, index, { ...request, newId: newSentenceId });
-        if (done === undefined) return false;
+      split(index, request, paragraph) {
+        const explicit = hasExplicitParagraphs(now().segments);
+        // Opening a paragraph at the right half needs explicit paragraphs; without a way to give
+        // the draft them, the split keeps the right half in its paragraph rather than failing.
+        const rightStarts = paragraph?.rightStarts === true && (explicit || paragraph.materialize !== undefined);
+        const from = rightStarts && !explicit && paragraph?.materialize !== undefined ? paragraph.materialize(now().segments) : now().segments;
+        const cut = splitSegment(from, index, { ...request, newId: newSentenceId });
+        if (cut === undefined) return false;
+        const done = { ...cut, segments: splitSentenceWithParagraphs(cut.segments, index, rightStarts) };
         const original = keyAt(index);
         changeAt.current.delete(original);
         // Both halves are what the application of speakers changed, if the sentence was.
@@ -372,7 +522,15 @@ export function useSpeakerEditing(args: {
         return true;
       },
     };
-  }, [contentId, handleRef, player, queryClient, t]);
+  }, [handleRef, leadAt, player, t]);
+
+  const leadOf = useCallback(
+    (key: string): HTMLElement | null => {
+      const index = latest.current.segments.findIndex((segment, at) => draftKey(segment, at) === key);
+      return index < 0 ? null : leadAt(index);
+    },
+    [leadAt],
+  );
 
   // Focus follows a change that took the focused row off the screen (a filter) or made a new one.
   useEffect(() => {
@@ -392,15 +550,58 @@ export function useSpeakerEditing(args: {
     for (let index = from - 1; index >= 0 && target === undefined; index -= 1) {
       if (visible === undefined || visible.has(index)) target = index;
     }
+    const named = pendingNaming.current;
+    pendingNaming.current = undefined;
     if (target === undefined) return;
-    const lead = wrapper.current?.querySelector<HTMLElement>(`[data-sentence-index="${target}"] [data-speaker-lead]`);
-    if (lead !== null && lead !== undefined && document.activeElement !== lead) lead.focus();
-  }, [segments, visible, handleRef]);
+    const lead = leadAt(target);
+    if (lead === null) return;
+    if (document.activeElement !== lead) lead.focus();
+    // Named beside the column the focus is on: the assigned row itself, or its nearest neighbour
+    // on screen when a filter took that row away.
+    if (named === undefined || named.next !== segments) return;
+    const anchorKey = draftKey(segments[target] as DraftSegment, target);
+    // The menu that asked for the speaker hands the focus back to its column on a timer of its
+    // own; opening the popover before that would see the focus leave it, which closes it.
+    window.setTimeout(() => {
+      const column = leadOf(anchorKey);
+      if (column === null) return;
+      if (document.activeElement !== column) column.focus();
+      naming.open({ speakerId: named.speaker.id, ordinal: named.speaker.ordinal, anchorKey });
+    }, 0);
+  }, [segments, visible, handleRef, leadAt, leadOf, naming]);
 
   const contextValue = useMemo<SpeakerEditing>(
-    () => ({ contentId, t, store, speakers: speakerMap, current, others, actions }),
-    [contentId, t, store, speakerMap, current, others, actions],
+    () => ({ contentId, t, store, speakers: speakerMap, current, others, actions, menus, naming, leadOf }),
+    [contentId, t, store, speakerMap, current, others, actions, menus, naming, leadOf],
   );
+
+  /**
+   * Opens the speaker menu of a sentence, as a click on its column would, with the focus on
+   * that column. Does nothing for a sentence a filter hides or whose column is not shown.
+   */
+  const openMenuAt = useCallback(
+    (index: number): void => {
+      const shown = latest.current.visible;
+      if (shown !== undefined && !shown.has(index)) return;
+      const lead = leadAt(index);
+      if (lead === null) return;
+      lead.scrollIntoView?.({ block: "nearest" });
+      lead.focus({ preventScroll: true });
+      menus.request(index);
+    },
+    [leadAt, menus],
+  );
+
+  /** Makes every sentence naming a speaker that no longer exists unassigned, as one undoable step; returns how many. */
+  const unassignMissing = useCallback((): number => {
+    const { segments: all, resolved: speakersOf } = latest.current;
+    const list = known.current;
+    if (list === undefined) return 0;
+    const indices = speakersOf.flatMap((id, index) => (id !== null && !list.has(id) ? [index] : []));
+    if (indices.length === 0) return 0;
+    handleRef.current?.applyBatch(assignSpeaker(all, indices, null), t("speakerEditor.undo.unassignMissing", { count: indices.length }));
+    return indices.length;
+  }, [handleRef, t]);
 
   const onFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
     const row = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-sentence-index]") : null;
@@ -462,5 +663,9 @@ export function useSpeakerEditing(args: {
     summary,
     dismissSummary,
     createError: create.error,
+    openMenuAt,
+    unassignMissing,
+    /** How many sentences name a speaker the list no longer has (see `MissingSpeakerNotice`). */
+    missingCount,
   };
 }

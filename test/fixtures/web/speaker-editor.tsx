@@ -10,10 +10,10 @@ import { stubResizeObserver } from "./speaker-fetch.ts";
 
 export const NOT_FOUND = { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } };
 
-export const SPEAKER_A: SpeakerDto = { id: "spk-a", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-export const SPEAKER_B: SpeakerDto = { id: "spk-b", ordinal: 2, name: "林雪", colorIndex: 1, used: true };
+export const SPEAKER_A: SpeakerDto = { id: "spk-a", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+export const SPEAKER_B: SpeakerDto = { id: "spk-b", ordinal: 2, name: "林雪", colorIndex: 1, used: true, referenced: true };
 /** Named by nobody and used by nothing. */
-export const SPEAKER_C: SpeakerDto = { id: "spk-c", ordinal: 3, colorIndex: 2, used: false };
+export const SPEAKER_C: SpeakerDto = { id: "spk-c", ordinal: 3, colorIndex: 2, used: false, referenced: false };
 
 /** Six sentences: A A B B B A, one second apart each four seconds long. */
 export function talk(): TranscriptSegmentDto[] {

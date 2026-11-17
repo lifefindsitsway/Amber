@@ -2,10 +2,11 @@ import { CaseSensitive, ChevronDown, ChevronUp, Replace, Search, Undo2, X } from
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../shared/defaults.ts";
+import { removeSentencesWithParagraphs } from "../../../shared/paragraph-marks.ts";
 import { blockedComboOf } from "../../shortcut-registry.tsx";
 import { Button } from "../../ui/button.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
-import type { InitialScroll } from "./edit-position.ts";
+import type { InitialScroll, InitialScrollOutcome } from "./edit-position.ts";
 import { startInitialScroll } from "./editor-initial-scroll.ts";
 import {
   applyDelete,
@@ -20,9 +21,14 @@ import {
 } from "./find-replace.ts";
 import type { DraftSyncSnapshot } from "./use-draft-sync.ts";
 
-/** A sentence the editor can edit: anything with a text. */
+/**
+ * A sentence the editor can edit: anything with a text. `paragraphStart` is read only by the
+ * paragraph rules of whole-sentence deletion; items that never carry it (a translation) are
+ * simply removed.
+ */
 export interface SentenceItem {
   text: string;
+  paragraphStart?: boolean;
 }
 
 /** One undoable batch: the items before it, and what it did when the caller named it. */
@@ -113,6 +119,17 @@ export interface SentenceEditorProps<S extends SentenceItem> {
    * per mount; later values are ignored. A sentence a filter hides is left alone.
    */
   initialScroll?: InitialScroll | undefined;
+  /**
+   * Told once per mount how the opening went: the outcome of the opening scroll when it ends for
+   * good, or `"none"` right away when the first render had no `initialScroll` or its row is not
+   * rendered (out of range, filtered away).
+   */
+  onInitialScrollDone?: (outcome: InitialScrollOutcome | "none") => void;
+  /**
+   * Per original index, whether the sentence opens a paragraph: such a row gets more space above
+   * it and says so to assistive technology. Absent = no paragraph structure shown (a translation).
+   */
+  paragraphStarts?: readonly boolean[];
 }
 
 /** What a caller may do to the editor from outside: undoable batch changes and scrolling. */
@@ -128,6 +145,13 @@ export interface SentenceEditorHandle<S extends SentenceItem> {
    * for a sentence a filter hides.
    */
   focusSentence(index: number): void;
+  /** Whether any undo step would put back items that satisfy `test`. */
+  hasUndo(test: (items: readonly S[]) => boolean): boolean;
+  /**
+   * Forgets the newest undo step whose items satisfy `test` and every step older than it, so
+   * nothing can bring those items back (a speaker deleted meanwhile, for example).
+   */
+  dropUndo(test: (items: readonly S[]) => boolean): void;
 }
 
 /**
@@ -149,7 +173,13 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   const [replacement, setReplacement] = useState("");
   const [current, setCurrent] = useState(0);
   const [active, setActive] = useState<number | undefined>(undefined);
-  const [undo, setUndo] = useState<ReadonlyArray<UndoEntry<S>>>([]);
+  const [undo, setUndoState] = useState<ReadonlyArray<UndoEntry<S>>>([]);
+  // The stack as last set, for the handle's synchronous questions between a change and its render.
+  const undoNow = useRef<ReadonlyArray<UndoEntry<S>>>(undo);
+  const setUndo = useCallback((next: (stack: ReadonlyArray<UndoEntry<S>>) => ReadonlyArray<UndoEntry<S>>): void => {
+    undoNow.current = next(undoNow.current);
+    setUndoState(undoNow.current);
+  }, []);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false);
 
@@ -217,9 +247,10 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
     latest.current.onItemsChange(next);
   };
   const undoLast = (): void => {
-    const previous = undo.at(-1);
+    const previous = undoNow.current.at(-1);
     if (previous === undefined) return;
-    setUndo(undo.slice(0, -1));
+    setUndo((stack) => stack.slice(0, -1));
+    // A snapshot is put back as it was: nothing about it is worked out again.
     props.onItemsChange(previous.items);
   };
   const undoLabel = undo.at(-1)?.label;
@@ -235,6 +266,13 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
         if (latest.current.visible?.has(index) === false) return;
         reveal(index);
         enterSentence(index);
+      },
+      hasUndo: (test) => undoNow.current.some((entry) => test(entry.items)),
+      dropUndo: (test) => {
+        setUndo((stack) => {
+          const newest = stack.findLastIndex((entry) => test(entry.items));
+          return newest < 0 ? stack : stack.slice(newest + 1);
+        });
       },
     }),
     // The functions read everything through refs, state setters and stable callbacks.
@@ -301,7 +339,10 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   const applyFillers = (): void => {
     const remove = new Set(filler.deleteWhole ? filler.whole : []);
     const cuts = filler.checkedHits.filter((hit) => !remove.has(hit.index));
-    batch(withTexts(items, applyDelete(texts, cuts), remove));
+    const cut = withTexts(items, applyDelete(texts, cuts));
+    // A deleted sentence that opened a paragraph hands that on to the next one kept, so the rest
+    // of its paragraph does not run into the one before.
+    batch(remove.size === 0 ? cut : removeSentencesWithParagraphs(cut, remove));
     filler.reset();
   };
 
@@ -312,16 +353,48 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
   const opening = useRef<InitialScroll | undefined>(undefined);
   opening.current ??= props.initialScroll;
   const hasOpening = opening.current !== undefined;
+  // The opening is reported once per mount, also across StrictMode's simulated remount, whose
+  // first run is disposed without reporting anything.
+  const reportedOpening = useRef(false);
+  const onOpeningDone = useRef(props.onInitialScrollDone);
+  onOpeningDone.current = props.onInitialScrollDone;
   useLayoutEffect(() => {
+    const report = (outcome: InitialScrollOutcome | "none"): void => {
+      if (reportedOpening.current) return;
+      reportedOpening.current = true;
+      onOpeningDone.current?.(outcome);
+    };
     const target = opening.current;
-    if (target === undefined || container.current === null || rowList.current === null) return;
+    if (target === undefined || container.current === null || rowList.current === null) {
+      report("none");
+      return;
+    }
     // A layout effect: the rows are in the DOM and the first correction lands before the first paint.
-    const run = startInitialScroll(container.current, rowList.current, target);
+    const run = startInitialScroll(container.current, rowList.current, target, report);
+    if (run === undefined) report("none");
     return () => run?.dispose();
   }, [hasOpening]);
 
   const busy = props.busy || props.sync.phase !== "editing" && props.sync.phase !== "saving";
   busyNow.current = busy;
+  const { paragraphStarts } = props;
+  // Which shown rows get the space of a new paragraph above them: one that opens a paragraph, or
+  // one after hidden rows of which one did (a filter must not make two paragraphs look like
+  // one). The first row shown needs no space above it, whatever opens there.
+  const spacedRows = useMemo(() => {
+    if (paragraphStarts === undefined) return undefined;
+    const spaced = new Array<boolean>(items.length).fill(false);
+    let opened = false;
+    let seen = false;
+    for (let index = 0; index < items.length; index += 1) {
+      opened ||= paragraphStarts[index] === true;
+      if (visible !== undefined && !visible.has(index)) continue;
+      spaced[index] = seen && opened;
+      opened = false;
+      seen = true;
+    }
+    return spaced;
+  }, [paragraphStarts, visible, items.length]);
 
   return (
     <div ref={container} className="flex h-full min-h-0 flex-col" onKeyDown={onEditorKey} data-testid={props.testId ?? "sentence-editor"}>
@@ -465,6 +538,9 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
             hasHit={hitRows.has(index)}
             isCurrentHit={currentMatch?.index === index && panel.mode === "find"}
             isActive={active === index}
+            paragraphStart={paragraphStarts?.[index] === true}
+            spaced={spacedRows?.[index] === true}
+            paragraphLabel={t("paragraphEditor.startLabel")}
             invalid={props.isInvalid?.(item) ?? false}
             layout={props.layout}
             renderHeader={props.renderHeader}
@@ -867,6 +943,11 @@ interface RowProps<S extends SentenceItem> {
   hasHit: boolean;
   isCurrentHit: boolean;
   isActive: boolean;
+  /** Opens a paragraph: said to assistive technology. */
+  paragraphStart: boolean;
+  /** Opens a paragraph below another row: more space above it. */
+  spaced: boolean;
+  paragraphLabel: string;
   invalid: boolean;
   layout: "compact" | "bilingual";
   renderHeader: (item: S, index: number) => ReactNode;
@@ -890,6 +971,7 @@ const SentenceRow = memo(function SentenceRow<S extends SentenceItem>(props: Row
     <textarea
       aria-label={props.textLabel(item, index)}
       aria-invalid={props.invalid}
+      {...(props.paragraphStart ? { "aria-description": props.paragraphLabel } : {})}
       className={`min-h-8 w-full resize-none rounded border bg-surface px-2 py-1 leading-6 text-ink [field-sizing:content] focus-visible:outline-2 focus-visible:outline-accent ${props.layout === "bilingual" ? "text-[15px]" : "text-sm"} ${props.invalid ? "border-danger" : "border-line"}`}
       rows={1}
       value={item.text}
@@ -924,8 +1006,9 @@ const SentenceRow = memo(function SentenceRow<S extends SentenceItem>(props: Row
     ) : null;
   return (
     <li
-      className={`my-0.5 rounded-md border-l-2 px-2 py-1.5 [contain-intrinsic-size:auto_3.5rem] [content-visibility:auto] ${props.hasHit ? "border-l-accent" : "border-l-transparent"} ${ring}`}
+      className={`${props.spaced ? "mt-5 mb-0.5" : "my-0.5"} rounded-md border-l-2 px-2 py-1.5 [contain-intrinsic-size:auto_3.5rem] [content-visibility:auto] ${props.hasHit ? "border-l-accent" : "border-l-transparent"} ${ring}`}
       data-sentence-index={index}
+      {...(props.paragraphStart ? { "data-paragraph-start": "true" } : {})}
       {...(props.isCurrentHit ? { "data-current-hit": "true" } : {})}
       {...(props.hasHit ? { "data-has-hit": "true" } : {})}
       onClick={(event) => {

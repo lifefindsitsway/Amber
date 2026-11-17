@@ -629,8 +629,8 @@ function taskStream() {
 }
 
 describe("speakers around the summary", () => {
-  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true };
+  const CHEN = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+  const LI = { id: "sp2", ordinal: 2, name: "李华", colorIndex: 1, used: true, referenced: true };
   // Two named speakers, so the primary is read by speakers; the cited sentence is 李华's.
   const SPOKEN = [segment("s1", 0, 0, 4_000, "今天讲检索。", { speakerId: "sp1" }), segment(CITED_SEGMENT_ID, 2, 75_000, 80_000, "再看重排序。", { speakerId: "sp2" })];
 

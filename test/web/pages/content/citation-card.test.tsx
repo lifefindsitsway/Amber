@@ -5,7 +5,7 @@ import { CitationCard, type CitedSentence, type SentencePlayback } from "../../.
 import { segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
-const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
+const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
 const CITED: CitedSentence = { segment: segment("s9", 9, 75_000, 80_000, "再看重排序。", { speakerId: "sp1" }), speaker: CHEN };
 
 afterEach(() => {

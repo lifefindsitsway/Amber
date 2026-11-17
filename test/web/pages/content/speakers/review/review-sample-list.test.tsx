@@ -7,8 +7,8 @@ import { ReviewSampleList, type SampleListSentence } from "../../../../../../src
 import { renderApp } from "../../../../../fixtures/web/render.tsx";
 
 const SPEAKERS = new Map<string, SpeakerDto>([
-  ["sa", { id: "sa", ordinal: 1, name: "陈明", colorIndex: 0, used: true }],
-  ["sb", { id: "sb", ordinal: 2, colorIndex: 1, used: true }],
+  ["sa", { id: "sa", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true }],
+  ["sb", { id: "sb", ordinal: 2, colorIndex: 1, used: true, referenced: true }],
 ]);
 const SENTENCES: SampleListSentence[] = [
   { id: "g0", startMs: 0, endMs: 2_000, text: "你好", speakerId: "sa" },

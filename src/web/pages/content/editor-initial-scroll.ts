@@ -159,11 +159,17 @@ function isEditable(element: Element | null): boolean {
 
 /**
  * Opens the editor's list (`list`, the scrolling element inside `editor`) on the row carrying
- * `data-sentence-index="<index>"`, writing the outcome on the list as `data-initial-scroll`.
- * Returns `undefined`, and writes nothing, when that row is not rendered (out of range or
+ * `data-sentence-index="<index>"`, writing the outcome on the list as `data-initial-scroll` and
+ * then telling `onDone`, once, when the loop ends for good (never after `dispose`). Returns
+ * `undefined`, and writes and tells nothing, when that row is not rendered (out of range or
  * filtered away).
  */
-export function startInitialScroll(editor: HTMLElement, list: HTMLElement, target: InitialScroll): InitialScrollRun | undefined {
+export function startInitialScroll(
+  editor: HTMLElement,
+  list: HTMLElement,
+  target: InitialScroll,
+  onDone?: (outcome: InitialScrollOutcome) => void,
+): InitialScrollRun | undefined {
   const rowOf = (): HTMLElement | null => list.querySelector<HTMLElement>(`:scope > [data-sentence-index="${target.index}"]`);
   if (rowOf() === null) return undefined;
   const doc = editor.ownerDocument;
@@ -212,6 +218,9 @@ export function startInitialScroll(editor: HTMLElement, list: HTMLElement, targe
           input.setSelectionRange(0, 0);
         }
       : undefined,
-    onDone: (outcome) => list.setAttribute(INITIAL_SCROLL_ATTRIBUTE, outcome),
+    onDone: (outcome) => {
+      list.setAttribute(INITIAL_SCROLL_ATTRIBUTE, outcome);
+      onDone?.(outcome);
+    },
   });
 }

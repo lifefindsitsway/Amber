@@ -60,6 +60,11 @@ export interface SubtitleImportPlan {
   /** Canonical BCP-47 language of the original. */
   language: string;
   paragraphMarks: boolean;
+  /**
+   * The original joins its sentences loosely, as a package of version 2 says; the imported
+   * original and every translation imported with it carry it. Only with `paragraphMarks`.
+   */
+  looseJoin?: true;
   /** In the order they first appear (package order for a package). */
   speakers: PlannedSpeaker[];
   /** In final sentence order (time order, or package order for a package). */
@@ -332,6 +337,7 @@ function planFromPackage(format: TimedSubtitleFormat, pkg: SubtitlePackage, opti
     format,
     language: pkg.original.language,
     paragraphMarks: marks,
+    ...(marks && pkg.original.looseJoin === true ? { looseJoin: true } : {}),
     speakers: packageSpeakers(pkg).map((speaker) => ({
       key: speaker.key,
       ordinal: speaker.ordinal,

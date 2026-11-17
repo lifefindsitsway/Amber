@@ -15,8 +15,8 @@ export const READER_ME = { userId: "u1", role: "user", mode: "server", mustChang
 
 export const TYPOGRAPHY_KEY = "amber.reader.typography.u1";
 
-export const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
-export const UNNAMED: SpeakerDto = { id: "sp2", ordinal: 2, colorIndex: 1, used: true };
+export const CHEN: SpeakerDto = { id: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
+export const UNNAMED: SpeakerDto = { id: "sp2", ordinal: 2, colorIndex: 1, used: true, referenced: true };
 
 const withSpeaker = (item: TranscriptSegmentDto, speakerId: string | undefined): TranscriptSegmentDto => (speakerId === undefined ? item : { ...item, speakerId });
 

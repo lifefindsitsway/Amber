@@ -6,7 +6,7 @@ import { shareLine, SpeakerIdentityCard } from "../../../../../src/web/pages/con
 import { renderApp } from "../../../../fixtures/web/render.tsx";
 import { stubFetch, stubResizeObserver, type FetchCall } from "../../../../fixtures/web/speaker-fetch.ts";
 
-const speaker: SpeakerDto = { id: "s1", ordinal: 1, name: "陈明", colorIndex: 0, used: true };
+const speaker: SpeakerDto = { id: "s1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true };
 
 function card(overrides: Partial<SpeakerDto> = {}, extra: { sentences?: number; durationShare?: number } = {}) {
   return (

@@ -78,6 +78,27 @@ describe("buildSubtitlePackage", () => {
     expect(serializeSubtitlePackage(unmarked)).not.toContain("paragraphStart");
   });
 
+  it("writes version 2 with loose joining only for a loosely joined revision, read from the revision and not its sentences", () => {
+    const marks = [segment("a", 0, "甲", { paragraphStart: true, looseJoin: true }), segment("b", 1, "乙", { paragraphStart: false, looseJoin: true })];
+    const translation = [translated("t", 0, "a", "A")];
+    const loose = buildSubtitlePackage({ revision: { language: "zh-CN", looseJoin: true }, segments: marks, speakers: [], translations: [{ language: "en", segments: translation }], version: "1" });
+    expect(loose.formatVersion).toBe(2);
+    expect(loose.original.looseJoin).toBe(true);
+    const text = serializeSubtitlePackage(loose);
+    expect(text).toContain('"formatVersion":2,');
+    expect(text).toContain('"paragraphMarks":true,"looseJoin":true,');
+    expect(parseSubtitlePackage(text)).toEqual(loose);
+
+    // Sentences repeat their revision's flag, but only the revision decides.
+    const strict = buildSubtitlePackage({ revision: { language: "zh-CN" }, segments: marks, speakers: [], translations: [], version: "1" });
+    expect(strict.formatVersion).toBe(1);
+    expect(serializeSubtitlePackage(strict)).not.toContain("looseJoin");
+    // Never claimed without marks, which no reader would take.
+    const bare = buildSubtitlePackage({ revision: { language: "zh-CN", looseJoin: true }, segments: [segment("a", 0, "甲")], speakers: [], translations: [], version: "1" });
+    expect(bare.formatVersion).toBe(1);
+    expect(bare.original).not.toHaveProperty("looseJoin");
+  });
+
   it("writes each translation by its sentences' single sources, languages in a fixed order, missing and blank lines left out", () => {
     const pkg = buildSubtitlePackage({
       revision: { language: "zh-CN" },

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { useContentEvents } from "../../../../src/web/api/context.tsx";
 import type { ContentEvent } from "../../../../src/web/api/content-events.ts";
 import { ContentPageProvider } from "../../../../src/web/pages/content/content-context.tsx";
-import { DraftEditor, draftFromSegments } from "../../../../src/web/pages/content/draft-editor.tsx";
+import { DraftEditor, draftFromSegments, withInheritedParagraphs } from "../../../../src/web/pages/content/draft-editor.tsx";
 import { contentDetail, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
 import { recognition, segmentRoute, type Row } from "../../../fixtures/web/speaker-compare.ts";
@@ -24,6 +24,9 @@ function savedDraft(version: number, segments = draftFromSegments(SEGMENTS)) {
   return { id: "d1", contentId: "c1", baseRevisionId: "r1", version, segments, updatedAt: 1 };
 }
 
+/** The base revision `r1`: a saved draft without paragraph marks reads it for the marks it inherits. */
+const BASE = { "GET /api/transcript/revisions/r1/segments": { body: { revision: revision("r1"), items: SEGMENTS } } };
+
 /** Answers a PUT with the body it was sent, at `version`. */
 const echo = (version: number) => (call: RecordedCall) => ({ body: { id: "d1", contentId: "c1", ...(call.body as object), version, updatedAt: 1 } });
 
@@ -42,6 +45,28 @@ const puts = (calls: RecordedCall[]) => calls.filter((call) => call.method === "
 describe("DraftEditor", () => {
   it("starts from the base sentences, each pointing at its source", () => {
     expect(draftFromSegments(SEGMENTS)[1]).toEqual({ id: "s2", startMs: 4_000, endMs: 8_000, text: "先看向量库。", sourceSegmentIds: ["s2"], speakerId: null });
+  });
+
+  it("takes a marked revision's paragraphs into a new draft, and none from a revision without", () => {
+    const marked = [segment("a", 0, 0, 1_000, "甲", { paragraphStart: true }), segment("b", 1, 1_000, 2_000, "乙", { paragraphStart: false })];
+    expect(draftFromSegments(marked).map((item) => item.paragraphStart)).toEqual([true, false]);
+    expect(draftFromSegments(SEGMENTS).some((item) => "paragraphStart" in item)).toBe(false);
+  });
+
+  it("fills a saved draft without marks with what it inherits from a marked base, and leaves other drafts alone", () => {
+    const base = [
+      segment("a", 0, 0, 1_000, "甲", { paragraphStart: true }),
+      segment("b", 1, 1_000, 2_000, "乙", { paragraphStart: true }),
+      segment("c", 2, 2_000, 3_000, "丙", { paragraphStart: false }),
+    ];
+    // The draft dropped 乙, a paragraph start: 丙 opens that paragraph instead.
+    const draft = base.filter((item) => item.id !== "b").map((item) => ({ id: item.id, startMs: item.startMs, endMs: item.endMs, text: item.text, sourceSegmentIds: [item.id], speakerId: null }));
+    expect(withInheritedParagraphs(draft, base).map((item) => item.paragraphStart)).toEqual([true, true]);
+    const unmarked = SEGMENTS;
+    const plain = draftFromSegments(SEGMENTS);
+    expect(withInheritedParagraphs(plain, unmarked)).toBe(plain);
+    const explicit = draftFromSegments(base);
+    expect(withInheritedParagraphs(explicit, unmarked)).toBe(explicit);
   });
 
   it("states each sentence's speaker in a new draft: the source's, or null for none", () => {
@@ -86,7 +111,7 @@ describe("DraftEditor", () => {
 
   it("discards a saved draft at its version, only after a second confirmation", async () => {
     const { calls } = mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "DELETE /api/contents/c1/transcript/draft": { status: 204 },
     });
     const onClose = renderEditor();
@@ -118,7 +143,7 @@ describe("DraftEditor", () => {
   it("on a draft changed elsewhere, 「以本窗口为准」 overwrites at the server's version", async () => {
     let saves = 0;
     const { calls } = mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "PUT /api/contents/c1/transcript/draft": (call) => {
         saves += 1;
         return saves === 1 ? draftChanged(5) : echo(6)(call);
@@ -139,6 +164,7 @@ describe("DraftEditor", () => {
     let gets = 0;
     let saves = 0;
     const { calls } = mockApi({
+      ...BASE,
       "GET /api/contents/c1/transcript/draft": () => {
         gets += 1;
         return { body: gets === 1 ? savedDraft(3) : savedDraft(7, draftFromSegments([segment("s1", 0, 0, 4_000, "另一个窗口")])) };
@@ -164,7 +190,7 @@ describe("DraftEditor", () => {
   it("shows a failed save with a retry, and asks before leaving unsaved edits", async () => {
     let saves = 0;
     mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "PUT /api/contents/c1/transcript/draft": (call) => {
         saves += 1;
         return saves === 1 ? { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } } : echo(4)(call);
@@ -204,7 +230,7 @@ function holdCommits(): () => void {
 
 describe("DraftEditor close result", () => {
   it("reports 放弃草稿 as discarded, once", async () => {
-    mockApi({ "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) }, "DELETE /api/contents/c1/transcript/draft": { status: 204 } });
+    mockApi({ ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) }, "DELETE /api/contents/c1/transcript/draft": { status: 204 } });
     const onClose = renderEditor();
     await screen.findByDisplayValue("今天讲检索。");
     fireEvent.click(screen.getByTestId("draft-discard"));
@@ -218,7 +244,7 @@ describe("DraftEditor close result", () => {
   });
 
   it("reports 退出 as exited", async () => {
-    mockApi({ "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) } });
+    mockApi({ ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) } });
     const onClose = renderEditor();
     await screen.findByDisplayValue("今天讲检索。");
     fireEvent.click(screen.getByTestId("draft-exit"));
@@ -249,7 +275,7 @@ describe("DraftEditor close result", () => {
 
   it("reports 重新加载 after a changed primary as reload, and nothing for the conflict itself", async () => {
     mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "POST /api/contents/c1/transcript/draft/commit": PRIMARY_CHANGED,
     });
     const onClose = renderEditor();
@@ -263,7 +289,7 @@ describe("DraftEditor close result", () => {
 
   it("stays open when the commit fails, and shows why", async () => {
     mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "POST /api/contents/c1/transcript/draft/commit": { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } },
     });
     const onClose = renderEditor();
@@ -278,7 +304,7 @@ describe("DraftEditor close result", () => {
   it("closes once with the commit when 仍然提交 succeeds", async () => {
     let commits = 0;
     mockApi({
-      "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
+      ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) },
       "POST /api/contents/c1/transcript/draft/commit": () => {
         commits += 1;
         return commits === 1 ? PRIMARY_CHANGED : COMMITTED;

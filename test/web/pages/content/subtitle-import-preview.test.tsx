@@ -8,7 +8,7 @@ import { SubtitleImportPreview, useSubtitleImportChoice } from "../../../../src/
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { packagePreview, prefixPreview, srtPreview, target } from "../../../fixtures/web/subtitle-preview.ts";
 
-const SPEAKER = { colorIndex: 0, used: true } as const;
+const SPEAKER = { colorIndex: 0, used: true, referenced: true } as const;
 
 /** The preview with its choice held as the hosts hold it, and the options that choice builds. */
 function Harness(props: { state: SubtitlePreviewState; originalLanguage?: string; onRefresh?: () => void }) {
@@ -189,7 +189,7 @@ describe("subtitle preview notices", () => {
 
 describe("subtitle preview into an existing Content", () => {
   const zhang = { ...SPEAKER, id: "sp1", ordinal: 1, name: "张三" };
-  const zhangToo = { ...SPEAKER, id: "sp3", ordinal: 3, name: "张三", used: false };
+  const zhangToo = { ...SPEAKER, id: "sp3", ordinal: 3, name: "张三", used: false, referenced: false };
 
   it("offers one row per same-named speaker, each existing one listed, creating by default", () => {
     const { options } = show(prefixPreview({ target: target({ speakers: [zhang, { ...SPEAKER, id: "sp2", ordinal: 2, name: "王五" }, zhangToo] }) }));

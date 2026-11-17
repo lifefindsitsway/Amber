@@ -18,11 +18,11 @@ export function turns(ordinals: ReadonlyArray<number | null>, length = 5_000): R
 
 /** This Content's speakers 1–2 (the reviewed transcription) and 3–5 (the comparison's own labels). */
 export const COMPARE_SPEAKERS: SpeakerDto[] = [
-  { id: "spk-1", ordinal: 1, name: "陈明", colorIndex: 0, used: true },
-  { id: "spk-2", ordinal: 2, name: "林雪", colorIndex: 1, used: true },
-  { id: "spk-3", ordinal: 3, colorIndex: 2, used: true, comparisonOnly: true },
-  { id: "spk-4", ordinal: 4, colorIndex: 3, used: true, comparisonOnly: true },
-  { id: "spk-5", ordinal: 5, colorIndex: 4, used: true, comparisonOnly: true },
+  { id: "spk-1", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true },
+  { id: "spk-2", ordinal: 2, name: "林雪", colorIndex: 1, used: true, referenced: true },
+  { id: "spk-3", ordinal: 3, colorIndex: 2, used: true, referenced: true, comparisonOnly: true },
+  { id: "spk-4", ordinal: 4, colorIndex: 3, used: true, referenced: true, comparisonOnly: true },
+  { id: "spk-5", ordinal: 5, colorIndex: 4, used: true, referenced: true, comparisonOnly: true },
 ];
 
 /** Speaker id of ordinal `n` in `COMPARE_SPEAKERS`. */

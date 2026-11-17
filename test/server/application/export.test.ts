@@ -7,9 +7,11 @@ import { BundledFontMetrics } from "../../../src/server/adapters/fonts/otf-advan
 import { escapeFilterValue } from "../../../src/server/adapters/media-ingest/ffmpeg-burner.ts";
 import { SUBTITLE_FONT_FILE } from "../../../src/server/api/routes/fonts.ts";
 import { ExportService, type ExportFile } from "../../../src/server/application/export.ts";
+import { writeSubtitleImport } from "../../../src/server/application/subtitle-import.ts";
 import type { SummaryRevision } from "../../../src/server/domain/artifact.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { buildSubtitlePackage } from "../../../src/server/domain/export/ambersub.ts";
+import { planSubtitleImport, readSubtitleDocument } from "../../../src/server/domain/subtitle-document.ts";
 import { assDialogueDigest, parseSubtitlePackage, serializeSubtitlePackage, type SubtitlePackage } from "../../../src/server/domain/subtitle-package.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import { burnSubtitleRequest } from "../../../src/server/pipeline/stages/burn.ts";
@@ -20,6 +22,7 @@ import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle
 import { addLocalFile, ASR_LINES, seedExportCollection, seedExportContent, type ExportFixture, type ExportLine } from "../../fixtures/export/export-data.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { toolPath, toolsBinDir } from "../../fixtures/tools.ts";
+import { JOIN_SAMPLES, type JoinSample } from "../../fixtures/transcripts/reading-join.ts";
 import { tempDataDir } from "../../tools/sqlite.ts";
 
 const NOW = new Date(2026, 9, 1, 12).getTime();
@@ -53,6 +56,37 @@ function refusal(run: () => unknown): { class: string; userMessage: string } {
   }
   throw new Error("not refused");
 }
+
+type JoinMode = "marked" | "loose" | "unmarked";
+/** One paragraph of a golden sample as an imported revision: proofread-style marks, the same marks joined loosely, or none. */
+function insertJoinSample(h: Harness, contentId: string, texts: readonly string[], mode: JoinMode): { revisionId: string; segments: TranscriptSegment[] } {
+  const revisionId = h.newId();
+  const segments: TranscriptSegment[] = texts.map((text, ordinal) => ({
+    id: h.newId() as SegmentId,
+    revisionId,
+    ordinal,
+    startMs: 1000 + ordinal * 1000,
+    endMs: 1900 + ordinal * 1000,
+    text,
+    ...(mode === "unmarked" ? {} : { paragraphStart: ordinal === 0 }),
+    sourceSegmentIds: [],
+  }));
+  const revision: TranscriptRevision = {
+    id: revisionId,
+    contentId,
+    kind: "imported",
+    language: "zh-CN",
+    timingFidelity: "segment_only",
+    generation: { kind: "imported", format: "ambersub" },
+    segmentCount: segments.length,
+    ...(mode === "loose" ? { looseJoin: true as const } : {}),
+    createdAt: 1,
+  };
+  h.repository.withTransaction((scope) => scope.transcripts.insertRevision(LOCAL.userId, revision, segments));
+  return { revisionId, segments };
+}
+const expectedJoin = (sample: JoinSample, mode: JoinMode): string => (mode === "marked" ? sample.marked : sample.unmarked);
+const JOIN_CASES = JOIN_SAMPLES.flatMap((sample) => (["marked", "loose", "unmarked"] as const).map((mode) => ({ sample, mode, name: `${sample.name} (${mode})` })));
 
 const dialogues = (ass: string): string[] => ass.split("\n").filter((line) => line.startsWith("Dialogue: "));
 const styles = (ass: string): string[] => ass.split("\n").filter((line) => line.startsWith("Style: "));
@@ -1214,4 +1248,62 @@ describe("restore data under the bundled FFmpeg", () => {
     // The subtitles were drawn at all: most frames differ from the clip without them.
     expect(drawnWith.filter((line, index) => line !== bare[index]).length).toBeGreaterThan(20);
   }, 60_000);
+});
+
+describe("ExportService joins sentences exactly like the reading view", () => {
+  it.each(JOIN_CASES)("TXT and Markdown of $name", async ({ sample, mode }) => {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    const exports = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW });
+    const { revisionId } = insertJoinSample(h, contentId, sample.texts, mode);
+    const expected = expectedJoin(sample, mode);
+    expect(await text(exports.exportContent(LOCAL, contentId, { format: "txt", revisionId }))).toBe(`${expected}\n`);
+    const markdown = await text(exports.exportContent(LOCAL, contentId, { format: "markdown", sections: { transcript: { revisionId } }, backlinks: false }));
+    expect(markdown.endsWith(`**[00:01]** ${expected}\n`)).toBe(true);
+  });
+});
+
+describe("ExportService, packages of a loosely joined revision", () => {
+  it("writes version 2 for the package and the styled ASS restore data, and an import restores the joining of the original and its translation", async () => {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    const exports = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW });
+    const sample = JOIN_SAMPLES[0] as JoinSample;
+    const original = insertJoinSample(h, contentId, sample.texts, "loose");
+    const translationId = h.newId();
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(
+        LOCAL.userId,
+        {
+          id: translationId, contentId, kind: "translated", parentRevisionId: original.revisionId, language: "en", timingFidelity: "segment_only",
+          generation: { kind: "manual" }, segmentCount: original.segments.length, looseJoin: true, createdAt: 2,
+        },
+        original.segments.map((segment) => ({ ...segment, id: h.newId() as SegmentId, revisionId: translationId, text: `en ${segment.ordinal}`, sourceSegmentIds: [segment.id] })),
+      );
+      scope.translations.setCurrent(LOCAL.userId, contentId, "en", translationId, h.newId());
+    });
+
+    const body = await text(exports.exportContent(LOCAL, contentId, { format: "ambersub", revisionId: original.revisionId }));
+    expect(body).toContain('"formatVersion":2,');
+    expect(body).toContain('"paragraphMarks":true,"looseJoin":true,');
+    const pkg = parseSubtitlePackage(body);
+    expect(pkg).toMatchObject({ formatVersion: 2, original: { looseJoin: true } });
+    expect(pkg.translations.map((translation) => translation.language)).toEqual(["en"]);
+
+    const style: SubtitleStyle = { appearance: defaultSubtitleAppearance(), placement: defaultSubtitlePlacement() };
+    const ass = await text(exports.exportContent(LOCAL, contentId, { format: "ass-bilingual", revisionId: original.revisionId, translationRevisionId: translationId, style }));
+    expect(restoreDataOf(ass)?.pkg).toMatchObject({ formatVersion: 2, original: { looseJoin: true } });
+
+    // Back in through the import: the original and its translation join loosely again.
+    const target = createLocalContent(h);
+    const plan = planSubtitleImport(readSubtitleDocument(body, { filename: "x.ambersub" }), {});
+    const written = h.repository.withTransaction((scope) => writeSubtitleImport(scope, LOCAL.userId, { contentId: target, plan, newContent: true, newId: h.newId, now: NOW }));
+    for (const id of [written.revisionId, written.translationRevisionIds.en as string]) {
+      expect(h.repository.withTransaction((scope) => scope.transcripts.getRevision(LOCAL.userId, id))?.looseJoin).toBe(true);
+    }
+    const restored = await text(exports.exportContent(LOCAL, target, { format: "txt", revisionId: written.revisionId }));
+    expect(restored).toBe(`${sample.unmarked}\n`);
+  });
 });

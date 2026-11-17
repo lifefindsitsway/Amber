@@ -21,6 +21,7 @@ interface RevisionRow {
   timing_fidelity: TranscriptRevision["timingFidelity"];
   generation_json: string;
   segment_count: number;
+  loose_join: number | null;
   created_at: number;
 }
 
@@ -34,6 +35,8 @@ interface SegmentRow {
   words_json: string | null;
   speaker_id: string | null;
   paragraph_start: number | null;
+  /** The revision's `loose_join`, projected onto every sentence read. */
+  loose_join: number | null;
 }
 
 interface SourceRow {
@@ -62,6 +65,7 @@ function toSegment(row: SegmentRow, sources: readonly SegmentId[]): TranscriptSe
     words: parseJsonOrNull<TranscriptWord[]>(row.words_json),
     speakerId: row.speaker_id,
     paragraphStart: row.paragraph_start === null ? null : row.paragraph_start === 1,
+    looseJoin: row.loose_join === 1 ? true : null,
     sourceSegmentIds: [...sources],
   });
 }
@@ -88,6 +92,7 @@ function toRevision(row: RevisionRow): TranscriptRevision {
     timingFidelity: row.timing_fidelity,
     generation: parseJson<TranscriptGeneration>(row.generation_json),
     segmentCount: row.segment_count,
+    looseJoin: row.loose_join === 1 ? true : null,
     createdAt: row.created_at,
   });
 }
@@ -105,9 +110,18 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
      WHERE revision.content_id = ? AND content.user_id = ?
      ORDER BY revision.created_at, revision.id`,
   );
-  const segmentsOfRevision = db.prepare("SELECT * FROM transcript_segment WHERE revision_id = ? ORDER BY ordinal");
+  // Every sentence read carries its revision's `loose_join`, so whoever joins sentences into
+  // running text (reading, notes, exports) applies the revision's rule without another lookup.
+  const segmentColumns = "segment.*, revision.loose_join AS loose_join";
+  const segmentsOfRevision = db.prepare(
+    `SELECT ${segmentColumns} FROM transcript_segment AS segment
+     JOIN transcript_revision AS revision ON revision.id = segment.revision_id
+     WHERE segment.revision_id = ? ORDER BY segment.ordinal`,
+  );
   const segmentPage = db.prepare(
-    "SELECT * FROM transcript_segment WHERE revision_id = ? AND ordinal > ? ORDER BY ordinal LIMIT ?",
+    `SELECT ${segmentColumns} FROM transcript_segment AS segment
+     JOIN transcript_revision AS revision ON revision.id = segment.revision_id
+     WHERE segment.revision_id = ? AND segment.ordinal > ? ORDER BY segment.ordinal LIMIT ?`,
   );
   const sourcesOfRevision = db.prepare(
     `SELECT source.child_segment_id, source.parent_segment_id FROM transcript_segment_source AS source
@@ -122,7 +136,7 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
      ORDER BY source.child_segment_id, source.position`,
   );
   const ownedSegment = db.prepare(
-    `SELECT segment.* FROM transcript_segment AS segment
+    `SELECT ${segmentColumns} FROM transcript_segment AS segment
      JOIN transcript_revision AS revision ON revision.id = segment.revision_id
      JOIN content ON content.id = revision.content_id
      WHERE segment.id = ? AND content.user_id = ?`,
@@ -167,9 +181,9 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
   const segmentOfRevision = db.prepare("SELECT 1 FROM transcript_segment WHERE id = ? AND revision_id = ?");
   const insertRevision = db.prepare(
     `INSERT INTO transcript_revision (
-       id, content_id, kind, parent_revision_id, language, timing_fidelity, generation_json, segment_count, created_at
+       id, content_id, kind, parent_revision_id, language, timing_fidelity, generation_json, segment_count, loose_join, created_at
      ) VALUES (
-       @id, @contentId, @kind, @parentRevisionId, @language, @timingFidelity, @generationJson, @segmentCount, @createdAt
+       @id, @contentId, @kind, @parentRevisionId, @language, @timingFidelity, @generationJson, @segmentCount, @looseJoin, @createdAt
      )`,
   );
   const insertSegment = db.prepare(
@@ -224,6 +238,7 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
         timingFidelity: revision.timingFidelity,
         generationJson: JSON.stringify(revision.generation),
         segmentCount: revision.segmentCount,
+        looseJoin: revision.looseJoin === true ? 1 : null,
         createdAt: revision.createdAt,
       });
       for (const segment of segments) {

@@ -3,8 +3,10 @@ import { SPEAKER_AVATAR_MAX_BYTES, SPEAKER_AVATAR_MAX_PX, SPEAKER_NAME_MAX_GRAPH
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { resolveSpeakerContext } from "../../../src/server/application/speaker-context.ts";
 import { SpeakerService } from "../../../src/server/application/speakers.ts";
-import { UNASSIGNED_SPEAKER_LABEL } from "../../../src/server/domain/speaker-context.ts";
+import { BUILTIN_SUMMARY_TEMPLATES } from "../../../src/server/domain/prompts.ts";
+import { speakerLabels, UNASSIGNED_SPEAKER_LABEL, type SpeakerContextSnapshot } from "../../../src/server/domain/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
+import type { Repository, RepositoryScope } from "../../../src/server/ports/repository.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 
@@ -470,5 +472,246 @@ describe("SpeakerService speakers of comparison transcriptions", () => {
     // Once the user works with that speaker in a regular version it is suggested again.
     revisionWith(h, contentId, [compared]);
     expect(speakers.suggestions(LOCAL, "王", other).items.map((item) => item.name).sort()).toEqual(["王同学", "王老师"]);
+  });
+});
+
+describe("SpeakerService delete", () => {
+  /** A revision naming `speakerIds` one sentence each, optionally archived or made only for comparison. */
+  function revisionWith(h: Harness, contentId: string, speakerIds: ReadonlyArray<string | undefined>, options: { comparison?: boolean; archived?: boolean } = {}): string {
+    const id = h.newId();
+    const revision: TranscriptRevision = {
+      id, contentId, kind: "asr", language: "zh-CN", timingFidelity: "segment_only",
+      generation: { kind: "asr", asrProfileId: "asr", modelId: "scribe", ...(options.comparison === true ? { purpose: "comparison" as const } : {}) },
+      segmentCount: speakerIds.length, createdAt: 1,
+    };
+    const segments: TranscriptSegment[] = speakerIds.map((speakerId, ordinal) => ({
+      id: h.newId() as SegmentId, revisionId: id, ordinal, startMs: ordinal * 1000, endMs: ordinal * 1000 + 900, text: `${ordinal}`,
+      ...(speakerId === undefined ? {} : { speakerId }), sourceSegmentIds: [],
+    }));
+    h.repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision(LOCAL.userId, revision, segments);
+      if (options.archived === true) scope.transcripts.setArchived(LOCAL.userId, id, 2);
+    });
+    return id;
+  }
+
+  const ids = (speakers: SpeakerService, contentId: string) => speakers.list(LOCAL, contentId).items.map((speaker) => speaker.id);
+  const sentences = (h: Harness, contentId: string) =>
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.listRevisions(LOCAL.userId, contentId).flatMap((revision) => scope.transcripts.listSegments(LOCAL.userId, revision.id).map((segment) => [segment.id, segment.speakerId])),
+    );
+
+  it("deletes an unreferenced speaker; it is gone from the list and a second delete is not_found", () => {
+    const { speakers, contentId } = setup();
+    const [a, b] = [speakers.create(LOCAL, contentId, { name: "甲" }), speakers.create(LOCAL, contentId, {})];
+    expect(speakers.delete(LOCAL, contentId, (a as { id: string }).id)).toBeUndefined();
+    expect(ids(speakers, contentId)).toEqual([(b as { id: string }).id]);
+    expect(errorOf(() => speakers.delete(LOCAL, contentId, (a as { id: string }).id)).class).toBe("not_found");
+    expect(errorOf(() => speakers.delete(LOCAL, contentId, "missing")).class).toBe("not_found");
+  });
+
+  it("answers not_found for another user's, a missing or a trashed Content, and for a speaker of another Content, deleting nothing", () => {
+    const { h, speakers, contentId } = setup();
+    const mine = speakers.create(LOCAL, contentId, {});
+    const elsewhere = speakers.create(LOCAL, createLocalContent(h), {});
+    const bobContent = createLocalContent(h, BOB.userId);
+    const bobs = speakers.create(BOB, bobContent, {});
+    expect(errorOf(() => speakers.delete(BOB, contentId, mine.id)).class).toBe("not_found");
+    expect(errorOf(() => speakers.delete(LOCAL, bobContent, bobs.id)).class).toBe("not_found");
+    expect(errorOf(() => speakers.delete(LOCAL, "missing", mine.id)).class).toBe("not_found");
+    expect(errorOf(() => speakers.delete(LOCAL, contentId, elsewhere.id)).class).toBe("not_found");
+    expect(ids(speakers, contentId)).toEqual([mine.id]);
+    expect(speakers.list(BOB, bobContent).items.map((speaker) => speaker.id)).toEqual([bobs.id]);
+    h.trash.trash(LOCAL, contentId);
+    expect(errorOf(() => speakers.delete(LOCAL, contentId, mine.id)).class).toBe("not_found");
+    h.trash.restore(LOCAL, contentId);
+    expect(ids(speakers, contentId)).toEqual([mine.id]);
+  });
+
+  it("refuses a speaker that only an archived revision, a comparison, the transcript draft or a translation draft names, touching no sentence", () => {
+    const { h, speakers, contentId } = setup();
+    const [primaryOnly, archivedOnly, comparisonOnly, draftOnly, translationOnly, idle] = [1, 2, 3, 4, 5, 6].map(() => speakers.create(LOCAL, contentId, {}).id) as [
+      string, string, string, string, string, string,
+    ];
+    const primary = revisionWith(h, contentId, [primaryOnly, undefined]);
+    h.repository.withTransaction((scope) => scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, primary, 2));
+    revisionWith(h, contentId, [archivedOnly], { archived: true });
+    revisionWith(h, contentId, [comparisonOnly], { comparison: true });
+    h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: primary, expectedVersion: null, segments: [{ startMs: 0, endMs: 900, text: "一句", sourceSegmentIds: [], speakerId: draftOnly }],
+    });
+    // Translation drafts never carry speakers through the API; one that does is still honoured.
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.putDraft(
+        LOCAL.userId,
+        { id: h.newId(), contentId, baseRevisionId: primary, targetLanguage: "en", version: 1, segments: [{ startMs: 0, endMs: 900, text: "one", sourceSegmentIds: [], speakerId: translationOnly }], updatedAt: 1 },
+        null,
+      ),
+    );
+    const before = sentences(h, contentId);
+
+    const listed = speakers.list(LOCAL, contentId).items;
+    expect(listed.map((speaker) => speaker.referenced)).toEqual([true, true, true, true, true, false]);
+    // `used` is narrower: an archived revision or a translation draft alone does not make a speaker used.
+    expect(listed.map((speaker) => speaker.used)).toEqual([true, false, true, true, false, false]);
+    for (const id of [primaryOnly, archivedOnly, comparisonOnly, draftOnly, translationOnly]) {
+      const error = errorOf(() => speakers.delete(LOCAL, contentId, id));
+      expect([id, error.class, error.code]).toEqual([id, "conflict", "conflict.speaker_in_use"]);
+      expect(error.userMessage).toBe("这位发言人仍被字幕版本或草稿使用，不能删除");
+      expect(error.details).toBeUndefined();
+    }
+    speakers.delete(LOCAL, contentId, idle);
+    expect(ids(speakers, contentId)).toEqual([primaryOnly, archivedOnly, comparisonOnly, draftOnly, translationOnly]);
+    expect(sentences(h, contentId)).toEqual(before);
+
+    // Once the draft is discarded nothing names that speaker any more, and it may go.
+    h.transcripts.discardDraft(LOCAL, contentId);
+    expect(speakers.list(LOCAL, contentId).items.find((speaker) => speaker.id === draftOnly)?.referenced).toBe(false);
+    speakers.delete(LOCAL, contentId, draftOnly);
+    expect(ids(speakers, contentId)).not.toContain(draftOnly);
+  });
+
+  it("says referenced exactly where a deletion would be refused", () => {
+    const { h, speakers, contentId } = setup();
+    const created = [1, 2, 3, 4].map(() => speakers.create(LOCAL, contentId, {}).id) as [string, string, string, string];
+    revisionWith(h, contentId, [created[0], created[2]]);
+    revisionWith(h, contentId, [created[3]], { archived: true });
+    for (const speaker of speakers.list(LOCAL, contentId).items) {
+      const refused = (() => {
+        try {
+          speakers.delete(LOCAL, contentId, speaker.id);
+          return false;
+        } catch {
+          return true;
+        }
+      })();
+      expect([speaker.id, refused]).toEqual([speaker.id, speaker.referenced]);
+    }
+  });
+
+  it("gives a speaker created after a deletion the next ordinal after those left, and counts the limit by the speakers left", () => {
+    const { h, speakers, contentId } = setup();
+    const [first, middle, last] = [speakers.create(LOCAL, contentId, {}), speakers.create(LOCAL, contentId, {}), speakers.create(LOCAL, contentId, {})];
+    speakers.delete(LOCAL, contentId, middle.id);
+    expect(speakers.create(LOCAL, contentId, {}).ordinal).toBe(4);
+    speakers.delete(LOCAL, contentId, last.id);
+    const next = speakers.create(LOCAL, contentId, { name: "新" });
+    expect(next).toMatchObject({ ordinal: 5, name: "新", referenced: false });
+    expect(speakers.list(LOCAL, contentId).items.map((speaker) => speaker.ordinal)).toEqual([1, 4, 5]);
+    expect(first.ordinal).toBe(1);
+
+    h.repository.withTransaction((scope) =>
+      scope.speakers.insert(LOCAL.userId, contentId, Array.from({ length: SPEAKERS_PER_CONTENT_MAX - 3 }, () => ({ id: h.newId() })), 1),
+    );
+    expect(errorOf(() => speakers.create(LOCAL, contentId, {})).class).toBe("invalid_request");
+    speakers.delete(LOCAL, contentId, first.id);
+    expect(speakers.create(LOCAL, contentId, {}).ordinal).toBe(SPEAKERS_PER_CONTENT_MAX + 3);
+    expect(speakers.list(LOCAL, contentId).items).toHaveLength(SPEAKERS_PER_CONTENT_MAX);
+    expect(errorOf(() => speakers.create(LOCAL, contentId, {})).class).toBe("invalid_request");
+  });
+
+  it("deletes by id alone: one of two same-named speakers, or an unnamed one, leaves the others as they were", () => {
+    const { speakers, contentId } = setup();
+    const twinA = speakers.create(LOCAL, contentId, { name: "张伟" });
+    const twinB = speakers.create(LOCAL, contentId, { name: "张伟", nameConfirmed: true });
+    const unnamedA = speakers.create(LOCAL, contentId, {});
+    const unnamedB = speakers.create(LOCAL, contentId, {});
+    speakers.delete(LOCAL, contentId, twinA.id);
+    speakers.delete(LOCAL, contentId, unnamedB.id);
+    expect(speakers.list(LOCAL, contentId).items).toEqual([
+      { ...twinB, referenced: false },
+      { ...unnamedA, referenced: false },
+    ]);
+  });
+
+  it("computes referenced for the whole roster in one query, in list and patch alike, never per speaker", () => {
+    const { h, contentId } = setup();
+    const calls: string[] = [];
+    const counted: Repository = {
+      withTransaction: ((work: (scope: RepositoryScope) => unknown) =>
+        h.repository.withTransaction((scope) =>
+          work({
+            ...scope,
+            speakers: new Proxy(scope.speakers, {
+              get(target, key, receiver) {
+                const value: unknown = Reflect.get(target, key, receiver);
+                return typeof value === "function"
+                  ? (...args: unknown[]) => {
+                      calls.push(String(key));
+                      return (value as (...a: unknown[]) => unknown).apply(target, args);
+                    }
+                  : value;
+              },
+            }),
+          }) as never,
+        )) as Repository["withTransaction"],
+    };
+    const speakers = new SpeakerService({ repository: counted, newId: h.newId });
+    const created = Array.from({ length: 6 }, (_, index) => speakers.create(LOCAL, contentId, { name: `第${index}位` }).id);
+    revisionWith(h, contentId, created.slice(0, 3));
+    revisionWith(h, contentId, created.slice(3, 4), { archived: true });
+
+    calls.length = 0;
+    const listed = speakers.list(LOCAL, contentId).items;
+    expect(listed.map((speaker) => speaker.referenced)).toEqual([true, true, true, true, false, false]);
+    expect(calls.filter((name) => name.startsWith("referenced"))).toEqual(["referencedIds"]);
+    expect(calls.filter((name) => name === "get")).toEqual([]);
+
+    calls.length = 0;
+    expect(speakers.patch(LOCAL, contentId, created[3] as string, { colorIndex: 1 }).referenced).toBe(true);
+    expect(calls.filter((name) => name.startsWith("referenced"))).toEqual(["referencedIds"]);
+
+    calls.length = 0;
+    expect(speakers.create(LOCAL, contentId, {}).referenced).toBe(false);
+    expect(calls.filter((name) => name.startsWith("referenced"))).toEqual([]);
+  });
+
+  it("leaves the speaker labels an AI result copied as they were: its own speakers cannot go, and another one's deletion changes nothing stored", () => {
+    const { h, speakers, contentId } = setup();
+    const core = BUILTIN_SUMMARY_TEMPLATES[0] as (typeof BUILTIN_SUMMARY_TEMPLATES)[number];
+    const host = speakers.create(LOCAL, contentId, { name: "蒋炎岩", nameConfirmed: true });
+    const guest = speakers.create(LOCAL, contentId, {});
+    const spare = speakers.create(LOCAL, contentId, { name: "临时", nameConfirmed: true });
+    const revisionId = revisionWith(h, contentId, [host.id, guest.id, host.id]);
+    h.repository.withTransaction((scope) => {
+      scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revisionId, 2);
+      scope.speakerConfirmations.set(LOCAL.userId, contentId, revisionId, 3);
+      scope.summaryTemplates.syncBuiltin(
+        BUILTIN_SUMMARY_TEMPLATES.map((template) => ({ id: template.id, name: template.nameKey, versions: [{ version: template.version, prompt: template.prompt }] })),
+        1,
+      );
+    });
+    // The snapshot a request takes holds the speakers its revision names; this one also copies the spare, as an older roster could have.
+    const resolved = h.repository.withTransaction((scope) => resolveSpeakerContext(scope, LOCAL.userId, contentId, revisionId, "transcript"));
+    expect(resolved?.speakers.map((speaker) => speaker.id)).toEqual([host.id, guest.id]);
+    const snapshot = { ...(resolved as SpeakerContextSnapshot), speakers: h.repository.withTransaction((scope) => speakerLabels(scope.speakers.list(LOCAL.userId, contentId))) };
+    const summaryRevisionId = h.newId();
+    h.repository.withTransaction((scope) => {
+      const segmentId = scope.transcripts.listSegments(LOCAL.userId, revisionId)[0]?.id as SegmentId;
+      const { artifactId } = scope.summaries.insertRevision(LOCAL.userId, {
+        contentId,
+        templateId: core.id,
+        artifactId: h.newId(),
+        revision: {
+          id: summaryRevisionId,
+          provenance: { inputs: [{ kind: "transcriptRevision", id: revisionId }], promptRef: { id: core.id, version: core.version }, speakerContext: snapshot, createdAt: 1 },
+          quality: "normal",
+          body: `要点 [[seg:${segmentId}]]`,
+          citations: [{ transcriptRevisionId: revisionId, segmentId }],
+        },
+      });
+      scope.summaries.setCurrent(LOCAL.userId, artifactId, summaryRevisionId);
+    });
+    const stored = () => h.db.prepare("SELECT speaker_context_json FROM summary_revision WHERE id = ?").get(summaryRevisionId) as { speaker_context_json: string };
+    const before = stored();
+    expect((JSON.parse(before.speaker_context_json) as SpeakerContextSnapshot).speakers.map((speaker) => speaker.label)).toEqual(["蒋炎岩", "发言人 2", "临时"]);
+
+    for (const id of [host.id, guest.id]) expect(errorOf(() => speakers.delete(LOCAL, contentId, id)).code).toBe("conflict.speaker_in_use");
+    speakers.delete(LOCAL, contentId, spare.id);
+    expect(ids(speakers, contentId)).toEqual([host.id, guest.id]);
+    expect(stored()).toEqual(before);
+    const current = h.summaries.list(LOCAL, contentId).templates.find((entry) => entry.template.id === core.id)?.current;
+    expect(current?.id).toBe(summaryRevisionId);
+    expect(current?.speakerContext?.speakers).toEqual(expect.arrayContaining([{ id: host.id, label: "蒋炎岩" }]));
   });
 });

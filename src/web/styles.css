@@ -480,3 +480,28 @@ body {
     background: var(--color-accent);
   }
 }
+
+/*
+ * 「定位到播放位置」 arrival (pages/content/reader-locate.ts): the sentence's background fades
+ * once, from the accent at the strength the player timeline marks use, back to whatever the
+ * sentence has of its own (selected, changed or none): the keyframes give only the start, so the
+ * end is the sentence's own background. The script sets the length and removes the attribute
+ * afterwards. Unlayered, so the reduced-motion tint, held still for the same time instead,
+ * shows over the sentence's own background utilities too.
+ */
+@keyframes reader-locate-pulse {
+  from {
+    background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+  }
+}
+
+[data-locate-pulse] {
+  animation: reader-locate-pulse var(--reader-locate-pulse) ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-locate-pulse] {
+    animation: none;
+    background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+  }
+}

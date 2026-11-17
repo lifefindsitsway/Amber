@@ -91,9 +91,14 @@ export function noteAnchorProblem(
  * start to the end sentence in reading order. Within one sentence it is the plain slice;
  * across sentences the start's tail, every middle sentence whole and the end's head, joined
  * by the reading separator that the two full neighbouring sentences call for;
- * the sentences must keep `paragraphStart`, which tells whether their revision is marked.
+ * the sentences must keep `paragraphStart` and `looseJoin` as read from storage, which tell
+ * whether their revision joins as a marked one, exactly as the reading view joins them.
  */
-export function noteQuote(range: ReadonlyArray<Pick<TranscriptSegment, "text" | "paragraphStart">>, startOffset: number, endOffset: number): string {
+export function noteQuote(
+  range: ReadonlyArray<Pick<TranscriptSegment, "text" | "paragraphStart" | "looseJoin">>,
+  startOffset: number,
+  endOffset: number,
+): string {
   const first = range[0];
   if (first === undefined) {
     return "";

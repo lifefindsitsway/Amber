@@ -12,6 +12,7 @@ import { contentView } from "./ui-content.ts";
 import { editor } from "./ui-editor.ts";
 import { library } from "./ui-library.ts";
 import { notes } from "./ui-notes.ts";
+import { paragraphEditor } from "./ui-paragraph-editor.ts";
 import { readerFont } from "./ui-reader-font.ts";
 import { search } from "./ui-search.ts";
 import { settings } from "./ui-settings.ts";
@@ -54,6 +55,7 @@ export const zhCN = {
   speakerIdentity,
   speakerReader,
   speakerEditor,
+  paragraphEditor,
   speakerTools,
   speakerReview,
   speakerCompare,

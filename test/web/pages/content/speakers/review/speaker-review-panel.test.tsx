@@ -13,9 +13,9 @@ const REVIEW_PATH = "/api/transcript/revisions/r1/speaker-review";
 const CONFIRM_PATH = "/api/transcript/revisions/r1/speakers-confirmed";
 
 const SPEAKERS = [
-  { id: "sa", ordinal: 1, name: "陈明", colorIndex: 0, used: true, nameConfirmed: true },
-  { id: "sb", ordinal: 2, name: "李雪", colorIndex: 1, used: true },
-  { id: "sc", ordinal: 3, colorIndex: 2, used: true },
+  { id: "sa", ordinal: 1, name: "陈明", colorIndex: 0, used: true, referenced: true, nameConfirmed: true },
+  { id: "sb", ordinal: 2, name: "李雪", colorIndex: 1, used: true, referenced: true },
+  { id: "sc", ordinal: 3, colorIndex: 2, used: true, referenced: true },
 ];
 
 const REVIEW: SpeakerReviewDto = {
@@ -45,7 +45,7 @@ function routes(review: SpeakerReviewDto, extra: Parameters<typeof stubFetch>[0]
   });
 }
 
-function showControl(options: { speakerMode?: boolean; onLocate?: (id: string) => void; controller?: PlayerController; crossCheck?: string } = {}) {
+function showControl(options: { speakerMode?: boolean; onLocate?: (id: string) => void; controller?: PlayerController; crossCheck?: string; onManageSpeakers?: () => void } = {}) {
   const controller = options.controller ?? new PlayerController();
   return renderApp(
     <PlayerControllerProvider controller={controller}>
@@ -56,6 +56,7 @@ function showControl(options: { speakerMode?: boolean; onLocate?: (id: string) =
         sentences={SENTENCES}
         onLocate={options.onLocate ?? (() => undefined)}
         {...(options.crossCheck === undefined ? {} : { crossCheck: <p>{options.crossCheck}</p> })}
+        {...(options.onManageSpeakers === undefined ? {} : { onManageSpeakers: options.onManageSpeakers })}
       />
     </PlayerControllerProvider>,
   );
@@ -198,6 +199,26 @@ describe("SpeakerReviewControl", () => {
     fireEvent.click(within(panel).getByTestId("speaker-review-assist-toggle"));
     const kinds = new Set(within(panel).getAllByRole("button").map((button) => button.getAttribute("data-testid")));
     expect([...kinds].sort()).toEqual(["speaker-review-assist-toggle", "speaker-review-confirm", "speaker-review-locate", "speaker-review-sample-play"]);
+  });
+});
+
+describe("SpeakerReviewControl 「管理发言人…」", () => {
+  it("is offered beside the roster only with a way to manage speakers, and closes the panel before taking it", async () => {
+    routes(REVIEW);
+    const manage = vi.fn();
+    showControl({ onManageSpeakers: manage });
+    const panel = await openPanel();
+    const button = within(panel).getByRole("button", { name: "管理发言人…" });
+    fireEvent.click(button);
+    expect(manage).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByTestId("speaker-review-panel")).toBeNull());
+  });
+
+  it("is absent without one", async () => {
+    routes(REVIEW);
+    showControl();
+    const panel = await openPanel();
+    expect(within(panel).queryByTestId("speaker-review-manage")).toBeNull();
   });
 });
 

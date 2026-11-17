@@ -83,6 +83,139 @@ describe("TranscriptService draft commit", () => {
   });
 });
 
+describe("TranscriptService paragraphs in drafts and commits", () => {
+  type Draftable = { startMs: number; endMs: number; text: string; sourceSegmentIds: string[]; paragraphStart?: boolean };
+  /** The sentences of `revisionId` one to one, with `starts[i]` as explicit marks when given. */
+  const sentencesOf = (h: Harness, revisionId: string, starts?: readonly boolean[]): Draftable[] =>
+    h.repository
+      .withTransaction((scope) => scope.transcripts.listSegments(LOCAL.userId, revisionId))
+      .map((segment, index) => ({
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: segment.text,
+        sourceSegmentIds: [segment.id],
+        ...(starts === undefined ? {} : { paragraphStart: starts[index] as boolean }),
+      }));
+  /** Saves `segments` as the Content's draft on `baseId` and commits it against the current primary. */
+  const commit = (h: Harness, contentId: string, baseId: string, segments: Draftable[]) => {
+    h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: baseId, expectedVersion: null, segments });
+    return h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: primaryOf(h, contentId) as string, draftVersion: 1 });
+  };
+  const marksOf = (h: Harness, id: string) => segmentsOf(h, id).map((segment) => segment.paragraphStart);
+  const setup = (paragraphStarts?: readonly boolean[]) => {
+    const h = createHarness();
+    open.push(h);
+    const contentId = createLocalContent(h);
+    return { h, contentId, base: seed(h, contentId, 4, paragraphStarts) };
+  };
+
+  it("saves a draft without marks or with marks on every sentence, keeping them through reopening", () => {
+    const { h, contentId, base } = setup();
+    const none = h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: base.revision.id, expectedVersion: null, segments: sentencesOf(h, base.revision.id) });
+    expect(none.segments.every((segment) => !("paragraphStart" in segment))).toBe(true);
+    const explicit = h.transcripts.putDraft(LOCAL, contentId, {
+      baseRevisionId: base.revision.id, expectedVersion: 1, segments: sentencesOf(h, base.revision.id, [true, false, true, false]),
+    });
+    expect(explicit.segments.map((segment) => segment.paragraphStart)).toEqual([true, false, true, false]);
+    expect(h.transcripts.getDraft(LOCAL, contentId).segments.map((segment) => segment.paragraphStart)).toEqual([true, false, true, false]);
+  });
+
+  it("refuses a save with marks on some sentences only, or a first sentence not opening a paragraph, saving nothing", async () => {
+    const { h, contentId, base } = setup();
+    const mixed = sentencesOf(h, base.revision.id);
+    mixed[0] = { ...(mixed[0] as Draftable), paragraphStart: true };
+    const save = (segments: Draftable[]) => () => h.transcripts.putDraft(LOCAL, contentId, { baseRevisionId: base.revision.id, expectedVersion: null, segments });
+    expect(await codeOf(save(mixed))).toEqual({ code: "invalid_request" });
+    expect(await codeOf(save(sentencesOf(h, base.revision.id, [false, false, true, false])))).toEqual({ code: "invalid_request" });
+    let message: unknown;
+    try {
+      save(mixed)();
+    } catch (error) {
+      message = (error as { appError?: { userMessage?: unknown } }).appError?.userMessage;
+    }
+    // Named like a schema error, so the client can tell which field was refused.
+    expect(message).toContain("segments.paragraphStart");
+    expect(countRows(h.db, "transcript_draft")).toBe(0);
+  });
+
+  it("still loads a draft saved before drafts had paragraphs, and commits it by inheriting the base's marks", () => {
+    const { h, contentId, base } = setup([true, false, true, false]);
+    // Stored as an earlier build left it: no paragraph field at all.
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.putDraft(LOCAL.userId, { id: h.newId(), contentId, baseRevisionId: base.revision.id, version: 1, segments: sentencesOf(h, base.revision.id) as never, updatedAt: 5 }, null),
+    );
+    const draft = h.transcripts.getDraft(LOCAL, contentId);
+    expect(draft.segments.every((segment) => !("paragraphStart" in segment))).toBe(true);
+    const committed = h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id, draftVersion: 1 });
+    expect(marksOf(h, committed.id)).toEqual([true, false, true, false]);
+  });
+
+  it("refuses to commit a stored draft whose marks are invalid, writing no revision", async () => {
+    const { h, contentId, base } = setup();
+    for (const starts of [[true, false, true], [false, true, true, true]] as const) {
+      const segments = sentencesOf(h, base.revision.id).map((segment, index) => (starts[index] === undefined ? segment : { ...segment, paragraphStart: starts[index] }));
+      h.repository.withTransaction((scope) => {
+        scope.transcripts.deleteDraft(LOCAL.userId, contentId, undefined);
+        scope.transcripts.putDraft(LOCAL.userId, { id: h.newId(), contentId, baseRevisionId: base.revision.id, version: 1, segments: segments as never, updatedAt: 5 }, null);
+      });
+      expect(await codeOf(() => h.transcripts.commitDraft(LOCAL, contentId, { expectedPrimaryRevisionId: base.revision.id, draftVersion: 1 }))).toEqual({ code: "invalid_request" });
+      expect(countRows(h.db, "transcript_revision")).toBe(1);
+      expect(primaryOf(h, contentId)).toBe(base.revision.id);
+      expect(h.transcripts.getDraft(LOCAL, contentId).version).toBe(1);
+    }
+  });
+
+  it("without explicit paragraphs on a marked base: inherits the marks and the base's joining", () => {
+    const { h, contentId, base } = setup([true, false, true, false]);
+    const committed = commit(h, contentId, base.revision.id, sentencesOf(h, base.revision.id));
+    expect(committed).not.toHaveProperty("looseJoin");
+    expect(marksOf(h, committed.id)).toEqual([true, false, true, false]);
+    expect(segmentsOf(h, committed.id).some((segment) => "looseJoin" in segment)).toBe(false);
+  });
+
+  it("without explicit paragraphs on an unmarked base: no marks and no loose joining", () => {
+    const { h, contentId, base } = setup();
+    const committed = commit(h, contentId, base.revision.id, sentencesOf(h, base.revision.id));
+    expect(committed).not.toHaveProperty("looseJoin");
+    expect(marksOf(h, committed.id)).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it("with explicit paragraphs on a marked base: takes the draft's marks and keeps the base's joining", () => {
+    const { h, contentId, base } = setup([true, false, true, false]);
+    const committed = commit(h, contentId, base.revision.id, sentencesOf(h, base.revision.id, [true, true, false, true]));
+    expect(committed).not.toHaveProperty("looseJoin");
+    expect(revisionOf(h, committed.id)).not.toHaveProperty("looseJoin");
+    expect(marksOf(h, committed.id)).toEqual([true, true, false, true]);
+  });
+
+  it("with explicit paragraphs on an unmarked base: takes the draft's marks and joins loosely", () => {
+    const { h, contentId, base } = setup();
+    const committed = commit(h, contentId, base.revision.id, sentencesOf(h, base.revision.id, [true, false, false, true]));
+    expect(committed.looseJoin).toBe(true);
+    expect(revisionOf(h, committed.id)?.looseJoin).toBe(true);
+    expect(marksOf(h, committed.id)).toEqual([true, false, false, true]);
+    const page = h.transcripts.segments(LOCAL, committed.id, { limit: 2 });
+    expect(page.revision.looseJoin).toBe(true);
+    expect(page.items.map((item) => item.looseJoin)).toEqual([true, true]);
+  });
+
+  it("on a loosely joined manual base: stays loose with explicit paragraphs or without, also when the base is folded away", () => {
+    const { h, contentId, base } = setup();
+    const loose = commit(h, contentId, base.revision.id, sentencesOf(h, base.revision.id, [true, false, false, true]));
+    // Explicit paragraphs on the loose manual primary: it is folded into the new revision,
+    // which hangs off the unmarked original, yet the draft's own base decides the joining.
+    const again = commit(h, contentId, loose.id, sentencesOf(h, loose.id, [true, true, false, false]));
+    expect(revisionOf(h, loose.id)).toBeUndefined();
+    expect(revisionOf(h, again.id)).toMatchObject({ parentRevisionId: base.revision.id, looseJoin: true });
+    expect(marksOf(h, again.id)).toEqual([true, true, false, false]);
+    // Without explicit paragraphs: marks inherited, joining kept.
+    const inherited = commit(h, contentId, again.id, sentencesOf(h, again.id));
+    expect(revisionOf(h, inherited.id)).toMatchObject({ parentRevisionId: base.revision.id, looseJoin: true });
+    expect(marksOf(h, inherited.id)).toEqual([true, true, false, false]);
+    expect(countRows(h.db, "transcript_revision")).toBe(2);
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 // Merge on commit, archive, permanent delete
 

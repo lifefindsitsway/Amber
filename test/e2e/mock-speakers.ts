@@ -2,9 +2,10 @@ import type { BrowserContext, Page, Request, Route } from "@playwright/test";
 import { contentDetailDtoSchema, transcriptRevisionDtoSchema, transcriptRevisionListDtoSchema } from "../../src/shared/dto/content.ts";
 import { contentExportRequestSchema } from "../../src/shared/dto/export.ts";
 import { chaptersDtoSchema } from "../../src/shared/dto/chapter.ts";
-import { speakerDtoSchema, speakerListDtoSchema, speakerPatchRequestSchema, type SpeakerDto } from "../../src/shared/dto/speaker.ts";
+import { speakerCreateRequestSchema, speakerDtoSchema, speakerListDtoSchema, speakerPatchRequestSchema, type SpeakerDto } from "../../src/shared/dto/speaker.ts";
 import { errorResponseSchema } from "../../src/shared/errors.ts";
-import type { DiarizationUnavailableReason } from "../../src/shared/speakers.ts";
+import { defaultSpeakerColorIndex, normalizeSpeakerName, type DiarizationUnavailableReason } from "../../src/shared/speakers.ts";
+import { hasExplicitParagraphs, inheritedParagraphStarts } from "../../src/shared/paragraph-marks.ts";
 import { taskAcceptedDtoSchema } from "../../src/shared/dto/task.ts";
 import {
   draftCommitRequestSchema,
@@ -46,8 +47,8 @@ const now = 1_790_000_000_000;
 
 /** The speakers: a named teacher and an unnamed second speaker, shown as 「发言人 2」. */
 export const SPEAKERS: SpeakerDto[] = [
-  { id: SPEAKER_TEACHER, ordinal: 1, name: "林老师", colorIndex: 0, avatarVersion: 1, used: true },
-  { id: SPEAKER_STUDENT, ordinal: 2, colorIndex: 1, used: true },
+  { id: SPEAKER_TEACHER, ordinal: 1, name: "林老师", colorIndex: 0, avatarVersion: 1, used: true, referenced: true },
+  { id: SPEAKER_STUDENT, ordinal: 2, colorIndex: 1, used: true, referenced: true },
 ];
 
 /** Who says each sentence: two turns of the teacher around one of the student, and a last sentence nobody was assigned to. */
@@ -173,6 +174,14 @@ export interface SpeakersRequests {
   failRevisionList: boolean;
   /** Runs right after a commit succeeded, before it is answered: another window's doings. */
   afterCommit?: (state: SpeakersRequests) => void;
+  /** Speakers an archived revision names: referenced, so not deletable, though no listed revision names them. */
+  archivedReferences: Set<string>;
+  /** How many speakers were ever created: numbers the next one's id. */
+  speakersCreated: number;
+  /** Bodies of the speaker creations. */
+  creations: unknown[];
+  /** Ids of the speakers whose deletion was asked for, refused ones included. */
+  deletions: string[];
 }
 
 /** The transcript draft as the server keeps it. */
@@ -225,6 +234,10 @@ export function speakersRequests(page: Page): SpeakersRequests {
       primary: SPEAKERS_REVISION,
       commits: [],
       failRevisionList: false,
+      archivedReferences: new Set(),
+      speakersCreated: 0,
+      creations: [],
+      deletions: [],
     };
     states.set(context, state);
   }
@@ -270,6 +283,10 @@ function commitDraft(state: SpeakersRequests, body: unknown): { status: number; 
   if (request.expectedPrimaryRevisionId !== state.primary) {
     return { status: 409, body: conflict("conflict.primary_changed", { currentPrimaryRevisionId: state.primary }) };
   }
+  // As the server does: a sentence naming a speaker that no longer exists (deleted in another window) is refused.
+  if (draft.segments.some((segment) => typeof segment.speakerId === "string" && !state.speakers.some((speaker) => speaker.id === segment.speakerId))) {
+    return { status: 400, body: errorResponseSchema.parse({ error: { class: "invalid_request", code: "invalid_request", retryDisposition: "never", userMessage: "" } }) };
+  }
   const base = draft.baseRevisionId;
   const baseSegments = new Map(revisionSegments(state, base).map((segment) => [segment.id, segment]));
   const baseManual = state.manual.find((item) => item.id === base);
@@ -277,12 +294,30 @@ function commitDraft(state: SpeakersRequests, body: unknown): { status: number; 
   state.manualCommitted += 1;
   const id = manualRevisionId(state.manualCommitted);
   const accept = request.speakerReview === "accept_suggestions";
+  // Paragraphs as the server keeps them: a draft's explicit marks as they are, otherwise inherited from the base.
+  const explicit = hasExplicitParagraphs(draft.segments);
+  const inherited = inheritedParagraphStarts(baseSegments, draft.segments);
+  const baseLoose = [...baseSegments.values()][0]?.looseJoin === true;
+  const baseMarked = [...baseSegments.values()][0]?.paragraphStart !== undefined;
+  const loose = explicit ? baseLoose || !baseMarked : baseLoose;
   const committed: TranscriptSegmentDto[] = draft.segments.map((segment, ordinal) => {
     const first = segment.sourceSegmentIds[0];
     let speakerId = segment.speakerId === undefined ? (first === undefined ? undefined : baseSegments.get(first)?.speakerId) : (segment.speakerId ?? undefined);
     if (segment.speakerReview === "needs_review" && !accept) speakerId = undefined;
     const sources = folded === undefined ? segment.sourceSegmentIds : segment.sourceSegmentIds.flatMap((source) => baseSegments.get(source)?.sourceSegmentIds ?? []);
-    return { id: segmentId(id, ordinal), revisionId: id, ordinal, startMs: segment.startMs, endMs: segment.endMs, text: segment.text, ...(speakerId === undefined ? {} : { speakerId }), sourceSegmentIds: sources };
+    const paragraphStart = explicit ? segment.paragraphStart : inherited[ordinal];
+    return {
+      id: segmentId(id, ordinal),
+      revisionId: id,
+      ordinal,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      text: segment.text,
+      ...(speakerId === undefined ? {} : { speakerId }),
+      ...(paragraphStart === undefined ? {} : { paragraphStart }),
+      ...(paragraphStart !== undefined && loose ? { looseJoin: true as const } : {}),
+      sourceSegmentIds: sources,
+    };
   });
   if (folded !== undefined) state.manual = state.manual.filter((item) => item !== folded);
   const revision: ManualRevision = { id, parentRevisionId: folded?.parentRevisionId ?? base, segments: committed, createdAt: now + state.manualCommitted };
@@ -329,9 +364,27 @@ function revisionDto(state: SpeakersRequests, revisionId: string) {
           timingFidelity: "inherited_segment",
           generation: { kind: "manual" },
           segmentCount: manual.segments.length,
+          ...(manual.segments[0]?.looseJoin === true ? { looseJoin: true as const } : {}),
           createdAt: manual.createdAt,
         };
   return { ...base, ...(confirmedAt === undefined ? {} : { speakersConfirmedAt: confirmedAt }) };
+}
+
+/** The id of the `n`th speaker created in a browser context (from 1). */
+export const createdSpeakerId = (n: number): string => `01J00000000000000000NSPK${String(n).padStart(2, "0")}`;
+
+/** Whether a listed revision or the stored draft names the speaker. */
+function isNamed(state: SpeakersRequests, speakerId: string): boolean {
+  if (state.draft?.segments.some((segment) => segment.speakerId === speakerId) === true) return true;
+  return revisionIds(state).some((revisionId) => revisionSegments(state, revisionId).some((segment) => segment.speakerId === speakerId));
+}
+
+/** Whether anything still refers to the speaker, as the server works it out: any revision (archived ones included) or the draft. */
+const isReferenced = (state: SpeakersRequests, speakerId: string): boolean => state.archivedReferences.has(speakerId) || isNamed(state, speakerId);
+
+/** A speaker as the API answers with it: whether it is used and referenced is worked out at the time of asking. */
+function speakerAnswer(state: SpeakersRequests, speaker: SpeakerDto): SpeakerDto {
+  return { ...speaker, used: speaker.used || isNamed(state, speaker.id), referenced: isReferenced(state, speaker.id) };
 }
 
 /** The speakers a revision's sentences name, in ordinal order. */
@@ -410,11 +463,41 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
       const answer = commitDraft(state, request.postDataJSON());
       return json(answer.body, answer.status);
     }
-    if (method === "GET" && resource === "speakers") return json(speakerListDtoSchema.parse({ items: state.speakers }));
+    if (method === "GET" && resource === "speakers") return json(speakerListDtoSchema.parse({ items: state.speakers.map((speaker) => speakerAnswer(state, speaker)) }));
+    if (method === "POST" && resource === "speakers") {
+      const body = speakerCreateRequestSchema.parse(request.postDataJSON());
+      state.creations.push(body);
+      const name = body.name === undefined ? undefined : normalizeSpeakerName(body.name);
+      if (name === "too_long") return json(errorResponseSchema.parse({ error: { class: "invalid_request", code: "invalid_request", retryDisposition: "never", userMessage: "" } }), 400);
+      state.speakersCreated += 1;
+      const ordinal = Math.max(0, ...state.speakers.map((speaker) => speaker.ordinal)) + 1;
+      const created = speakerDtoSchema.parse({
+        id: createdSpeakerId(state.speakersCreated),
+        ordinal,
+        colorIndex: body.colorIndex ?? defaultSpeakerColorIndex(ordinal),
+        used: false,
+        referenced: false,
+        ...(name === undefined ? {} : { name }),
+        ...(name !== undefined && body.nameConfirmed === true ? { nameConfirmed: true } : {}),
+      });
+      state.speakers.push(created);
+      return json(created, 201);
+    }
     const speakerMatch = resource === undefined ? null : /^speakers\/([^/]+)(\/avatar)?$/.exec(resource);
     if (speakerMatch !== null && speakerMatch[2] !== undefined && method === "GET") {
       state.avatarHeaders.push(request.headers());
       await route.fulfill({ status: 200, contentType: "image/png", body: AVATAR_PNG });
+      return true;
+    }
+    if (speakerMatch !== null && speakerMatch[2] === undefined && method === "DELETE") {
+      const speakerId = speakerMatch[1] as string;
+      state.deletions.push(speakerId);
+      if (!state.speakers.some((speaker) => speaker.id === speakerId)) {
+        return json(errorResponseSchema.parse({ error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } }), 404);
+      }
+      if (isReferenced(state, speakerId)) return json(conflict("conflict.speaker_in_use"), 409);
+      state.speakers = state.speakers.filter((speaker) => speaker.id !== speakerId);
+      await route.fulfill({ status: 204, body: "" });
       return true;
     }
     if (speakerMatch !== null && speakerMatch[2] === undefined && method === "PATCH") {
@@ -433,7 +516,7 @@ export async function handleSpeakers(route: Route, request: Request, url: URL): 
         ...(patch.colorIndex === undefined ? {} : { colorIndex: patch.colorIndex }),
       });
       state.speakers[index] = updated;
-      return json(updated);
+      return json(speakerAnswer(state, updated));
     }
     if (method === "POST" && resource === "transcript/retranscribe") {
       const reason = state.refuseNextRetranscribe;

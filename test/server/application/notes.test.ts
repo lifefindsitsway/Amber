@@ -4,9 +4,10 @@ import type { NoteCreateRequest } from "../../../src/shared/dto/note.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { NoteService } from "../../../src/server/application/notes.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
-import type { TranscriptSegment } from "../../../src/server/domain/transcript.ts";
+import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import type { Repository } from "../../../src/server/ports/repository.ts";
 import { lectureTranscripts, type TranscriptFixture } from "../../fixtures/transcripts/lecture.ts";
+import { JOIN_SAMPLES, type JoinSample } from "../../fixtures/transcripts/reading-join.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 
 const open: Harness[] = [];
@@ -30,6 +31,37 @@ function setup() {
   const notes = new NoteService({ repository: h.repository, now: () => clock.now, newId: h.newId });
   return { h, contentId, fixture, clock, notes };
 }
+
+type JoinMode = "marked" | "loose" | "unmarked";
+/** One paragraph of a golden sample as an imported revision: proofread-style marks, the same marks joined loosely, or none. */
+function insertJoinSample(h: Harness, contentId: string, texts: readonly string[], mode: JoinMode): { revisionId: string; segments: TranscriptSegment[] } {
+  const revisionId = h.newId();
+  const segments: TranscriptSegment[] = texts.map((text, ordinal) => ({
+    id: h.newId() as SegmentId,
+    revisionId,
+    ordinal,
+    startMs: 1000 + ordinal * 1000,
+    endMs: 1900 + ordinal * 1000,
+    text,
+    ...(mode === "unmarked" ? {} : { paragraphStart: ordinal === 0 }),
+    sourceSegmentIds: [],
+  }));
+  const revision: TranscriptRevision = {
+    id: revisionId,
+    contentId,
+    kind: "imported",
+    language: "zh-CN",
+    timingFidelity: "segment_only",
+    generation: { kind: "imported", format: "ambersub" },
+    segmentCount: segments.length,
+    ...(mode === "loose" ? { looseJoin: true as const } : {}),
+    createdAt: 1,
+  };
+  h.repository.withTransaction((scope) => scope.transcripts.insertRevision(LOCAL.userId, revision, segments));
+  return { revisionId, segments };
+}
+const expectedJoin = (sample: JoinSample, mode: JoinMode): string => (mode === "marked" ? sample.marked : sample.unmarked);
+const JOIN_CASES = JOIN_SAMPLES.flatMap((sample) => (["marked", "loose", "unmarked"] as const).map((mode) => ({ sample, mode, name: `${sample.name} (${mode})` })));
 
 const seg = (fixture: TranscriptFixture, part: keyof TranscriptFixture, index: number): TranscriptSegment => {
   const segment = fixture[part].segments[index];
@@ -486,5 +518,20 @@ describe("NoteService quotes on read", () => {
     expect(notes.find(LOCAL, "01J0000000000000000000NOPE")).toBeUndefined();
     h.trash.trash(LOCAL, contentId);
     expect(notes.find(LOCAL, legacy)).toBeUndefined();
+  });
+});
+
+describe("note quotes join sentences exactly like the reading view", () => {
+  it.each(JOIN_CASES)("$name", ({ sample, mode }) => {
+    const { h, contentId, notes } = setup();
+    const { revisionId, segments } = insertJoinSample(h, contentId, sample.texts, mode);
+    const first = segments[0] as TranscriptSegment;
+    const last = segments.at(-1) as TranscriptSegment;
+    const created = notes.create(LOCAL, contentId, {
+      transcriptRevisionId: revisionId, startSegmentId: first.id, startOffset: 0, endSegmentId: last.id, endOffset: last.text.length, mark: "background", color: "yellow",
+    });
+    expect(created.body.quote).toBe(expectedJoin(sample, mode));
+    // Listed notes cut their quote afresh from the stored sentences, by the same rule.
+    expect(notes.list(LOCAL, contentId, revisionId).items.map((item) => item.quote)).toEqual([expectedJoin(sample, mode)]);
   });
 });

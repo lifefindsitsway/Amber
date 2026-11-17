@@ -124,6 +124,7 @@ const existingSpeaker = (id: string, ordinal: number, name: string | undefined, 
   ...(name === undefined ? {} : { name }),
   colorIndex: ordinal - 1,
   used,
+  referenced: used,
 });
 
 type Setup = Parameters<typeof installSubtitleImport>[1] & {

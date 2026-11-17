@@ -111,6 +111,11 @@ export const transcriptRevisionDtoSchema = z.object({
   timingFidelity: z.enum(TIMING_FIDELITIES),
   generation: z.record(z.string(), z.unknown()),
   segmentCount: z.number().int().nonnegative(),
+  /**
+   * The revision has paragraph marks but joins its sentences as an unmarked one does (an
+   * unproofread transcript paragraphed by hand); absent = false. Only on revisions with marks.
+   */
+  looseJoin: z.literal(true).exactOptional(),
   createdAt: epochMsSchema,
   /** When the user marked this revision's speakers as reviewed; absent = not reviewed. */
   speakersConfirmedAt: epochMsSchema.exactOptional(),

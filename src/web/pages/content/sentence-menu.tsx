@@ -1,4 +1,4 @@
-import { Clock, Copy, MessageCircleQuestion, Play, Users } from "lucide-react";
+import { Clock, Copy, MessageCircleQuestion, Play, UserRoundPen, Users } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { SegmentId } from "../../../shared/ids.ts";
@@ -71,6 +71,11 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
      * text led by what this returns (`名字：`, empty for a sentence nobody was assigned to).
      */
     speakerPrefixOf?: (segmentId: string) => string;
+    /**
+     * Present where the view can take the user to the sentence's speaker: adds 「更改发言人…」,
+     * which hands over the sentence that was right-clicked (not the one playing).
+     */
+    onChangeSpeaker?: (segmentId: string) => void;
   },
 ) {
   const { t } = useTranslation();
@@ -120,6 +125,16 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
                 label: t("speakerReader.copy.sentenceWithSpeaker"),
                 icon: <Users size={14} aria-hidden="true" />,
                 onSelect: () => void copyText(`${speakerPrefix}${sentence.text}`),
+              },
+            ]),
+        ...(options.onChangeSpeaker === undefined
+          ? []
+          : [
+              {
+                id: "change-speaker",
+                label: t("speakerEditor.entry.changeSpeaker"),
+                icon: <UserRoundPen size={14} aria-hidden="true" />,
+                onSelect: () => options.onChangeSpeaker?.(segmentId),
               },
             ]),
         ...(composer === undefined || !options.explainSentence

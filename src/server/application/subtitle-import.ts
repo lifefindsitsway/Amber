@@ -276,6 +276,7 @@ export function writeSubtitleImport(scope: RepositoryScope, owner: string, input
     timingFidelity: timingFidelityFor("imported"),
     generation: { kind: "imported", format: plan.format },
     segmentCount: segments.length,
+    ...(plan.looseJoin === true ? { looseJoin: true } : {}),
     createdAt: now,
   };
   // The insert refuses a revision that breaks the transcript invariants (timing, ordinals,
@@ -349,8 +350,9 @@ function speakerRows(created: readonly PlannedSpeaker[], taken: readonly number[
 /**
  * One translated revision of the imported original: each line becomes a sentence with that
  * original sentence as its single source, sharing its timing, ordinal, speaker and paragraph
- * mark. Sentences without a line are simply absent (ordinals may have gaps); the first
- * sentence always opens a paragraph when marks are kept, as the invariant requires.
+ * mark, and joining like the original. Sentences without a line are simply absent (ordinals
+ * may have gaps); the first sentence always opens a paragraph when marks are kept, as the
+ * invariant requires.
  */
 function translatedRevision(
   original: TranscriptRevision,
@@ -390,6 +392,7 @@ function translatedRevision(
       timingFidelity: timingFidelityFor("translated"),
       generation: { kind: "imported", format },
       segmentCount: segments.length,
+      ...(original.looseJoin === true ? { looseJoin: true } : {}),
       createdAt: now,
     },
     segments,

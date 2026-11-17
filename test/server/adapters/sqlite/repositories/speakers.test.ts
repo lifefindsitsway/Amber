@@ -87,6 +87,60 @@ describe("speaker repository", () => {
     expect(repository.withTransaction((scope) => scope.speakers.usedIds("bob", "c1")).size).toBe(0);
   });
 
+  it("reports every speaker any revision or draft names, archived, comparison and translation ones included, in one answer", () => {
+    repository.withTransaction((scope) => {
+      scope.speakers.insert("alice", "c1", ["A", "B", "C", "D", "E", "F"].map((id) => ({ id })), T0);
+      scope.speakers.insert("alice", "c2", [{ id: "F" }], T0);
+    });
+    const revision = (id: string, contentId: string, comparison = false) =>
+      insertRow(db, "transcript_revision", {
+        id, content_id: contentId, kind: "asr", language: "zh", timing_fidelity: "segment_only",
+        generation_json: JSON.stringify({ kind: "asr", asrProfileId: "p", modelId: "m", ...(comparison ? { purpose: "comparison" } : {}) }), segment_count: 1, created_at: T0,
+      });
+    revision("r1", "c1");
+    revision("r2", "c1");
+    revision("r3", "c1", true);
+    revision("x1", "c2");
+    insertRow(db, "transcript_segment", { id: "s1", revision_id: "r1", ordinal: 0, start_ms: 0, end_ms: 1, text: "a", speaker_id: "A" });
+    insertRow(db, "transcript_segment", { id: "s2", revision_id: "r2", ordinal: 0, start_ms: 0, end_ms: 1, text: "b", speaker_id: "B" });
+    insertRow(db, "transcript_segment", { id: "s3", revision_id: "r3", ordinal: 0, start_ms: 0, end_ms: 1, text: "c", speaker_id: "E" });
+    // The same id in another Content says nothing about this one.
+    insertRow(db, "transcript_segment", { id: "s4", revision_id: "x1", ordinal: 0, start_ms: 0, end_ms: 1, text: "d", speaker_id: "F" });
+    insertRow(db, "transcript_revision_archive", { revision_id: "r2", content_id: "c1", archived_at: T0 + 2 });
+    insertRow(db, "transcript_draft", {
+      id: "d", content_id: "c1", base_revision_id: "r1", version: 1, updated_at: T0,
+      segments_json: JSON.stringify([
+        { startMs: 0, endMs: 1, text: "a", sourceSegmentIds: ["s1"], speakerId: "C" },
+        { startMs: 1, endMs: 2, text: "b", sourceSegmentIds: [], speakerId: null },
+        { startMs: 2, endMs: 3, text: "c", sourceSegmentIds: [] },
+      ]),
+    });
+    insertRow(db, "transcript_draft", {
+      id: "t", content_id: "c1", base_revision_id: "r1", target_language: "en", version: 1, updated_at: T0,
+      segments_json: JSON.stringify([{ startMs: 0, endMs: 1, text: "a", sourceSegmentIds: ["s1"], speakerId: "D" }]),
+    });
+    const all = repository.withTransaction((scope) => scope.speakers.referencedIds("alice", "c1"));
+    expect([...all].sort()).toEqual(["A", "B", "C", "D", "E"]);
+    // The same definition as the per-id check a deletion makes.
+    expect([...repository.withTransaction((scope) => scope.speakers.referencedAmong("alice", "c1", ["A", "B", "C", "D", "E", "F"]))].sort()).toEqual([...all].sort());
+    expect([...repository.withTransaction((scope) => scope.speakers.referencedIds("alice", "c2"))]).toEqual(["F"]);
+    expect(repository.withTransaction((scope) => scope.speakers.referencedIds("bob", "c1")).size).toBe(0);
+    // Narrower than "used": an archived revision, a comparison-only one aside, or a translation draft does not make a speaker used.
+    expect([...repository.withTransaction((scope) => scope.speakers.usedIds("alice", "c1"))].sort()).toEqual(["A", "C", "E"]);
+  });
+
+  it("refuses, through the sentence trigger, a sentence naming a speaker deleted from its Content", () => {
+    repository.withTransaction((scope) => scope.speakers.insert("alice", "c1", [{ id: "A" }, { id: "Z" }], T0));
+    insertRow(db, "transcript_revision", {
+      id: "r1", content_id: "c1", kind: "asr", language: "zh", timing_fidelity: "segment_only",
+      generation_json: JSON.stringify({ kind: "asr", asrProfileId: "p", modelId: "m" }), segment_count: 2, created_at: T0,
+    });
+    expect(repository.withTransaction((scope) => scope.speakers.delete("alice", "c1", ["Z"]))).toBe(1);
+    insertRow(db, "transcript_segment", { id: "s1", revision_id: "r1", ordinal: 0, start_ms: 0, end_ms: 1, text: "a", speaker_id: "A" });
+    expect(() => insertRow(db, "transcript_segment", { id: "s2", revision_id: "r1", ordinal: 1, start_ms: 1, end_ms: 2, text: "b", speaker_id: "Z" })).toThrow(/speaker/u);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM transcript_segment WHERE revision_id = 'r1'").get()).toEqual({ n: 1 });
+  });
+
   it("suggests the owner's named speakers of other Contents, newest first, matching the query literally", () => {
     repository.withTransaction((scope) => {
       scope.speakers.insert("alice", "c1", [{ id: "a1", name: "蒋炎岩" }, { id: "a2" }], T0);

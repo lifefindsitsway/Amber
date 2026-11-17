@@ -15,8 +15,10 @@ export const transcriptSegmentDtoSchema = z.object({
   text: z.string(),
   words: z.array(z.object({ text: z.string(), startMs: msSchema, endMs: msSchema })).exactOptional(),
   speakerId: z.string().exactOptional(),
-  /** Semantic paragraph start marked by proofreading; absent on revisions without marks. */
+  /** Paragraph start marked by proofreading or a manual edit; absent on revisions without marks. */
   paragraphStart: z.boolean().exactOptional(),
+  /** The revision's `looseJoin`, repeated on each of its sentences so joining rules can read it per sentence. */
+  looseJoin: z.literal(true).exactOptional(),
   sourceSegmentIds: z.array(idSchema),
 });
 export type TranscriptSegmentDto = z.infer<typeof transcriptSegmentDtoSchema>;
@@ -38,6 +40,10 @@ export type TranscriptSegmentPageDto = z.infer<typeof transcriptSegmentPageDtoSc
  * `speakerId`: a speaker of the Content, `null` = unassigned; absent (a draft saved before
  * drafts carried speakers) = the speaker of the first source sentence. `speakerReview` is how
  * applying speakers left the sentence; it lives in the draft only and never reaches a revision.
+ *
+ * `paragraphStart`: the draft's explicit paragraphs. Either no sentence has it (a commit then
+ * inherits the base's marks through the sources) or every sentence has it with the first one
+ * `true` (a commit takes them as they are); a draft mixing the two is refused.
  */
 export const transcriptDraftSegmentSchema = z
   .object({
@@ -48,6 +54,7 @@ export const transcriptDraftSegmentSchema = z
     sourceSegmentIds: z.array(idSchema),
     speakerId: idSchema.nullable().exactOptional(),
     speakerReview: z.enum(SPEAKER_REVIEW_STATES).exactOptional(),
+    paragraphStart: z.boolean().exactOptional(),
   })
   .strict();
 

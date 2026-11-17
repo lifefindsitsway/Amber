@@ -61,6 +61,29 @@ const COMPARISON_ONLY = `(
           WHERE d.content_id = cs.content_id AND json_type(item.value, '$.speakerId') = 'text' AND json_extract(item.value, '$.speakerId') = cs.id)
 )`;
 
+/**
+ * The speaker ids of content `@contentId` (owned by `@owner`) that some sentence of any of its
+ * revisions (archived and comparison ones included) or any of its drafts (transcript and
+ * translation drafts alike) names, narrowed by `filter` on the id. The one definition of "still
+ * referenced", shared by the list's flag, the deletion check and the comparison recycling, so a
+ * speaker shown as deletable is exactly one a deletion accepts. A single statement: every
+ * speaker of the Content is answered at once.
+ */
+function referencesQuery(filter: string): string {
+  return `SELECT s.speaker_id AS id
+     FROM transcript_revision r
+     JOIN content c ON c.id = r.content_id
+     JOIN transcript_segment s ON s.revision_id = r.id
+     WHERE r.content_id = @contentId AND c.user_id = @owner AND s.speaker_id ${filter}
+     UNION
+     SELECT json_extract(item.value, '$.speakerId') AS id
+     FROM transcript_draft d
+     JOIN content c ON c.id = d.content_id
+     JOIN json_each(d.segments_json) AS item
+     WHERE d.content_id = @contentId AND c.user_id = @owner AND json_type(item.value, '$.speakerId') = 'text'
+       AND json_extract(item.value, '$.speakerId') ${filter}`;
+}
+
 /** `%` and `_` are LIKE wildcards; a query matches them literally. */
 function likePattern(query: string): string {
   return `%${query.replace(/[\\%_]/gu, (character) => `\\${character}`)}%`;
@@ -125,20 +148,8 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
     `SELECT cs.id FROM content_speaker cs JOIN content c ON c.id = cs.content_id AND c.user_id = cs.user_id
      WHERE cs.user_id = ? AND cs.content_id = ? AND ${COMPARISON_ONLY}`,
   );
-  const referenced = db.prepare(
-    `SELECT s.speaker_id AS id
-     FROM transcript_revision r
-     JOIN content c ON c.id = r.content_id
-     JOIN transcript_segment s ON s.revision_id = r.id
-     WHERE r.content_id = @contentId AND c.user_id = @owner AND s.speaker_id IN (SELECT value FROM json_each(@ids))
-     UNION
-     SELECT json_extract(item.value, '$.speakerId') AS id
-     FROM transcript_draft d
-     JOIN content c ON c.id = d.content_id
-     JOIN json_each(d.segments_json) AS item
-     WHERE d.content_id = @contentId AND c.user_id = @owner AND json_type(item.value, '$.speakerId') = 'text'
-       AND json_extract(item.value, '$.speakerId') IN (SELECT value FROM json_each(@ids))`,
-  );
+  const referenced = db.prepare(referencesQuery("IN (SELECT value FROM json_each(@ids))"));
+  const referencedAll = db.prepare(referencesQuery("IS NOT NULL"));
   const remove = db.prepare("DELETE FROM content_speaker WHERE user_id = ? AND content_id = ? AND id IN (SELECT value FROM json_each(?))");
 
   const getSpeaker = (owner: string, contentId: string, speakerId: string): ContentSpeaker | undefined => {
@@ -201,6 +212,9 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
       // Most Contents have no comparison transcription; they skip the per-speaker checks.
       if (hasComparison.get(contentId, ownerUserId) === undefined) return new Set();
       return new Set((comparisonOnly.all(ownerUserId, contentId) as Array<{ id: string }>).map((row) => row.id));
+    },
+    referencedIds(ownerUserId, contentId) {
+      return new Set((referencedAll.all({ owner: ownerUserId, contentId }) as Array<{ id: string }>).map((row) => row.id));
     },
     referencedAmong(ownerUserId, contentId, speakerIds) {
       if (speakerIds.length === 0) return new Set();

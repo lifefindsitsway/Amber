@@ -6,7 +6,7 @@ import {
   parseSubtitlePackage,
   serializeSubtitlePackage,
   subtitleTextDigest,
-  SUBTITLE_PACKAGE_VERSION,
+  SUBTITLE_PACKAGE_MAX_VERSION,
   type SubtitlePackage,
 } from "../../../src/server/domain/subtitle-package.ts";
 
@@ -91,8 +91,72 @@ describe("subtitle package", () => {
   });
 
   it("refuses a newer format version with its own code and both versions", () => {
-    const error = failure(() => parseSubtitlePackage(variant((raw) => (raw.formatVersion = SUBTITLE_PACKAGE_VERSION + 1))));
-    expect(error).toEqual({ code: "invalid_request.subtitle_newer", details: { formatVersion: 2, supportedVersion: 1 } });
+    expect(SUBTITLE_PACKAGE_MAX_VERSION).toBe(2);
+    const error = failure(() => parseSubtitlePackage(variant((raw) => (raw.formatVersion = SUBTITLE_PACKAGE_MAX_VERSION + 1))));
+    expect(error).toEqual({ code: "invalid_request.subtitle_newer", details: { formatVersion: 3, supportedVersion: 2 } });
+  });
+
+  it("writes a version-1 package exactly as before loose joining existed", () => {
+    expect(serializeSubtitlePackage(sample())).toBe(
+      '{"format":"amber-subtitle","formatVersion":1,"generator":{"app":"Amber","version":"0.7.0"},' +
+        '"original":{"language":"zh-CN","paragraphMarks":true,"speakers":[{"key":"s1","ordinal":1,"name":"张三","colorIndex":0},{"key":"s2","ordinal":2,"colorIndex":1}],' +
+        '"segments":[{"key":"a","startMs":0,"endMs":1000,"text":"第一句。","speaker":"s1","paragraphStart":true},' +
+        '{"key":"b","startMs":1000,"endMs":2000,"text":"第二句。","speaker":"s2","paragraphStart":false},' +
+        '{"key":"c","startMs":500,"endMs":2500,"text":"第三句。","speaker":null,"paragraphStart":true}]},' +
+        '"translations":[{"language":"en","segments":[{"sourceSegmentKey":"a","text":"First."}]}]}\n',
+    );
+  });
+
+  it("reads back a version-2 package of a loosely joined original", () => {
+    const base = sample();
+    const pkg: SubtitlePackage = { ...base, formatVersion: 2, original: { ...base.original, looseJoin: true } };
+    const text = serializeSubtitlePackage(pkg);
+    expect(text).toContain('"formatVersion":2,');
+    expect(text).toContain('"paragraphMarks":true,"looseJoin":true,"speakers"');
+    expect(parseSubtitlePackage(text)).toEqual(pkg);
+  });
+
+  it("never writes a package whose version and loose joining disagree", () => {
+    const base = sample();
+    expect(() => serializeSubtitlePackage({ ...base, original: { ...base.original, looseJoin: true } })).toThrow();
+    expect(() => serializeSubtitlePackage({ ...base, formatVersion: 2 })).toThrow();
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+    ["null", null],
+  ])("refuses a version-1 package naming loose joining (%s)", (_name, value) => {
+    const text = variant((raw) => (raw.original.looseJoin = value));
+    expect(failure(() => parseSubtitlePackage(text)).code).toBe("invalid_request.subtitle_format");
+  });
+
+  const invalidV2: Array<[string, (raw: Record<string, any>) => void]> = [
+    ["without loose joining", () => undefined],
+    ["with loose joining false", (raw) => (raw.original.looseJoin = false)],
+    [
+      "without paragraph marks",
+      (raw) => {
+        raw.original.looseJoin = true;
+        raw.original.paragraphMarks = false;
+        raw.original.segments.forEach((segment: Record<string, unknown>) => delete segment.paragraphStart);
+      },
+    ],
+    [
+      "with a sentence missing its mark",
+      (raw) => {
+        raw.original.looseJoin = true;
+        delete raw.original.segments[2].paragraphStart;
+      },
+    ],
+  ];
+
+  it.each(invalidV2)("refuses a version-2 package %s", (_name, change) => {
+    const text = variant((raw) => {
+      raw.formatVersion = 2;
+      change(raw);
+    });
+    expect(failure(() => parseSubtitlePackage(text)).code).toBe("invalid_request.subtitle_format");
   });
 
   const invalid: Array<[string, string | ((raw: Record<string, any>) => void)]> = [

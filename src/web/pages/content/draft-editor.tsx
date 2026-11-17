@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { GitCompare } from "lucide-react";
@@ -6,7 +6,9 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { queryKeys } from "../../api/queries.ts";
 import { transcriptRevisionDtoSchema, type TranscriptRevisionDto } from "../../../shared/dto/content.ts";
-import { transcriptDraftDtoSchema } from "../../../shared/dto/transcript.ts";
+import { transcriptDraftDtoSchema, type TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
+import { hasExplicitParagraphs, inheritedParagraphStarts } from "../../../shared/paragraph-marks.ts";
+import type { ReadingChapter } from "../../../shared/reading.ts";
 import type { SpeakerReviewResolution } from "../../../shared/speakers.ts";
 import { ApiError } from "../../api/client.ts";
 import { publishSpeakersChanged } from "../../api/content-events.ts";
@@ -19,10 +21,12 @@ import { Modal } from "../../ui/modal.tsx";
 import { ApplySpeakersDialog } from "./apply-speakers.tsx";
 import { CommitReviewDialog } from "./commit-review-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
-import { contentKeys, fetchAllSegments, useRevisions } from "./content-data.ts";
+import { contentKeys, fetchAllSegments, useChapters, useRevisions } from "./content-data.ts";
+import { ParagraphControl, ParagraphEditingProvider, useParagraphEditing } from "./paragraph-controls.tsx";
 import { SpeakerLead } from "./speaker-column.tsx";
 import { draftKey, type BaseSpeakers, type DraftSegment, type SpeakerFilter } from "./speaker-draft.ts";
-import { FilterBar, SpeakerFilterMenu, SpeakerPanel } from "./speaker-toolbar.tsx";
+import { FilterBar, SpeakerFilterMenu, SpeakerPanel, type SpeakerUndoGuard } from "./speaker-toolbar.tsx";
+import { MissingSpeakerNotice } from "./speakers/missing-speaker-notice.tsx";
 import { SplitControl } from "./split-sentence.tsx";
 import { SpeakerEditingProvider, useSpeakerEditing } from "./use-speaker-editing.tsx";
 import { useSpeakers, speakerLabel } from "./speakers/speaker-data.ts";
@@ -30,18 +34,48 @@ import { draftChangedVersion, useDraftSync } from "./use-draft-sync.ts";
 import { isChineseLanguage, SentenceEditor, type SentenceEditorHandle } from "./sentence-editor.tsx";
 import { KeepSpeakersConfirmed, keepSpeakersConfirmedField, useKeepSpeakersConfirmed } from "./speakers/review/keep-speakers-confirmed.tsx";
 import { ComparisonView, type ComparisonFilter } from "./speakers/compare/comparison-view.tsx";
-import { locateDraftTarget, type EditorCloseResult, type EditTarget, type InitialScroll } from "./edit-position.ts";
+import { locateDraftTarget, type EditorCloseResult, type EditTarget, type InitialScroll, type InitialScrollOutcome } from "./edit-position.ts";
 import { usePlayRange } from "../../player/player-controller.tsx";
 
 export type { DraftSegment };
 
 /**
+ * What a speaker entry of the reading view asks the editor to open once the list is in place:
+ * the speaker panel, or the speaker menu of one sentence (the one the entry was asked on).
+ */
+export type SpeakerIntent = { kind: "panel" } | { kind: "menu"; segmentId: string };
+
+/**
  * Starts a draft from a revision: each sentence keeps its timing and points at its source,
  * and states its speaker (`null` = none), so a draft never depends on the source to say who
- * speaks.
+ * speaks. A revision with paragraph marks gives the draft explicit paragraphs from the start;
+ * one without leaves the draft without, inheriting whatever its base has.
  */
-export function draftFromSegments(segments: ReadonlyArray<{ id: string; startMs: number; endMs: number; text: string; speakerId?: string }>): DraftSegment[] {
-  return segments.map((segment) => ({ id: segment.id, startMs: segment.startMs, endMs: segment.endMs, text: segment.text, sourceSegmentIds: [segment.id], speakerId: segment.speakerId ?? null }));
+export function draftFromSegments(
+  segments: ReadonlyArray<{ id: string; startMs: number; endMs: number; text: string; speakerId?: string; paragraphStart?: boolean }>,
+): DraftSegment[] {
+  return segments.map((segment) => ({
+    id: segment.id,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: segment.text,
+    sourceSegmentIds: [segment.id],
+    speakerId: segment.speakerId ?? null,
+    ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
+  }));
+}
+
+/**
+ * A saved draft without paragraph marks over a base that has them, given the marks a commit
+ * would inherit, so the editor shows and edits the paragraphs the draft really has. Only in
+ * memory: the server keeps the draft as it is until the user's next edit is saved. A draft with
+ * marks, or over a base without them, is returned as it is.
+ */
+export function withInheritedParagraphs(draft: readonly DraftSegment[], base: readonly TranscriptSegmentDto[]): readonly DraftSegment[] {
+  if (hasExplicitParagraphs(draft)) return draft;
+  const marks = inheritedParagraphStarts(new Map(base.map((segment) => [segment.id, segment] as const)), draft);
+  if (marks[0] === undefined) return draft;
+  return draft.map((segment, index) => ({ ...segment, paragraphStart: marks[index] === true }));
 }
 
 interface LoadedDraft {
@@ -53,15 +87,21 @@ interface LoadedDraft {
 }
 
 /** The Content's transcript draft as the editor starts from it: the saved one, else a new one from the base. */
-async function loadDraft(client: ReturnType<typeof useApi>, contentId: string, baseId: string): Promise<LoadedDraft> {
+async function loadDraft(client: ReturnType<typeof useApi>, queryClient: QueryClient, contentId: string, baseId: string): Promise<LoadedDraft> {
   try {
     const draft = await client.get(`/api/contents/${encodeURIComponent(contentId)}/transcript/draft`, transcriptDraftDtoSchema);
+    // The draft's own base says what its sentences inherit. A revision never changes, so the
+    // reading view's copy of it serves when it has one.
+    const unstated = draft.segments.some((segment) => segment.speakerId === undefined);
+    const base =
+      unstated || !hasExplicitParagraphs(draft.segments)
+        ? await queryClient.fetchQuery({ queryKey: contentKeys.segments(draft.baseRevisionId), queryFn: () => fetchAllSegments(client, draft.baseRevisionId), staleTime: Infinity })
+        : undefined;
     // A draft saved before drafts stated speakers keeps its sentences as they are (the commit
     // reads the speaker of the first source); the editor needs those speakers only to show them.
-    const baseSpeakers = draft.segments.some((segment) => segment.speakerId === undefined)
-      ? new Map((await fetchAllSegments(client, draft.baseRevisionId)).map((segment) => [segment.id, segment.speakerId] as const))
-      : undefined;
-    return { baseRevisionId: draft.baseRevisionId, version: draft.version, segments: draft.segments, baseSpeakers };
+    const baseSpeakers = unstated && base !== undefined ? new Map(base.map((segment) => [segment.id, segment.speakerId] as const)) : undefined;
+    const segments = base === undefined ? draft.segments : [...withInheritedParagraphs(draft.segments, base)];
+    return { baseRevisionId: draft.baseRevisionId, version: draft.version, segments, baseSpeakers };
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
       return { baseRevisionId: baseId, version: null, segments: draftFromSegments(await fetchAllSegments(client, baseId)), baseSpeakers: undefined };
@@ -98,6 +138,13 @@ export function DraftEditor(props: {
   applySpeakersFrom?: string;
   /** Opens the cross-recognition comparison on mount. */
   openComparison?: boolean;
+  /** Told once how the list's opening went (see `SentenceEditorProps.onInitialScrollDone`). */
+  onInitialScrollDone?: (outcome: InitialScrollOutcome | "none") => void;
+  /**
+   * Opens the speaker panel or a sentence's speaker menu once the list's opening scroll is done,
+   * unless the user took over meanwhile (`cancelled`): the editor never pulls focus from them.
+   */
+  speakerIntent?: SpeakerIntent;
 }) {
   const { t } = useTranslation();
   const client = useApi();
@@ -137,7 +184,7 @@ export function DraftEditor(props: {
 
   const initial = useQuery({
     queryKey: ["draft", contentId, props.base.id],
-    queryFn: () => loadDraft(client, contentId, props.base.id),
+    queryFn: () => loadDraft(client, queryClient, contentId, props.base.id),
     staleTime: Infinity,
     gcTime: 0,
   });
@@ -169,8 +216,15 @@ export function DraftEditor(props: {
   const { resolved, visible, filter, setFilter } = speakerEditing;
   // A Content nobody was ever assigned in has no speaker column until the user starts: a
   // column of 「未分配」 on every sentence would be noise to someone only correcting text.
-  const [labeling, setLabeling] = useState(false);
+  // A speaker entry starts labelling right away: the column is there for the menu it opens.
+  const [labeling, setLabeling] = useState(props.speakerIntent !== undefined);
+  // Bumped to open the speaker panel from outside it.
+  const [panelSignal, setPanelSignal] = useState(0);
   const showColumn = labeling || speakers.length > 0 || resolved.some((id) => id !== null);
+  // The current chapters, projected by time as the reading view does: a chapter start always
+  // opens a paragraph.
+  const chapterQuery = useChapters(contentId);
+  const chapters = useMemo<readonly ReadingChapter[]>(() => chapterQuery.data?.current?.chapters ?? [], [chapterQuery.data]);
   const pendingReviews = useMemo(() => (segments ?? NO_SEGMENTS).filter((segment) => segment.speakerReview === "needs_review"), [segments]);
   const suggested = pendingReviews.filter((segment) => typeof segment.speakerId === "string").length;
   const keepReview = useKeepSpeakersConfirmed({ contentId, baseRevisionId, segments });
@@ -236,6 +290,9 @@ export function DraftEditor(props: {
         const current = error.error.details?.["currentPrimaryRevisionId"];
         setConflict(typeof current === "string" ? current : "");
       }
+      // A sentence naming a speaker deleted in another window is refused; the list read again
+      // shows which sentences those are, with the offer to unassign them.
+      if (error instanceof ApiError && error.error.class === "invalid_request") void speakerList.refetch();
     },
   });
   const startCommit = (review: SpeakerReviewResolution | undefined): void => {
@@ -253,9 +310,51 @@ export function DraftEditor(props: {
     },
   });
 
+  // The speaker entries' request, acted on once the list is in place: the panel, or the menu of
+  // the sentence the editor opened on. A user who scrolled, typed or clicked meanwhile keeps what
+  // they are doing.
+  const intent = useRef(props.speakerIntent);
+  const reportOpening = props.onInitialScrollDone;
+  const { openMenuAt } = speakerEditing;
+  const onInitialScrollDone = useCallback(
+    (outcome: InitialScrollOutcome | "none") => {
+      reportOpening?.(outcome);
+      const asked = intent.current;
+      intent.current = undefined;
+      if (asked === undefined || outcome === "cancelled") return;
+      if (asked.kind === "panel") setPanelSignal((signal) => signal + 1);
+      else if (initialScroll !== undefined && outcome !== "none") openMenuAt(initialScroll.index);
+    },
+    [reportOpening, openMenuAt, initialScroll],
+  );
+  // Deleting a speaker the undo history still names would let an undo bring back sentences
+  // pointing at nobody: those steps go with it, and the confirmation says so.
+  const undoGuard = useMemo<SpeakerUndoGuard>(() => {
+    const names = (speakerId: string) => (items: readonly DraftSegment[]) => items.some((segment) => segment.speakerId === speakerId);
+    return {
+      mentions: (speakerId) => handleRef.current?.hasUndo(names(speakerId)) === true,
+      drop: (speakerId) => handleRef.current?.dropUndo(names(speakerId)),
+    };
+  }, []);
+  // Chapters decide where paragraphs start from the first row shown, so the list waits for them
+  // once; a later refetch must not take the editor (and its undo history) down again.
+  const chaptersAwaited = useRef(false);
+  if (!chapterQuery.isPending) chaptersAwaited.current = true;
+
+  const paragraphs = useParagraphEditing({
+    segments: segments ?? NO_SEGMENTS,
+    resolved,
+    chapters,
+    visible,
+    // The moments the editor takes no batch edit: a commit or discard under way, a conflict.
+    locked: commit.isPending || discard.isPending || (state.phase !== "editing" && state.phase !== "saving"),
+    speakerPickers: showColumn,
+    handleRef,
+  });
+
   /** 「载入最新」: the draft as another window left it, or the base again when it is gone. */
   const loadLatest = async (): Promise<void> => {
-    const latest = await loadDraft(client, contentId, baseRevisionId);
+    const latest = await loadDraft(client, queryClient, contentId, baseRevisionId);
     setSegments(latest.segments);
     setBaseRevisionId(latest.baseRevisionId);
     setBaseSpeakers(latest.baseSpeakers);
@@ -268,12 +367,24 @@ export function DraftEditor(props: {
   };
 
   const renderLead = useCallback((_item: DraftSegment, index: number) => <SpeakerLead index={index} />, []);
-  const rowActions = useCallback((item: DraftSegment, index: number) => <SplitControl index={index} segment={item} />, []);
+  // Paragraphs and splitting do not need speakers: the actions are there whether or not the
+  // speaker column is.
+  const rowActions = useCallback(
+    (item: DraftSegment, index: number) => (
+      <>
+        <ParagraphControl index={index} />
+        <SplitControl index={index} segment={item} />
+      </>
+    ),
+    [],
+  );
 
   if (initial.isError) {
     return initial.error instanceof ApiError ? <ErrorView error={initial.error.error} /> : null;
   }
-  if (segments === undefined) return <Loading />;
+  // The chapters decide where paragraphs start from the first row shown; the reading view has
+  // usually fetched them already.
+  if (segments === undefined || !chaptersAwaited.current) return <Loading />;
 
   const failure = [commit.error, discard.error].find((error) => error instanceof ApiError && draftChangedVersion(error) === undefined && error.error.code !== "conflict.primary_changed");
   const busy = commit.isPending || discard.isPending;
@@ -282,136 +393,147 @@ export function DraftEditor(props: {
 
   return (
     <SpeakerEditingProvider value={speakerEditing.contextValue}>
-      <div className="contents" ref={speakerEditing.wrapper} onFocus={speakerEditing.onFocus}>
-        <SentenceEditor
-          testId="draft-editor"
-          items={segments}
-          onItemsChange={onItemsChange}
-          keyOf={draftKey}
-          renderHeader={segmentTime}
-          textLabel={segmentTime}
-          layout="compact"
-          fillers={isChineseLanguage(props.base.language)}
-          deleteWholeSentences
-          sync={state}
-          onRetry={() => sync.retry()}
-          onLoadLatest={() => void loadLatest()}
-          onKeepMine={() => sync.overwrite()}
-          onDiscard={() => discard.mutate()}
-          onExit={() => exit()}
-          onCommit={() => (pendingReviews.length > 0 ? setReviewOpen(true) : startCommit(undefined))}
-          busy={busy}
-          handleRef={handleRef}
-          {...(initialScroll === undefined ? {} : { initialScroll })}
-          {...(showColumn ? { renderLead, rowActions } : {})}
-          {...(visible === undefined ? {} : { visible })}
-          toolbarExtra={
-            <>
-              {speakers.length > 0 || filter.kind !== "all" ? (
-                <SpeakerFilterMenu
+      <ParagraphEditingProvider value={paragraphs.contextValue}>
+        <div className="contents" ref={speakerEditing.wrapper} onFocus={speakerEditing.onFocus} onKeyDown={paragraphs.onKeyDown}>
+          <SentenceEditor
+            testId="draft-editor"
+            items={segments}
+            onItemsChange={onItemsChange}
+            keyOf={draftKey}
+            renderHeader={segmentTime}
+            textLabel={segmentTime}
+            layout="compact"
+            fillers={isChineseLanguage(props.base.language)}
+            deleteWholeSentences
+            sync={state}
+            onRetry={() => sync.retry()}
+            onLoadLatest={() => void loadLatest()}
+            onKeepMine={() => sync.overwrite()}
+            onDiscard={() => discard.mutate()}
+            onExit={() => exit()}
+            onCommit={() => (pendingReviews.length > 0 ? setReviewOpen(true) : startCommit(undefined))}
+            busy={busy}
+            handleRef={handleRef}
+            {...(initialScroll === undefined ? {} : { initialScroll })}
+            rowActions={rowActions}
+            paragraphStarts={paragraphs.starts}
+            onInitialScrollDone={onInitialScrollDone}
+            {...(showColumn ? { renderLead } : {})}
+            {...(visible === undefined ? {} : { visible })}
+            toolbarExtra={
+              <>
+                {speakers.length > 0 || filter.kind !== "all" ? (
+                  <SpeakerFilterMenu
+                    segments={segments}
+                    resolved={resolved}
+                    changedKeys={speakerEditing.changedKeys}
+                    speakers={speakers}
+                    filter={filter}
+                    filterName={filterName}
+                    shown={shown}
+                    onFilter={setFilter}
+                    hasChanged={speakerEditing.changedKeys.size > 0}
+                  />
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-pressed={comparing}
+                  onClick={() => (comparing ? closeComparison() : setComparing(true))}
+                  data-testid="comparison-toggle"
+                >
+                  <GitCompare size={14} aria-hidden="true" />
+                  {t(comparing ? "speakerCompare.panel.close" : "speakerCompare.panel.open")}
+                </Button>
+                <SpeakerPanel
+                  contentId={contentId}
                   segments={segments}
                   resolved={resolved}
-                  changedKeys={speakerEditing.changedKeys}
-                  speakers={speakers}
-                  filter={filter}
-                  filterName={filterName}
-                  shown={shown}
-                  onFilter={setFilter}
-                  hasChanged={speakerEditing.changedKeys.size > 0}
+                  current={speakerEditing.drafted}
+                  others={speakerEditing.rest}
+                  disabled={busy || state.phase !== "editing" && state.phase !== "saving"}
+                  columnShown={showColumn}
+                  onStartLabeling={() => setLabeling(true)}
+                  onMerge={speakerEditing.merge}
+                  onApply={() => setApplyOpen(true)}
+                  undoGuard={undoGuard}
+                  openSignal={panelSignal}
                 />
-              ) : null}
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-pressed={comparing}
-                onClick={() => (comparing ? closeComparison() : setComparing(true))}
-                data-testid="comparison-toggle"
-              >
-                <GitCompare size={14} aria-hidden="true" />
-                {t(comparing ? "speakerCompare.panel.close" : "speakerCompare.panel.open")}
-              </Button>
-              <SpeakerPanel
-                contentId={contentId}
-                segments={segments}
-                resolved={resolved}
-                current={speakerEditing.drafted}
-                others={speakerEditing.rest}
-                disabled={busy || state.phase !== "editing" && state.phase !== "saving"}
-                columnShown={showColumn}
-                onStartLabeling={() => setLabeling(true)}
-                onMerge={speakerEditing.merge}
-                onApply={() => setApplyOpen(true)}
-              />
-            </>
-          }
-          commitNote={
-            <>
-              <KeepSpeakersConfirmed state={keepReview} disabled={busy} />
-              {pendingReviews.length === 0 ? null : (
-                <button
-                  type="button"
-                  className="rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
-                  onClick={() => setFilter({ kind: "review" })}
-                  data-testid="draft-review-count"
-                >
-                  {t("speakerEditor.commit.pending", { count: pendingReviews.length })}
-                </button>
-              )}
-            </>
-          }
-          notices={
-            <>
-              {comparing ? (
-                <div className="max-h-[45vh] overflow-y-auto border-b border-line px-4 py-3" data-testid="comparison-panel">
-                  <ComparisonView
-                    contentId={contentId}
-                    {...(page.content.durationMs === undefined ? {} : { durationMs: page.content.durationMs })}
-                    sentences={compared}
-                    baseRevisionId={baseRevisionId}
-                    revisions={revisions.data?.revisions ?? []}
-                    speakers={speakers}
-                    {...(range.mode === "unsupported" ? {} : { playRange: range.playRange })}
-                    rangePlayable={range.mode === "play"}
-                    onLocate={locateRow}
-                    onFilterChange={onComparisonFilter}
-                    activeCategory={filter.kind === "keys" ? filter.category : null}
-                  />
-                </div>
-              ) : null}
-              {speakerEditing.summary === undefined ? null : (
-                <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-1.5 text-xs" role="status" data-testid="apply-result">
-                  <span className="font-medium tabular-nums">
-                    {t("speakerEditor.apply.summary", speakerEditing.summary)}
-                  </span>
-                  <button type="button" className="ml-auto rounded px-1.5 py-0.5 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.dismissSummary}>
-                    {t("speakerEditor.apply.dismiss")}
+              </>
+            }
+            commitNote={
+              <>
+                <KeepSpeakersConfirmed state={keepReview} disabled={busy} />
+                {pendingReviews.length === 0 ? null : (
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+                    onClick={() => setFilter({ kind: "review" })}
+                    data-testid="draft-review-count"
+                  >
+                    {t("speakerEditor.commit.pending", { count: pendingReviews.length })}
                   </button>
-                </div>
-              )}
-              <FilterBar filter={filter} label={filterName} shown={shown} total={segments.length} onClear={() => setFilter({ kind: "all" })} />
-              {speakerEditing.selectedCount === 0 ? null : (
-                <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken/50 px-4 py-1.5 text-xs" role="status" data-testid="speaker-selection-bar">
-                  <span className="tabular-nums">{t("speakerEditor.selection.count", { count: speakerEditing.selectedCount })}</span>
-                  <span className="text-muted">{t("speakerEditor.selection.hint")}</span>
-                  <button type="button" className="ml-auto rounded px-1.5 py-0.5 text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.clearSelection} data-testid="speaker-selection-clear">
-                    {t("speakerEditor.selection.clear")}
-                  </button>
-                </div>
-              )}
-              {speakerEditing.createError instanceof ApiError ? (
-                <div className="px-4 pt-2">
-                  <ErrorView error={speakerEditing.createError.error} />
-                </div>
-              ) : null}
-              {failure instanceof ApiError ? (
-                <div className="px-4 pt-2">
-                  <ErrorView error={failure.error} />
-                </div>
-              ) : null}
-            </>
-          }
-        />
-      </div>
+                )}
+              </>
+            }
+            notices={
+              <>
+                {comparing ? (
+                  <div className="max-h-[45vh] overflow-y-auto border-b border-line px-4 py-3" data-testid="comparison-panel">
+                    <ComparisonView
+                      contentId={contentId}
+                      {...(page.content.durationMs === undefined ? {} : { durationMs: page.content.durationMs })}
+                      sentences={compared}
+                      baseRevisionId={baseRevisionId}
+                      revisions={revisions.data?.revisions ?? []}
+                      speakers={speakers}
+                      {...(range.mode === "unsupported" ? {} : { playRange: range.playRange })}
+                      rangePlayable={range.mode === "play"}
+                      onLocate={locateRow}
+                      onFilterChange={onComparisonFilter}
+                      activeCategory={filter.kind === "keys" ? filter.category : null}
+                    />
+                  </div>
+                ) : null}
+                {speakerEditing.summary === undefined ? null : (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-1.5 text-xs" role="status" data-testid="apply-result">
+                    <span className="font-medium tabular-nums">
+                      {t("speakerEditor.apply.summary", speakerEditing.summary)}
+                    </span>
+                    <button type="button" className="ml-auto rounded px-1.5 py-0.5 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.dismissSummary}>
+                      {t("speakerEditor.apply.dismiss")}
+                    </button>
+                  </div>
+                )}
+                <MissingSpeakerNotice count={speakerEditing.missingCount} onUnassign={() => void speakerEditing.unassignMissing()} disabled={busy} />
+                <FilterBar filter={filter} label={filterName} shown={shown} total={segments.length} onClear={() => setFilter({ kind: "all" })} />
+                {speakerEditing.selectedCount === 0 ? null : (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken/50 px-4 py-1.5 text-xs" role="status" data-testid="speaker-selection-bar">
+                    <span className="tabular-nums">{t("speakerEditor.selection.count", { count: speakerEditing.selectedCount })}</span>
+                    <span className="text-muted">{t("speakerEditor.selection.hint")}</span>
+                    <button type="button" className="ml-auto rounded px-1.5 py-0.5 text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.clearSelection} data-testid="speaker-selection-clear">
+                      {t("speakerEditor.selection.clear")}
+                    </button>
+                  </div>
+                )}
+                {speakerEditing.createError instanceof ApiError ? (
+                  <div className="px-4 pt-2">
+                    <ErrorView error={speakerEditing.createError.error} />
+                  </div>
+                ) : null}
+                {failure instanceof ApiError ? (
+                  <div className="px-4 pt-2">
+                    <ErrorView error={failure.error} />
+                  </div>
+                ) : null}
+                <p className="sr-only" role="status" data-testid="paragraph-status">
+                  {paragraphs.status}
+                </p>
+              </>
+            }
+          />
+        </div>
+      </ParagraphEditingProvider>
       <ApplySpeakersDialog
         open={applyOpen}
         onOpenChange={setApplyOpen}

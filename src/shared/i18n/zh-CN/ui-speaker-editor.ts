@@ -1,4 +1,4 @@
-/** UI copy of speakers in the transcript editor: the speaker column, splitting, filters, the speaker panel and applying speakers. */
+/** UI copy of speakers in the transcript editor: the speaker column, splitting, filters, the speaker panel, applying speakers and the ways into speaker editing. */
 export const speakerEditor = {
   /** What the undo control says it takes back. */
   undo: {
@@ -6,6 +6,7 @@ export const speakerEditor = {
     split: "拆分句子",
     merge: "合并发言人",
     apply: "套用发言人",
+    unassignMissing: "设为未分配（{{count}} 句）",
   },
   lead: {
     label: "发言人：{{name}}",
@@ -14,17 +15,28 @@ export const speakerEditor = {
     selected: "已选中",
   },
   scope: {
+    label: "作用范围",
     sentence: "本句",
-    run: "本轮 {{count}} 句",
+    rest: "本句到本轮结束",
+    run: "整轮",
     selection: "所选 {{count}} 句",
-    onlySentence: "只改本句",
-    wholeRun: "改整轮（{{count}} 句）",
+    /** How many sentences a scope covers and when they are spoken. */
+    extent: "{{count}} 句 · {{from}}–{{to}}",
+    span: "{{from}}–{{to}}",
   },
   menu: {
     others: "更多发言人",
     create: "新建发言人",
     unassign: "设为未分配",
     currentSpeaker: "当前",
+  },
+  /** The naming popover a speaker created from a sentence's menu opens with. */
+  naming: {
+    label: "给新发言人起名",
+    placeholder: "发言人 {{ordinal}}",
+    hint: "Enter 保存，Esc 跳过（显示为「发言人 {{ordinal}}」）",
+    save: "保存",
+    skip: "跳过",
   },
   selection: {
     count: "已选 {{count}} 句",
@@ -65,16 +77,45 @@ export const speakerEditor = {
   panel: {
     toggle: "发言人",
     title: "发言人",
-    current: "当前使用",
-    noneInDraft: "这份稿还没有发言人。可以逐句手动指定，也可以从另一份带发言人的转录稿套用。",
+    add: "新增",
+    addLabel: "新增发言人",
+    nameLabel: "新发言人的姓名",
+    namePlaceholder: "姓名（可留空）",
+    nameHint: "留空则显示为「发言人 {{ordinal}}」；填写的姓名视为已确认",
+    create: "添加",
+    creating: "添加中…",
+    cancel: "取消",
+    created: "已新增「{{name}}」",
+    used: "本稿已使用 · {{count}}",
+    unused: "本稿未使用 · {{count}}",
+    noneInDraft: "这份稿还没有句子指定发言人。可以逐句手动指定，也可以从另一份带发言人的转录稿套用。",
     start: "标注发言人",
     edit: "编辑发言人：{{name}}",
     merge: "合并到…",
     mergeFor: "把 {{name}} 合并到其他发言人",
     mergeHint: "{{name}} 的句子都归给：",
-    others: "其他发言人（{{count}}）",
-    aiNote: "AI 总结与对话暂不读取发言人",
+    noSentences: "尚未分配句子",
+    historyOnly: "历史字幕版本仍在引用，无法删除",
+    delete: "删除",
+    deleteFor: "删除发言人：{{name}}",
+    deleteConfirm: "删除「{{name}}」？",
+    deleteUndo: "此前涉及 TA 的修改将不能撤销",
+    deleting: "删除中…",
+    deleted: "已删除「{{name}}」",
+    inUse: "TA 刚被某个版本或草稿引用，无法删除；名单已刷新",
+    showMore: "再显示 {{count}} 位",
+    showLess: "收起",
     apply: "从转录稿套用…",
+  },
+  /** The notice over a draft some of whose sentences name a speaker that no longer exists. */
+  missing: {
+    message: "有 {{count}} 句指向已删除的发言人",
+    unassign: "设为未分配",
+  },
+  /** The ways into speaker editing from the reading view. */
+  entry: {
+    labelSpeakers: "标注发言人",
+    changeSpeaker: "更改发言人…",
   },
   apply: {
     title: "套用发言人",

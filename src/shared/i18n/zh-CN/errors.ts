@@ -88,6 +88,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "conflict.draft_changed": "草稿已在其他窗口修改",
   "conflict.speakers_changed": "发言人名单已在其他窗口修改，请刷新后重新核对",
   "conflict.speaker_capacity": "这个内容的发言人名额不足，无法再新增发言人；可先删除不再需要的对比稿",
+  "conflict.speaker_in_use": "这位发言人仍被字幕版本或草稿使用，不能删除",
   "conflict.subtitle_changed": "字幕文件在预览之后有变化，请重新选择文件或重新预览",
   "conflict.cache_inspection_expired": "缓存核对结果已过期，正在重新核对",
   "conflict.last_admin": "至少保留一个管理员",

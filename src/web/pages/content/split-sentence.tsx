@@ -5,6 +5,7 @@ import { SPEAKER_SPLIT_MIN_MS } from "../../../shared/defaults.ts";
 import { canSplit, splitPoint, type SplitPointSource } from "../../../shared/speaker-split.ts";
 import { Button } from "../../ui/button.tsx";
 import { formatDuration } from "../../format.ts";
+import { useParagraphEditingContext } from "./paragraph-controls.tsx";
 import { speakerLabel } from "./speakers/speaker-data.ts";
 import type { DraftSegment } from "./speaker-draft.ts";
 import { useEditingPlayhead, useSpeakerEditingContext } from "./use-speaker-editing.tsx";
@@ -17,14 +18,17 @@ function caretOf(index: number): number | undefined {
 
 /**
  * 「在此拆分」 under the active sentence: cuts it into two at the caret, giving each half a
- * speaker. The time of the cut comes from, in order, the speaker change the recognizer saw
- * inside the sentence, the playback position when it is inside the sentence, and an estimate
- * from the caret's place in the text; the source is named, and the milliseconds can be
- * changed before cutting. A sentence too short for two halves can only be given to one speaker.
+ * speaker when the draft has speakers. The time of the cut comes from, in order, the speaker
+ * change the recognizer saw inside the sentence, the playback position when it is inside the
+ * sentence, and an estimate from the caret's place in the text; the source is named, and the
+ * milliseconds can be changed before cutting. The right half stays in the left half's
+ * paragraph unless 「后半句另起一段」 is ticked. A sentence too short for two halves cannot be
+ * split, which is said right next to the disabled action.
  */
 export function SplitControl(props: { index: number; segment: DraftSegment }) {
   const { t } = useTranslation();
   const editing = useSpeakerEditingContext();
+  const paragraphs = useParagraphEditingContext();
   const { segment, index } = props;
   const splittable = canSplit(segment);
   const [caret, setCaret] = useState<number | undefined>(() => caretOf(index));
@@ -56,6 +60,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
   const [text, setText] = useState<string | undefined>(undefined);
   // The halves' speakers: the proposal until the user picks one, which then counts as chosen.
   const [chosen, setChosen] = useState<{ left?: string | null; right?: string | null }>({});
+  const [rightStarts, setRightStarts] = useState(false);
   const proposedRight = source === "recognized" && context.nextSpeakerId !== null && context.nextSpeakerId !== context.currentSpeakerId ? context.nextSpeakerId : context.currentSpeakerId;
   const leftSpeaker = chosen.left !== undefined ? chosen.left : context.currentSpeakerId;
   const rightSpeaker = chosen.right !== undefined ? chosen.right : proposedRight;
@@ -72,16 +77,20 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
       rightSpeakerId: chosen.right !== undefined ? chosen.right : freshRight,
       leftChosen: chosen.left !== undefined,
       rightChosen: chosen.right !== undefined,
-    });
+    }, { rightStarts, materialize: paragraphs.materialize });
   };
 
   if (!splittable) {
+    const reason = paragraphs.speakerPickers ? t("speakerEditor.split.tooShort", { ms: SPEAKER_SPLIT_MIN_MS * 2 }) : t("paragraphEditor.splitTooShort", { ms: SPEAKER_SPLIT_MIN_MS * 2 });
     return (
-      <span className="inline-flex" title={t("speakerEditor.split.tooShort", { ms: SPEAKER_SPLIT_MIN_MS * 2 })} data-testid="split-disabled">
+      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" title={reason} data-testid="split-disabled">
         <Button size="sm" variant="ghost" disabled data-testid="split-button">
           <Scissors size={13} aria-hidden="true" />
           {t("speakerEditor.split.action")}
         </Button>
+        <span className="text-xs text-muted" data-testid="split-disabled-reason">
+          {reason}
+        </span>
       </span>
     );
   }
@@ -123,7 +132,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
           <span className="rounded bg-sunken px-1.5 py-0.5 text-[11px] text-muted" data-testid="split-source" data-source={source}>
             {t(`speakerEditor.split.source.${source}`)}
           </span>
-          {(["left", "right"] as const).map((half) => {
+          {!paragraphs.speakerPickers ? null : (["left", "right"] as const).map((half) => {
             const value = half === "left" ? leftSpeaker : rightSpeaker;
             const name = t(half === "left" ? "speakerEditor.split.leftSpeaker" : "speakerEditor.split.rightSpeaker");
             return (
@@ -145,6 +154,10 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
               </select>
             );
           })}
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            <input type="checkbox" className="accent-accent" checked={rightStarts} onChange={(event) => setRightStarts(event.target.checked)} data-testid="split-right-starts" />
+            {t("paragraphEditor.splitRightStarts")}
+          </label>
           {inRange ? null : (
             <span className="text-xs text-danger" role="status">
               {t("speakerEditor.split.outOfRange", { ms: SPEAKER_SPLIT_MIN_MS })}

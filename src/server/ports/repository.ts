@@ -357,8 +357,9 @@ export interface SpeakerPatch {
 /**
  * The speakers of the owner's Contents. Invariant: a speaker id is unique within its Content
  * only, so every call names the Content; `ordinal` is unique within the Content and given in
- * the same transaction as `MAX(ordinal) + 1`. Speakers are never deleted on their own; they go
- * with their Content. Names arrive normalized and photos checked; the repository stores them.
+ * the same transaction as `MAX(ordinal) + 1`. A speaker is deleted on its own only while
+ * nothing references it (see `referencedAmong`); otherwise it goes with its Content. Names
+ * arrive normalized and photos checked; the repository stores them.
  */
 export interface SpeakerRepository {
   /** In `ordinal` order. */
@@ -391,6 +392,12 @@ export interface SpeakerRepository {
    * included) and no draft. Such speakers are left out of rosters, pickers and suggestions.
    */
   comparisonOnlyIds(ownerUserId: string, contentId: string): Set<string>;
+  /**
+   * Ids named by a sentence of any revision of the Content (archived and comparison ones
+   * included) or by any of its drafts (transcript and translation), answered for every speaker
+   * of the Content in one query. The same definition as `referencedAmong`.
+   */
+  referencedIds(ownerUserId: string, contentId: string): Set<string>;
   /** Those of `speakerIds` still named by a sentence of any revision of the Content, or by any of its drafts. */
   referencedAmong(ownerUserId: string, contentId: string, speakerIds: readonly string[]): Set<string>;
   /** Deletes the given speakers of the Content; the caller makes sure nothing names them. Returns how many went. */

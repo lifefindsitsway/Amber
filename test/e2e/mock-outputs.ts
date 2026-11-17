@@ -221,8 +221,8 @@ export const BASIS_LECTURE: Lecture = {
   revisionId: BASIS_REVISION,
   title: BASIS_TITLE,
   speakers: [
-    { id: PROFESSOR, ordinal: 1, name: PROFESSOR_NAME, colorIndex: 0, used: true, nameConfirmed: true },
-    { id: GUEST, ordinal: 2, colorIndex: 1, used: true },
+    { id: PROFESSOR, ordinal: 1, name: PROFESSOR_NAME, colorIndex: 0, used: true, referenced: true, nameConfirmed: true },
+    { id: GUEST, ordinal: 2, colorIndex: 1, used: true, referenced: true },
   ],
   sequence: [PROFESSOR, PROFESSOR, GUEST, PROFESSOR, GUEST, PROFESSOR],
   sentence: (index) => `第 ${index + 1} 句依据模拟字幕。`,
@@ -233,8 +233,8 @@ export const NAMESAKE_LECTURE: Lecture = {
   revisionId: NAMESAKE_REVISION,
   title: NAMESAKE_TITLE,
   speakers: [
-    { id: NAMESAKE_PROFESSOR, ordinal: 1, name: PROFESSOR_NAME, colorIndex: 2, used: true },
-    { id: NAMESAKE_GUEST, ordinal: 2, colorIndex: 3, used: true },
+    { id: NAMESAKE_PROFESSOR, ordinal: 1, name: PROFESSOR_NAME, colorIndex: 2, used: true, referenced: true },
+    { id: NAMESAKE_GUEST, ordinal: 2, colorIndex: 3, used: true, referenced: true },
   ],
   sequence: [NAMESAKE_GUEST, NAMESAKE_PROFESSOR, NAMESAKE_PROFESSOR],
   sentence: (index) => `第 ${index + 1} 句依据同名字幕。`,

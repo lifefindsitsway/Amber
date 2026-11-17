@@ -1,16 +1,17 @@
 import type { TFunction } from "i18next";
 import { Check, CircleQuestionMark, Plus, UserRoundX } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { memo, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from "react";
+import { memo, useEffect, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import { speakerMonogram } from "../../../shared/speakers.ts";
+import { formatDuration } from "../../format.ts";
 import { hasCommandModifier } from "../../shortcut-registry.tsx";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../ui/context-menu.tsx";
 import { ringShadow, SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
 import { speakerColorVars } from "./speakers/speaker-colors.ts";
 import { speakerLabel } from "./speakers/speaker-data.ts";
-import { useSpeakerEditingContext, type LeadScope } from "./use-speaker-editing.tsx";
+import { useSpeakerEditingContext, type LeadScope, type ScopeMode } from "./use-speaker-editing.tsx";
 
 /** The avatar size of a sentence's speaker column. */
 const LEAD_AVATAR_PX = 24;
@@ -25,6 +26,8 @@ const FOLLOW_UP_GLYPH_RATIO = 0.5;
 const FOLLOW_UP_RING_PERCENT = 40;
 
 const isDigit = (key: string): boolean => key.length === 1 && key >= "0" && key <= "9";
+/** Only the first nine speakers of the roster have a digit key. */
+const DIGIT_KEYS = 9;
 
 /**
  * The muted avatar of the sentences after a stretch's first. A draft has thousands of rows
@@ -78,8 +81,17 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
   const view = useSyncExternalStore(editing.store.subscribe, () => editing.store.at(props.index));
   const [armed, setArmed] = useState(false);
   const [open, setOpen] = useState(false);
-  /** `run` once the user asked the menu for the whole turn; the default is the sentence (or the selection). */
-  const [mode, setMode] = useState<"run" | undefined>(undefined);
+  /** The reach the user picked in the open menu; the default is the sentence (or the selection). */
+  const [mode, setMode] = useState<ScopeMode>("sentence");
+  // Another part of the editor (an entry from the reading view) may ask this column to open its menu.
+  const { menus } = editing;
+  const menuRequest = useSyncExternalStore(menus.subscribe, () => menus.nonceFor(props.index));
+  useEffect(() => {
+    if (menuRequest === 0) return;
+    menus.consume(props.index);
+    setArmed(true);
+    setOpen(true);
+  }, [menuRequest, menus, props.index]);
   if (view === undefined) return null;
 
   const speaker = view.speakerId === null ? undefined : editing.speakers.get(view.speakerId);
@@ -95,9 +107,9 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
 
   /**
    * A digit gives the numbered speaker (0 = nobody) to the selection, else to this sentence.
-   * Only the open menu, which writes its scope out, may also be on a whole turn.
+   * Only the open menu, which writes its scope out, may also reach further in the turn.
    */
-  const choose = (digit: string, scopeMode: "run" | undefined): void => {
+  const choose = (digit: string, scopeMode: ScopeMode): void => {
     const scope = actions.scope(props.index, scopeMode);
     if (digit === "0") {
       actions.assign(scope, null);
@@ -119,7 +131,7 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
       actions.clearSelection();
     } else if (!event.shiftKey && isDigit(event.key)) {
       event.preventDefault();
-      choose(event.key, undefined);
+      choose(event.key, "sentence");
     } else if (!armed && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       arm();
@@ -182,7 +194,7 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setMode(undefined);
+        if (!next) setMode("sentence");
       }}
     >
       <DropdownMenu.Trigger asChild>{face}</DropdownMenu.Trigger>
@@ -192,14 +204,14 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
           align="start"
           sideOffset={4}
           collisionPadding={8}
-          className={`${MENU_CONTENT_CLASS} w-64`}
+          className={`${MENU_CONTENT_CLASS} max-h-[var(--radix-dropdown-menu-content-available-height)] w-72 max-w-[calc(100vw-16px)] overflow-y-auto`}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing || hasCommandModifier(event.nativeEvent) || event.shiftKey || !isDigit(event.key)) return;
             // Radix would take a digit as type-ahead; here it picks the numbered speaker and closes the menu.
             event.preventDefault();
             choose(event.key, mode);
             setOpen(false);
-            setMode(undefined);
+            setMode("sentence");
           }}
           data-testid="speaker-menu"
         >
@@ -210,25 +222,34 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
   );
 });
 
-function scopeLabel(t: TFunction, scope: LeadScope): string {
-  if (scope.kind === "selection") return t("speakerEditor.scope.selection", { count: scope.keys.length });
-  if (scope.kind === "run") return t("speakerEditor.scope.run", { count: scope.keys.length });
-  return t("speakerEditor.scope.sentence");
+/** 「3 句 · 0:12–0:31」: how many sentences a scope covers and when they are spoken. */
+function extentOf(t: TFunction, scope: LeadScope): string {
+  return t("speakerEditor.scope.extent", { count: scope.keys.length, from: formatDuration(scope.startMs), to: formatDuration(scope.endMs) });
 }
 
+/** 「0:12–0:31」: when a scope's sentences are spoken. */
+function spanOf(t: TFunction, scope: LeadScope): string {
+  return t("speakerEditor.scope.span", { from: formatDuration(scope.startMs), to: formatDuration(scope.endMs) });
+}
+
+const SCOPE_MODES: readonly ScopeMode[] = ["sentence", "rest", "run"];
+
 /** The menu's entries; rendered only while it is open, so it reads the scope at that moment. */
-function LeadMenu(props: { index: number; mode: "run" | undefined; setMode: (mode: "run" | undefined) => void; speakerId: string | null }) {
+function LeadMenu(props: { index: number; mode: ScopeMode; setMode: (mode: ScopeMode) => void; speakerId: string | null }) {
   const { t } = useTranslation();
   const editing = useSpeakerEditingContext();
   const { actions } = editing;
   const scope = actions.scope(props.index, props.mode);
   const run = actions.scope(props.index, "run");
-  const canToggle = scope.kind !== "selection" && run.keys.length > 1;
+  // A choice of reach only where it means something: not for a selection, nor a turn of one sentence.
+  const choosable = scope.kind !== "selection" && run.keys.length > 1;
 
   const item = (speaker: SpeakerDto, digit: number | undefined) => (
     <DropdownMenu.Item key={speaker.id} className={MENU_ITEM_CLASS} onSelect={() => actions.assign(scope, speaker.id)} data-testid={`speaker-menu-item-${speaker.id}`}>
       <SpeakerAvatar contentId={editing.contentId} speaker={speaker} size={20} decorative />
-      <span className="min-w-0 flex-1 truncate">{speakerLabel(t, speaker)}</span>
+      <span className="min-w-0 flex-1 truncate" title={speakerLabel(t, speaker)}>
+        {speakerLabel(t, speaker)}
+      </span>
       {scope.common === speaker.id ? <Check size={14} className="shrink-0 text-accent" aria-label={t("speakerEditor.menu.currentSpeaker")} /> : null}
       {digit === undefined ? null : <kbd className="shrink-0 rounded border border-line px-1 font-mono text-[11px] text-muted">{digit}</kbd>}
     </DropdownMenu.Item>
@@ -236,23 +257,41 @@ function LeadMenu(props: { index: number; mode: "run" | undefined; setMode: (mod
 
   return (
     <>
-      <DropdownMenu.Label className="px-2 pt-1 pb-1.5 text-xs text-muted" data-testid="speaker-menu-scope">
-        {scopeLabel(t, scope)}
-      </DropdownMenu.Label>
-      {canToggle ? (
-        <DropdownMenu.Item
-          className={`${MENU_ITEM_CLASS} text-xs text-accent`}
-          onSelect={(event) => {
-            event.preventDefault();
-            props.setMode(scope.kind === "run" ? undefined : "run");
-          }}
-          data-testid="speaker-menu-scope-toggle"
-        >
-          {scope.kind === "run" ? t("speakerEditor.scope.onlySentence") : t("speakerEditor.scope.wholeRun", { count: run.keys.length })}
-        </DropdownMenu.Item>
-      ) : null}
+      {choosable ? (
+        <DropdownMenu.RadioGroup value={props.mode} onValueChange={(value) => props.setMode(value as ScopeMode)} aria-label={t("speakerEditor.scope.label")} data-testid="speaker-menu-scopes">
+          <DropdownMenu.Label className="px-2 pt-1 pb-0.5 text-xs text-muted">{t("speakerEditor.scope.label")}</DropdownMenu.Label>
+          {SCOPE_MODES.map((mode) => {
+            const option = actions.scope(props.index, mode);
+            return (
+              <DropdownMenu.RadioItem
+                key={mode}
+                value={mode}
+                className={`${MENU_ITEM_CLASS} data-[state=checked]:font-medium`}
+                // Picking a reach keeps the menu open: the speaker is chosen next.
+                onSelect={(event) => event.preventDefault()}
+                data-testid={`speaker-menu-scope-${mode}`}
+              >
+                <span className="flex size-3.5 shrink-0 items-center justify-center">
+                  <DropdownMenu.ItemIndicator>
+                    <Check size={14} className="text-accent" aria-hidden="true" />
+                  </DropdownMenu.ItemIndicator>
+                </span>
+                <span className="min-w-0 flex-1 truncate">{t(`speakerEditor.scope.${mode}`)}</span>
+                <span className="shrink-0 font-mono text-[11px] text-muted tabular-nums" data-testid="speaker-menu-scope-extent">
+                  {extentOf(t, option)}
+                </span>
+              </DropdownMenu.RadioItem>
+            );
+          })}
+        </DropdownMenu.RadioGroup>
+      ) : (
+        <DropdownMenu.Label className="flex items-baseline gap-2 px-2 pt-1 pb-1.5 text-xs text-muted" data-testid="speaker-menu-scope">
+          <span className="min-w-0 flex-1 truncate">{scope.kind === "selection" ? t("speakerEditor.scope.selection", { count: scope.keys.length }) : t("speakerEditor.scope.sentence")}</span>
+          <span className="shrink-0 font-mono text-[11px] tabular-nums">{spanOf(t, scope)}</span>
+        </DropdownMenu.Label>
+      )}
       <DropdownMenu.Separator className="my-1 h-px bg-line" />
-      {editing.current.map((speaker, position) => item(speaker, position < 9 ? position + 1 : undefined))}
+      {editing.current.map((speaker, position) => item(speaker, position < DIGIT_KEYS ? position + 1 : undefined))}
       {editing.others.length === 0 ? null : (
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger className={MENU_ITEM_CLASS} data-testid="speaker-menu-others">

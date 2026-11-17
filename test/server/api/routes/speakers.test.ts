@@ -204,6 +204,43 @@ describe("speaker routes", () => {
     expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}/speakers/${target.id}/avatar`, headers: bob })).statusCode).toBe(404);
   });
 
+  it("deletes an unreferenced speaker with 204 and no body; a referenced one is 409, a missing one or a stranger's 404", async () => {
+    const { h, app, contentId } = await setup();
+    const url = `/api/contents/${contentId}/speakers`;
+    const spare = speakerDtoSchema.parse((await app.inject({ method: "POST", url, headers: auth, payload: { name: "误建" } })).json());
+    const kept = speakerDtoSchema.parse((await app.inject({ method: "POST", url, headers: auth, payload: { name: "主持人" } })).json());
+    expect([spare.referenced, kept.referenced]).toEqual([false, false]);
+    const fixture = lectureTranscripts(contentId);
+    h.repository.withTransaction((scope) =>
+      scope.transcripts.insertRevision(LOCAL.userId, fixture.asr.revision, fixture.asr.segments.map((segment) => ({ ...segment, speakerId: kept.id }))),
+    );
+    const listed = speakerListDtoSchema.parse((await app.inject({ method: "GET", url, headers: auth })).json());
+    expect(listed.items.map((item) => [item.id, item.referenced])).toEqual([
+      [spare.id, false],
+      [kept.id, true],
+    ]);
+    const patched = speakerDtoSchema.parse((await app.inject({ method: "PATCH", url: `${url}/${kept.id}`, headers: auth, payload: { colorIndex: 2 } })).json());
+    expect(patched.referenced).toBe(true);
+
+    // Another user, an unknown Content and an unknown speaker all look alike, and change nothing.
+    expect((await app.inject({ method: "DELETE", url: `${url}/${spare.id}`, headers: bob })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `/api/contents/missing/speakers/${spare.id}`, headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `${url}/missing`, headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: `${url}/${spare.id}` })).statusCode).toBe(401);
+
+    const refused = await app.inject({ method: "DELETE", url: `${url}/${kept.id}`, headers: auth });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: { class: "conflict", code: "conflict.speaker_in_use", userMessage: "这位发言人仍被字幕版本或草稿使用，不能删除" } });
+
+    const deleted = await app.inject({ method: "DELETE", url: `${url}/${spare.id}`, headers: auth });
+    expect(deleted.statusCode).toBe(204);
+    expect(deleted.body).toBe("");
+    expect(speakerListDtoSchema.parse((await app.inject({ method: "GET", url, headers: auth })).json()).items.map((item) => item.id)).toEqual([kept.id]);
+    const again = await app.inject({ method: "DELETE", url: `${url}/${spare.id}`, headers: auth });
+    expect(again.statusCode).toBe(404);
+    expect(again.json()).toMatchObject({ error: { class: "not_found" } });
+  });
+
   it("requires authentication", async () => {
     const { app, contentId } = await setup();
     expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}/speakers` })).statusCode).toBe(401);

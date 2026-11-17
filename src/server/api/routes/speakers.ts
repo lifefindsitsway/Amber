@@ -70,6 +70,12 @@ export function registerSpeakerRoutes(app: FastifyInstance, deps: { speakers: Sp
     return sendValidated(reply, 200, speakerDtoSchema, speakers.patch(principalOf(request), id, sid, body));
   });
 
+  app.delete("/api/contents/:id/speakers/:sid", async (request, reply) => {
+    const { id, sid } = parseInput(speakerParamsSchema, request.params, "params");
+    speakers.delete(principalOf(request), id, sid);
+    return reply.code(204).send();
+  });
+
   // `no-cache` makes a changed photo show at once; the version-keyed ETag turns the
   // revalidation into a 304 while it is unchanged.
   app.get("/api/contents/:id/speakers/:sid/avatar", async (request, reply) => {

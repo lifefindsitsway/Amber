@@ -121,6 +121,7 @@ export const EXPECTED_REFINED_CODES = [
   { code: "conflict.draft_changed", detailsKeys: ["currentVersion"], retryDisposition: null, action: null },
   { code: "conflict.speakers_changed", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.speaker_capacity", detailsKeys: ["room", "required"], retryDisposition: null, action: null },
+  { code: "conflict.speaker_in_use", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.subtitle_changed", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.cache_inspection_expired", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.last_admin", detailsKeys: [], retryDisposition: null, action: null },
