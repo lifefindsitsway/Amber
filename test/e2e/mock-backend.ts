@@ -34,6 +34,7 @@ import { handleChat } from "./mock-chat.ts";
 import { handleDescription } from "./mock-description.ts";
 import { handleOtherModels, OtherModelsState } from "./mock-other-models.ts";
 import { handleOutputs } from "./mock-outputs.ts";
+import { handleDanmaku } from "./mock-danmaku.ts";
 import { handleSearch } from "./mock-search.ts";
 import { handleSpeakers } from "./mock-speakers.ts";
 import { handleTrash, TrashState, type LibraryContent, type MockTrash } from "./mock-trash.ts";
@@ -852,6 +853,7 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
     }
     if (
       (await handleSpeakers(route, request, url)) ||
+      (await handleDanmaku(route, request, url)) ||
       (await handleDescription(route, request, url)) ||
       (await handleTrash(trash, route, request, url)) ||
       (await handleNotes(notesState, route, request, url)) ||

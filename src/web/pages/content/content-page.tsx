@@ -26,7 +26,8 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyn
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { BREAKPOINT_DRAWER_PX, BREAKPOINT_SINGLE_PX, HIGHLIGHT_THRESHOLD_DEFAULT } from "../../../shared/defaults.ts";
-import type { ContentDetailDto } from "../../../shared/dto/content.ts";
+import type { TFunction } from "i18next";
+import type { ContentDetailDto, MediaAssetDto } from "../../../shared/dto/content.ts";
 import type { AuthMeDto } from "../../../shared/dto/system.ts";
 import type { TaskDetailDto } from "../../../shared/dto/task.ts";
 import { ApiError } from "../../api/client.ts";
@@ -46,7 +47,7 @@ import { useMainWidth, useWindowWidth } from "../../layout-width.tsx";
 import { playerSourceOf } from "../../player/capabilities.ts";
 import { saveCachedCopy } from "../../desktop/cached-media.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
-import { allPlayableCaches, cacheHeight, isAudioOnly, playableCache, playableVideoCaches, qualityLabel, usePlaybackMedia, type LocalAsset } from "../../player/media-url.ts";
+import { allPlayableCaches, cacheHeight, isAudioOnly, playableCache, playableVideoCaches, qualityLabel, useCacheReader, usePlaybackMedia, type CacheReader, type LocalAsset } from "../../player/media-url.ts";
 import { useListLoopEntry, useLoopCollectionChoice, usePlaylistAdvance, type AdvanceResult, type LoopCollectionChoice } from "../../player/list-loop.ts";
 import { PlayerController, PlayerControllerProvider, usePlayerCapabilities } from "../../player/player-controller.tsx";
 import { PlayerView, type ActivePlayer } from "../../player/player-view.tsx";
@@ -65,6 +66,7 @@ import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { DeleteContentDialog } from "../../components/delete-content-dialog.tsx";
 import { CacheMediaDialog } from "./cache-media-dialog.tsx";
 import { ContentPageProvider, useContentPage, type ContentPageState, type ContentTab, type SegmentSelection } from "./content-context.tsx";
+import { useDanmakuExtension } from "../../player/danmaku-layer.tsx";
 import { useChapters, useContentDetail, useContentTaskRefresh, useHighlights, useUnfinishedCacheTask } from "./content-data.ts";
 import type { QualitySource } from "../../player/player-menus.tsx";
 import { useContentSubtitles } from "./content-subtitles.ts";
@@ -293,14 +295,16 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   const [cacheTaskId, setCacheTaskId] = useState<string | undefined>(undefined);
   const [audioInstead, setAudioInstead] = useState(false);
   const platform = content.source.kind === "youtube" || content.source.kind === "bilibili";
-  const cache = playableCache(content);
+  // The desktop client plays the caches it keeps; the server mode streams video caches (from content packs).
+  const reader = useCacheReader();
+  const cache = playableCache(content, reader);
   const cached = cache !== undefined;
-  const videoCaches = playableVideoCaches(content);
+  const videoCaches = playableVideoCaches(content, reader);
   // The chosen quality (a height, "" for an unknown one) holds for this page whatever file
   // carries it, so a cache replaced at the same quality is picked up by itself.
   const [selectedQuality, setSelectedQuality] = useState<string | undefined>(undefined);
   const [qualityNotice, setQualityNotice] = useState<string | undefined>(undefined);
-  const qualityOf = (asset: LocalAsset): string => String(cacheHeight(asset) ?? "");
+  const qualityOf = (asset: MediaAssetDto): string => String(cacheHeight(asset) ?? "");
   const chosenCache = selectedQuality === undefined ? undefined : videoCaches.find((asset) => qualityOf(asset) === selectedQuality);
   const effectiveCache = chosenCache ?? videoCaches[0];
   const qualityKey = videoCaches.map(qualityOf).join(",");
@@ -328,7 +332,7 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   }, [unfinishedCache.data, dismissedKey]);
   const playback: PlaybackControls = {
     preferLocal: preferLocal && cached,
-    ...(desktop && platform && cached ? { playLocal: () => setPreferLocal(true) } : {}),
+    ...(reader !== "none" && platform && cached ? { playLocal: () => setPreferLocal(true) } : {}),
     cacheAudioOnly: cache?.audioOnly === true,
     playOnline: () => {
       setPreferLocal(false);
@@ -374,7 +378,7 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   const [singleView, setSingleView] = useState<"middle" | "outputs">("middle");
   const columns = width >= BREAKPOINT_DRAWER_PX;
   const [middleCollapsed, setMiddleCollapsed] = useState(() => localStorage.getItem(MIDDLE_KEY) === "1");
-  const canPlayCache = desktop && platform && cached;
+  const canPlayCache = reader !== "none" && platform && cached;
   useEffect(() => {
     if (props.subtitleEditRequest === 0) return;
     setPlayerHidden(false);
@@ -634,8 +638,8 @@ function Toolbar(props: {
   if (platform) {
     items.push({
       key: "switch-player",
-      inline: <PlayerModeSwitch playback={playback} desktop={props.desktop} />,
-      menu: <PlayerModeMenu playback={playback} desktop={props.desktop} />,
+      inline: <PlayerModeSwitch playback={playback} />,
+      menu: <PlayerModeMenu playback={playback} />,
     });
   }
   items.push({
@@ -767,8 +771,9 @@ function MenuLabel(props: { label: string; note: string | undefined }) {
 }
 
 /** 「在线 | 本地缓存」 inside the "⋯" menu: the checked entry is the player actually on screen. */
-function PlayerModeMenu(props: { playback: PlaybackControls; desktop: boolean }) {
+function PlayerModeMenu(props: { playback: PlaybackControls }) {
   const { t } = useTranslation();
+  const reader = useCacheReader();
   const { playback } = props;
   const indicator = (
     <span className="mt-0.5 flex w-3.5 shrink-0 justify-center" aria-hidden="true">
@@ -795,7 +800,7 @@ function PlayerModeMenu(props: { playback: PlaybackControls; desktop: boolean })
           {indicator}
           <MenuLabel
             label={playback.cacheAudioOnly ? t("contentView.toolbar.playerLocalAudio") : t("contentView.toolbar.playerLocal")}
-            note={playback.playLocal === undefined ? (props.desktop ? t("contentView.player.notCached") : t("contentView.player.clientOnly")) : undefined}
+            note={playback.playLocal === undefined ? localUnavailableHint(reader, t) : undefined}
           />
         </DropdownMenu.RadioItem>
       </DropdownMenu.RadioGroup>
@@ -947,14 +952,21 @@ function fileNameOf(path: string): string {
   return path.split(/[\\/]/u).pop() ?? path;
 }
 
+/** Why 「本地缓存」 cannot be chosen: no cache yet, or no way to read one in this run. */
+function localUnavailableHint(reader: CacheReader, t: TFunction): string {
+  if (reader === "desktop") return t("contentView.player.notCached");
+  return reader === "server" ? t("contentView.player.notCachedServer") : t("contentView.player.clientOnly");
+}
+
 /**
  * 「在线 | 本地缓存」: the pressed half is the player actually on screen, so
- * it also follows an iframe failure that fell back to the cache. 「本地缓存」 needs the
- * desktop client and a cached copy and says which one is missing; with only an audio cache
- * it reads 「本地缓存（仅音频）」.
+ * it also follows an iframe failure that fell back to the cache. 「本地缓存」 needs a cached
+ * copy this run can play (the desktop client's files, or a video cache the server streams)
+ * and says what is missing; with only an audio cache it reads 「本地缓存（仅音频）」.
  */
-function PlayerModeSwitch(props: { playback: PlaybackControls; desktop: boolean }) {
+function PlayerModeSwitch(props: { playback: PlaybackControls }) {
   const { t } = useTranslation();
+  const reader = useCacheReader();
   const { playback } = props;
   const local = playback.active === "local";
   const segment = (pressed: boolean) =>
@@ -969,7 +981,7 @@ function PlayerModeSwitch(props: { playback: PlaybackControls; desktop: boolean 
         className={`${segment(local)} border-l border-line`}
         aria-pressed={local}
         disabled={playback.playLocal === undefined}
-        {...(playback.playLocal === undefined ? { title: props.desktop ? t("contentView.player.notCached") : t("contentView.player.clientOnly") } : {})}
+        {...(playback.playLocal === undefined ? { title: localUnavailableHint(reader, t) } : {})}
         onClick={playback.playLocal}
         data-testid="switch-player-local"
       >
@@ -1062,6 +1074,7 @@ function MiddleColumn(props: {
   const highlights = useHighlights(content.id);
   const chapterList = chapters.data?.current?.chapters ?? [];
   const shownHighlights = visibleHighlights(highlights.data?.current?.items ?? [], highlightThreshold);
+  const danmakuExtension = useDanmakuExtension(content);
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
       {props.toolbar}
@@ -1084,6 +1097,7 @@ function MiddleColumn(props: {
             onEndedAdvance={playback.advance}
             loopCollection={playback.loopCollection}
             subtitles={props.subtitles}
+            extensions={danmakuExtension}
             renderBelow={(active) =>
               // The local player draws chapters into its seek bar; only the highlight band stays below it.
               active === "local" ? (

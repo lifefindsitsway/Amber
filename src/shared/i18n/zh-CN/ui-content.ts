@@ -40,6 +40,7 @@ export const contentView = {
     localClientOnly: "本地文件只能在 Amber 客户端中播放",
     localMissing: "找不到本地文件，重新关联后即可播放",
     notCached: "缓存本视频后可切换到本地播放器",
+    notCachedServer: "没有视频缓存：在客户端缓存后，用内容包导入到这里即可播放",
     none: "该内容没有可播放的来源",
     rate: "倍速",
     autoplay: "自动播放",

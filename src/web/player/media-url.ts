@@ -7,9 +7,6 @@ import { useApi } from "../api/context.tsx";
 import { localFileUrl } from "../desktop/bridge.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
 
-/** Kinds `GET /api/media/:assetId` serves (server mode). */
-const SERVED_KINDS = new Set(["managed_upload", "platform_cache"]);
-
 type Media = Pick<ContentDetailDto, "media">;
 
 /** An available asset with the path the backend reported for the desktop client. */
@@ -54,34 +51,72 @@ export function compareCacheQuality(a: MediaAssetDto, b: MediaAssetDto): number 
   return ha !== hb ? hb - ha : b.createdAt - a.createdAt;
 }
 
-/** The video caches the desktop client can read, best quality first (see `compareCacheQuality`). */
-export function playableVideoCaches(content: Media): LocalAsset[] {
-  return content.media.filter((item): item is LocalAsset => isVideoCache(item) && isLocal(item)).sort(compareCacheQuality);
+/**
+ * Where this run reads platform caches from, which decides what counts as a local cache:
+ * `desktop` reads the files the client keeps (a video or an audio cache); `server` streams
+ * them over `GET /api/media` and offers video caches only (they come from imported content
+ * packs; an audio cache there is never played); `none` (a local backend in a plain browser)
+ * reads none.
+ */
+export type CacheReader = "desktop" | "server" | "none";
+
+export function cacheReaderOf(mode: ApiClient["mode"], desktop: boolean): CacheReader {
+  if (mode === "server") return "server";
+  return desktop ? "desktop" : "none";
 }
 
-/** The newest audio cache the desktop client can read; a Content holds at most one. */
-function playableAudioCache(content: Media): LocalAsset | undefined {
+/** This run's `CacheReader`. */
+export function useCacheReader(): CacheReader {
+  const client = useApi();
+  const desktop = useDesktop();
+  return cacheReaderOf(client.mode, desktop);
+}
+
+function readable(item: MediaAssetDto, reader: CacheReader): boolean {
+  if (reader === "desktop") return isLocal(item);
+  return reader === "server" && item.availability === "available";
+}
+
+/**
+ * The video caches `reader` can play, best quality first (see `compareCacheQuality`).
+ * Without a reader, the desktop client's (assets with a local path).
+ */
+export function playableVideoCaches(content: Media): LocalAsset[];
+export function playableVideoCaches(content: Media, reader: CacheReader): MediaAssetDto[];
+export function playableVideoCaches(content: Media, reader: CacheReader = "desktop"): MediaAssetDto[] {
+  return content.media.filter((item) => isVideoCache(item) && readable(item, reader)).sort(compareCacheQuality);
+}
+
+/** The newest audio cache the desktop client can read; a Content holds at most one. Other readers play none. */
+function playableAudioCache(content: Media, reader: CacheReader): MediaAssetDto | undefined {
+  if (reader !== "desktop") return undefined;
   return content.media
-    .filter((item): item is LocalAsset => item.kind === "platform_cache" && isAudioOnly(item) && isLocal(item))
-    .reduce<LocalAsset | undefined>((newest, item) => (newest === undefined || item.createdAt > newest.createdAt ? item : newest), undefined);
+    .filter((item) => item.kind === "platform_cache" && isAudioOnly(item) && readable(item, reader))
+    .reduce<MediaAssetDto | undefined>((newest, item) => (newest === undefined || item.createdAt > newest.createdAt ? item : newest), undefined);
 }
 
-/** The platform caches the desktop client can read: the best video cache before the audio cache. */
-export function playableCaches(content: Media): LocalAsset[] {
-  return [playableVideoCaches(content)[0], playableAudioCache(content)].filter((item): item is LocalAsset => item !== undefined);
+/** The platform caches `reader` can play: the best video cache before the audio cache. */
+export function playableCaches(content: Media): LocalAsset[];
+export function playableCaches(content: Media, reader: CacheReader): MediaAssetDto[];
+export function playableCaches(content: Media, reader: CacheReader = "desktop"): MediaAssetDto[] {
+  return [playableVideoCaches(content, reader)[0], playableAudioCache(content, reader)].filter((item): item is MediaAssetDto => item !== undefined);
 }
 
-/** Every platform cache the desktop client can read: the video caches by quality, then the audio cache. */
-export function allPlayableCaches(content: Media): LocalAsset[] {
-  return [...playableVideoCaches(content), playableAudioCache(content)].filter((item): item is LocalAsset => item !== undefined);
+/** Every platform cache `reader` can play: the video caches by quality, then the audio cache. */
+export function allPlayableCaches(content: Media): LocalAsset[];
+export function allPlayableCaches(content: Media, reader: CacheReader): MediaAssetDto[];
+export function allPlayableCaches(content: Media, reader: CacheReader = "desktop"): MediaAssetDto[] {
+  return [...playableVideoCaches(content, reader), playableAudioCache(content, reader)].filter((item): item is MediaAssetDto => item !== undefined);
 }
 
 /**
  * The cache the local player switches to: the best video cache when there is one, else the
- * audio cache, which plays without a picture (`audioOnly`).
+ * audio cache, which plays without a picture (`audioOnly`; the desktop client only).
  */
-export function playableCache(content: Media): { asset: LocalAsset; audioOnly: boolean } | undefined {
-  const asset = playableCaches(content)[0];
+export function playableCache(content: Media): { asset: LocalAsset; audioOnly: boolean } | undefined;
+export function playableCache(content: Media, reader: CacheReader): { asset: MediaAssetDto; audioOnly: boolean } | undefined;
+export function playableCache(content: Media, reader: CacheReader = "desktop"): { asset: MediaAssetDto; audioOnly: boolean } | undefined {
+  const asset = playableCaches(content, reader)[0];
   return asset === undefined ? undefined : { asset, audioOnly: isAudioOnly(asset) };
 }
 
@@ -102,14 +137,10 @@ export function localPlayable(content: Media, assetId?: string): LocalAsset | un
  */
 export function playbackAsset(content: Media, mode: ApiClient["mode"], desktop: boolean, assetId?: string): MediaAssetDto | undefined {
   if (mode === "server") {
-    const served = content.media.filter((item) => SERVED_KINDS.has(item.kind) && item.availability === "available");
-    const videos = served.filter(isVideoCache).sort(compareCacheQuality);
-    return (
-      served.find((item) => item.kind === "managed_upload") ??
-      (assetId === undefined ? undefined : videos.find((item) => item.id === assetId)) ??
-      videos[0] ??
-      served[0]
-    );
+    // An upload is the original and comes first; a platform video plays its video caches only.
+    const upload = content.media.find((item) => item.kind === "managed_upload" && item.availability === "available");
+    const videos = playableVideoCaches(content, "server");
+    return upload ?? (assetId === undefined ? undefined : videos.find((item) => item.id === assetId)) ?? videos[0];
   }
   return desktop ? localPlayable(content, assetId) : undefined;
 }
@@ -121,7 +152,7 @@ async function urlOfAsset(asset: MediaAssetDto, client: Pick<ApiClient, "mode" |
 
 /**
  * URL the `<video>` player streams from, when there is one. The server mode serves uploads
- * and platform caches over `/api/media`; the desktop client reads the original local file
+ * and video caches over `/api/media`; the desktop client reads the original local file
  * or a platform cache (video before audio) through its asset protocol. A local backend
  * outside the desktop client has no player source.
  */

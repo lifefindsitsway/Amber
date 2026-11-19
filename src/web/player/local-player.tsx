@@ -11,6 +11,7 @@ import { ClockInput } from "./clock-input.tsx";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
 import { PlaybackRateMenu, PlayerSettingsMenu, QualityMenu, type QualitySource } from "./player-menus.tsx";
 import { usePlayerController, usePlayerTime } from "./player-controller.tsx";
+import type { PlayerExtensionContext, PlayerExtensions } from "./player-extensions.ts";
 import { usePlayerSettings } from "./player-settings.ts";
 import { SeekBar, type ChapterEntry } from "./seek-bar.tsx";
 import { SubtitleEditor } from "./subtitle-editor.tsx";
@@ -85,6 +86,7 @@ export function LocalPlayer(props: {
   sources?: readonly QualitySource[] | undefined;
   activeSourceId?: string | undefined;
   onSelectSource?: ((assetId: string) => void) | undefined;
+  extensions?: PlayerExtensions | undefined;
 }) {
   const { t } = useTranslation();
   const controller = usePlayerController();
@@ -129,6 +131,7 @@ export function LocalPlayer(props: {
   const [controlsFocused, setControlsFocused] = useState(false);
   const subtitles = props.subtitles;
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
+  const [extensionMenuOpen, setExtensionMenuOpen] = useState(false);
   const [subtitleDragging, setSubtitleDragging] = useState(false);
   const [subtitlePreview, setSubtitlePreview] = useState(false);
   const subtitleEditing = subtitles !== undefined && subtitles.editing && subtitles.mode !== "off";
@@ -141,7 +144,7 @@ export function LocalPlayer(props: {
   const [scrubMs, setScrubMs] = useState<number | undefined>(undefined);
   const position = scrubMs ?? time ?? 0;
   const audioOnly = props.audioOnly === true;
-  const picture = usePictureRect(subtitles === undefined ? null : videoElement, audioOnly);
+  const picture = usePictureRect(subtitles === undefined && props.extensions === undefined ? null : videoElement, audioOnly);
   const onDuration = (seconds: number): void => {
     const ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : undefined;
     setDurationMs(ms);
@@ -374,10 +377,20 @@ export function LocalPlayer(props: {
 
   // Dragging a subtitle or previewing its final look shows the picture without the controls.
   const subtitleOnly = subtitleDragging || subtitlePreview;
-  const shown = !subtitleOnly && (audioOnly || !playing || pointerActive || rateMenuOpen || settingsMenuOpen || qualityMenuOpen || subtitleMenuOpen || controlsFocused);
+  const shown = !subtitleOnly && (audioOnly || !playing || pointerActive || rateMenuOpen || settingsMenuOpen || qualityMenuOpen || subtitleMenuOpen || extensionMenuOpen || controlsFocused);
   const sources = audioOnly || props.sources === undefined || props.sources.length === 0 ? undefined : props.sources;
   const autoplay = (settings.autoplay || props.autoplay === true) && swap === undefined && (switchedTo === undefined || switchedTo !== props.activeSourceId);
   const progress = durationMs === undefined ? 0 : Math.min(100, Math.max(0, (position / durationMs) * 100));
+  const extensionContext: PlayerExtensionContext = {
+    video: videoElement,
+    picture,
+    audioOnly,
+    fullscreen,
+    playing,
+    sourceId: props.activeSourceId,
+    container: root,
+    onMenuOpenChange: setExtensionMenuOpen,
+  };
 
   return (
     <div
@@ -437,6 +450,7 @@ export function LocalPlayer(props: {
           {t("contentView.player.audioOnly")}
         </div>
       ) : null}
+      {props.extensions?.pictureLayers?.(extensionContext) ?? null}
       {subtitles === undefined ? null : (
         <SubtitleOverlay
           model={subtitles}
@@ -492,6 +506,7 @@ export function LocalPlayer(props: {
                   <QualityMenu sources={sources} activeId={props.activeSourceId} onSelect={selectSource} container={root} onOpenChange={setQualityMenuOpen} />
                 </span>
               )}
+              {props.extensions?.controls?.(extensionContext) ?? null}
               <span className="flex" data-control="volume">
                 <VolumeControl setting={volume} />
               </span>
@@ -501,7 +516,13 @@ export function LocalPlayer(props: {
                 </span>
               )}
               <span className="flex" data-control="settings">
-                <PlayerSettingsMenu settings={settings} container={root} onOpenChange={setSettingsMenuOpen} loopCollection={props.loopCollection} />
+                <PlayerSettingsMenu
+                  settings={settings}
+                  container={root}
+                  onOpenChange={setSettingsMenuOpen}
+                  loopCollection={props.loopCollection}
+                  extra={props.extensions?.settingsItems?.(extensionContext) ?? null}
+                />
               </span>
               {audioOnly ? null : (
                 <button

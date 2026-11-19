@@ -5,6 +5,7 @@ import { BilibiliPlayer } from "./bilibili-player.tsx";
 import type { PlayerSource } from "./capabilities.ts";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
 import { LocalPlayer } from "./local-player.tsx";
+import type { PlayerExtensions } from "./player-extensions.ts";
 import type { QualitySource } from "./player-menus.tsx";
 import type { ChapterEntry } from "./seek-bar.tsx";
 import type { SubtitleTrackModel } from "./subtitle-overlay.tsx";
@@ -48,6 +49,8 @@ export function PlayerView(props: {
   localSources?: readonly QualitySource[] | undefined;
   localSourceId?: string | undefined;
   onSelectLocalSource?: ((assetId: string) => void) | undefined;
+  /** Features drawn on and added to the `<video>` player; the platform iframes take none. */
+  extensions?: PlayerExtensions | undefined;
 }) {
   const { t } = useTranslation();
   const [failed, setFailed] = useState(false);
@@ -72,6 +75,7 @@ export function PlayerView(props: {
         loopCollection={props.loopCollection}
         subtitles={props.subtitles}
         activeSourceId={props.localSourceId}
+        extensions={props.extensions}
         {...(props.localAudioOnly === true || props.localSources === undefined
           ? {}
           : { sources: props.localSources, onSelectSource: props.onSelectLocalSource })}

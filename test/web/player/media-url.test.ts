@@ -7,6 +7,7 @@ import { ApiProvider, createQueryClient } from "../../../src/web/api/context.tsx
 import {
   allPlayableCaches,
   cacheHeight,
+  cacheReaderOf,
   localPlayable,
   mediaUrlOf,
   playableCache,
@@ -110,6 +111,38 @@ describe("mediaUrlOf", () => {
     expect(playbackAsset({ media: [sd, hd, upload] }, "server", false)?.id).toBe("up");
     expect(playbackAsset({ media: [sd, hd] }, "server", false)?.id).toBe("hd");
     expect(playbackAsset({ media: [sd, hd] }, "server", false, "sd")?.id).toBe("sd");
+  });
+});
+
+describe("local caches by run mode", () => {
+  const video = (id: string, quality: string, overrides: Partial<MediaAssetDto> = {}) =>
+    asset(id, { kind: "platform_cache", retentionPolicy: "evictable", quality, ...overrides });
+  const audio = asset("m1", { kind: "platform_cache", mimeType: "audio/mpeg", retentionPolicy: "evictable" });
+
+  it("names the reader of each run", () => {
+    expect([cacheReaderOf("server", false), cacheReaderOf("local", true), cacheReaderOf("local", false), cacheReaderOf(undefined, false)]).toEqual(["server", "desktop", "none", "none"]);
+  });
+
+  it("offers the server's available video caches by quality, never an audio cache and never needing a local path", () => {
+    const media = [video("sd", "720"), audio, video("hd", "1080"), video("gone", "2160", { availability: "evicted" })];
+    expect(playableVideoCaches({ media }, "server").map((item) => item.id)).toEqual(["hd", "sd"]);
+    expect(playableCaches({ media }, "server").map((item) => item.id)).toEqual(["hd"]);
+    expect(allPlayableCaches({ media }, "server").map((item) => item.id)).toEqual(["hd", "sd"]);
+    expect(playableCache({ media }, "server")).toEqual({ asset: media[2], audioOnly: false });
+    // An audio cache alone is no local playback in the server mode, nor is it streamed.
+    expect(playableCache({ media: [audio] }, "server")).toBeUndefined();
+    expect(playbackAsset({ media: [audio] }, "server", false)).toBeUndefined();
+    // The desktop reader still wants a local path; a plain browser on a local backend reads none.
+    expect(playableCache({ media }, "desktop")).toBeUndefined();
+    expect(playableCache({ media: [video("hd", "1080", { localPath: "/m/hd.mp4" })] }, "none")).toBeUndefined();
+  });
+
+  it("keeps the desktop client's answers when no reader is named", () => {
+    const local = video("hd", "1080", { localPath: "/m/hd.mp4" });
+    const localAudio = { ...audio, localPath: "/m/a.mp3" };
+    expect(playableCache({ media: [local, localAudio] })?.asset.id).toBe("hd");
+    expect(playableCache({ media: [localAudio] })).toEqual({ asset: localAudio, audioOnly: true });
+    expect(playableCaches({ media: [local, localAudio] }, "desktop").map((item) => item.id)).toEqual(["hd", "m1"]);
   });
 });
 

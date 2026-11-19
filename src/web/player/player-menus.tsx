@@ -1,7 +1,7 @@
 import type { TFunction } from "i18next";
 import { Settings } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { LoopCollectionChoice } from "./list-loop.ts";
 import { END_BEHAVIORS, type PlayerSettings } from "./player-settings.ts";
@@ -182,9 +182,12 @@ export function PlayerSettingsMenu(props: {
   container: HTMLElement | null;
   onOpenChange?: (open: boolean) => void;
   loopCollection?: LoopCollectionChoice | undefined;
+  /** Entries features add at the end (see `PlayerExtensions.settingsItems`); `null` adds nothing. */
+  extra?: ReactNode;
 }) {
   const { t } = useTranslation();
   const sections = settingsSections(props.settings, props.loopCollection, t);
+  const hasExtra = props.extra !== undefined && props.extra !== null && props.extra !== false;
   return (
     <DropdownMenu.Root {...rootProps(props)}>
       <DropdownMenu.Trigger className={BAR_BUTTON_CLASS} aria-label={t("contentView.player.settings.title")} title={t("contentView.player.settings.title")} data-testid="player-settings">
@@ -232,6 +235,12 @@ export function PlayerSettingsMenu(props: {
               )}
             </Fragment>
           ))}
+          {hasExtra ? (
+            <>
+              <DropdownMenu.Separator className={SEPARATOR_CLASS} />
+              {props.extra}
+            </>
+          ) : null}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
