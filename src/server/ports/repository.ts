@@ -22,6 +22,7 @@ import type { Content, ContentSource, ImportBatch } from "../domain/content.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { Note } from "../domain/note.ts";
 import type { ContentFigure } from "../domain/figure.ts";
+import type { DanmakuItem } from "../../shared/dto/danmaku.ts";
 import type { ContentSpeaker, SpeakerAvatar } from "../domain/speaker.ts";
 import type { AsrProviderProfile, OtherModelProfile, PlatformAccount, ProviderProfile } from "../domain/provider-profile.ts";
 import type { TokenUsageFeature } from "../../shared/enums.ts";
@@ -1138,6 +1139,21 @@ export interface FigureRepository {
   purgeDeleted(before: number, limit: number): Array<{ userId: string; contentId: string; figureId: string }>;
 }
 
+export interface DanmakuSnapshotRecord {
+  contentId: string;
+  platformPartId: string;
+  fetchedAt: number;
+  items: DanmakuItem[];
+}
+
+export interface DanmakuRepository {
+  get(ownerUserId: string, contentId: string): DanmakuSnapshotRecord | undefined;
+  /** When and how many, without reading the items. */
+  summary(ownerUserId: string, contentId: string): { platformPartId: string; fetchedAt: number; count: number } | undefined;
+  /** Replaces the Content's snapshot whole. */
+  put(ownerUserId: string, snapshot: DanmakuSnapshotRecord): void;
+}
+
 /** A note with the start time of its first sentence, which orders it and is shown with it. */
 export type TimedNote = Note & { startMs: number };
 
@@ -1216,6 +1232,7 @@ export interface RepositoryScope {
   chat: ChatRepository;
   notes: NoteRepository;
   figures: FigureRepository;
+  danmaku: DanmakuRepository;
   pendingFileDeletes: PendingFileDeleteRepository;
 }
 

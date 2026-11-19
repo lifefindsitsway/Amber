@@ -1,3 +1,4 @@
+import type { DanmakuItem } from "../../shared/dto/danmaku.ts";
 import type { PlatformDescription } from "../domain/content-description.ts";
 import type { CookieBrowser } from "../domain/runtime-support.ts";
 import type { Platform } from "../domain/platform.ts";
@@ -233,4 +234,12 @@ export interface PlatformSourceAdapter {
    * Every failure is `browser_cookies_unavailable`.
    */
   importBrowserCookies?(browser: CookieBrowser, signal: AbortSignal): Promise<string>;
+  /**
+   * The danmaku of one video part, fetched anonymously in one request (never with a login),
+   * the response read as bytes within `DANMAKU_RESPONSE_MAX_BYTES` and inflated within
+   * `DANMAKU_INFLATED_MAX_BYTES`. Only the normal pool; text cleaned and capped; at most
+   * `DANMAKU_ITEMS_MAX` items, the lowest weights dropped first (`truncated`). An empty list
+   * means the video has none. Only platforms that offer danmaku implement it.
+   */
+  fetchDanmaku?(ref: PlatformContentRef, signal: AbortSignal): Promise<{ items: DanmakuItem[]; truncated: boolean }>;
 }

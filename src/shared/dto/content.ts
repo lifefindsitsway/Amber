@@ -7,6 +7,7 @@ import {
   TRANSCRIPT_KINDS,
 } from "../enums.ts";
 import { nameSchema } from "./collection.ts";
+import { contentDanmakuSummarySchema } from "./danmaku.ts";
 import { languageTagSchema } from "./import.ts";
 import { INSPECTED_SUBTITLE_FORMATS, subtitleImportOptionsSchema } from "./subtitle-import.ts";
 
@@ -78,6 +79,8 @@ export const contentDetailDtoSchema = contentDtoSchema.extend({
   descriptionTruncated: z.literal(true).exactOptional(),
   /** When the platform request that last settled the description (text or none) was sent; absent = never settled. */
   descriptionCheckedAt: epochMsSchema.exactOptional(),
+  /** Present when the Content's platform offers danmaku: when the last snapshot was fetched and how many items it holds. */
+  danmaku: contentDanmakuSummarySchema.exactOptional(),
 });
 export type ContentDetailDto = z.infer<typeof contentDetailDtoSchema>;
 

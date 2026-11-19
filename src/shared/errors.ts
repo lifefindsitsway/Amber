@@ -328,6 +328,10 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.figure_changed": { detailsKeys: ["currentVersion"] },
   // Restoring a deleted figure whose retention has run out.
   "not_found.figure_purged": {},
+  // Danmaku asked for a Content whose platform offers none.
+  "invalid_request.danmaku_unsupported": {},
+  // The Content's danmaku was requested too recently; nothing was sent to the platform.
+  "rate_limited.danmaku_cooldown": { detailsKeys: ["retryAfterMs"] },
   "unauthenticated.csrf": {},
   "unauthenticated.setup_token": {},
   "unauthenticated.bad_credentials": {},

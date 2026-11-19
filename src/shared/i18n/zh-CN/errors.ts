@@ -139,6 +139,8 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "invalid_request.figure_anchor": "插图所依据的字幕已不存在，请刷新后重试",
   "conflict.figure_changed": "这张插图已在别处修改，已显示最新内容",
   "not_found.figure_purged": "这张插图已超过保留期，无法恢复",
+  "invalid_request.danmaku_unsupported": "这个视频不支持弹幕",
+  "rate_limited.danmaku_cooldown": "刚刚更新过弹幕，请稍后再试",
   "invalid_request.subtitle_encoding": "字幕文件不是 UTF-8 编码",
   "invalid_request.subtitle_format": "无法识别的字幕格式",
   "invalid_request.subtitle_newer": "这个字幕包来自更新版本的 Amber，请升级后再导入",

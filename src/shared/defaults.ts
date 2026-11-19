@@ -513,3 +513,24 @@ export const FIGURE_DELETED_RETENTION_DAYS = 30;
 export const FIGURE_PROCESS_TIMEOUT_MS = 20000;
 /** Frame captures and image normalizations run at once, across all users. */
 export const FIGURE_PROCESS_CONCURRENCY = 2;
+
+/** Size cap of one danmaku response body as sent (compressed), 8 MiB. */
+export const DANMAKU_RESPONSE_MAX_BYTES = 8388608;
+/** Size cap of a danmaku response once inflated, 32 MiB. */
+export const DANMAKU_INFLATED_MAX_BYTES = 33554432;
+/** Most danmaku items one snapshot keeps. */
+export const DANMAKU_ITEMS_MAX = 20000;
+/** Length cap of one danmaku item's text, in characters. */
+export const DANMAKU_TEXT_MAX_CHARS = 100;
+/** Timeout of one danmaku request. */
+export const DANMAKU_FETCH_TIMEOUT_MS = 15000;
+/** Least time between two danmaku requests for one Content. */
+export const DANMAKU_FETCH_COOLDOWN_MS = 30000;
+/** Most danmaku elements on screen at once. */
+export const DANMAKU_ONSCREEN_MAX = 120;
+/** Most danmaku items waiting for a free lane; older ones are dropped first. */
+export const DANMAKU_QUEUE_MAX = 300;
+/** Time a scrolling danmaku takes to cross the picture at normal speed. */
+export const DANMAKU_SCROLL_MS = 8000;
+/** Time a top or bottom danmaku stays at normal speed. */
+export const DANMAKU_FIXED_MS = 4000;

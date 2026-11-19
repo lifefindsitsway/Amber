@@ -17,9 +17,11 @@ import type {
   VideoQuality,
   VideoTarget,
 } from "../../../ports/platform-source.ts";
+import type { DanmakuItem } from "../../../../shared/dto/danmaku.ts";
 import { platformGet, platformGetJson } from "../http.ts";
 import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoQualities, secondsToMs, videoTargetOf, type YtDlpChapter } from "../shared.ts";
 import type { YtDlp } from "../yt-dlp.ts";
+import { fetchBilibiliDanmaku } from "./danmaku.ts";
 import { collectionUrl, isShortLink, parseBilibiliUrl, videoUrl } from "./url.ts";
 
 /** IE_NAMEs of the pinned yt-dlp that handle the URLs `parse` accepts. */
@@ -370,6 +372,18 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       signal,
     });
     return { ...video, acquisition: cookies === undefined ? "guest" : "authenticated" };
+  }
+
+  /**
+   * The part's danmaku in one anonymous request to the danmaku list of its cid. Takes no
+   * credential: the login is never read and no cookie is sent, so a failure is never retried
+   * with one. A Content without a cid has no part to ask for.
+   */
+  async fetchDanmaku(ref: PlatformContentRef, signal: AbortSignal): Promise<{ items: DanmakuItem[]; truncated: boolean }> {
+    if (ref.platformPartId === undefined) {
+      throw new TypeError("danmaku needs the part id");
+    }
+    return fetchBilibiliDanmaku(this.options.http, ref.platformPartId, signal);
   }
 
   /** The part a Content refers to, located by cid because part numbers shift when parts are reordered. */

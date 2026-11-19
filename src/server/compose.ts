@@ -53,6 +53,7 @@ import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
 import { FigureService } from "./application/figures.ts";
+import { DanmakuService, danmakuSummaryIn } from "./application/danmaku.ts";
 import { SpeakerService } from "./application/speakers.ts";
 import { SpeakerLineageReader } from "./application/speaker-lineage.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
@@ -357,6 +358,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   });
   const contents = new ContentService({
     repository,
+    danmakuSummary: (scope, owner, content) => danmakuSummaryIn(platforms, scope, owner, content),
     ...(config.mode === "local"
       ? { localPaths: { pathOf: (ref: string) => media.cache.pathOf(ref), isFile: isExistingFile, cacheAvailable: () => media.cache.isAvailableSync() } }
       : {}),
@@ -489,6 +491,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     // Declared further down; read only once requests arrive.
     backgroundReady: () => backgroundReady,
   });
+  const danmaku = new DanmakuService({ repository, platforms, logger: lateLogger(() => appLogger?.child({ component: "danmaku" })) });
   const speakers = new SpeakerService({ repository });
   // Local mode only: the client backup and the maintenance state before an update install.
   let backgroundReady = false;
@@ -604,6 +607,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     webSearch,
     notes,
     figures,
+    danmaku,
     speakers,
     localImport,
     subtitleImport,

@@ -1,3 +1,4 @@
+import type { ContentDanmakuSummary } from "../../shared/dto/danmaku.ts";
 import { monotonicFactory } from "ulid";
 import { SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import type {
@@ -33,6 +34,8 @@ export interface ContentServiceOptions {
    * sends a path.
    */
   localPaths?: LocalPathResolver;
+  /** The danmaku part of a Content's detail, read in the same transaction; absent leaves the field out. */
+  danmakuSummary?: (scope: RepositoryScope, owner: string, content: Content) => ContentDanmakuSummary | undefined;
   now?: () => number;
   newId?: () => string;
 }
@@ -301,7 +304,13 @@ export class ContentService {
   detailIn(scope: RepositoryScope, owner: string, content: Content): ContentDetailDto {
     const [dto] = contentDtos(scope, owner, [content]) as [ContentDto];
     const media = scope.mediaAssets.listByContent(owner, content.id).map((asset) => this.withCurrentAvailability(scope, asset));
-    return { ...dto, ...contentDetailFields(content), media: media.map((asset) => mediaAssetDto(asset, this.options.localPaths)) };
+    const danmaku = this.options.danmakuSummary?.(scope, owner, content);
+    return {
+      ...dto,
+      ...contentDetailFields(content),
+      media: media.map((asset) => mediaAssetDto(asset, this.options.localPaths)),
+      ...(danmaku === undefined ? {} : { danmaku }),
+    };
   }
 
   revisions(principal: RequestPrincipal, contentId: string): TranscriptRevisionListDto {

@@ -139,6 +139,9 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "DELETE", path: "/figures/:fid", modes: BOTH },
   { method: "POST", path: "/figures/:fid/restore", modes: BOTH },
   { method: "GET", path: "/figures/:fid/image", modes: BOTH },
+  // danmaku
+  { method: "GET", path: "/contents/:id/danmaku", modes: BOTH },
+  { method: "POST", path: "/contents/:id/danmaku/fetch", modes: BOTH },
   // export
   { method: "POST", path: "/contents/:id/export", modes: BOTH },
   { method: "POST", path: "/collections/:id/export", modes: BOTH },

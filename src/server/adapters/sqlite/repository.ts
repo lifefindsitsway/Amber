@@ -17,6 +17,7 @@ import { sqliteMediaAssetRepository } from "./repositories/media-assets.ts";
 import { sqliteNetworkAllowlistRepository } from "./repositories/network-allowlist.ts";
 import { sqliteNoteRepository } from "./repositories/notes.ts";
 import { sqliteFigureRepository } from "./repositories/figures.ts";
+import { sqliteDanmakuRepository } from "./repositories/danmaku.ts";
 import { sqlitePendingFileDeleteRepository } from "./repositories/pending-file-deletes.ts";
 import { sqlitePlatformAccountRepository } from "./repositories/platform-accounts.ts";
 import { sqliteOtherModelProfileRepository } from "./repositories/other-model-profiles.ts";
@@ -90,6 +91,7 @@ export class SqliteRepository implements Repository {
       chat: sqliteChatRepository(db),
       notes: sqliteNoteRepository(db),
       figures: sqliteFigureRepository(db),
+      danmaku: sqliteDanmakuRepository(db),
       pendingFileDeletes: sqlitePendingFileDeleteRepository(db),
     };
   }

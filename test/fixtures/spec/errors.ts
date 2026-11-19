@@ -119,6 +119,8 @@ export const EXPECTED_REFINED_CODES = [
   { code: "invalid_request.figure_anchor", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.figure_changed", detailsKeys: ["currentVersion"], retryDisposition: null, action: null },
   { code: "not_found.figure_purged", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "invalid_request.danmaku_unsupported", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "rate_limited.danmaku_cooldown", detailsKeys: ["retryAfterMs"], retryDisposition: null, action: null },
   { code: "conflict.mutation_lane", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.setting_env_overridden", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.duplicate_file", detailsKeys: ["duplicateOfContentId", "trashed"], retryDisposition: null, action: null },

@@ -27,6 +27,7 @@ import type { SubtitleImportService } from "./application/subtitle-import.ts";
 import type { MediaAssetService } from "./application/media-assets.ts";
 import type { NoteService } from "./application/notes.ts";
 import type { FigureService } from "./application/figures.ts";
+import type { DanmakuService } from "./application/danmaku.ts";
 import type { SpeakerService } from "./application/speakers.ts";
 import type { PlatformAccountService } from "./application/platform-accounts.ts";
 import type { PlatformQrLoginService } from "./application/platform-qr-login.ts";
@@ -75,6 +76,7 @@ import { registerInstanceSettingsRoutes } from "./api/routes/instance-settings.t
 import { registerMediaDeleteRoute, registerMediaPlaybackRoutes } from "./api/routes/media.ts";
 import { registerNoteRoutes } from "./api/routes/notes.ts";
 import { registerFigureRoutes } from "./api/routes/figures.ts";
+import { registerDanmakuRoutes } from "./api/routes/danmaku.ts";
 import { registerSpeakerRoutes } from "./api/routes/speakers.ts";
 import { registerOtherModelRoutes } from "./api/routes/other-models.ts";
 import { registerPlatformAccountRoutes } from "./api/routes/platform-accounts.ts";
@@ -175,6 +177,8 @@ export interface AppDeps {
   notes?: NoteService;
   /** Figures of the reading view (captured frames, uploaded and pasted images). */
   figures?: FigureService;
+  /** Danmaku snapshots of platform videos. */
+  danmaku?: DanmakuService;
   /** Speaker identities of a Content and their photos. */
   speakers?: SpeakerService;
   /** "Proofread again", "regenerate chapters", "recompute highlights" and "translate". */
@@ -368,6 +372,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.figures !== undefined) {
     registerFigureRoutes(app, { figures: deps.figures });
+  }
+  if (deps.danmaku !== undefined) {
+    registerDanmakuRoutes(app, { danmaku: deps.danmaku });
   }
   if (deps.speakers !== undefined) {
     registerSpeakerRoutes(app, { speakers: deps.speakers });

@@ -186,6 +186,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
     image_sha256: "0".repeat(64), created_at: T0, updated_at: T0,
   });
   row("content_figure_image", { figure_id: figure, bytes: Buffer.from([0]) });
+  row("content_danmaku", { content_id: content, user_id: userId, platform_part_id: "1", fetched_at: T0, item_count: 0, items_json: json([]) });
 
   const terminology = (scope_kind: string, extra: Record<string, unknown>) => {
     const id = nextId();

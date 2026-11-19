@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_USER_AGENT, platformGet, platformGetJson } from "../../../../src/server/adapters/platform/http.ts";
+import { BROWSER_USER_AGENT, platformGet, platformGetBytes, platformGetJson } from "../../../../src/server/adapters/platform/http.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { OutboundHttpError } from "../../../../src/server/ports/outbound-http.ts";
 import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
@@ -67,5 +67,57 @@ describe("platformGet", () => {
     expect(http.requests[0]?.headers).toEqual({ "User-Agent": BROWSER_USER_AGENT });
     // The caller walks the chain itself; the client must not follow it.
     expect(http.requests[0]?.redirect).toBe("manual");
+  });
+});
+
+describe("platformGetBytes", () => {
+  const DM = "https://api.bilibili.com/x/v1/dm/list.so?oid=1";
+
+  it("returns the body's bytes as sent with the headers, under the caller's timeout or the metadata one", async () => {
+    const http = new ScriptedHttp(() => ({ body: "raw", headers: { "Content-Encoding": "deflate" } }));
+    const answer = await platformGetBytes(http, { url: DM, signal: signal(), maxBytes: 3, timeoutMs: 1234 });
+    expect(Buffer.from(answer.bytes).toString("utf8")).toBe("raw");
+    expect(answer.headers.get("content-encoding")).toBe("deflate");
+    expect(http.requests[0]).toMatchObject({ url: DM, method: "GET", timeoutMs: 1234, headers: { "User-Agent": BROWSER_USER_AGENT } });
+    await platformGetBytes(http, { url: DM, signal: signal(), maxBytes: 3 });
+    expect(http.requests[1]?.timeoutMs).toBe(PLATFORM_METADATA_TIMEOUT_MS);
+  });
+
+  it("refuses a body longer than the limit, by length or by declaration", async () => {
+    const long = new ScriptedHttp(() => ({ body: "1234" }));
+    expect(await classOf(platformGetBytes(long, { url: DM, signal: signal(), maxBytes: 3 }))).toBe("source_html_error_page");
+    const declared = new ScriptedHttp(() => ({ body: "1", headers: { "Content-Length": "4" } }));
+    expect(await classOf(platformGetBytes(declared, { url: DM, signal: signal(), maxBytes: 3 }))).toBe("source_html_error_page");
+  });
+
+  it("maps statuses like platformGetJson, even when the error page is over the limit", async () => {
+    const cases: Array<[number, string]> = [
+      [412, "platform_blocked"],
+      [429, "platform_blocked"],
+      [404, "source_unreachable"],
+      [503, "source_unreachable"],
+    ];
+    for (const [status, expected] of cases) {
+      const http = new ScriptedHttp(() => ({ status, body: "x".repeat(100) }));
+      expect(await classOf(platformGetBytes(http, { url: DM, signal: signal(), maxBytes: 3 })), String(status)).toBe(expected);
+    }
+  });
+
+  it("maps a transport failure while reading to source_unreachable but lets an abort through", async () => {
+    const broken = (reason: "network" | "aborted") => ({
+      async request() {
+        return {
+          status: 200,
+          headers: new Map<string, string>(),
+          body: (async function* () {
+            yield new Uint8Array([1]);
+            throw new OutboundHttpError("after_send", reason);
+          })(),
+          text: async () => "",
+        };
+      },
+    });
+    expect(await classOf(platformGetBytes(broken("network"), { url: DM, signal: signal(), maxBytes: 10 }))).toBe("source_unreachable");
+    await expect(platformGetBytes(broken("aborted"), { url: DM, signal: signal(), maxBytes: 10 })).rejects.toBeInstanceOf(OutboundHttpError);
   });
 });
