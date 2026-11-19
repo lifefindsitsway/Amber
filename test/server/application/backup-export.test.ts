@@ -10,7 +10,7 @@ import { NoteService } from "../../../src/server/application/notes.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { BackupArchiveRequest, BackupArchiveWriter } from "../../../src/server/ports/backup.ts";
 import { backupHeaderSchema } from "../../../src/shared/backup.ts";
-import { BACKUP_HEADER_MAX_BYTES } from "../../../src/shared/defaults.ts";
+import { BACKUP_HEADER_MAX_BYTES, FIGURE_IMAGE_MAX_BYTES, FIGURES_PER_CONTENT_MAX } from "../../../src/shared/defaults.ts";
 import type { BackupExportRequest } from "../../../src/shared/dto/backup.ts";
 import { createExportStack, readArchive, seedLibrary, settled, sha256Of } from "../../fixtures/backup/library.ts";
 import { createHarness, createLocalContent, createTaskOfKind, gate, LOCAL, stageStatuses, taskOf, waitFor, type Harness } from "../../fixtures/pipeline/harness.ts";
@@ -387,6 +387,56 @@ describe("BackupExportService", () => {
       staged.close();
     }
   });
+
+  it("exports a library with a Content at the figure limit: every figure and image goes in, the snapshot passes the restore checks, the estimate counts them", async () => {
+    const { h, library, stack, target, request } = await setup();
+    const empty = stack.service.estimate({ includeOriginals: false, includeCache: false }).database.bytes;
+    const image = randomBytes(FIGURE_IMAGE_MAX_BYTES);
+    h.repository.withTransaction((scope) => {
+      for (let index = 0; index < FIGURES_PER_CONTENT_MAX; index += 1) {
+        image[0] = index;
+        scope.figures.insert(
+          {
+            id: `01FIGURE${String(index).padStart(18, "0")}`,
+            contentId: library.contentId,
+            userId: LOCAL.userId,
+            source: "upload",
+            displayMs: index * 1000,
+            sortKey: 0,
+            widthRatio: 0.5,
+            caption: `图 ${index + 1}`,
+            image: { width: 1280, height: 720, bytes: image.length, sha256: sha256Of(image) },
+            version: 1,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          image,
+        );
+      }
+    });
+    // The images live in the database, so the estimate grows by about their bytes.
+    expect(stack.service.estimate({ includeOriginals: false, includeCache: false }).database.bytes - empty).toBeGreaterThanOrEqual(FIGURES_PER_CONTENT_MAX * FIGURE_IMAGE_MAX_BYTES);
+
+    const { jobId } = stack.service.start(request({ includeOriginals: false, includeCache: false }));
+    expect((await settled(stack, jobId)).status).toBe("succeeded");
+    const entries = await readArchive(target);
+    const snapshotFile = join(stack.destinationDir, "figures.sqlite");
+    writeFileSync(snapshotFile, entries.find((entry) => entry.path === "database.sqlite")?.bytes ?? Buffer.alloc(0));
+    const staged = StagedDatabase.open(snapshotFile);
+    try {
+      expect(() => staged.verify()).not.toThrow();
+    } finally {
+      staged.close();
+    }
+    const snapshot = new Database(snapshotFile, { readonly: true });
+    try {
+      expect(snapshot.prepare("SELECT count(*) AS n FROM content_figure WHERE content_id = ?").get(library.contentId)).toEqual({ n: FIGURES_PER_CONTENT_MAX });
+      expect(snapshot.prepare("SELECT count(*) AS n, sum(length(bytes)) AS bytes FROM content_figure_image").get()).toEqual({ n: FIGURES_PER_CONTENT_MAX, bytes: FIGURES_PER_CONTENT_MAX * FIGURE_IMAGE_MAX_BYTES });
+      expect(snapshot.pragma("integrity_check", { simple: true })).toBe("ok");
+    } finally {
+      snapshot.close();
+    }
+  }, 120_000);
 
   it("estimates by registered sizes", async () => {
     const { library, stack } = await setup();

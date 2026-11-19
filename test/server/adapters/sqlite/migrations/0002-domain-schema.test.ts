@@ -180,6 +180,12 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
     start_offset: 0, end_segment_id: firstSegment, end_offset: 1, quote: "大", mark: "background", color: "yellow", comment: "…",
     created_at: T0, updated_at: T0,
   });
+  const figure = nextId();
+  row("content_figure", {
+    id: figure, content_id: content, user_id: userId, source: "upload", display_ms: 0, width_ratio: 0.7, image_width: 1, image_height: 1, image_bytes: 1,
+    image_sha256: "0".repeat(64), created_at: T0, updated_at: T0,
+  });
+  row("content_figure_image", { figure_id: figure, bytes: Buffer.from([0]) });
 
   const terminology = (scope_kind: string, extra: Record<string, unknown>) => {
     const id = nextId();

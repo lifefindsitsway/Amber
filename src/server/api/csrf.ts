@@ -1,7 +1,7 @@
 import type { FastifyRequest } from "fastify";
 
-/** The only route whose body may be multipart; every other unsafe request with a simple form content type is refused. */
-const MULTIPART_ROUTES = new Set(["POST /api/contents/upload"]);
+/** The only routes whose body may be multipart; every other unsafe request with a simple form content type is refused. */
+const MULTIPART_ROUTES = new Set(["POST /api/contents/upload", "POST /api/contents/:id/figures/upload"]);
 
 /** Content types a cross-site HTML form can send without a preflight. */
 const SIMPLE_FORM_TYPES = new Set(["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"]);
@@ -32,7 +32,7 @@ export function checkCsrf(request: FastifyRequest, publicOrigin: string): string
       return "origin_missing";
     }
   }
-  // 6. No simple form content type on JSON endpoints; only the upload route takes multipart.
+  // 6. No simple form content type on JSON endpoints; only the upload routes take multipart.
   const contentType = single(request.headers["content-type"])?.split(";")[0]?.trim().toLowerCase();
   if (contentType !== undefined && SIMPLE_FORM_TYPES.has(contentType)) {
     const route = `${request.method} ${request.routeOptions.url ?? ""}`;

@@ -32,7 +32,15 @@ interface HitRow {
   speaker_name: string | null;
   speaker_color_index: number | null;
   speakers_confirmed: number | null;
+  figure_ordinal: number | null;
+  figure_captured_at_ms: number | null;
 }
+
+/**
+ * A figure row whose figure is no longer live has no ordinal. The projection is kept in the
+ * same transaction as every figure change, so this only guards a half-repaired index.
+ */
+const answerable = (row: HitRow): boolean => row.kind !== "figure" || row.figure_ordinal !== null;
 
 function toHit(row: HitRow): SearchIndexHit {
   switch (row.kind) {
@@ -67,17 +75,32 @@ function toHit(row: HitRow): SearchIndexHit {
       };
     case "collection":
       return { kind: "collection", collectionId: row.collection_id as string, text: row.text };
+    case "figure":
+      return {
+        kind: "figure",
+        contentId: row.content_id as string,
+        figureId: row.revision_id as string,
+        ordinal: row.figure_ordinal as number,
+        ...(row.figure_captured_at_ms === null ? {} : { capturedAtMs: row.figure_captured_at_ms }),
+        text: row.text,
+      };
     default:
       return { kind: row.kind, contentId: row.content_id as string, text: row.text };
   }
 }
 
-/** Kinds in the order a `like` scan reports them, so short lists still show titles first. */
-const LIKE_ORDER = ["title", "collection", "reference", "summary", "segment"] as const;
+/**
+ * Kinds in the order a `like` scan reports them, so short lists still show titles first.
+ * Figure captions come before sentences: a Content has few of them and many sentences, which
+ * would otherwise use up the scan's limit first.
+ */
+const LIKE_ORDER = ["title", "collection", "reference", "summary", "figure", "segment"] as const;
 
 /**
  * The FTS5 projection, derived from the business tables with
  * `INSERT … SELECT`; summary bodies pass through JavaScript to drop citation markers.
+ * Figure captions are projected with their Content (live figures with a caption only), so
+ * the trash, a Content sync and a full rebuild treat them like the Content's other rows.
  * Rows are located by their UNINDEXED columns, so re-deriving one Content scans the table:
  * acceptable at personal-library scale, revisited if libraries grow large.
  */
@@ -106,6 +129,16 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
      FROM content c JOIN summary_artifact a ON a.content_id = c.id JOIN summary_revision r ON r.id = a.current_revision_id
      WHERE ${contentFilter} ORDER BY c.id, a.template_id`,
   );
+  // A figure's id goes in `revision_id`, as a reference text's does: `segment_id` stays for sentences.
+  // `@figureId` narrows the derivation to one figure; NULL takes every figure of the Contents.
+  const insertFigures = db.prepare(
+    `INSERT INTO search_index (${COLUMNS})
+     SELECT f.caption, 'figure', c.user_id, c.id, NULL, f.id, NULL, NULL
+     FROM content c JOIN content_figure f ON f.content_id = c.id AND f.user_id = c.user_id
+     WHERE ${contentFilter} AND (@figureId IS NULL OR f.id = @figureId)
+       AND f.deleted_at IS NULL AND f.caption IS NOT NULL AND trim(f.caption) <> ''
+     ORDER BY c.id, f.display_ms, f.sort_key, f.created_at, f.id`,
+  );
   const insertRow = db.prepare(
     `INSERT INTO search_index (${COLUMNS}) VALUES (@text, @kind, @userId, @contentId, @collectionId, @revisionId, NULL, NULL)`,
   );
@@ -115,6 +148,7 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
      FROM collection k WHERE (@all = 1 OR (k.user_id = @owner AND k.id = @collectionId))`,
   );
   const deleteContent = db.prepare("DELETE FROM search_index WHERE user_id = ? AND content_id = ?");
+  const deleteFigure = db.prepare("DELETE FROM search_index WHERE user_id = ? AND content_id = ? AND kind = 'figure' AND revision_id = ?");
   const deleteCollection = db.prepare("DELETE FROM search_index WHERE user_id = ? AND kind = 'collection' AND collection_id = ?");
   const deleteAll = db.prepare("DELETE FROM search_index");
   const anyRow = db.prepare("SELECT 1 FROM search_index LIMIT 1");
@@ -138,6 +172,7 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
     insertTitles.run(params);
     insertSegments.run(params);
     insertReferences.run(params);
+    insertFigures.run({ ...params, figureId: null });
     const summaries = currentSummaries.all(params) as Array<{ revision_id: string; body: string; user_id: string; content_id: string }>;
     for (const summary of summaries) {
       insertRow.run({
@@ -163,16 +198,26 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
   };
 
   // A sentence's speaker is joined as it is now, never indexed: a rename or a review shows at once.
+  // A figure's 「图 N」 is numbered here among the Content's live figures, never stored, so it
+  // follows deletions and moves at once and does not depend on how the reading view lays them out.
+  // The window's one bound parameter, the owner, comes before those of the WHERE clause.
   const SELECT_HIT = `SELECT si.kind, si.content_id, si.collection_id, si.revision_id, si.segment_id, si.start_ms, si.text,
       a.id AS artifact_id, a.template_id,
       sp.id AS speaker_id, sp.ordinal AS speaker_ordinal, sp.name AS speaker_name, sp.color_index AS speaker_color_index,
-      CASE WHEN sc.revision_id IS NULL THEN 0 ELSE 1 END AS speakers_confirmed
+      CASE WHEN sc.revision_id IS NULL THEN 0 ELSE 1 END AS speakers_confirmed,
+      fg.ordinal AS figure_ordinal, fg.captured_at_ms AS figure_captured_at_ms
     FROM search_index si
     LEFT JOIN summary_revision sr ON si.kind = 'summary' AND sr.id = si.revision_id
     LEFT JOIN summary_artifact a ON a.id = sr.artifact_id
     LEFT JOIN transcript_segment ts ON si.kind = 'segment' AND ts.id = si.segment_id
     LEFT JOIN content_speaker sp ON sp.content_id = si.content_id AND sp.id = ts.speaker_id
-    LEFT JOIN transcript_revision_speaker_confirmation sc ON si.kind = 'segment' AND sc.revision_id = si.revision_id`;
+    LEFT JOIN transcript_revision_speaker_confirmation sc ON si.kind = 'segment' AND sc.revision_id = si.revision_id
+    LEFT JOIN (
+      SELECT f.id, f.user_id, f.captured_at_ms,
+        row_number() OVER (PARTITION BY f.content_id ORDER BY f.display_ms, f.sort_key, f.created_at, f.id) AS ordinal
+      FROM content_figure f
+      WHERE f.deleted_at IS NULL AND f.user_id = ?
+    ) fg ON si.kind = 'figure' AND fg.id = si.revision_id`;
   const speakerNameFilter = (terms: number): string => Array.from({ length: terms }, () => " AND sp.name LIKE ? ESCAPE '\\'").join("");
 
   /** Scope condition and its parameters; content scopes never return collection rows. */
@@ -199,6 +244,10 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
     removeContent(ownerUserId, contentId) {
       deleteContent.run(ownerUserId, contentId);
     },
+    syncFigure(ownerUserId, contentId, figureId) {
+      deleteFigure.run(ownerUserId, contentId, figureId);
+      insertFigures.run({ all: 0, owner: ownerUserId, contentId, figureId });
+    },
     syncCollection(ownerUserId, collectionId) {
       deleteCollection.run(ownerUserId, collectionId);
       insertCollections.run({ all: 0, owner: ownerUserId, collectionId });
@@ -218,8 +267,8 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
           const rows = statement(
             `${SELECT_HIT} WHERE search_index MATCH ? AND si.user_id = ? AND si.kind = ?${scope.sql}
              ORDER BY bm25(search_index), si.rowid LIMIT ?`,
-          ).all(match, ownerUserId, kind, ...scope.params, query.groupLimit) as HitRow[];
-          hits.push(...rows.map(toHit));
+          ).all(ownerUserId, match, ownerUserId, kind, ...scope.params, query.groupLimit) as HitRow[];
+          hits.push(...rows.filter(answerable).map(toHit));
         }
         return hits;
       }
@@ -229,10 +278,10 @@ export function sqliteSearchIndexRepository(db: SqliteConnection): SearchIndexRe
       const rows = statement(
         `${SELECT_HIT} WHERE si.user_id = ? AND si.kind IN (${kinds})${likes}${scope.sql}
          ORDER BY CASE si.kind ${order} END, si.rowid LIMIT ?`,
-      ).all(ownerUserId, ...scope.kinds, ...query.terms.map(likePattern), ...scope.params, query.likeLimit) as HitRow[];
+      ).all(ownerUserId, ownerUserId, ...scope.kinds, ...query.terms.map(likePattern), ...scope.params, query.likeLimit) as HitRow[];
       const perKind = new Map<string, number>();
       const hits: SearchIndexHit[] = [];
-      for (const row of rows) {
+      for (const row of rows.filter(answerable)) {
         const seen = perKind.get(row.kind) ?? 0;
         if (seen < query.groupLimit) {
           perKind.set(row.kind, seen + 1);

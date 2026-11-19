@@ -360,6 +360,7 @@ describe("CollectionPage", () => {
           ],
           summaries: [],
           collections: [],
+          figures: [],
         },
       },
     });

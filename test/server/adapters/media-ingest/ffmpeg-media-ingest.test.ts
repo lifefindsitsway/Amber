@@ -1,12 +1,31 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { FIGURE_LONG_EDGE_MAX_PX, FIGURE_PIXELS_MAX, FIGURE_WEBP_QUALITY } from "../../../../src/shared/defaults.ts";
 import { FfmpegMediaIngest } from "../../../../src/server/adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { NodeProcessRunner } from "../../../../src/server/adapters/process-runner/node-process-runner.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
+import { inspectPackWebp } from "../../../../src/server/domain/figure-image.ts";
 import { childProcessEnv } from "../../../../src/server/ports/process-runner.ts";
+import {
+  animatedPng,
+  animatedWebp,
+  audioOnly,
+  decodePixels,
+  ffmpeg,
+  frameLevels,
+  METADATA_MARK,
+  nearestFrame,
+  orientedJpeg,
+  patternPng,
+  TIMED_VIDEO_FPS,
+  TIMED_VIDEO_MS,
+  timedVideo,
+  transparentPng,
+  truncatedJpeg,
+} from "../../../fixtures/media/figure-images.ts";
 import { mediaFixtures } from "../../../fixtures/media/index.ts";
 import { toolPath, toolsBinDir } from "../../../fixtures/tools.ts";
 import { tempDataDir } from "../../../tools/sqlite.ts";
@@ -208,5 +227,263 @@ describe("FfmpegMediaIngest", () => {
   it("reports a tool that cannot start as internal.tool_failed", async () => {
     const broken = new FfmpegMediaIngest({ runner: new NodeProcessRunner(), binDir: tempDataDir("amber-nobin-"), env: {} });
     expect(await codeOf(broken.probe(mediaFixtures().withAudio.path, signal()))).toBe("internal.tool_failed");
+  });
+});
+
+describe("FfmpegMediaIngest figures", () => {
+  const encoding = { maxLongEdge: FIGURE_LONG_EDGE_MAX_PX, quality: FIGURE_WEBP_QUALITY };
+
+  async function detailsOf(promise: Promise<unknown>): Promise<{ code: string; reason: unknown }> {
+    try {
+      await promise;
+    } catch (error) {
+      if (isAmberError(error)) return { code: error.appError.code, reason: error.appError.details?.["reason"] };
+      throw error;
+    }
+    throw new Error("expected a rejection");
+  }
+
+  describe("captureFrame", () => {
+    let dir: string;
+    let video: string;
+    let levels: number[];
+    beforeAll(() => {
+      dir = tempDataDir("amber-capture-");
+      video = timedVideo(dir);
+      levels = frameLevels(video);
+    });
+
+    it("captures the frame at the requested time, within one frame, as a WebP that passes the carried-image check", async () => {
+      for (const atMs of [0, 1250, 5550, 9850]) {
+        const output = join(dir, `frame-${atMs}.webp`);
+        const result = await ingest().captureFrame({ path: video, atMs }, { path: output }, encoding, signal());
+        const bytes = readFileSync(output);
+        expect(result).toEqual({ width: 64, height: 48, bytes: bytes.length });
+        expect(inspectPackWebp(bytes)).toEqual({ ok: true, width: 64, height: 48 });
+        const frame = nearestFrame(levels, decodePixels(output, "gray", "1:1")[0] ?? -1);
+        expect(Math.abs(frame - Math.floor((atMs * TIMED_VIDEO_FPS) / 1000)), `at ${atMs} ms`).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it("scales the longer edge down to the limit", async () => {
+      const wide = join(dir, "wide.mp4");
+      ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=5:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", wide]);
+      const output = join(dir, "wide.webp");
+      expect(await ingest().captureFrame({ path: wide, atMs: 0 }, { path: output }, { maxLongEdge: 320, quality: 82 }, signal())).toMatchObject({ width: 320, height: 180 });
+    });
+
+    it("takes the last frame for a time at or past it, such as the media's length", async () => {
+      for (const atMs of [9_960, TIMED_VIDEO_MS, TIMED_VIDEO_MS + 5_000]) {
+        const output = join(dir, `end-${atMs}.webp`);
+        expect(await ingest().captureFrame({ path: video, atMs }, { path: output }, encoding, signal())).toMatchObject({ width: 64, height: 48 });
+        expect(inspectPackWebp(readFileSync(output))).toMatchObject({ ok: true });
+        expect([atMs, nearestFrame(levels, decodePixels(output, "gray", "1:1")[0] ?? -1)]).toEqual([atMs, levels.length - 1]);
+      }
+    });
+
+    it("fails with past_end only when the end shows no picture either, leaving no output", async () => {
+      // One second of picture under five seconds of sound: past 1 s there is no frame to show.
+      const short = join(dir, "short-picture.mp4");
+      ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=64x48:r=10:d=1", "-f", "lavfi", "-i", "sine=duration=5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", short]);
+      const output = join(dir, "past.webp");
+      expect(await detailsOf(ingest().captureFrame({ path: short, atMs: 4_000 }, { path: output }, encoding, signal()))).toEqual({
+        code: "invalid_request.figure_frame",
+        reason: "past_end",
+      });
+      expect(existsSync(output)).toBe(false);
+    });
+
+    it("opens a file only as the container its bytes claim: a playlist posing as a video is refused", async () => {
+      const playlist = join(dir, "carried.mp4");
+      writeFileSync(playlist, `#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nfile:${video}\n#EXT-X-ENDLIST\n`);
+      const output = join(dir, "playlist.webp");
+      expect(await detailsOf(ingest().captureFrame({ path: playlist, atMs: 0 }, { path: output }, encoding, signal()))).toEqual({
+        code: "invalid_request.figure_frame",
+        reason: "failed",
+      });
+      expect(existsSync(output)).toBe(false);
+      // Refused by its bytes before any tool runs: without ffmpeg at all the answer is the same.
+      const toolless = new FfmpegMediaIngest({ runner: new NodeProcessRunner(), binDir: tempDataDir("amber-nobin-"), env: {} });
+      expect(await detailsOf(toolless.captureFrame({ path: playlist, atMs: 0 }, { path: output }, encoding, signal()))).toEqual({
+        code: "invalid_request.figure_frame",
+        reason: "failed",
+      });
+    });
+
+    it("fails on a file without a picture with no_video, cover art included", async () => {
+      const output = join(dir, "audio.webp");
+      expect(await detailsOf(ingest().captureFrame({ path: audioOnly(dir), atMs: 0 }, { path: output }, encoding, signal()))).toEqual({
+        code: "invalid_request.figure_frame",
+        reason: "no_video",
+      });
+      const withCover = join(dir, "cover.mp3");
+      ffmpeg(["-f", "lavfi", "-i", "sine=duration=1", "-f", "lavfi", "-i", "color=c=red:s=32x32", "-map", "0", "-map", "1", "-frames:v", "1", "-c:v", "mjpeg", "-disposition:v", "attached_pic", withCover]);
+      expect(await detailsOf(ingest().captureFrame({ path: withCover, atMs: 0 }, { path: output }, encoding, signal()))).toMatchObject({ reason: "no_video" });
+      expect(existsSync(output)).toBe(false);
+    });
+
+    it("reports a vanished input as media_missing", async () => {
+      expect(await codeOf(ingest().captureFrame({ path: join(dir, "gone.mp4"), atMs: 0 }, { path: join(dir, "x.webp") }, encoding, signal()))).toBe("media_missing");
+    });
+  });
+
+  describe("normalizeImage", () => {
+    let dir: string;
+    beforeAll(() => {
+      dir = tempDataDir("amber-normalize-");
+    });
+    const normalize = (input: string, name: string) => {
+      const output = join(dir, name);
+      return { output, run: ingest().normalizeImage({ path: input }, { path: output }, encoding, signal()) };
+    };
+
+    it("turns an oriented JPEG upright and drops every metadata", async () => {
+      const { output, run } = normalize(orientedJpeg(dir), "oriented.webp");
+      expect(await run).toMatchObject({ width: 40, height: 80 });
+      const bytes = readFileSync(output);
+      expect(bytes.includes(METADATA_MARK)).toBe(false);
+      // A plain VP8 / VP8L / VP8X+ALPH layout: no EXIF, XMP or ICC chunk.
+      expect(inspectPackWebp(bytes)).toEqual({ ok: true, width: 40, height: 80 });
+      const pixels = decodePixels(output, "rgba");
+      // The red left half of the stored picture is on top once turned.
+      expect([pixels[(5 * 40 + 20) * 4], pixels[(5 * 40 + 20) * 4 + 2]]).toEqual([expect.toSatisfy((v: number) => v > 200), expect.toSatisfy((v: number) => v < 60)]);
+      expect([pixels[(75 * 40 + 20) * 4], pixels[(75 * 40 + 20) * 4 + 2]]).toEqual([expect.toSatisfy((v: number) => v < 60), expect.toSatisfy((v: number) => v > 200)]);
+    });
+
+    it("keeps transparency", async () => {
+      const { output, run } = normalize(transparentPng(dir), "alpha.webp");
+      expect(await run).toMatchObject({ width: 100, height: 50 });
+      const pixels = decodePixels(output, "rgba");
+      expect(pixels[(25 * 100 + 10) * 4 + 3]).toBe(0);
+      expect(pixels[(25 * 100 + 90) * 4 + 3]).toBe(255);
+    });
+
+    it("keeps only the first frame of an animated PNG or WebP", async () => {
+      for (const [input, name] of [[animatedPng(dir), "apng.webp"], [animatedWebp(dir), "awebp.webp"]] as const) {
+        const { output, run } = normalize(input, name);
+        expect(await run, name).toMatchObject({ width: 40, height: 30 });
+        const bytes = readFileSync(output);
+        expect(inspectPackWebp(bytes), name).toMatchObject({ ok: true });
+        const [r, g, b] = decodePixels(output, "rgba");
+        expect([name, (r ?? 0) > 200, (g ?? 255) < 60, (b ?? 255) < 60]).toEqual([name, true, true, true]);
+      }
+    });
+
+    it("scales the longer edge down to the limit and never up", async () => {
+      expect(await normalize(patternPng(dir, 3000, 1000), "wide.webp").run).toMatchObject({ width: FIGURE_LONG_EDGE_MAX_PX, height: 853 });
+      expect(await normalize(patternPng(dir, 1000, 3000), "tall.webp").run).toMatchObject({ width: 853, height: FIGURE_LONG_EDGE_MAX_PX });
+      expect(await normalize(patternPng(dir, 200, 100), "small.webp").run).toMatchObject({ width: 200, height: 100 });
+      // An extreme aspect ratio still keeps one pixel on its short edge.
+      expect(await normalize(patternPng(dir, 6000, 2), "thin.webp").run).toMatchObject({ width: FIGURE_LONG_EDGE_MAX_PX, height: 1 });
+    });
+
+    it("refuses to decode a picture over the pixel limit whatever the header in front of it said", async () => {
+      // Over the limit in fact (7000×6000), as the decoder sees it.
+      const huge = join(dir, "huge.png");
+      ffmpeg(["-f", "lavfi", "-i", "color=c=gray:s=7000x6000,format=gray", "-frames:v", "1", "-c:v", "png", "-f", "image2", huge]);
+      expect(7000 * 6000).toBeGreaterThan(FIGURE_PIXELS_MAX);
+      const first = normalize(huge, "huge.webp");
+      expect(await detailsOf(first.run)).toEqual({ code: "invalid_request.figure_image", reason: "corrupt" });
+      expect(existsSync(first.output)).toBe(false);
+      // A small image with the huge one appended: the header in front says 16×16.
+      const appended = join(dir, "appended.png");
+      writeFileSync(appended, Buffer.concat([readFileSync(patternPng(dir, 16, 16)), readFileSync(huge)]));
+      const second = normalize(appended, "appended.webp");
+      expect(await detailsOf(second.run)).toEqual({ code: "invalid_request.figure_image", reason: "corrupt" });
+      expect(existsSync(second.output)).toBe(false);
+    });
+
+    it("refuses a truncated JPEG as corrupt and leaves no output", async () => {
+      const { output, run } = normalize(truncatedJpeg(dir), "truncated.webp");
+      expect(await detailsOf(run)).toEqual({ code: "invalid_request.figure_image", reason: "corrupt" });
+      expect(existsSync(output)).toBe(false);
+    });
+
+    it("goes by the signature: a PNG named .jpg is read, text named .png is refused as unsupported", async () => {
+      const disguised = join(dir, "photo.jpg");
+      copyFileSync(patternPng(dir, 32, 16), disguised);
+      expect(await normalize(disguised, "disguised.webp").run).toMatchObject({ width: 32, height: 16 });
+      const text = join(dir, "notes.png");
+      writeFileSync(text, "not an image at all\n".repeat(20));
+      const { output, run } = normalize(text, "text.webp");
+      expect(await detailsOf(run)).toEqual({ code: "invalid_request.figure_image", reason: "unsupported" });
+      expect(existsSync(output)).toBe(false);
+    });
+  });
+
+  // A stand-in ffmpeg that writes part of its output, starts a grandchild and hangs, so the
+  // test can see the whole tree die and the output go when the deadline passes or the caller aborts.
+  describe.skipIf(process.platform === "win32")("deadline and cancellation", () => {
+    function hangingTool(): { binDir: string; pidFile: string } {
+      const binDir = tempDataDir("amber-hang-");
+      const pidFile = join(binDir, "grandchild.pid");
+      const script = [
+        "#!/bin/sh",
+        'for last; do :; done',
+        'out="${last#file:}"',
+        'printf partial > "$out"',
+        "sleep 60 &",
+        `echo $! > "${pidFile}"`,
+        "wait",
+      ].join("\n");
+      writeFileSync(join(binDir, "ffmpeg"), `${script}\n`);
+      chmodSync(join(binDir, "ffmpeg"), 0o755);
+      return { binDir, pidFile };
+    }
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    async function settle(pidFile: string): Promise<number> {
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      for (let attempt = 0; attempt < 50 && alive(pid); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      return pid;
+    }
+    async function started(pidFile: string): Promise<void> {
+      for (let attempt = 0; attempt < 200 && !existsSync(pidFile); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    it("kills the process tree at the deadline, removes the output and fails the image as corrupt", async () => {
+      const { binDir, pidFile } = hangingTool();
+      const tool = new FfmpegMediaIngest({ runner: new NodeProcessRunner(), binDir, env: {}, figureTimeoutMs: 300 });
+      const input = patternPng(binDir, 16, 16);
+      const output = join(binDir, "out.webp");
+      expect(await detailsOf(tool.normalizeImage({ path: input }, { path: output }, encoding, signal()))).toEqual({ code: "invalid_request.figure_image", reason: "corrupt" });
+      expect(alive(await settle(pidFile))).toBe(false);
+      expect(existsSync(output)).toBe(false);
+    });
+
+    it("fails a capture at the deadline as figure_frame failed", async () => {
+      const { binDir, pidFile } = hangingTool();
+      const tool = new FfmpegMediaIngest({ runner: new NodeProcessRunner(), binDir, env: {}, figureTimeoutMs: 300 });
+      const output = join(binDir, "frame.webp");
+      expect(await detailsOf(tool.captureFrame({ path: mediaFixtures().noAudio.path, atMs: 0 }, { path: output }, encoding, signal()))).toEqual({
+        code: "invalid_request.figure_frame",
+        reason: "failed",
+      });
+      expect(alive(await settle(pidFile))).toBe(false);
+      expect(existsSync(output)).toBe(false);
+    });
+
+    it("kills the process tree and removes the output when the caller aborts", async () => {
+      const { binDir, pidFile } = hangingTool();
+      const tool = new FfmpegMediaIngest({ runner: new NodeProcessRunner(), binDir, env: {} });
+      const controller = new AbortController();
+      const output = join(binDir, "out.webp");
+      const running = tool.normalizeImage({ path: patternPng(binDir, 16, 16) }, { path: output }, encoding, controller.signal);
+      await started(pidFile);
+      controller.abort();
+      const outcome = await running.then(
+        () => "resolved",
+        (error: unknown) => (isAmberError(error) ? error.appError.code : "aborted"),
+      );
+      expect(outcome).toBe("aborted");
+      expect(alive(await settle(pidFile))).toBe(false);
+      expect(existsSync(output)).toBe(false);
+    });
   });
 });

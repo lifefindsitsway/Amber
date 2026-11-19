@@ -21,6 +21,7 @@ import type { Collection, CollectionItem } from "../domain/collection.ts";
 import type { Content, ContentSource, ImportBatch } from "../domain/content.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
 import type { Note } from "../domain/note.ts";
+import type { ContentFigure } from "../domain/figure.ts";
 import type { ContentSpeaker, SpeakerAvatar } from "../domain/speaker.ts";
 import type { AsrProviderProfile, OtherModelProfile, PlatformAccount, ProviderProfile } from "../domain/provider-profile.ts";
 import type { TokenUsageFeature } from "../../shared/enums.ts";
@@ -924,7 +925,17 @@ export type SearchIndexHit =
   | { kind: "title" | "reference"; contentId: string; text: string }
   | { kind: "segment"; contentId: string; transcriptRevisionId: string; segmentId: string; startMs: number; text: string; speaker?: SearchHitSpeaker }
   | { kind: "summary"; contentId: string; artifactId: string; templateId: string; summaryRevisionId: string; text: string }
-  | { kind: "collection"; collectionId: string; text: string };
+  | { kind: "collection"; collectionId: string; text: string }
+  | {
+      kind: "figure";
+      contentId: string;
+      figureId: string;
+      /** 1-based place among the Content's live figures by display time, sort key, creation; read at query time. */
+      ordinal: number;
+      /** The frame's media time, on a capture. */
+      capturedAtMs?: number;
+      text: string;
+    };
 
 /** A speaker whose name matches a search, with the sentences the Content's primary gives them. */
 export interface SearchSpeakerMatch {
@@ -950,6 +961,12 @@ export interface SearchIndexRepository {
   removeContent(ownerUserId: string, contentId: string): void;
   syncCollection(ownerUserId: string, collectionId: string): void;
   removeCollection(ownerUserId: string, collectionId: string): void;
+  /**
+   * Re-derives one figure's caption row: present only while the figure is live, its caption is
+   * not empty and its Content is outside the trash. `syncContent` covers every figure of the
+   * Content too; this is for a change to one figure.
+   */
+  syncFigure(ownerUserId: string, contentId: string, figureId: string): void;
   /** Hits of the owner within the scope; titles and template ids are joined from the business tables. */
   query(ownerUserId: string, query: SearchIndexQuery): SearchIndexHit[];
   /**
@@ -1090,6 +1107,37 @@ export interface NoteGroup {
   latestAt: number;
 }
 
+/** What a figure change may set; `anchor: null` / `caption: null` clear them. */
+export interface FigurePatch {
+  caption?: string | null;
+  widthRatio?: number;
+  displayMs?: number;
+  anchor?: ContentFigure["anchor"] | null;
+  sortKey?: number;
+}
+
+export interface FigureRepository {
+  /** A figure of the owner, deleted or not. */
+  get(ownerUserId: string, figureId: string): ContentFigure | undefined;
+  /** Every figure of the Content: live ones and those still restorable. */
+  listByContent(ownerUserId: string, contentId: string): ContentFigure[];
+  /** Live and recently deleted figures of the Content, the number its limit counts. */
+  countByContent(ownerUserId: string, contentId: string): number;
+  /** Inserts the metadata and the image bytes together. */
+  insert(figure: ContentFigure, image: Uint8Array): void;
+  /**
+   * Applies the patch when the stored version is `expectedVersion`, bumping it; `undefined`
+   * when the figure is missing, `"version_mismatch"` (with the current version) when it moved on.
+   */
+  update(ownerUserId: string, figureId: string, expectedVersion: number, patch: FigurePatch, now: number): ContentFigure | { conflict: "version_mismatch"; currentVersion: number } | undefined;
+  /** Marks it deleted (idempotent) or restores it, bumping the version. */
+  setDeleted(ownerUserId: string, figureId: string, deletedAt: number | undefined, now: number): ContentFigure | undefined;
+  /** The WebP bytes. */
+  getImage(ownerUserId: string, figureId: string): Uint8Array | undefined;
+  /** Removes figures deleted before `before` with their images; returns the removed ids by owner and Content. */
+  purgeDeleted(before: number, limit: number): Array<{ userId: string; contentId: string; figureId: string }>;
+}
+
 /** A note with the start time of its first sentence, which orders it and is shown with it. */
 export type TimedNote = Note & { startMs: number };
 
@@ -1167,6 +1215,7 @@ export interface RepositoryScope {
   search: SearchIndexRepository;
   chat: ChatRepository;
   notes: NoteRepository;
+  figures: FigureRepository;
   pendingFileDeletes: PendingFileDeleteRepository;
 }
 

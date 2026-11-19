@@ -1,7 +1,7 @@
 import type { Request, Route } from "@playwright/test";
-import { searchResultDtoSchema, type SearchRange, type SpeakerHitDto } from "../../src/shared/dto/search.ts";
+import { searchResultDtoSchema, type FigureHitDto, type SearchRange, type SpeakerHitDto } from "../../src/shared/dto/search.ts";
 import { BILI_REVISION, BILIBILI_CONTENT, segmentId } from "./mock-backend.ts";
-import { BASIS_LECTURE, lectureConfirmed, lectureSummaryText, NAMESAKE_LECTURE, speakerBasisState, type SpeakerBasisState } from "./mock-outputs.ts";
+import { BASIS_CONTENT, BASIS_LECTURE, BASIS_TITLE, lectureConfirmed, lectureSummaryText, NAMESAKE_LECTURE, speakerBasisState, type SpeakerBasisState } from "./mock-outputs.ts";
 
 /**
  * `GET /api/search` of the fake backend over the always-processed bilibili lecture: its
@@ -12,6 +12,19 @@ const TITLE = "第二讲：B 站模拟课程";
 const SEGMENT_COUNT = 12;
 const SEGMENT_MS = 10_000;
 const sentence = (index: number): string => `第 ${index + 1} 句模拟字幕。`;
+
+/**
+ * Captioned figures of the lectures, as the projection holds them: two of the bilibili lecture
+ * share a word, so its hits are told apart by the capture time and by 「图 N」; the speaker
+ * lecture's one is served only while that lecture is installed. No caption shares a word with
+ * the titles or sentences, so figure hits never change what the other specs find. A function,
+ * not a constant: the mock backend imports this module before its own ids are initialised.
+ */
+export const figureCaptions = () => [
+  { contentId: BILIBILI_CONTENT, contentTitle: TITLE, figureId: "01J0000000000000000000FIG1", ordinal: 1, capturedAtMs: 80_000, caption: "板书：梯度下降的推导" },
+  { contentId: BILIBILI_CONTENT, contentTitle: TITLE, figureId: "01J0000000000000000000FIG2", ordinal: 2, caption: "课后补充的梯度下降示意图" },
+  { contentId: BASIS_CONTENT, contentTitle: BASIS_TITLE, figureId: "01J0000000000000000000FIG3", ordinal: 1, caption: "合集课堂的白板照片" },
+] as const;
 
 function match(text: string, terms: readonly string[]): SearchRange[] | undefined {
   const lower = text.toLowerCase();
@@ -53,11 +66,19 @@ export async function handleSearch(route: Route, request: Request, url: URL, hid
   );
   const lectures = speakerBasisState(request.frame().page());
   const extra = lectures === undefined ? undefined : lectureHits(lectures, terms);
+  const figures = figureCaptions().flatMap((figure): FigureHitDto[] => {
+    const ranges = match(figure.caption, terms);
+    const served = figure.contentId === BILIBILI_CONTENT ? !gone : lectures !== undefined && !hidden(figure.contentId);
+    if (ranges === undefined || !served) return [];
+    const { caption, ...hit } = figure;
+    return [{ ...hit, snippet: caption, ranges }];
+  });
   const body = searchResultDtoSchema.parse({
     contents: titleRanges === undefined ? [] : [{ contentId: BILIBILI_CONTENT, title: TITLE, matchedIn: "title", snippet: TITLE, ranges: titleRanges }],
     segments: [...segments, ...(extra?.segments ?? [])],
     summaries: extra?.summaries ?? [],
     collections: [],
+    figures,
     ...(extra?.speakers === undefined || extra.speakers.length === 0 ? {} : { speakers: extra.speakers }),
   });
   await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });

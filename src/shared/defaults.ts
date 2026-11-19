@@ -483,3 +483,33 @@ export const BACKUP_UI_PREFERENCES_MAX_BYTES = 1048576;
 export const BACKUP_HEADER_MAX_BYTES = 33554432;
 /** Size cap of a backup's `manifest.json` (32 MiB). */
 export const BACKUP_MANIFEST_MAX_BYTES = 33554432;
+
+/** Most figures one Content may hold, recently deleted ones included until they are purged. */
+export const FIGURES_PER_CONTENT_MAX = 100;
+/** Size cap of one stored figure image (WebP), 1 MiB; an encode above it is redone at a lower quality. */
+export const FIGURE_IMAGE_MAX_BYTES = 1048576;
+/** Size cap of an uploaded or pasted image before it is re-encoded, 20 MiB. */
+export const FIGURE_UPLOAD_MAX_BYTES = 20971520;
+/** Longest edge of a stored figure image, in pixels; larger pictures are scaled down. */
+export const FIGURE_LONG_EDGE_MAX_PX = 2560;
+/** Most pixels (width × height) an incoming image may declare; refused from its header before any decoding. */
+export const FIGURE_PIXELS_MAX = 40000000;
+/** WebP quality of a figure image, and the lowest quality a too-large encode may step down to. */
+export const FIGURE_WEBP_QUALITY = 82;
+export const FIGURE_WEBP_QUALITY_MIN = 50;
+/** Length cap of a figure caption, in characters. */
+export const FIGURE_CAPTION_MAX_CHARS = 2000;
+/** Narrowest a figure may be shown, as a share of the reading column's width. */
+export const FIGURE_WIDTH_MIN_RATIO = 0.25;
+/** The three figure width steps, as shares of the reading column's width. */
+export const FIGURE_WIDTH_SMALL = 0.4;
+export const FIGURE_WIDTH_MEDIUM = 0.7;
+export const FIGURE_WIDTH_LARGE = 1;
+/** Width of a new figure until the user has picked one in this browser. */
+export const FIGURE_WIDTH_DEFAULT = 0.7;
+/** Days a deleted figure can still be restored; after that it is purged. */
+export const FIGURE_DELETED_RETENTION_DAYS = 30;
+/** Timeout of one frame capture or image normalization. */
+export const FIGURE_PROCESS_TIMEOUT_MS = 20000;
+/** Frame captures and image normalizations run at once, across all users. */
+export const FIGURE_PROCESS_CONCURRENCY = 2;

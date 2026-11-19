@@ -52,6 +52,7 @@ import { TranslationService } from "./application/translations.ts";
 import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
+import { FigureService } from "./application/figures.ts";
 import { SpeakerService } from "./application/speakers.ts";
 import { SpeakerLineageReader } from "./application/speaker-lineage.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
@@ -479,6 +480,15 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         });
   const search = new SearchService({ repository, speakerLineage });
   const notes = new NoteService({ repository, logger: lateLogger(() => appLogger?.child({ component: "notes" })) });
+  const figures = new FigureService({
+    repository,
+    ingest,
+    media,
+    files,
+    logger: lateLogger(() => appLogger?.child({ component: "figures" })),
+    // Declared further down; read only once requests arrive.
+    backgroundReady: () => backgroundReady,
+  });
   const speakers = new SpeakerService({ repository });
   // Local mode only: the client backup and the maintenance state before an update install.
   let backgroundReady = false;
@@ -593,6 +603,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     chat,
     webSearch,
     notes,
+    figures,
     speakers,
     localImport,
     subtitleImport,
@@ -679,6 +690,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   janitor.start();
   let background: Promise<void> | undefined;
   let stopping = false;
+  let figurePurgeTimer: NodeJS.Timeout | undefined;
 
   return {
     app,
@@ -698,6 +710,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         // Expired trash goes before the file sweep; the worker removes their files first, so
         // the sweep walks directories that no longer change under it.
         await trash.sweep().catch((error: unknown) => startupLog("trash_sweep_failed", { message: String(error) }));
+        try {
+          figures.purgeExpired();
+        } catch (error) {
+          startupLog("figure_purge_failed", { message: String(error) });
+        }
         await fileDeleter.whenIdle();
         // The sweep finishes before the scheduler runs anything.
         await janitor.sweep().catch((error: unknown) => startupLog("asset_sweep_failed", { message: String(error) }));
@@ -709,6 +726,16 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         // A stop requested during the sweep must not start work on a closing database.
         if (stopping) return;
         trash.arm();
+        // Expired deleted figures are already invisible; purging only frees their space, so a
+        // coarse period is enough.
+        figurePurgeTimer = setInterval(() => {
+          try {
+            figures.purgeExpired();
+          } catch (error) {
+            logger.warn("figure_purge_failed", { message: String(error) });
+          }
+        }, FIGURE_PURGE_INTERVAL_MS);
+        figurePurgeTimer.unref();
         search.ensureReady();
         scheduler?.start();
         backgroundReady = true;
@@ -726,6 +753,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       await scheduler?.stop();
       // Neither the trash timer nor the file worker may write once the database is closed.
       await trash.stop();
+      clearInterval(figurePurgeTimer);
       await fileDeleter.stop();
       // A copy still running is rolled back before the database closes under it.
       await cacheRoot?.close();
@@ -734,6 +762,9 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     },
   };
 }
+
+/** How often deleted figures past their retention are purged while the server runs. */
+const FIGURE_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /** Whether `path` names an existing regular file; any error reads as "not there". */
 function isExistingFile(path: string): boolean {

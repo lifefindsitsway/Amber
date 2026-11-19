@@ -26,6 +26,7 @@ import type { LocalImportService } from "./application/local-import.ts";
 import type { SubtitleImportService } from "./application/subtitle-import.ts";
 import type { MediaAssetService } from "./application/media-assets.ts";
 import type { NoteService } from "./application/notes.ts";
+import type { FigureService } from "./application/figures.ts";
 import type { SpeakerService } from "./application/speakers.ts";
 import type { PlatformAccountService } from "./application/platform-accounts.ts";
 import type { PlatformQrLoginService } from "./application/platform-qr-login.ts";
@@ -73,6 +74,7 @@ import { registerSubtitleRoutes } from "./api/routes/subtitles.ts";
 import { registerInstanceSettingsRoutes } from "./api/routes/instance-settings.ts";
 import { registerMediaDeleteRoute, registerMediaPlaybackRoutes } from "./api/routes/media.ts";
 import { registerNoteRoutes } from "./api/routes/notes.ts";
+import { registerFigureRoutes } from "./api/routes/figures.ts";
 import { registerSpeakerRoutes } from "./api/routes/speakers.ts";
 import { registerOtherModelRoutes } from "./api/routes/other-models.ts";
 import { registerPlatformAccountRoutes } from "./api/routes/platform-accounts.ts";
@@ -171,6 +173,8 @@ export interface AppDeps {
   webSearch?: WebSearchService;
   /** Notes on transcript text. */
   notes?: NoteService;
+  /** Figures of the reading view (captured frames, uploaded and pasted images). */
+  figures?: FigureService;
   /** Speaker identities of a Content and their photos. */
   speakers?: SpeakerService;
   /** "Proofread again", "regenerate chapters", "recompute highlights" and "translate". */
@@ -357,6 +361,14 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   if (deps.notes !== undefined) {
     registerNoteRoutes(app, { notes: deps.notes });
   }
+  // Multipart bodies: the server-mode media upload and, in both modes, the figure upload.
+  if ((deps.localImport !== undefined && deps.mode === "server") || deps.figures !== undefined) {
+    // Size limits are enforced per part by each route itself.
+    await app.register(multipart, { throwFileSizeLimit: false });
+  }
+  if (deps.figures !== undefined) {
+    registerFigureRoutes(app, { figures: deps.figures });
+  }
   if (deps.speakers !== undefined) {
     registerSpeakerRoutes(app, { speakers: deps.speakers });
   }
@@ -384,8 +396,6 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.localImport !== undefined) {
     if (deps.mode === "server") {
-      // Size limits are enforced per part by the upload route itself.
-      await app.register(multipart, { throwFileSizeLimit: false });
       registerUploadRoute(app, { localImport: deps.localImport });
     } else {
       registerLocalFileRoute(app, { localImport: deps.localImport });

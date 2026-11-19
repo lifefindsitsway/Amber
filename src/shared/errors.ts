@@ -316,6 +316,18 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.cache_dir": { detailsKeys: ["reason"] },
   // A usage chart bucket size too fine for the time range; `suggestedGranularity` is the finest that fits.
   "invalid_request.usage_granularity": { detailsKeys: ["suggestedGranularity"] },
+  // An uploaded or pasted image that is not PNG, JPEG or WebP, cannot be decoded, or is too large; `reason` is a FigureImageProblem.
+  "invalid_request.figure_image": { detailsKeys: ["reason"] },
+  // The Content already holds `limit` figures, recently deleted ones included.
+  "invalid_request.figure_limit": { detailsKeys: ["limit"] },
+  // No frame could be captured: the media has no picture, the time is past its end, or the capture failed; `reason` is a FigureFrameProblem.
+  "invalid_request.figure_frame": { detailsKeys: ["reason"] },
+  // A figure placement naming a revision or sentence that does not belong to the Content.
+  "invalid_request.figure_anchor": {},
+  // The figure was changed elsewhere since this version; `currentVersion` is absent when it was purged.
+  "conflict.figure_changed": { detailsKeys: ["currentVersion"] },
+  // Restoring a deleted figure whose retention has run out.
+  "not_found.figure_purged": {},
   "unauthenticated.csrf": {},
   "unauthenticated.setup_token": {},
   "unauthenticated.bad_credentials": {},

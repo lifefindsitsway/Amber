@@ -70,7 +70,7 @@ describe("moving to the trash", () => {
 
     expect(await codeOf(() => h.contents.get(LOCAL, contentId))).toBe("not_found");
     expect(h.contents.list(LOCAL, { limit: 10 }).items.map((item) => item.id)).not.toContain(contentId);
-    expect(h.search.search(LOCAL, { q: "梯度", scope: "global" })).toEqual({ contents: [], segments: [], summaries: [], collections: [] });
+    expect(h.search.search(LOCAL, { q: "梯度", scope: "global" })).toEqual({ contents: [], segments: [], summaries: [], collections: [], figures: [] });
     expect(h.collections.get(LOCAL, course.id)).toMatchObject({ itemCount: 0, items: [], updatedAt: T0 + 5 });
     expect(h.collections.list(LOCAL).items[0]?.itemCount).toBe(0);
     expect(countRows(h.db, "content", "id = ? AND trashed_at = ?", contentId, T0 + 5)).toBe(1);

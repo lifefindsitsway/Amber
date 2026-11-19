@@ -98,6 +98,22 @@ export const speakerHitDtoSchema = z.object({
 });
 export type SpeakerHitDto = z.infer<typeof speakerHitDtoSchema>;
 
+/**
+ * A figure whose caption matches. `ordinal` is its 1-based position among the Content's live
+ * figures ordered by display time, then sort key, then creation (「图 N」); `capturedAtMs` is
+ * present on a captured frame. Both tell several figures of one Content apart. Opens
+ * `?tab=transcript&figure=<figureId>`.
+ */
+export const figureHitDtoSchema = z.object({
+  contentId: idSchema,
+  contentTitle: z.string().optional(),
+  figureId: idSchema,
+  ordinal: z.number().int().positive(),
+  capturedAtMs: msSchema.optional(),
+  ...hitText,
+});
+export type FigureHitDto = z.infer<typeof figureHitDtoSchema>;
+
 /** Each group holds at most `SEARCH_GROUP_LIMIT` hits, best first. `speakers` only in the `global` and `library` scopes, and only when a name matches. */
 export const searchResultDtoSchema = z.object({
   contents: z.array(contentHitDtoSchema),
@@ -105,5 +121,7 @@ export const searchResultDtoSchema = z.object({
   summaries: z.array(summaryHitDtoSchema),
   collections: z.array(collectionHitDtoSchema),
   speakers: z.array(speakerHitDtoSchema).optional(),
+  /** Figure captions, in every scope. */
+  figures: z.array(figureHitDtoSchema),
 });
 export type SearchResultDto = z.infer<typeof searchResultDtoSchema>;

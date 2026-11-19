@@ -133,6 +133,12 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   // Filled with the matching `cacheDirErrors` text by the sidecar.
   "invalid_request.cache_dir": "{{message}}",
   "invalid_request.usage_granularity": "这个时间范围太长，请改用更粗的粒度",
+  "invalid_request.figure_image": "无法使用这张图片：只支持 PNG、JPEG、WebP，且不能损坏或过大",
+  "invalid_request.figure_limit": "这条内容的插图已达 {{limit}} 张上限（含最近删除的）",
+  "invalid_request.figure_frame": "无法截取当前画面",
+  "invalid_request.figure_anchor": "插图所依据的字幕已不存在，请刷新后重试",
+  "conflict.figure_changed": "这张插图已在别处修改，已显示最新内容",
+  "not_found.figure_purged": "这张插图已超过保留期，无法恢复",
   "invalid_request.subtitle_encoding": "字幕文件不是 UTF-8 编码",
   "invalid_request.subtitle_format": "无法识别的字幕格式",
   "invalid_request.subtitle_newer": "这个字幕包来自更新版本的 Amber，请升级后再导入",

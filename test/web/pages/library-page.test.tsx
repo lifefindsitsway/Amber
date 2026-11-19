@@ -249,6 +249,7 @@ describe("LibraryPage", () => {
           ],
           summaries: [],
           collections: [],
+          figures: [],
         },
       },
     });
@@ -306,6 +307,7 @@ describe("LibraryPage", () => {
           ],
           summaries: [],
           collections: [],
+          figures: [],
         },
       },
     });
@@ -365,7 +367,7 @@ describe("LibraryPage", () => {
       "GET /api/contents": { body: { items: [content], total: 1 } },
       "GET /api/collections": { body: { items: [] } },
       "GET /api/tasks/events": { body: {} },
-      "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [] } },
+      "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [], figures: [] } },
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
@@ -643,7 +645,7 @@ function segmentHit(contentId: string) {
 }
 
 function searchResult(groups: { contents?: object[]; segments?: object[]; summaries?: object[] }) {
-  return { contents: [], segments: [], summaries: [], collections: [], ...groups };
+  return { contents: [], segments: [], summaries: [], collections: [], figures: [], ...groups };
 }
 
 /**
@@ -699,7 +701,7 @@ describe("LibraryPage search with speakers", () => {
       "GET /api/contents": { body: { items: [content], total: 1 } },
       "GET /api/collections": { body: { items: [] } },
       "GET /api/tasks/events": { body: {} },
-      "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [], speakers: [SPEAKER_HIT] } },
+      "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [], figures: [], speakers: [SPEAKER_HIT] } },
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
@@ -738,6 +740,7 @@ describe("LibraryPage search with speakers", () => {
             { contentId: "c1", contentTitle: "第一讲 检索增强", artifactId: "a1", templateId: "summary.core", summaryRevisionId: "sr1", snippet: "进程调度概述", ranges: [], speakerContextState: "names_changed" },
           ],
           collections: [],
+          figures: [],
           speakers: [SPEAKER_HIT],
         },
       },

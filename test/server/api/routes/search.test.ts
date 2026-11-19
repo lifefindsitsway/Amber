@@ -52,7 +52,7 @@ describe("GET /api/search", () => {
     const scoped = await app.inject({ method: "GET", url: `/api/search?q=${encodeURIComponent("检索")}&scope=${collection.id}`, headers: bob });
     expect(scoped.statusCode).toBe(404);
     const global = await app.inject({ method: "GET", url: `/api/search?q=${encodeURIComponent("检索")}`, headers: bob });
-    expect(global.json()).toEqual({ contents: [], segments: [], summaries: [], collections: [] });
+    expect(global.json()).toEqual({ contents: [], segments: [], summaries: [], collections: [], figures: [] });
   });
 
   it("requires authentication", async () => {

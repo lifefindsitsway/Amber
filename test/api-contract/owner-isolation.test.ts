@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { monotonicFactory } from "ulid";
@@ -51,6 +52,7 @@ interface AliceIds {
   bobCollectionId: string;
   threadId: string;
   chatAnswerId: string;
+  figureId: string;
 }
 
 type Entry =
@@ -293,6 +295,22 @@ const MATRIX: Record<string, Entry> = {
   ]),
   "DELETE /api/notes/:id": owned((ids) => [{ method: "DELETE", url: `/api/notes/${ids.noteId}` }]),
   "GET /api/notes/groups": { kind: "self", reason: "groups the caller's own notes; none of A's", requests: () => [get("/api/notes/groups")] },
+  "GET /api/contents/:id/figures": owned((ids) => [get(`/api/contents/${ids.contentId}/figures`)]),
+  "POST /api/contents/:id/figures/capture": owned((ids) => [
+    { method: "POST", url: `/api/contents/${ids.contentId}/figures/capture`, payload: { assetId: ids.assetId, atMs: 0 } },
+  ]),
+  "POST /api/contents/:id/figures/upload": owned((ids) => [
+    {
+      method: "POST",
+      url: `/api/contents/${ids.contentId}/figures/upload`,
+      headers: { "content-type": "multipart/form-data; boundary=amberfig" },
+      payload: `--amberfig\r\nContent-Disposition: form-data; name="meta"\r\n\r\n{"placement":{"displayMs":0,"anchor":null,"sortKey":0}}\r\n--amberfig--\r\n`,
+    },
+  ]),
+  "PATCH /api/figures/:fid": owned((ids) => [{ method: "PATCH", url: `/api/figures/${ids.figureId}`, payload: { version: 1, caption: "bob" } }]),
+  "DELETE /api/figures/:fid": owned((ids) => [{ method: "DELETE", url: `/api/figures/${ids.figureId}` }]),
+  "POST /api/figures/:fid/restore": owned((ids) => [{ method: "POST", url: `/api/figures/${ids.figureId}/restore` }]),
+  "GET /api/figures/:fid/image": owned((ids) => [get(`/api/figures/${ids.figureId}/image`)]),
   "GET /api/trash": { kind: "self", reason: "lists the caller's own trash", requests: () => [get("/api/trash")] },
   "DELETE /api/trash": { kind: "self", reason: "empties the caller's own trash", requests: () => [{ method: "DELETE", url: "/api/trash" }] },
   "POST /api/trash/:id/restore": owned((ids) => [{ method: "POST", url: `/api/trash/${ids.contentId}/restore` }]),
@@ -434,7 +452,7 @@ let stack: ComposedStack;
 let ids: AliceIds;
 let bobCookie: string;
 
-function seedAlice(userId: string, bobId: string): AliceIds {
+function seedAlice(userId: string, bobId: string): Omit<AliceIds, "figureId"> {
   const repository = stack.composition.repository;
   const contentId = newId();
   const transcripts = lectureTranscripts(contentId);
@@ -580,6 +598,25 @@ function seedAliceUsage(alice: AliceIds): void {
   }
 }
 
+/** One figure of Alice's Content with a marked caption, written with plain SQL. */
+function seedAliceFigure(userId: string): string {
+  const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
+  const figureId = newId();
+  const contentId = (db.prepare("SELECT id FROM content WHERE user_id = ? LIMIT 1").get(userId) as { id: string }).id;
+  const image = Buffer.from("RIFF\x1a\x00\x00\x00WEBPVP8L\x0d\x00\x00\x00\x2f\x00\x00\x00\x10\x07\x10\x11\x11\x88\x88\xfe\x07\x00", "latin1");
+  const now = Date.now();
+  try {
+    db.prepare(
+      `INSERT INTO content_figure (id, content_id, user_id, source, display_ms, sort_key, width_ratio, caption, image_width, image_height, image_bytes, image_sha256, created_at, updated_at)
+       VALUES (?, ?, ?, 'upload', 0, 0, 0.7, ?, 1, 1, ?, ?, ?, ?)`,
+    ).run(figureId, contentId, userId, `${MARK} caption`, image.length, createHash("sha256").update(image).digest("hex"), now, now);
+    db.prepare("INSERT INTO content_figure_image (figure_id, bytes) VALUES (?, ?)").run(figureId, image);
+  } finally {
+    db.close();
+  }
+  return figureId;
+}
+
 /** Every row of every table except the session bookkeeping that logins legitimately touch. */
 function databaseDump(): string {
   const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
@@ -604,7 +641,7 @@ beforeAll(async () => {
   const alice = await stack.createUser("alice");
   const bob = await stack.createUser("bob");
   bobCookie = bob.cookie;
-  ids = seedAlice(alice.id, bob.id);
+  ids = { ...seedAlice(alice.id, bob.id), figureId: seedAliceFigure(alice.id) };
   seedAliceUsage(ids);
 }, 60_000);
 
@@ -735,7 +772,7 @@ describe("user B against every server route holding user A's ids", () => {
 
 /** Matrix entries that reach A's Content or one of its sub-resources by id. */
 const CONTENT_SCOPED = (key: string): boolean =>
-  /^(GET|HEAD|POST|PUT|PATCH|DELETE) \/api\/(contents\/:id|transcript\/|summaries\/|notes\/:id|tasks\/:id|media\/:assetId)/u.test(key) ||
+  /^(GET|HEAD|POST|PUT|PATCH|DELETE) \/api\/(contents\/:id|transcript\/|summaries\/|notes\/:id|tasks\/:id|media\/:assetId|figures\/:fid)/u.test(key) ||
   key === "DELETE /api/collections/:id/items/:iid" ||
   key === "POST /api/collections/:id/items";
 

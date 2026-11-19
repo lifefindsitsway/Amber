@@ -8,7 +8,8 @@ import { enterRunRoot } from "./test/tools/temp-root.ts";
 // SPA is built once by `pnpm test:e2e` before Playwright starts. The `mock` project runs it
 // under `vite preview` and answers `/api` with `page.route`; the `server` project talks to
 // a real server-mode backend on a temporary data directory that also serves the build.
-const PREVIEW_PORT = 4173;
+// `AMBER_E2E_PREVIEW_PORT` moves the preview, so separate checkouts can run side by side.
+const PREVIEW_PORT = Number(process.env["AMBER_E2E_PREVIEW_PORT"] ?? 4173);
 const ci = process.env["CI"] !== undefined;
 // Workers inherit the runner's environment, so every process agrees on one run root and
 // one data directory; the global setup's teardown removes the root.

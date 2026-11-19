@@ -1,5 +1,5 @@
 import { SEARCH_GROUP_LIMIT, SEARCH_SHORT_QUERY_LIMIT } from "../../shared/defaults.ts";
-import type { ContentHitDto, SearchQuery, SearchResultDto, SpeakerHitDto } from "../../shared/dto/search.ts";
+import type { ContentHitDto, FigureHitDto, SearchQuery, SearchResultDto, SpeakerHitDto } from "../../shared/dto/search.ts";
 import type { SegmentId } from "../../shared/ids.ts";
 import { amberError } from "../domain/errors.ts";
 import { highlightSnippet, parseSearchQuery } from "../domain/search-query.ts";
@@ -71,7 +71,7 @@ export class SearchService {
         const title = titleOf(contentId);
         return title === undefined ? {} : { [key]: title };
       };
-      const result: SearchResultDto = { contents: [], segments: [], summaries: [], collections: [] };
+      const result: SearchResultDto = { contents: [], segments: [], summaries: [], collections: [], figures: [] };
       const titleHits: ContentHitDto[] = [];
       const referenceHits: ContentHitDto[] = [];
       for (const hit of hits) {
@@ -106,6 +106,16 @@ export class SearchService {
             });
             break;
           }
+          case "figure":
+            result.figures.push({
+              contentId: hit.contentId,
+              ...withTitle(hit.contentId, "contentTitle"),
+              figureId: hit.figureId,
+              ordinal: hit.ordinal,
+              ...(hit.capturedAtMs === undefined ? {} : { capturedAtMs: hit.capturedAtMs }),
+              ...text,
+            } satisfies FigureHitDto);
+            break;
           case "collection": {
             const collection = scope.collections.get(owner, hit.collectionId);
             if (collection !== undefined) {

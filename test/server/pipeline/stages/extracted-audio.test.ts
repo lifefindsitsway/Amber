@@ -159,6 +159,8 @@ function stubIngest(inputs: string[], hints: Array<number | undefined>): LocalMe
   return {
     probe: async () => Promise.reject(new Error("not used")),
     transcodeAudio: async () => Promise.reject(new Error("not used")),
+    captureFrame: async () => Promise.reject(new Error("not used")),
+    normalizeImage: async () => Promise.reject(new Error("not used")),
     async extractAudio(input, output, _signal, options) {
       hints.push(options?.durationMs);
       const bytes = Buffer.concat([Buffer.from("flac:"), await readFile(input.path)]);

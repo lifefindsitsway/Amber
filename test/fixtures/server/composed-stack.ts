@@ -119,7 +119,9 @@ export async function composeServerStack(): Promise<ComposedStack> {
         throw new Error(`creating ${username} failed: ${created.statusCode} ${created.body}`);
       }
       const id = (created.json() as { id: string }).id;
-      return { id, cookie: await login(username) };
+      // A new account only has its initial password: trying the other first would spend
+      // the login rate limit, which a stack with several users then runs into.
+      return { id, cookie: await login(username, INITIAL_PASSWORD) };
     },
     close: () => composition.shutdown(),
   };

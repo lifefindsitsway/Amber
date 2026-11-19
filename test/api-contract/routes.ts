@@ -131,6 +131,14 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "PATCH", path: "/notes/:id", modes: BOTH },
   { method: "DELETE", path: "/notes/:id", modes: BOTH },
   { method: "GET", path: "/notes/groups", modes: BOTH },
+  // figures
+  { method: "GET", path: "/contents/:id/figures", modes: BOTH },
+  { method: "POST", path: "/contents/:id/figures/capture", modes: BOTH },
+  { method: "POST", path: "/contents/:id/figures/upload", modes: BOTH },
+  { method: "PATCH", path: "/figures/:fid", modes: BOTH },
+  { method: "DELETE", path: "/figures/:fid", modes: BOTH },
+  { method: "POST", path: "/figures/:fid/restore", modes: BOTH },
+  { method: "GET", path: "/figures/:fid/image", modes: BOTH },
   // export
   { method: "POST", path: "/contents/:id/export", modes: BOTH },
   { method: "POST", path: "/collections/:id/export", modes: BOTH },

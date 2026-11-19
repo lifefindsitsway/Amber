@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { FigureService } from "../../../src/server/application/figures.ts";
+import type { ContentFigure } from "../../../src/server/domain/figure.ts";
+import type { LocalMediaIngest } from "../../../src/server/ports/local-media-ingest.ts";
 import { BUILTIN_SUMMARY_TEMPLATES } from "../../../src/server/domain/prompts.ts";
 import { attributionDigest, speakerLabels } from "../../../src/server/domain/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
@@ -110,7 +113,7 @@ describe("SearchService", () => {
   it("isolates owners and refuses a collection scope that is not the caller's", () => {
     const h = harness();
     const { courseA } = corpus(h);
-    expect(h.search.search(BOB, { q: "梯度" })).toEqual({ contents: [], segments: [], summaries: [], collections: [] });
+    expect(h.search.search(BOB, { q: "梯度" })).toEqual({ contents: [], segments: [], summaries: [], collections: [], figures: [] });
     expect(() => h.search.search(BOB, { q: "梯度", scope: courseA.id })).toThrow(expect.objectContaining({ appError: expect.objectContaining({ class: "not_found" }) }));
   });
 });
@@ -366,5 +369,106 @@ describe("SearchService: speakers", () => {
     expect(h.search.search(LOCAL, { q: "%_" }).speakers?.map((hit) => hit.speakerId)).toEqual([c.speakerIds[1]]);
     expect(h.search.search(LOCAL, { q: "0%" }).speakers?.map((hit) => hit.speakerId)).toEqual([c.speakerIds[1]]);
     expect(h.search.search(LOCAL, { q: "_王x" })).not.toHaveProperty("speakers");
+  });
+});
+
+describe("SearchService: figure captions", () => {
+  const T0 = 1_790_000_000_000;
+  /** Patch, delete and restore never process an image, so the ingest is never reached. */
+  const noIngest = new Proxy({} as LocalMediaIngest, {
+    get: () => () => {
+      throw new Error("no image processing in search tests");
+    },
+  });
+  const figuresOf = (h: Harness) => new FigureService({ repository: h.repository, ingest: noIngest, media: h.media, files: h.media.data, now: () => T0 + 1000, newId: h.newId });
+
+  /** Stored and projected in one transaction, as a capture or an upload is. */
+  function addFigure(h: Harness, contentId: string, overrides: Partial<ContentFigure> = {}, userId = LOCAL.userId): ContentFigure {
+    const figure: ContentFigure = {
+      id: h.newId(),
+      contentId,
+      userId,
+      source: "upload",
+      displayMs: 0,
+      sortKey: 0,
+      widthRatio: 0.7,
+      image: { width: 4, height: 3, bytes: 3, sha256: "a".repeat(64) },
+      version: 1,
+      createdAt: T0,
+      updatedAt: T0,
+      ...overrides,
+    };
+    h.repository.withTransaction((scope) => {
+      scope.figures.insert(figure, new Uint8Array([1, 2, 3]));
+      scope.search.syncFigure(userId, contentId, figure.id);
+    });
+    return figure;
+  }
+
+  it("groups caption hits with the Content's title, a 「图 N」 ordinal among live figures and the capture time", () => {
+    const h = harness();
+    const lecture = seedContent(h, { title: "优化方法第三讲", lines: ["一句无关的字幕"] });
+    // Listed out of order on purpose: display time, then sort key, then creation decide the ordinal.
+    const late = addFigure(h, lecture.contentId, { caption: "收敛曲线的截图", source: "capture", capturedAtMs: 95_000, displayMs: 95_000 });
+    const tieSecond = addFigure(h, lecture.contentId, { caption: "补充的收敛示意", displayMs: 40_000, sortKey: 2 });
+    const tieFirstNewer = addFigure(h, lecture.contentId, { displayMs: 40_000, sortKey: 1, createdAt: T0 + 5 });
+    const tieFirstOlder = addFigure(h, lecture.contentId, { caption: "黑板上的收敛条件", displayMs: 40_000, sortKey: 1 });
+    addFigure(h, lecture.contentId, { caption: "已删除的收敛图", displayMs: 1_000, deletedAt: T0 });
+
+    const result = h.search.search(LOCAL, { q: "收敛" });
+    const byId = new Map(result.figures.map((hit) => [hit.figureId, hit]));
+    expect(result.figures).toHaveLength(3);
+    expect(byId.get(tieFirstOlder.id)).toMatchObject({ contentId: lecture.contentId, contentTitle: "优化方法第三讲", ordinal: 1, snippet: "黑板上的收敛条件" });
+    expect(byId.get(tieFirstOlder.id)).not.toHaveProperty("capturedAtMs");
+    expect(byId.get(tieSecond.id)).toMatchObject({ ordinal: 3 });
+    expect(byId.get(late.id)).toMatchObject({ ordinal: 4, capturedAtMs: 95_000 });
+    expect(result.figures.flatMap((hit) => hit.ranges.map((range) => hit.snippet.slice(range.start, range.end)))).toEqual(["收敛", "收敛", "收敛"]);
+    expect(result.segments).toEqual([]);
+    // The uncaptioned figure counts toward the ordinals but is never a hit.
+    expect(byId.has(tieFirstNewer.id)).toBe(false);
+  });
+
+  it("follows caption edits, deletion and restore made through the figure service, renumbering the live figures", () => {
+    const h = harness();
+    const figures = figuresOf(h);
+    const lecture = seedContent(h, { title: "图示讲次" });
+    const first = addFigure(h, lecture.contentId, { caption: "第一张流程图", displayMs: 1_000 });
+    const second = addFigure(h, lecture.contentId, { caption: "第二张流程图", displayMs: 2_000 });
+    const ordinals = (q: string) => Object.fromEntries(h.search.search(LOCAL, { q }).figures.map((hit) => [hit.figureId, hit.ordinal]));
+    expect(ordinals("流程图")).toEqual({ [first.id]: 1, [second.id]: 2 });
+
+    figures.delete(LOCAL, first.id);
+    expect(ordinals("流程图")).toEqual({ [second.id]: 1 });
+    figures.restore(LOCAL, first.id);
+    expect(ordinals("流程图")).toEqual({ [first.id]: 1, [second.id]: 2 });
+
+    figures.patch(LOCAL, second.id, { version: 1, caption: "改名后的时序图" });
+    expect(ordinals("流程图")).toEqual({ [first.id]: 1 });
+    expect(ordinals("时序图")).toEqual({ [second.id]: 2 });
+    // A blank caption takes the figure out of search; it keeps its place among the others.
+    figures.patch(LOCAL, first.id, { version: 3, caption: "   " });
+    expect(ordinals("流程图")).toEqual({});
+    expect(ordinals("时序图")).toEqual({ [second.id]: 2 });
+  });
+
+  it("answers in the global, library and collection scopes and through the short-query path, for the owner only", async () => {
+    const h = harness();
+    const inside = seedContent(h, { title: "成员讲次" });
+    const outside = seedContent(h, { title: "其它讲次" });
+    const member = addFigure(h, inside.contentId, { caption: "板书照片" });
+    const other = addFigure(h, outside.contentId, { caption: "另一张板书" });
+    const bobs = seedContent(h, { title: "别人的讲次", userId: BOB.userId });
+    addFigure(h, bobs.contentId, { caption: "别人的板书" }, BOB.userId);
+    const course = h.collections.create(LOCAL, { name: "合集" });
+    await addTo(h, course.id, inside.contentId);
+
+    const ids = (result: SearchResultDto) => result.figures.map((hit) => hit.figureId).sort();
+    for (const q of ["板书", "板书照"]) {
+      expect(ids(h.search.search(LOCAL, { q }))).toEqual(q === "板书" ? [member.id, other.id].sort() : [member.id]);
+      expect(ids(h.search.search(LOCAL, { q, scope: "library" }))).toEqual(q === "板书" ? [member.id, other.id].sort() : [member.id]);
+      expect(ids(h.search.search(LOCAL, { q, scope: course.id }))).toEqual([member.id]);
+    }
+    expect(h.search.search(BOB, { q: "板书" }).figures.map((hit) => hit.snippet)).toEqual(["别人的板书"]);
+    expect(h.search.search(BOB, { q: "板书照" }).figures).toEqual([]);
   });
 });

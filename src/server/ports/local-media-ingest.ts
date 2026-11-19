@@ -59,4 +59,31 @@ export interface LocalMediaIngest {
     mimeType: string,
     signal: AbortSignal,
   ): Promise<{ sizeBytes: number }>;
+  /**
+   * One frame of `input` at `atMs` (clamped by the caller to the media's length) written to
+   * `output.path` as WebP at `quality`, scaled so its longer edge is at most `maxLongEdge`.
+   * Both paths are files in a job directory the caller owns and removes; nothing goes through
+   * a pipe. An empty output (a time past the last frame) fails with
+   * `invalid_request.figure_frame` (`past_end`), a file without a picture with `no_video`.
+   * Aborting or `FIGURE_PROCESS_TIMEOUT_MS` kills the process tree.
+   */
+  captureFrame(
+    input: { path: string; atMs: number },
+    output: { path: string },
+    options: { maxLongEdge: number; quality: number },
+    signal: AbortSignal,
+  ): Promise<{ width: number; height: number; bytes: number }>;
+  /**
+   * Re-encodes an uploaded or pasted image (`input.path`, already checked to be PNG, JPEG or
+   * WebP by its signature and within `FIGURE_PIXELS_MAX` by its header) to a WebP at
+   * `output.path`: decoded strictly (any damage fails with `invalid_request.figure_image`
+   * `corrupt`), first frame only, turned upright by its orientation, every metadata dropped,
+   * scaled to `maxLongEdge`, transparency kept. Paths as for `captureFrame`; same timeout.
+   */
+  normalizeImage(
+    input: { path: string },
+    output: { path: string },
+    options: { maxLongEdge: number; quality: number },
+    signal: AbortSignal,
+  ): Promise<{ width: number; height: number; bytes: number }>;
 }

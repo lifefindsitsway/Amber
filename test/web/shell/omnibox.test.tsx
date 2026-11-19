@@ -56,6 +56,7 @@ describe("Omnibox", () => {
           ],
           summaries: [],
           collections: [],
+          figures: [],
         },
       },
     });
@@ -77,7 +78,7 @@ describe("Omnibox", () => {
   });
 
   it("offers the new page when nothing matches", async () => {
-    mockApi({ ...baseRoutes(), "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [] } } });
+    mockApi({ ...baseRoutes(), "GET /api/search": { body: { contents: [], segments: [], summaries: [], collections: [], figures: [] } } });
     const ctx = context();
     renderApp(<Omnibox open onOpenChange={() => undefined} context={ctx} />);
     const input = await screen.findByPlaceholderText("搜索内容与合集，输入 > 执行命令");
@@ -142,6 +143,7 @@ describe("Omnibox speakers", () => {
             { contentId: "x3", contentTitle: "编译原理", artifactId: "a2", templateId: "summary.core", summaryRevisionId: "sr2", snippet: "陈明的另一观点", ranges: [], speakerContextState: "consistent" },
           ],
           collections: [],
+          figures: [],
           speakers: [
             { contentId: "x2", contentTitle: "操作系统", speakerId: "sp1", ordinal: 1, name: "陈明", colorIndex: 0, sentences: 40 },
             { contentId: "x3", contentTitle: "编译原理", speakerId: "sp5", ordinal: 1, name: "陈明", colorIndex: 0, sentences: 3 },
@@ -166,4 +168,5 @@ describe("Omnibox speakers", () => {
     fireEvent.click(screen.getByText("编译原理 · 3 句"));
     expect(ctx.navigate).toHaveBeenCalledWith("/contents/x3?tab=transcript&speaker=sp5");
   });
+
 });

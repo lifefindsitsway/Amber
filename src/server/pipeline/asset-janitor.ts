@@ -63,7 +63,7 @@ interface CacheSweep {
 }
 
 /** Top-level scratch directories whose contents never outlive a process. */
-const VOLATILE_DIRS = ["tmp/cookies", "tmp/backup", "tmp/platform", "tmp/asr-test"] as const;
+const VOLATILE_DIRS = ["tmp/cookies", "tmp/backup", "tmp/platform", "tmp/asr-test", "tmp/figures"] as const;
 
 /**
  * Removes what a finished Task leaves behind and sweeps debris at start-up. Database rows

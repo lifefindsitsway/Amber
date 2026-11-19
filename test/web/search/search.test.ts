@@ -12,6 +12,7 @@ const result: SearchResultDto = {
   ],
   summaries: [{ contentId: "c3", contentTitle: "第三讲", artifactId: "a3", templateId: "summary.core", summaryRevisionId: "sr3", snippet: "总结里的检索", ranges: [{ start: 4, end: 6 }] }],
   collections: [{ collectionId: "k1", name: "检索课程", snippet: "检索课程", ranges: [{ start: 0, end: 2 }] }],
+  figures: [],
 };
 
 describe("search helpers", () => {

@@ -1,3 +1,4 @@
+import { CLIP_SERVER_PORT } from "../fixtures/e2e/global-setup.ts";
 import type { Page, Request, Route } from "@playwright/test";
 import { contentDetailDtoSchema, contentDtoSchema, contentListDtoSchema, transcriptRevisionListDtoSchema } from "../../src/shared/dto/content.ts";
 import {
@@ -57,7 +58,7 @@ export const LOCAL_CONTENT = "01J0000000000000000000LC01";
 const LOCAL_ASSET = "01J0000000000000000000AST1";
 const LOCAL_REVISION = "01J0000000000000000000REV3";
 /** The clip server of the Playwright global setup (CLIP_SERVER_PORT), range-capable like /api/media. */
-const LOCAL_CLIP_URL = "http://127.0.0.1:4174/local-player.webm";
+const LOCAL_CLIP_URL = `http://127.0.0.1:${CLIP_SERVER_PORT}/local-player.webm`;
 export const YOUTUBE_URL = `https://www.youtube.com/watch?v=${YOUTUBE_VIDEO}`;
 
 /** Synthetic library rows of `MockOptions.libraryContents`, numbered from 1, newest first. */

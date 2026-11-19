@@ -21,6 +21,7 @@ const SEARCH = {
     ],
     summaries: [],
     collections: [],
+    figures: [],
   },
   isError: false,
   query: "进程调度",
@@ -92,4 +93,5 @@ describe("SearchHits", () => {
     rightClick(screen.getByText("第 1 项"));
     expect(contextLabels()).not.toContain("移出合集");
   });
+
 });

@@ -10,7 +10,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 const CLIP = join(REPO_ROOT, "dist/e2e-media/local-player.webm");
 
 /** Port of the clip server; the mock backend forwards `/api/media/<id>` here. */
-export const CLIP_SERVER_PORT = 4174;
+/** `AMBER_E2E_CLIP_PORT` moves it, so separate checkouts can run their suites side by side. */
+export const CLIP_SERVER_PORT = Number(process.env["AMBER_E2E_CLIP_PORT"] ?? 4174);
 
 /**
  * Generates the clip the local `<video>` smoke plays — 130 s of VP8 test pattern with a
