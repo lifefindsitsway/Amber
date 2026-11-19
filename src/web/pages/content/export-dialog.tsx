@@ -8,7 +8,7 @@ import { BILINGUAL_EXPORT_FORMATS, SUBTITLE_EXPORT_FORMATS, type ContentExportRe
 import { ApiError } from "../../api/client.ts";
 import { useMe } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
-import { useContentExport } from "../../export/export-data.ts";
+import { useContentExport, useExportFigureCount } from "../../export/export-data.ts";
 import { upgradeTrackPref, useSubtitlePrefs } from "../../player/subtitle-prefs.ts";
 import { exportSaver } from "../../export/export-saver.ts";
 import { Button } from "../../ui/button.tsx";
@@ -27,6 +27,8 @@ export interface MarkdownChoice {
   backlinks: boolean;
   /** Name the speakers in the transcript section; only meaningful while that section is ticked. */
   includeSpeakers?: boolean;
+  /** Put the figures into the transcript section; the download becomes a zip. Only meaningful while that section is ticked. */
+  figures?: boolean;
 }
 
 /** The Markdown export request: only ticked sections, each naming its revision. */
@@ -36,7 +38,9 @@ export function markdownExportBody(choice: MarkdownChoice): MarkdownExportReques
     sections: {
       ...(choice.summaryTemplateId === undefined ? {} : { summary: { templateId: choice.summaryTemplateId } }),
       ...(choice.chapters ? { chapters: true } : {}),
-      ...(choice.transcriptRevisionId === undefined ? {} : { transcript: { revisionId: choice.transcriptRevisionId } }),
+      ...(choice.transcriptRevisionId === undefined
+        ? {}
+        : { transcript: { revisionId: choice.transcriptRevisionId, ...(choice.figures === true ? { figures: true } : {}) } }),
       ...(choice.subtitlesRevisionId === undefined ? {} : { subtitles: { revisionId: choice.subtitlesRevisionId } }),
     },
     backlinks: choice.backlinks,
@@ -58,11 +62,14 @@ export function subtitleExportBody(
   revisionId: string,
   translationRevisionId: string | undefined,
   speakers?: SubtitleSpeakerChoice,
+  figures?: boolean,
 ): SubtitleExportRequest {
   const base: SubtitleExportRequest =
     BILINGUAL_EXPORT_FORMATS.has(format) && translationRevisionId !== undefined ? { format, revisionId, translationRevisionId } : { format, revisionId };
-  if (speakers === undefined) return base;
-  return { ...base, includeSpeakers: true, ...(SPEAKER_LABELED_FORMATS.has(format) ? { speakerLabels: speakers.labels } : {}) };
+  // Only TXT carries figures; the other formats never ask for them.
+  const withFigures: SubtitleExportRequest = figures === true && format === "txt" ? { ...base, figures: true } : base;
+  if (speakers === undefined) return withFigures;
+  return { ...withFigures, includeSpeakers: true, ...(SPEAKER_LABELED_FORMATS.has(format) ? { speakerLabels: speakers.labels } : {}) };
 }
 
 /**
@@ -96,6 +103,7 @@ function ExportForm(props: { templateId?: string }) {
   const revisions = useRevisions(contentId);
   const translationList = useTranslations(contentId);
   const fetchFile = useContentExport(contentId);
+  const figureCount = useExportFigureCount(contentId);
   // The bilingual files start from the translation the player pairs with the same original.
   const me = useMe();
   const prefs = useSubtitlePrefs(me.data?.userId ?? "", contentId);
@@ -120,6 +128,10 @@ function ExportForm(props: { templateId?: string }) {
   const [fileSpeakers, setFileSpeakers] = useState<boolean | undefined>(undefined);
   const [speakerLabels, setSpeakerLabels] = useState<SpeakerLabelMode>("turn");
   const labelsHintId = useId();
+  const [markdownFigures, setMarkdownFigures] = useState(false);
+  const [txtFigures, setTxtFigures] = useState(false);
+  const [savedAs, setSavedAs] = useState<string | undefined>(undefined);
+  const copyNoteId = useId();
 
   const readable = all.filter((revision) => revision.kind !== "translated");
   const transcriptRevision = transcriptId ?? primaryId ?? readable.at(-1)?.id;
@@ -132,12 +144,14 @@ function ExportForm(props: { templateId?: string }) {
 
   const exportFile = useMutation({
     mutationFn: async (action: { body: ContentExportRequest; copy?: true }) => {
+      setSavedAs(undefined);
       const file = await fetchFile(action.body);
       if (action.copy === true) {
         await navigator.clipboard?.writeText(await file.blob.text());
         setCopied(true);
       } else {
-        await exportSaver().save(file);
+        // Cancelling a save dialog is no export: nothing to confirm.
+        setSavedAs(await exportSaver().save(file));
       }
     },
   });
@@ -165,6 +179,10 @@ function ExportForm(props: { templateId?: string }) {
     pairs[0]?.id;
   const label = (revision: TranscriptRevisionDto): string => revisionLabel(revision, primaryId, t, i18n, all);
 
+  // Until the count is known the option stays off; a Content without figures cannot ask for them.
+  const figures = figureCount.data ?? 0;
+  const markdownWithFigures = markdownFigures && figures > 0;
+  const txtWithFigures = txtFigures && figures > 0;
   const choice: MarkdownChoice = {
     summaryTemplateId: summaryOn ? summaryTemplate : undefined,
     chapters: chaptersOn && hasChapters,
@@ -173,6 +191,8 @@ function ExportForm(props: { templateId?: string }) {
     backlinks,
     includeSpeakers: transcriptHasSpeakers && (markdownSpeakers ?? true),
   };
+  // The download carries the figures; the copy is text only, whatever is ticked.
+  const downloadChoice: MarkdownChoice = { ...choice, figures: markdownWithFigures && choice.transcriptRevisionId !== undefined };
   const filesWithSpeakers = subtitleHasSpeakers && (fileSpeakers ?? true);
   const speakerChoice: SubtitleSpeakerChoice | undefined = filesWithSpeakers ? { labels: speakerLabels } : undefined;
   const nothing = choice.summaryTemplateId === undefined && !choice.chapters && choice.transcriptRevisionId === undefined && choice.subtitlesRevisionId === undefined;
@@ -222,6 +242,16 @@ function ExportForm(props: { templateId?: string }) {
               {t("speakerTools.export.includeSpeakers")}
             </label>
           ) : null}
+          {transcriptOn && transcriptRevision !== undefined ? (
+            <FigureOption
+              count={figureCount.data}
+              checked={markdownWithFigures}
+              onChange={setMarkdownFigures}
+              note={t("exportFile.dialog.figuresMarkdownNote")}
+              className="pl-6"
+              testId="export-markdown-figures"
+            />
+          ) : null}
           <label className="flex flex-wrap items-center gap-2">
             <input type="checkbox" checked={subtitlesOn && subtitleRevision !== undefined} disabled={subtitleRevision === undefined} onChange={(event) => setSubtitlesOn(event.target.checked)} data-testid="export-subtitles" />
             {t("contentView.export.subtitles")}
@@ -247,15 +277,26 @@ function ExportForm(props: { templateId?: string }) {
           <div className="flex flex-col gap-2">
             <span className="font-medium">{t("contentView.export.markdown")}</span>
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={nothing || exportFile.isPending} onClick={() => exportFile.mutate({ body: markdownExportBody(choice), copy: true })} data-testid="export-copy">
+              <Button
+                size="sm"
+                disabled={nothing || exportFile.isPending}
+                onClick={() => exportFile.mutate({ body: markdownExportBody(choice), copy: true })}
+                {...(downloadChoice.figures === true ? { "aria-describedby": copyNoteId } : {})}
+                data-testid="export-copy"
+              >
                 <Copy size={14} />
                 {copied ? t("common.action.copied") : t("contentView.export.copyMarkdown")}
               </Button>
-              <Button size="sm" variant="primary" disabled={nothing || exportFile.isPending} onClick={() => exportFile.mutate({ body: markdownExportBody(choice) })} data-testid="export-markdown">
+              <Button size="sm" variant="primary" disabled={nothing || exportFile.isPending} onClick={() => exportFile.mutate({ body: markdownExportBody(downloadChoice) })} data-testid="export-markdown">
                 <Download size={14} />
-                {t("contentView.export.downloadMarkdown")}
+                {downloadChoice.figures === true ? t("exportFile.dialog.downloadZip") : t("contentView.export.downloadMarkdown")}
               </Button>
             </div>
+            {downloadChoice.figures === true ? (
+              <p id={copyNoteId} className="text-xs text-muted" data-testid="export-copy-note">
+                {t("exportFile.dialog.copyWithoutFigures")}
+              </p>
+            ) : null}
             {nothing ? <p className="text-xs text-muted">{t("contentView.export.nothingSelected")}</p> : null}
           </div>
           <div className="flex flex-col gap-2">
@@ -301,17 +342,27 @@ function ExportForm(props: { templateId?: string }) {
             <ul className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2" data-testid="export-formats">
               {SUBTITLE_EXPORT_FORMATS.map((format) => {
                 const bilingual = BILINGUAL_EXPORT_FORMATS.has(format);
-                return (
+                const zipped = format === "txt" && txtWithFigures;
+                const row = (
                   <FormatRow
                     key={format}
                     format={format}
+                    {...(zipped ? { label: t("exportFile.dialog.txtZip"), note: t("exportFile.dialog.figuresTxtNote") } : {})}
                     disabled={subtitleRevision === undefined || (bilingual && translation === undefined) || exportFile.isPending}
                     onExport={() => {
                       if (subtitleRevision === undefined) return;
-                      exportFile.mutate({ body: subtitleExportBody(format, subtitleRevision, translation, speakerChoice) });
+                      exportFile.mutate({ body: subtitleExportBody(format, subtitleRevision, translation, speakerChoice, zipped) });
                     }}
                   />
                 );
+                if (format !== "txt") return row;
+                // The TXT figure option sits right under its format, in the note column.
+                return [
+                  row,
+                  <li key="txt-figures" className="col-span-2 grid grid-cols-subgrid">
+                    <FigureOption count={figureCount.data} checked={txtWithFigures} onChange={setTxtFigures} className="col-start-2" testId="export-txt-figures" />
+                  </li>,
+                ];
               })}
               <FormatRow
                 format="ambersub"
@@ -328,6 +379,11 @@ function ExportForm(props: { templateId?: string }) {
             ) : null}
             {pairs.length === 0 ? <p className="text-xs text-muted">{t("contentView.export.noTranslation")}</p> : null}
           </div>
+          {savedAs !== undefined && !exportFile.isPending ? (
+            <p role="status" className="text-xs text-muted" data-testid="export-saved">
+              {t("exportFile.dialog.saved", { filename: savedAs })}
+            </p>
+          ) : null}
           {exportFile.error instanceof ApiError ? <ErrorView error={exportFile.error.error} /> : null}
         </div>
       </div>
@@ -336,17 +392,49 @@ function ExportForm(props: { templateId?: string }) {
 }
 
 /** A subtitle file button with its one-line note, the note read as the button's description. */
-function FormatRow(props: { format: SubtitleExportFormat | "ambersub"; disabled: boolean; onExport: () => void }) {
+function FormatRow(props: { format: SubtitleExportFormat | "ambersub"; disabled: boolean; onExport: () => void; label?: string; note?: string }) {
   const { t } = useTranslation();
   const noteId = useId();
   return (
     <li className="col-span-2 grid grid-cols-subgrid items-center">
       <Button size="sm" className="justify-self-start" disabled={props.disabled} onClick={props.onExport} aria-describedby={noteId} data-testid={`export-format-${props.format}`}>
-        {t(`contentView.export.format.${props.format}`)}
+        {props.label ?? t(`contentView.export.format.${props.format}`)}
       </Button>
       <span id={noteId} className="text-xs text-muted" data-testid={`export-note-${props.format}`}>
-        {t(`contentView.export.formatNote.${props.format}`)}
+        {props.note ?? t(`contentView.export.formatNote.${props.format}`)}
       </span>
     </li>
+  );
+}
+
+/**
+ * 「包含插图与备注（N 张）」: off by default, so an export is what it always was until asked.
+ * Without figures it is disabled and says why right beside it; while the count loads it is
+ * disabled without a number. When ticked, `note` (if any) says what the download becomes.
+ */
+function FigureOption(props: { count: number | undefined; checked: boolean; onChange: (checked: boolean) => void; note?: string; className?: string; testId: string }) {
+  const { t } = useTranslation();
+  const hintId = useId();
+  const none = props.count === 0;
+  const hint = none ? t("exportFile.dialog.figuresNone") : props.checked ? props.note : undefined;
+  return (
+    <div className={`flex flex-col gap-0.5 text-xs ${props.className ?? ""}`}>
+      <label className={`flex items-center gap-2 ${props.count === undefined || none ? "text-muted" : ""}`}>
+        <input
+          type="checkbox"
+          checked={props.checked}
+          disabled={props.count === undefined || none}
+          onChange={(event) => props.onChange(event.target.checked)}
+          {...(hint === undefined ? {} : { "aria-describedby": hintId })}
+          data-testid={props.testId}
+        />
+        {props.count === undefined ? t("exportFile.dialog.figuresLoading") : t("exportFile.dialog.figures", { count: props.count })}
+      </label>
+      {hint === undefined ? null : (
+        <span id={hintId} className="pl-6 text-muted" data-testid={`${props.testId}-hint`}>
+          {hint}
+        </span>
+      )}
+    </div>
   );
 }

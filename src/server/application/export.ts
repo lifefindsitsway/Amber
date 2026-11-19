@@ -1,5 +1,5 @@
 import { capCitationRuns } from "../../shared/citation-runs.ts";
-import { API_PAGE_SIZE_MAX, CITATION_RUN_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
+import { API_PAGE_SIZE_MAX, CITATION_RUN_MAX, FIGURE_IMAGE_MAX_BYTES, FIGURES_PER_CONTENT_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import {
   BILINGUAL_EXPORT_FORMATS,
   type CollectionExportRequest,
@@ -10,6 +10,7 @@ import {
   type SubtitlePackageExportRequest,
 } from "../../shared/dto/export.ts";
 import type { BurnMode } from "../../shared/enums.ts";
+import { placeFigures, type SentenceMapper } from "../../shared/figure-placement.ts";
 import { exportFile } from "../../shared/i18n/zh-CN/export-file.ts";
 import type { SpeakerLabelMode } from "../../shared/speakers.ts";
 import { subtitleCues } from "../../shared/subtitle-geometry.ts";
@@ -26,6 +27,16 @@ import { buildSubtitlePackage, withAssRestoreData } from "../domain/export/amber
 import { assDialogue, ASS_HEADER, STYLED_ASS_PLAY_RES_Y, styledAssDocument, type AssPlayRes } from "../domain/export/ass.ts";
 import type { GlyphAdvances } from "../domain/export/subtitle-breaks.ts";
 import type { ExportCue } from "../domain/export/cues.ts";
+import {
+  figureImagePath,
+  interleaveFigures,
+  markdownFigureBlock,
+  SentenceParagraphBuilder,
+  txtFigureBlock,
+  type SectionItem,
+  type SectionPiece,
+  type SentenceParagraph,
+} from "../domain/export/figures.ts";
 import { contentDisposition, exportFilename } from "../domain/export/filename.ts";
 import {
   chapterLine,
@@ -44,9 +55,12 @@ import { srtCue } from "../domain/export/srt.ts";
 import { dateText, dateTimeText, durationText } from "../domain/export/time-format.ts";
 import { txtParagraph } from "../domain/export/txt.ts";
 import { VTT_HEADER, vttCue } from "../domain/export/vtt.ts";
+import type { ContentFigure } from "../domain/figure.ts";
 import { DEFAULT_SUMMARY_TEMPLATE_ID } from "../domain/prompts.ts";
+import { mapSegment } from "../domain/segment-map.ts";
 import type { ContentSpeaker } from "../domain/speaker.ts";
 import { serializeSubtitlePackage, SUBTITLE_PACKAGE_EXTENSION } from "../domain/subtitle-package.ts";
+import { checkZip, ZipLimitError, zipStream, type ZipEntry } from "../domain/export/zip.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -64,13 +78,14 @@ export interface ExportServiceOptions {
 
 /**
  * A synchronous export: everything that can be refused is checked before the
- * first byte, so a refusal is still a JSON error; the body is then produced lazily.
+ * first byte, so a refusal is still a JSON error; the body is then produced lazily. Text
+ * files stream as strings; a transcript exported with its figures is a zip of bytes.
  */
-export interface ExportFile {
+export interface ExportFile<Chunk extends string | Uint8Array = string | Uint8Array> {
   /** Title-derived file name with its extension, before `filename*` encoding. */
   filename: string;
   contentType: string;
-  body: AsyncIterable<string>;
+  body: AsyncIterable<Chunk>;
 }
 
 /**
@@ -101,6 +116,7 @@ export function exportDisposition(file: ExportFile): string {
 }
 
 const MARKDOWN_TYPE = "text/markdown; charset=utf-8";
+const ZIP_TYPE = "application/zip";
 
 const SUBTITLE_FILES: Readonly<Record<SubtitleExportFormat, { extension: string; contentType: string }>> = {
   srt: { extension: "srt", contentType: "application/x-subrip; charset=utf-8" },
@@ -130,18 +146,22 @@ export class ExportService {
 
   /** A download: a styled ASS carries restore data, so it re-imports as exactly as a subtitle package. */
   exportContent(principal: RequestPrincipal, contentId: string, body: ContentExportRequest): ExportFile {
-    return this.contentFile(principal.userId, contentId, body, true);
+    return this.contentFile(principal.userId, contentId, body, true, true);
   }
 
   /**
    * The same file for an owner known from a Task rather than a request; burning reads its ASS
    * here. Never with restore data: a burned picture or a muxed track is not re-imported.
+   * Always the text file: figures are for downloads only.
    */
-  exportContentOf(owner: string, contentId: string, body: ContentExportRequest): ExportFile {
-    return this.contentFile(owner, contentId, body, false);
+  exportContentOf(owner: string, contentId: string, body: ContentExportRequest): ExportFile<string> {
+    return this.contentFile(owner, contentId, body, false, false);
   }
 
-  private contentFile(owner: string, contentId: string, body: ContentExportRequest, restoreData: boolean): ExportFile {
+  /** With `figures`, a Markdown or TXT request that asks for figures, of a Content that has some, becomes a zip. */
+  private contentFile(owner: string, contentId: string, body: ContentExportRequest, restoreData: boolean, figures: false): ExportFile<string>;
+  private contentFile(owner: string, contentId: string, body: ContentExportRequest, restoreData: boolean, figures: boolean): ExportFile;
+  private contentFile(owner: string, contentId: string, body: ContentExportRequest, restoreData: boolean, figures: boolean): ExportFile {
     return this.options.repository.withTransaction((scope) => {
       const content = scope.contents.get(owner, contentId);
       if (content === undefined) {
@@ -149,11 +169,11 @@ export class ExportService {
       }
       switch (body.format) {
         case "markdown":
-          return this.markdownFile(scope, owner, content, body);
+          return this.markdownFile(scope, owner, content, body, figures);
         case "ambersub":
           return this.packageFile(scope, owner, content, body);
         default:
-          return this.subtitleFile(scope, owner, content, body, restoreData);
+          return this.subtitleFile(scope, owner, content, body, restoreData, figures);
       }
     });
   }
@@ -240,7 +260,7 @@ export class ExportService {
     };
   }
 
-  private subtitleFile(scope: RepositoryScope, owner: string, content: Content, body: SubtitleExportRequest, restoreData: boolean): ExportFile {
+  private subtitleFile(scope: RepositoryScope, owner: string, content: Content, body: SubtitleExportRequest, restoreData: boolean, figures: boolean): ExportFile {
     const revision = revisionOf(scope, owner, content, body.revisionId);
     let translation: TranscriptRevision | undefined;
     if (BILINGUAL_EXPORT_FORMATS.has(body.format)) {
@@ -275,6 +295,12 @@ export class ExportService {
           }
         : undefined;
       return { filename, contentType: file.contentType, body: this.styledAss(owner, mode, originalId, translationId, options, speakers?.names, labels, restore) };
+    }
+    if (figures && body.format === "txt" && body.figures === true) {
+      const zip = this.figureTxtFile(scope, owner, content, revision, speakers);
+      if (zip !== undefined) {
+        return zip;
+      }
     }
     const cues = this.cuesOf(owner, revision.id, translation?.id);
     const karaoke = revision.timingFidelity === "exact_words";
@@ -357,7 +383,7 @@ export class ExportService {
     yield pkg.original.segments.length === 0 ? document : withAssRestoreData(document, serializeSubtitlePackage(pkg));
   }
 
-  private markdownFile(scope: RepositoryScope, owner: string, content: Content, body: MarkdownExportRequest): ExportFile {
+  private markdownFile(scope: RepositoryScope, owner: string, content: Content, body: MarkdownExportRequest, figures: boolean): ExportFile {
     const { sections } = body;
     let summary: { revision: SummaryRevision; templateName: string } | undefined;
     if (sections.summary !== undefined) {
@@ -383,6 +409,9 @@ export class ExportService {
     const exportedAt = this.now();
     const link = (ms: number): string | undefined => (body.backlinks ? backlinkUrl(content.source, ms) : undefined);
     const speakerNames = body.includeSpeakers === true && transcript !== undefined ? speakerLabels(scope.speakers.list(owner, content.id)) : undefined;
+    // With figures, the transcript section is written here, from the sentences, figures and images read in this one transaction.
+    const figured =
+      figures && sections.transcript?.figures === true && transcript !== undefined ? this.figuredMarkdownTranscript(scope, owner, content, transcript.id, chapters, link, speakerNames) : undefined;
     const service = this;
 
     async function* lines(): AsyncGenerator<string> {
@@ -410,7 +439,7 @@ export class ExportService {
         const label = revisionLabelText(transcript);
         yield `\n## ${fillText(exportFile.transcript, { revision: label })}\n\n`;
         let pending = "";
-        for await (const piece of service.transcriptPieces(owner, transcript.id, chapters, link, speakerNames)) {
+        for await (const piece of figured?.section ?? service.transcriptPieces(owner, transcript.id, chapters, link, speakerNames)) {
           yield pending;
           pending = piece;
         }
@@ -424,7 +453,73 @@ export class ExportService {
         }
       }
     }
-    return { filename: exportFilename(title, exportFile.untitled, "md"), contentType: MARKDOWN_TYPE, body: lines() };
+    const filename = exportFilename(title, exportFile.untitled, "md");
+    if (figured !== undefined) {
+      return { filename: exportFilename(title, exportFile.untitled, "zip"), contentType: ZIP_TYPE, body: zipBody(filename, lines(), figured.images, exportedAt) };
+    }
+    return { filename, contentType: MARKDOWN_TYPE, body: lines() };
+  }
+
+  /**
+   * The transcript section of a Markdown export with its figures, or `undefined` when the
+   * Content has no live figure (the export is then the plain `.md`). Sentences, figures and
+   * images are read in the caller's transaction; the section is cut into paragraphs exactly
+   * like the streamed one, so its text is the same with the figure blocks added.
+   */
+  private figuredMarkdownTranscript(
+    scope: RepositoryScope,
+    owner: string,
+    content: Content,
+    revisionId: string,
+    chapters: ChapterRevision | undefined,
+    link: (ms: number) => string | undefined,
+    speakerNames: ReadonlyMap<string, string> | undefined,
+  ): { section: string[]; images: Uint8Array[] } | undefined {
+    const live = liveFigures(scope, owner, content.id);
+    if (live.length === 0) {
+      return undefined;
+    }
+    const writer = new TranscriptSectionWriter(chapters, link, speakerNames);
+    const pieces: SectionPiece[] = [];
+    for (const segment of allSegments(scope, owner, revisionId)) {
+      pieces.push(...writer.push({ ...cueOf(segment), id: segment.id }));
+    }
+    pieces.push(...writer.finish());
+    const { items, images } = placeAndLoad(scope, owner, content.id, revisionId, pieces, live);
+    return { section: items.map((item) => (item.kind === "text" ? item.text : markdownFigureBlock(item.number, item.figure, link))), images };
+  }
+
+  /**
+   * The TXT export with its figures, or `undefined` when the Content has no live figure.
+   * Paragraphs and speaker prefixes are those of the plain TXT; each figure is a block of its
+   * own, separated from its neighbours by a blank line like a paragraph.
+   */
+  private figureTxtFile(scope: RepositoryScope, owner: string, content: Content, revision: TranscriptRevision, speakers: SpeakerNames | undefined): ExportFile | undefined {
+    const live = liveFigures(scope, owner, content.id);
+    if (live.length === 0) {
+      return undefined;
+    }
+    const labels = speakers === undefined ? undefined : new SpeakerLabeler(speakers.mode);
+    const builder = new SentenceParagraphBuilder();
+    const pieces: SectionPiece[] = [];
+    const add = (closed: SentenceParagraph | undefined): void => {
+      if (closed !== undefined) {
+        pieces.push({ kind: "paragraph", text: `${labelFor(speakers, labels, closed.paragraph.speakerId)}${closed.paragraph.text}\n`, sentences: closed.sentences });
+      }
+    };
+    for (const segment of allSegments(scope, owner, revision.id)) {
+      add(builder.push({ ...cueOf(segment), id: segment.id }));
+    }
+    add(builder.flush());
+    const { items, images } = placeAndLoad(scope, owner, content.id, revision.id, pieces, live);
+    const document = items.map((item) => (item.kind === "text" ? item.text : txtFigureBlock(item.number, item.figure))).join("\n");
+    const title = titleOf(scope, owner, content);
+    const filename = exportFilename(title, exportFile.untitled, SUBTITLE_FILES.txt.extension);
+    return {
+      filename: exportFilename(title, exportFile.untitled, "zip"),
+      contentType: ZIP_TYPE,
+      body: zipBody(filename, single(document), images, this.now()),
+    };
   }
 
   /**
@@ -489,14 +584,7 @@ export class ExportService {
     };
   }
 
-  /**
-   * The body of the transcript section (`exportFile.transcript`): reading paragraphs, and
-   * where chapters were requested too, a `###` heading wherever one of that same
-   * ChapterRevision's chapters starts. Chapters are projected by time — the latest chapter
-   * starting at or before a sentence takes it — so they apply to whichever revision is
-   * exported; a chapter start always closes the paragraph before it. Without
-   * `sections.chapters` no chapter is read.
-   */
+  /** The transcript section streamed page by page (`TranscriptSectionWriter`). */
   private async *transcriptPieces(
     owner: string,
     revisionId: string,
@@ -504,38 +592,14 @@ export class ExportService {
     link: (ms: number) => string | undefined,
     speakerNames?: ReadonlyMap<string, string>,
   ): AsyncGenerator<string> {
-    const starts = chapters === undefined ? [] : [...chapters.chapters].sort((a, b) => a.startMs - b.startMs);
-    // The first paragraph of each speaker's turn names the speaker; a chapter heading starts a new turn, as in the reading view.
-    const turns = new SpeakerLabeler("turn");
-    const line = (paragraph: Paragraph): string => {
-      const labelled = turns.next(paragraph.speakerId);
-      const speaker = labelled && paragraph.speakerId !== undefined ? speakerNames?.get(paragraph.speakerId) : undefined;
-      return transcriptParagraphLine(markdownStamp(paragraph.startMs, link(paragraph.startMs)), paragraph.text, speaker);
-    };
-    const builder = new ParagraphBuilder();
-    let next = 0;
+    const writer = new TranscriptSectionWriter(chapters, link, speakerNames);
     for await (const cue of this.cuesOf(owner, revisionId)) {
-      let opened: string | undefined;
-      while (next < starts.length && (starts[next] as ChapterRevision["chapters"][number]).startMs <= cue.startMs) {
-        opened = (starts[next] as ChapterRevision["chapters"][number]).title;
-        next += 1;
-      }
-      if (opened !== undefined) {
-        const closed = builder.flush();
-        if (closed !== undefined) {
-          yield line(closed);
-        }
-        turns.restart();
-        yield transcriptChapterHeading(opened);
-      }
-      const closed = builder.push(cue);
-      if (closed !== undefined) {
-        yield line(closed);
+      for (const piece of writer.push(cue)) {
+        yield piece.text;
       }
     }
-    const last = builder.flush();
-    if (last !== undefined) {
-      yield line(last);
+    for (const piece of writer.finish()) {
+      yield piece.text;
     }
   }
 
@@ -563,16 +627,7 @@ export class ExportService {
       }
       const translation = translated.get(segment.id);
       translated.delete(segment.id);
-      yield {
-        startMs: segment.startMs,
-        endMs: segment.endMs,
-        text: segment.text,
-        ...(segment.words === undefined ? {} : { words: segment.words }),
-        ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
-        ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
-        ...(segment.looseJoin === true ? { looseJoin: true } : {}),
-        ...(translation === undefined ? {} : { translation }),
-      };
+      yield { ...cueOf(segment), ...(translation === undefined ? {} : { translation }) };
     }
   }
 
@@ -593,6 +648,170 @@ export class ExportService {
       scope.transcripts.listSegments(owner, revisionId, { ...(afterOrdinal === undefined ? {} : { afterOrdinal }), limit: API_PAGE_SIZE_MAX }),
     );
   }
+}
+
+/**
+ * The body of the transcript section (`exportFile.transcript`): reading paragraphs, and
+ * where chapters were requested too, a `###` heading wherever one of that same
+ * ChapterRevision's chapters starts. Chapters are projected by time — the latest chapter
+ * starting at or before a sentence takes it — so they apply to whichever revision is
+ * exported; a chapter start always closes the paragraph before it. Without
+ * `sections.chapters` no chapter is read. Fed one sentence at a time, it serves both the
+ * streamed section and the one written with figures, so the two never differ in text.
+ */
+class TranscriptSectionWriter {
+  private readonly starts: ChapterRevision["chapters"];
+  private readonly link: (ms: number) => string | undefined;
+  private readonly speakerNames: ReadonlyMap<string, string> | undefined;
+  // The first paragraph of each speaker's turn names the speaker; a chapter heading starts a new turn, as in the reading view.
+  private readonly turns = new SpeakerLabeler("turn");
+  private readonly builder = new SentenceParagraphBuilder();
+  private next = 0;
+
+  constructor(chapters: ChapterRevision | undefined, link: (ms: number) => string | undefined, speakerNames: ReadonlyMap<string, string> | undefined) {
+    this.starts = chapters === undefined ? [] : [...chapters.chapters].sort((a, b) => a.startMs - b.startMs);
+    this.link = link;
+    this.speakerNames = speakerNames;
+  }
+
+  /** The pieces this sentence completes: the paragraph a chapter start closes, the heading, the paragraph the sentence closes. */
+  push(cue: ExportCue & { id?: string }): SectionPiece[] {
+    const pieces: SectionPiece[] = [];
+    let opened: string | undefined;
+    while (this.next < this.starts.length && (this.starts[this.next] as ChapterRevision["chapters"][number]).startMs <= cue.startMs) {
+      opened = (this.starts[this.next] as ChapterRevision["chapters"][number]).title;
+      this.next += 1;
+    }
+    if (opened !== undefined) {
+      const closed = this.builder.flush();
+      if (closed !== undefined) {
+        pieces.push(this.paragraph(closed));
+      }
+      this.turns.restart();
+      pieces.push({ kind: "heading", text: transcriptChapterHeading(opened) });
+    }
+    const closed = this.builder.push(cue);
+    if (closed !== undefined) {
+      pieces.push(this.paragraph(closed));
+    }
+    return pieces;
+  }
+
+  /** The last paragraph, if any. */
+  finish(): SectionPiece[] {
+    const last = this.builder.flush();
+    return last === undefined ? [] : [this.paragraph(last)];
+  }
+
+  private paragraph({ paragraph, sentences }: SentenceParagraph): SectionPiece {
+    const labelled = this.turns.next(paragraph.speakerId);
+    const speaker = labelled && paragraph.speakerId !== undefined ? this.speakerNames?.get(paragraph.speakerId) : undefined;
+    return { kind: "paragraph", text: transcriptParagraphLine(markdownStamp(paragraph.startMs, this.link(paragraph.startMs)), paragraph.text, speaker), sentences };
+  }
+}
+
+/** A stored sentence as an export cue, without a translation. */
+function cueOf(segment: TranscriptSegment): ExportCue {
+  return {
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: segment.text,
+    ...(segment.words === undefined ? {} : { words: segment.words }),
+    ...(segment.speakerId === undefined ? {} : { speakerId: segment.speakerId }),
+    ...(segment.paragraphStart === undefined ? {} : { paragraphStart: segment.paragraphStart }),
+    ...(segment.looseJoin === true ? { looseJoin: true } : {}),
+  };
+}
+
+/** The Content's figures that are not deleted; deleted ones are never exported. */
+function liveFigures(scope: RepositoryScope, owner: string, contentId: string): ContentFigure[] {
+  return scope.figures.listByContent(owner, contentId).filter((figure) => figure.deletedAt === undefined);
+}
+
+/**
+ * Maps a sentence of another revision of the Content to the exported one the way the reading
+ * view jumps between versions (`mapSegment`); `undefined` when the anchor's revision or
+ * sentence is gone or nothing matches, and the figure then falls back to its time.
+ */
+function sentenceMapper(scope: RepositoryScope, owner: string, contentId: string, readingRevisionId: string): SentenceMapper {
+  let revisions: Map<string, TranscriptRevision> | undefined;
+  const loaded = new Map<string, TranscriptSegment[]>();
+  const segmentsOf = (revisionId: string): TranscriptSegment[] => {
+    let segments = loaded.get(revisionId);
+    if (segments === undefined) {
+      segments = allSegments(scope, owner, revisionId);
+      loaded.set(revisionId, segments);
+    }
+    return segments;
+  };
+  return (fromRevisionId, segmentId) => {
+    revisions ??= new Map(scope.transcripts.listRevisions(owner, contentId).map((revision) => [revision.id, revision]));
+    if (!revisions.has(fromRevisionId)) {
+      return undefined;
+    }
+    const source = scope.transcripts.getSegment(owner, segmentId);
+    if (source === undefined || source.revisionId !== fromRevisionId) {
+      return undefined;
+    }
+    return mapSegment({ source, targetRevisionId: readingRevisionId, revisions, segmentsOf }).segmentId ?? undefined;
+  };
+}
+
+/**
+ * Places the figures between the export's paragraphs, numbers them in reading order and
+ * reads their images, all in the caller's transaction. Every image must be there and the
+ * archive must stay within the figure caps; otherwise the export is refused here, before
+ * the first byte.
+ */
+function placeAndLoad(
+  scope: RepositoryScope,
+  owner: string,
+  contentId: string,
+  revisionId: string,
+  pieces: readonly SectionPiece[],
+  live: readonly ContentFigure[],
+): { items: Array<SectionItem<ContentFigure>>; images: Uint8Array[] } {
+  const paragraphs = pieces.flatMap((piece) => (piece.kind === "paragraph" ? [{ segments: piece.sentences }] : []));
+  const layout = placeFigures({ readingRevisionId: revisionId, paragraphs, figures: live, mapSentence: sentenceMapper(scope, owner, contentId, revisionId) });
+  const { items, figures } = interleaveFigures(pieces, layout);
+  const cap = FIGURES_PER_CONTENT_MAX * FIGURE_IMAGE_MAX_BYTES;
+  const tooLarge = () => amberError("media_too_large", "figure images pass the export cap", { params: { limit: `${cap / BYTES_PER_MB} MB` } });
+  let total = 0;
+  const images = figures.map((figure) => {
+    const bytes = scope.figures.getImage(owner, figure.id);
+    if (bytes === undefined) {
+      throw amberError("internal", "a figure's image is missing");
+    }
+    total += bytes.length;
+    return bytes;
+  });
+  if (total > cap) {
+    throw tooLarge();
+  }
+  try {
+    // The document's size is not known yet; the images alone must already fit.
+    checkZip([{ name: "document", size: 0 }, ...images.map((image, index) => ({ name: figureImagePath(index + 1), size: image.length }))]);
+  } catch (error) {
+    if (error instanceof ZipLimitError) {
+      throw tooLarge();
+    }
+    throw error;
+  }
+  return { items, images };
+}
+
+/** The zip of a document and its figure images, `images/001.webp` on; the document is gathered first, as stored entries need their size up front. */
+async function* zipBody(documentName: string, document: AsyncIterable<string>, images: readonly Uint8Array[], modifiedAt: number): AsyncGenerator<Uint8Array> {
+  let text = "";
+  for await (const piece of document) {
+    text += piece;
+  }
+  const entries: ZipEntry[] = [{ name: documentName, data: Buffer.from(text, "utf8") }, ...images.map((data, index) => ({ name: figureImagePath(index + 1), data }))];
+  yield* zipStream(entries, { modifiedAt });
+}
+
+async function* single(text: string): AsyncGenerator<string> {
+  yield text;
 }
 
 /** Every sentence of a revision in ordinal order, read inside the caller's transaction. */

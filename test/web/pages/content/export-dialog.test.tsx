@@ -268,3 +268,86 @@ describe("ExportDialog Amber subtitle package", () => {
     expect(screen.getByTestId("export-ambersub-translated").textContent).toContain("请在上方选择原文版本");
   });
 });
+
+describe("ExportDialog figures", () => {
+  const figure = (id: string) => ({
+    id, contentId: "c1", source: "upload", placement: { displayMs: 0, anchor: null, sortKey: 0 }, widthRatio: 0.7,
+    image: { width: 4, height: 3, bytes: 10, sha256: "a".repeat(64) }, version: 1, createdAt: 1, updatedAt: 1,
+  });
+  const routes = (count: number) => ({
+    ...contentRoutes(),
+    "GET /api/contents/c1/figures": { body: { items: Array.from({ length: count }, (_, index) => figure(`f${index}`)), recentlyDeleted: [figure("gone")], limit: 100 } },
+    "POST /api/contents/c1/export": (call: { body?: unknown }) => {
+      const body = call.body as { format: string; figures?: boolean; sections?: { transcript?: { figures?: boolean } } };
+      const zipped = body.figures === true || body.sections?.transcript?.figures === true;
+      return { file: { filename: zipped ? "第一讲.zip" : body.format === "markdown" ? "第一讲.md" : `第一讲.${body.format}`, text: MARKDOWN } };
+    },
+  });
+  const post = (calls: Array<{ method: string; body?: unknown }>) => calls.filter((call) => call.method === "POST").at(-1)?.body;
+
+  it("builds figure requests only for the transcript section and for TXT", () => {
+    const choice = { summaryTemplateId: undefined, chapters: false, transcriptRevisionId: "r1", subtitlesRevisionId: undefined, backlinks: true, figures: true };
+    expect(markdownExportBody(choice)).toEqual({ format: "markdown", sections: { transcript: { revisionId: "r1", figures: true } }, backlinks: true });
+    expect(markdownExportBody({ ...choice, transcriptRevisionId: undefined, summaryTemplateId: "summary.core" })).toEqual({ format: "markdown", sections: { summary: { templateId: "summary.core" } }, backlinks: true });
+    expect(subtitleExportBody("txt", "r1", undefined, { labels: "every" }, true)).toEqual({ format: "txt", revisionId: "r1", figures: true, includeSpeakers: true, speakerLabels: "every" });
+    expect(subtitleExportBody("srt", "r1", undefined, undefined, true)).toEqual({ format: "srt", revisionId: "r1" });
+    expect(subtitleExportBody("txt", "r1", undefined, undefined, false)).toEqual({ format: "txt", revisionId: "r1" });
+  });
+
+  it("counts the live figures, downloads a zip once ticked, keeps the copy as text and names the saved file", async () => {
+    const saved = captureDownloads();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const { calls } = mockApi(routes(2));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    const option = (await screen.findByTestId("export-markdown-figures")) as HTMLInputElement;
+    await waitFor(() => expect(option.disabled).toBe(false));
+    expect(option.checked).toBe(false);
+    expect(option.closest("label")?.textContent).toBe("包含插图与备注（2 张）");
+    expect(screen.getByTestId("export-markdown").textContent).toBe("下载 .md");
+
+    fireEvent.click(option);
+    expect(screen.getByTestId("export-markdown").textContent).toBe("下载 .zip");
+    const note = screen.getByTestId("export-copy-note");
+    expect(note.textContent).toBe("复制的 Markdown 不含图片");
+    expect(screen.getByTestId("export-copy").getAttribute("aria-describedby")).toBe(note.id);
+    expect(option.getAttribute("aria-describedby")).toBe(screen.getByTestId("export-markdown-figures-hint").id);
+
+    fireEvent.click(screen.getByTestId("export-markdown"));
+    await waitFor(() => expect(saved).toEqual([{ download: "第一讲.zip" }]));
+    expect(post(calls)).toEqual({ format: "markdown", sections: { summary: { templateId: "summary.core" }, chapters: true, transcript: { revisionId: "r1", figures: true } }, backlinks: true });
+    expect((await screen.findByTestId("export-saved")).textContent).toBe("已导出「第一讲.zip」");
+    expect(screen.getByTestId("export-saved").getAttribute("role")).toBe("status");
+
+    fireEvent.click(screen.getByTestId("export-copy"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(MARKDOWN));
+    expect(post(calls)).toEqual({ format: "markdown", sections: { summary: { templateId: "summary.core" }, chapters: true, transcript: { revisionId: "r1" } }, backlinks: true });
+    expect(screen.queryByTestId("export-saved")).toBeNull();
+
+    const txt = screen.getByTestId("export-txt-figures") as HTMLInputElement;
+    fireEvent.click(txt);
+    expect(screen.getByTestId("export-format-txt").textContent).toBe("TXT（.zip）");
+    expect(screen.getByTestId("export-note-txt").textContent).toBe("下载为 .zip：文稿加图片文件，文稿里用编号标出每张图的位置");
+    fireEvent.click(screen.getByTestId("export-format-txt"));
+    await waitFor(() => expect(post(calls)).toEqual({ format: "txt", revisionId: "r1", figures: true }));
+    await waitFor(() => expect(saved.at(-1)).toEqual({ download: "第一讲.zip" }));
+  });
+
+  it("disables both options without figures and says why beside them", async () => {
+    captureDownloads();
+    mockApi(routes(0));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    for (const id of ["export-markdown-figures", "export-txt-figures"]) {
+      const option = (await screen.findByTestId(id)) as HTMLInputElement;
+      await waitFor(() => expect(option.disabled).toBe(true));
+      await waitFor(() => expect(option.closest("label")?.textContent).toBe("包含插图与备注（0 张）"));
+      const hint = screen.getByTestId(`${id}-hint`);
+      expect(hint.textContent).toBe("这条内容还没有插图");
+      expect(option.getAttribute("aria-describedby")).toBe(hint.id);
+    }
+    expect(screen.getByTestId("export-markdown").textContent).toBe("下载 .md");
+    expect(screen.getByTestId("export-format-txt").textContent).toBe("TXT");
+  });
+});

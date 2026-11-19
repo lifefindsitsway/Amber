@@ -36,7 +36,8 @@ describe("browserDownloadSaver", () => {
     });
     const blob = new Blob(["# 第一讲"]);
     // Outside the desktop client the environment saver is the browser download.
-    await exportSaver().save({ filename: "第一讲.md", blob });
+    // The download is named by the file; that is the name the confirmation shows.
+    await expect(exportSaver().save({ filename: "第一讲.md", blob })).resolves.toBe("第一讲.md");
     expect(create).toHaveBeenCalledWith(blob);
     expect(clicked).toEqual([{ href: "blob:mock", download: "第一讲.md" }]);
     expect(document.querySelector("a[download]")).toBeNull();
@@ -61,6 +62,18 @@ describe("tauriDialogSaver", () => {
     expect(path).toBe("C:\\Users\\me\\第一讲.srt");
     expect(new TextDecoder().decode(data)).toBe("1\n");
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it("saves a figure zip as bytes and reports the name the user gave it in the dialog", async () => {
+    fakeShell.desktop = true;
+    dialog.save.mockResolvedValue("D:\\笔记\\第一讲（图文）.zip");
+    fs.writeFile.mockResolvedValue(undefined);
+    const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0xff]);
+    await expect(exportSaver().save({ filename: "第一讲.zip", blob: new Blob([bytes]) })).resolves.toBe("第一讲（图文）.zip");
+    expect(dialog.save).toHaveBeenCalledWith({ defaultPath: "第一讲.zip", filters: [{ name: "ZIP", extensions: ["zip"] }] });
+    expect(Array.from(fs.writeFile.mock.calls[0]?.[1] ?? [])).toEqual(Array.from(bytes));
+    dialog.save.mockResolvedValue("/home/me/第一讲.zip");
+    await expect(tauriDialogSaver.save({ filename: "第一讲.zip", blob: new Blob([bytes]) })).resolves.toBe("第一讲.zip");
   });
 
   it("treats a cancelled dialog as nothing to do", async () => {

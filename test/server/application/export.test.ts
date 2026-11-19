@@ -9,19 +9,21 @@ import { SUBTITLE_FONT_FILE } from "../../../src/server/api/routes/fonts.ts";
 import { ExportService, type ExportFile } from "../../../src/server/application/export.ts";
 import { writeSubtitleImport } from "../../../src/server/application/subtitle-import.ts";
 import type { SummaryRevision } from "../../../src/server/domain/artifact.ts";
+import type { ContentFigure } from "../../../src/server/domain/figure.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { buildSubtitlePackage } from "../../../src/server/domain/export/ambersub.ts";
 import { planSubtitleImport, readSubtitleDocument } from "../../../src/server/domain/subtitle-document.ts";
 import { assDialogueDigest, parseSubtitlePackage, serializeSubtitlePackage, type SubtitlePackage } from "../../../src/server/domain/subtitle-package.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../src/server/domain/transcript.ts";
 import { burnSubtitleRequest } from "../../../src/server/pipeline/stages/burn.ts";
-import { API_PAGE_SIZE_MAX, SUBTITLE_ASS_DATA_CHUNK } from "../../../src/shared/defaults.ts";
+import { API_PAGE_SIZE_MAX, FIGURE_IMAGE_MAX_BYTES, FIGURES_PER_CONTENT_MAX, SUBTITLE_ASS_DATA_CHUNK } from "../../../src/shared/defaults.ts";
 import type { ContentExportRequest, SubtitleExportRequest } from "../../../src/shared/dto/export.ts";
 import type { SegmentId } from "../../../src/shared/ids.ts";
 import { defaultSubtitleAppearance, defaultSubtitlePlacement, type SubtitleStyle } from "../../../src/shared/subtitle-style.ts";
 import { addLocalFile, ASR_LINES, seedExportCollection, seedExportContent, type ExportFixture, type ExportLine } from "../../fixtures/export/export-data.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { toolPath, toolsBinDir } from "../../fixtures/tools.ts";
+import { readZip } from "../../../src/tooling/zip-reader.ts";
 import { JOIN_SAMPLES, type JoinSample } from "../../fixtures/transcripts/reading-join.ts";
 import { tempDataDir } from "../../tools/sqlite.ts";
 
@@ -1305,5 +1307,298 @@ describe("ExportService, packages of a loosely joined revision", () => {
     }
     const restored = await text(exports.exportContent(LOCAL, target, { format: "txt", revisionId: written.revisionId }));
     expect(restored).toBe(`${sample.unmarked}\n`);
+  });
+});
+
+describe("ExportService, figures in Markdown and TXT", () => {
+  /**
+   * SHA-256 of Markdown exports of the speaker fixture below as written before figures
+   * existed: summary, transcript and subtitle sections, every combination of revision,
+   * back-links, speakers and chapters. A request without figures, with `figures: false`, or
+   * with figures of a Content that has none must keep these bytes.
+   */
+  const MARKDOWN_BEFORE: Readonly<Record<string, string>> = {
+    "asr-md-plain-none-flat": "52652ae8be6ed1f59326ba909adf777b2b77f6398dc0e18c2b106ddabc7c4580",
+    "asr-md-plain-none-chapters": "94b6fdb8ce30f53717ca9c7f6bbc587961ea152226272c602b80ca6bc266817b",
+    "asr-md-plain-speakers-flat": "ea1852298bfb3f22c68591c6e1a76517654a607d0e358252f6dbc0a3bc224207",
+    "asr-md-plain-speakers-chapters": "8ebf8451ad0a376b03003996ed9cc6dac7a458f3f510f50fc915bf768ee09dc8",
+    "asr-md-links-none-flat": "59d8316752bc1dd4652c45e5f205cc7eb18db044e7e8a4683100b266fddb88a1",
+    "asr-md-links-none-chapters": "4c8f314e8aa614fdb503750b90cb81fac8aa0e98a5a0f813962e0e94867f0f56",
+    "asr-md-links-speakers-flat": "01f3f59a81d3ec30631b14b737b7da4856496f44627105c259e66f4d22daa9a3",
+    "asr-md-links-speakers-chapters": "1efeab3a09eb64b7b1d3bfbc616e2bf5c541578e1981ec2920b18746bbc1b7bb",
+    "corrected-md-plain-none-flat": "bb65001757dec21c8f61bc61b7c98a6707f733c603beb589513302f249e5c3d9",
+    "corrected-md-plain-none-chapters": "14b246e70b1797e37d390e0aeee27b518df1fae4bb14e06b2d7de127469f7005",
+    "corrected-md-plain-speakers-flat": "5ec7651b799b60e692f244b98dcdc9a6ce13cb979f33e2db8bb8bdde70610089",
+    "corrected-md-plain-speakers-chapters": "a0557f9872aeacfacab4e584fd436421cf18178553b8b4c147f8d58de9c382a8",
+    "corrected-md-links-none-flat": "aafbe0671dc3fdaad13e7138a9acc59783cd8db7c5df2a4b0015f8e7069f440f",
+    "corrected-md-links-none-chapters": "b52d601bea0ec8365299bc66996d701c0130b3f07a6bd9a80f5fdabc2547c8f4",
+    "corrected-md-links-speakers-flat": "89afc32c22a13289afbf13a9a03cf3bf498a6912bc8bfd2a97db6c8cb7a4931d",
+    "corrected-md-links-speakers-chapters": "8a5dee97f3a295c947d2ecec3e5269daadbc3ea4155727435a79e4dffad17668",
+    "translated-md-plain-none-flat": "8b9ce01ed63b1e0d2afe1e684c260d66d3bc59ddb8034372f087cf3c000857b1",
+    "translated-md-plain-none-chapters": "9801ae1dc67fba4d6ff90c2212cb7234c34de88141ab466a4c8658f223cd854f",
+    "translated-md-plain-speakers-flat": "bd7909986a76a7748cd4b621618ba06858190ae1f4d269b93b5402d81e7f6321",
+    "translated-md-plain-speakers-chapters": "86478e371bd5489ee2bd818f169f8dcc14863bef16c4c11386b75c0f4b405f15",
+    "translated-md-links-none-flat": "4c74ecba770ceccf1041fcaab621d8dd0f3d8ee471efab4fae31cae99d0afe0b",
+    "translated-md-links-none-chapters": "d2a9cc83193d521a6d17430924b67e3fb6b52e25de21c70c29a5d6d68d776f37",
+    "translated-md-links-speakers-flat": "28d5520d8eee1ae5c163d52d6841ba8e7446b239a9f05cac57e359c279387e9c",
+    "translated-md-links-speakers-chapters": "23cebac3191946304c90f910542fc3cc40e7f9a9bb149c376dce07d6c284df12",
+  };
+  const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+
+  function figureOf(contentId: string, id: string, overrides: Partial<ContentFigure> = {}): ContentFigure {
+    return {
+      id, contentId, userId: LOCAL.userId, source: "upload", displayMs: 0, sortKey: 0, widthRatio: 0.7,
+      image: { width: 4, height: 3, bytes: 8, sha256: "a".repeat(64) }, version: 1, createdAt: 1, updatedAt: 1, ...overrides,
+    };
+  }
+  function addFigure(h: Harness, figure: ContentFigure, image: Uint8Array = Buffer.from(`RIFF${figure.id}`)): void {
+    h.repository.withTransaction((scope) => scope.figures.insert({ ...figure, image: { ...figure.image, bytes: image.length } }, image));
+  }
+  async function bytes(file: ExportFile): Promise<Buffer> {
+    const parts: Buffer[] = [];
+    for await (const chunk of file.body) parts.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
+    return Buffer.concat(parts);
+  }
+  async function unzip(file: ExportFile): Promise<Map<string, Buffer>> {
+    return new Map(readZip(await bytes(file)).map((entry) => [entry.name, entry.read()]));
+  }
+  /** The figure blocks of a Markdown transcript taken out: what is left must be the export without figures. */
+  const withoutMarkdownBlocks = (markdown: string): string => markdown.replace(/!\[图 \d+\]\(images\/\d{3}\.webp\)\\\n(?:[^\n]*\\\n)*[^\n]*\n\n/g, "");
+
+  it("keeps the Markdown byte for byte without figures, with figures off, and when the Content has none", async () => {
+    const h = createHarness();
+    open.push(h);
+    const owners = ["a", "a", "b", undefined, "a", "b"];
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+      lines: ASR_LINES.map((line, index) => ({ ...line, text: index === 2 ? "x <b> & y" : line.text, ...(owners[index] === undefined ? {} : { speakerId: owners[index] as string }) })),
+      speakerNames: { a: "张三" },
+    });
+    const exports = new ExportService({ repository: h.repository, version: "1.0.0", now: () => NOW });
+    const markdown = async (key: string, figures: boolean | undefined) => {
+      const [revision, , links, speakers, chapters] = key.split("-") as ["asr" | "corrected" | "translated", string, string, string, string];
+      const file = exports.exportContent(LOCAL, fixture.contentId, {
+        format: "markdown",
+        sections: {
+          summary: { templateId: "summary.core" },
+          ...(chapters === "chapters" ? { chapters: true } : {}),
+          transcript: { revisionId: fixture[revision].revision.id, ...(figures === undefined ? {} : { figures }) },
+          subtitles: { revisionId: fixture.asr.revision.id },
+        },
+        backlinks: links === "links",
+        ...(speakers === "speakers" ? { includeSpeakers: true } : {}),
+      });
+      expect(file.contentType).toBe("text/markdown; charset=utf-8");
+      return sha256(await text(file));
+    };
+    for (const [key, digest] of Object.entries(MARKDOWN_BEFORE)) {
+      for (const figures of [undefined, false, true]) {
+        expect(await markdown(key, figures), `${key} figures=${String(figures)}`).toBe(digest);
+      }
+    }
+    // A deleted figure is no figure: still the plain file.
+    addFigure(h, figureOf(fixture.contentId, h.newId(), { deletedAt: 5 }));
+    expect(await markdown("asr-md-plain-none-flat", true)).toBe(MARKDOWN_BEFORE["asr-md-plain-none-flat"]);
+    // Figures that exist but were not asked for change nothing either.
+    addFigure(h, figureOf(fixture.contentId, h.newId()));
+    expect(await markdown("asr-md-plain-speakers-chapters", false)).toBe(MARKDOWN_BEFORE["asr-md-plain-speakers-chapters"]);
+    expect(await markdown("asr-md-plain-speakers-chapters", undefined)).toBe(MARKDOWN_BEFORE["asr-md-plain-speakers-chapters"]);
+  });
+
+  it("keeps the TXT byte for byte without figures, with figures off, and when the Content has none", async () => {
+    const { h, exports, fixture } = setup();
+    const revisionId = fixture.corrected.revision.id;
+    const plain = await text(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId }));
+    expect(plain).toBe("Hi world. 你好世界\n\n第二段{\\b1}开始\n\n九十九分 一百分\n\n六小时\n");
+    expect(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId, figures: false }))).toBe(plain);
+    const none = exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId, figures: true });
+    expect(none).toMatchObject({ filename: "示例课程：第一讲导论.txt", contentType: "text/plain; charset=utf-8" });
+    expect(await text(none)).toBe(plain);
+    addFigure(h, figureOf(fixture.contentId, h.newId()));
+    expect(await text(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId }))).toBe(plain);
+  });
+
+  /** Figures of the export fixture: one before everything, a capture after 第二段, one anchored in the ASR original, a deleted one. */
+  function seedFigures(h: Harness, fixture: ExportFixture): void {
+    const corrected = fixture.corrected.segments;
+    addFigure(h, figureOf(fixture.contentId, "F-capture", { source: "capture", capturedAtMs: 9500, displayMs: 9500, caption: "第一张", createdAt: 1, anchor: { revisionId: fixture.corrected.revision.id, segmentId: (corrected[2] as TranscriptSegment).id, side: "after" } }));
+    addFigure(h, figureOf(fixture.contentId, "F-first", { displayMs: 0, caption: "多行\n第二行", createdAt: 9 }));
+    addFigure(h, figureOf(fixture.contentId, "F-asr", { displayMs: 1, createdAt: 3, anchor: { revisionId: fixture.asr.revision.id, segmentId: (fixture.asr.segments[4] as TranscriptSegment).id, side: "after" } }));
+    addFigure(h, figureOf(fixture.contentId, "F-deleted", { displayMs: 2000, deletedAt: 7 }));
+  }
+
+  it("zips the Markdown with its images: each figure after its paragraph, numbered in reading order, the text otherwise unchanged", async () => {
+    const { h, exports, fixture } = setup();
+    seedFigures(h, fixture);
+    const body = (figures?: true): ContentExportRequest => ({
+      format: "markdown",
+      sections: { summary: { templateId: "summary.core" }, transcript: { revisionId: fixture.corrected.revision.id, ...(figures === undefined ? {} : { figures }) }, subtitles: { revisionId: fixture.asr.revision.id } },
+      backlinks: true,
+    });
+    const file = exports.exportContent(LOCAL, fixture.contentId, body(true));
+    expect(file).toMatchObject({ filename: "示例课程：第一讲导论.zip", contentType: "application/zip" });
+    const entries = await unzip(file);
+    expect([...entries.keys()]).toEqual(["示例课程：第一讲导论.md", "images/001.webp", "images/002.webp", "images/003.webp"]);
+    expect(entries.get("images/001.webp")?.toString()).toBe("RIFFF-first");
+    expect(entries.get("images/002.webp")?.toString()).toBe("RIFFF-capture");
+    expect(entries.get("images/003.webp")?.toString()).toBe("RIFFF-asr");
+    const markdown = (entries.get("示例课程：第一讲导论.md") as Buffer).toString("utf8");
+    const section = markdown.slice(markdown.indexOf("## 原文细读"), markdown.indexOf("## 字幕"));
+    expect(section).toBe(
+      [
+        "## 原文细读（校对稿 · m · 2026-10-01 12:00）",
+        "",
+        "![图 1](images/001.webp)\\",
+        "图 1 · 多行\\",
+        "第二行",
+        "",
+        `**[00:01](${at(1)})** Hi world. 你好世界`,
+        "",
+        `**[00:09](${at(9)})** 第二段{\\b1}开始`,
+        "",
+        "![图 2](images/002.webp)\\",
+        `图 2 · [00:09](${at(9)}) · 第一张`,
+        "",
+        `**[99:59](${at(5999)})** 九十九分 一百分`,
+        "",
+        "![图 3](images/003.webp)\\",
+        "图 3",
+        "",
+        `**[6:00:01](${at(21601)})** 六小时`,
+        "",
+        "",
+      ].join("\n"),
+    );
+    // Every relative image path resolves inside the archive.
+    for (const [, path] of markdown.matchAll(/\]\((images\/[^)]+)\)/g)) expect(entries.has(path as string)).toBe(true);
+    expect(withoutMarkdownBlocks(markdown)).toBe(await text(exports.exportContent(LOCAL, fixture.contentId, body())));
+  });
+
+  it("places figures against the exported revision when it is not the one they were placed in, and by time when nothing maps", async () => {
+    const { h, exports, fixture } = setup();
+    seedFigures(h, fixture);
+    // Anchored in a revision that no longer exists: placed by its time, after 九十九分's paragraph.
+    addFigure(h, figureOf(fixture.contentId, "F-gone", { displayMs: 5_999_500, createdAt: 4, anchor: { revisionId: h.newId(), segmentId: h.newId(), side: "before" } }));
+    const asrSection = async (): Promise<string> => {
+      const entries = await unzip(exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { transcript: { revisionId: fixture.asr.revision.id, figures: true } }, backlinks: false }));
+      const markdown = ([...entries.entries()].find(([name]) => name.endsWith(".md"))?.[1] as Buffer).toString("utf8");
+      return markdown.slice(markdown.indexOf("## 原文细读"));
+    };
+    expect(await asrSection()).toBe(
+      [
+        "## 原文细读（ASR 原稿 · scribe · 2026-10-01 12:00）",
+        "",
+        "![图 1](images/001.webp)\\",
+        "图 1 · 多行\\",
+        "第二行",
+        "",
+        "**[00:01]** Hello world. 你好世界",
+        "",
+        "**[00:09]** 第二段{\\b1}开始",
+        "",
+        // Anchored after 第二段 of the proofread revision: mapped to the same sentence of the original.
+        "![图 2](images/002.webp)\\",
+        "图 2 · [00:09] · 第一张",
+        "",
+        "**[99:59]** 九十九分 一百分",
+        "",
+        "![图 3](images/003.webp)\\",
+        "图 3",
+        "",
+        "![图 4](images/004.webp)\\",
+        "图 4",
+        "",
+        "**[6:00:01]** 六小时",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("zips the TXT with its images: a marker line after the paragraph, the caption on the next lines, blank lines around", async () => {
+    const { h, exports, fixture } = setup();
+    seedFigures(h, fixture);
+    const revisionId = fixture.translated.revision.id;
+    const file = exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId, figures: true });
+    expect(file).toMatchObject({ filename: "示例课程：第一讲导论.zip", contentType: "application/zip" });
+    const entries = await unzip(file);
+    expect([...entries.keys()]).toEqual(["示例课程：第一讲导论.txt", "images/001.webp", "images/002.webp", "images/003.webp"]);
+    const txt = (entries.get("示例课程：第一讲导论.txt") as Buffer).toString("utf8");
+    // The translation is read: figures anchored in its parent and grandparent map down to it.
+    expect(txt).toBe(
+      ["[图 1 · images/001.webp]", "多行", "第二行", "", "EN 1 EN 2", "", "EN 3", "", "[图 2 · 00:09 · images/002.webp]", "第一张", "", "EN 4 EN 5", "", "[图 3 · images/003.webp]", "", "EN 6", ""].join("\n"),
+    );
+    const plain = await text(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId }));
+    expect(txt.replace(/\[图 \d+ · (?:[\d:]+ · )?images\/\d{3}\.webp\]\n(?:第一张\n|多行\n第二行\n)?\n/g, "")).toBe(plain);
+  });
+
+  it("keeps TXT speaker prefixes exactly as without figures", async () => {
+    const h = createHarness();
+    open.push(h);
+    const owners = ["a", "a", "b", undefined, "a", "b"];
+    const fixture = seedExportContent(h, LOCAL.userId, "bilibili", {
+      lines: ASR_LINES.map((line, index) => ({ ...line, ...(owners[index] === undefined ? {} : { speakerId: owners[index] as string }) })),
+      speakerNames: { a: "张三" },
+    });
+    const exports = new ExportService({ repository: h.repository, version: VERSION, now: () => NOW });
+    addFigure(h, figureOf(fixture.contentId, "F-end", { displayMs: 99_999_999 }));
+    for (const speakerLabels of ["turn", "every"] as const) {
+      const request: SubtitleExportRequest = { format: "txt", revisionId: fixture.corrected.revision.id, includeSpeakers: true, speakerLabels };
+      const plain = await text(exports.exportContent(LOCAL, fixture.contentId, request));
+      const entries = await unzip(exports.exportContent(LOCAL, fixture.contentId, { ...request, figures: true }));
+      expect((entries.get("示例课程：第一讲导论.txt") as Buffer).toString("utf8")).toBe(`${plain}\n[图 1 · images/001.webp]\n`);
+    }
+  });
+
+  it("ends the Markdown transcript section on a single newline when a figure comes last", async () => {
+    const { h, exports, fixture } = setup();
+    addFigure(h, figureOf(fixture.contentId, "F-end", { source: "capture", capturedAtMs: 21_602_000, displayMs: 21_602_000 }));
+    const entries = await unzip(
+      exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { transcript: { revisionId: fixture.corrected.revision.id, figures: true }, subtitles: { revisionId: fixture.asr.revision.id } }, backlinks: false }),
+    );
+    const markdown = (entries.get("示例课程：第一讲导论.md") as Buffer).toString("utf8");
+    expect(markdown).toContain("**[6:00:01]** 六小时\n\n![图 1](images/001.webp)\\\n图 1 · [6:00:02]\n\n## 字幕\n");
+  });
+
+  it("writes captions with Markdown syntax, back quotes, brackets and line breaks without breaking the document", async () => {
+    const { h, exports, fixture } = setup();
+    const caption = "**粗** `code` ]x[ [链接](http://e.com)\n# 标题\n- 列表\n\n---\n```\n<script>";
+    addFigure(h, figureOf(fixture.contentId, "F-mark", { displayMs: 9000, caption }));
+    const entries = await unzip(
+      exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { transcript: { revisionId: fixture.corrected.revision.id, figures: true }, subtitles: { revisionId: fixture.asr.revision.id } }, backlinks: false }),
+    );
+    const markdown = (entries.get("示例课程：第一讲导论.md") as Buffer).toString("utf8");
+    expect(markdown).toContain(
+      ["**[00:09]** 第二段{\\b1}开始", "", "![图 1](images/001.webp)\\", "图 1 · \\*\\*粗\\*\\* \\`code\\` \\]x\\[ \\[链接\\](http://e.com)\\", "\\# 标题\\", "\\- 列表\\", "\\---\\", "\\`\\`\\`\\", "\\<script\\>", "", "**[99:59]** 九十九分 一百分"].join("\n"),
+    );
+    // The sections that follow are still where they were: one `##` heading per section, nothing else at line start.
+    expect(markdown.split("\n").filter((line) => /^#{1,6} /.test(line))).toEqual(["# 示例课程：第一讲/导论", "## 原文细读（校对稿 · m · 2026-10-01 12:00）", "## 字幕"]);
+    const txt = (await unzip(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id, figures: true }))).get("示例课程：第一讲导论.txt");
+    expect(txt?.toString("utf8")).toContain(`\n[图 1 · images/001.webp]\n${caption}\n\n九十九分 一百分\n`);
+  });
+
+  it("refuses before the first byte when a figure's image is missing", () => {
+    const { h, exports, fixture } = setup();
+    seedFigures(h, fixture);
+    h.db.prepare("DELETE FROM content_figure_image WHERE figure_id = ?").run("F-asr");
+    const markdown = refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { transcript: { revisionId: fixture.corrected.revision.id, figures: true } }, backlinks: false }));
+    expect(markdown.class).toBe("internal");
+    expect(refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id, figures: true })).class).toBe("internal");
+    // Without figures the export does not look at them.
+    expect(exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id }).contentType).toBe("text/plain; charset=utf-8");
+  });
+
+  it("refuses with media_too_large images past the figure cap instead of writing the archive", () => {
+    const { h, exports, fixture } = setup();
+    addFigure(h, figureOf(fixture.contentId, "F-huge"), new Uint8Array(FIGURES_PER_CONTENT_MAX * FIGURE_IMAGE_MAX_BYTES + 1));
+    const refused = refusal(() => exports.exportContent(LOCAL, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id, figures: true }));
+    expect(refused.class).toBe("media_too_large");
+  });
+
+  it("never reads figures for another owner, and a subtitled video export's text ignores them", async () => {
+    const { h, exports, fixture } = setup();
+    seedFigures(h, fixture);
+    expect(refusal(() => exports.exportContent(BOB, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id, figures: true })).class).toBe("not_found");
+    const file = exports.exportContentOf(LOCAL.userId, fixture.contentId, { format: "txt", revisionId: fixture.corrected.revision.id, figures: true });
+    expect(file.contentType).toBe("text/plain; charset=utf-8");
+    expect(await text(file)).toBe("Hi world. 你好世界\n\n第二段{\\b1}开始\n\n九十九分 一百分\n\n六小时\n");
   });
 });

@@ -7,7 +7,8 @@ import { isDesktop } from "../desktop/bridge.ts";
  * business component knowing which one ran.
  */
 export interface ExportSaver {
-  save(file: ExportedFile): Promise<void>;
+  /** The name the file was saved under, for the confirmation; `undefined` when the user cancelled. */
+  save(file: ExportedFile): Promise<string | undefined>;
 }
 
 /** The browser download: an object URL behind a transient `<a download>`. */
@@ -22,6 +23,7 @@ export const browserDownloadSaver: ExportSaver = {
       document.body.append(anchor);
       anchor.click();
       anchor.remove();
+      return file.filename;
     } finally {
       // Revoked after the click has been dispatched; the download keeps its own reference.
       setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -48,10 +50,12 @@ export const tauriDialogSaver: ExportSaver = {
       ...(extension === undefined ? {} : { filters: [{ name: extension.toUpperCase(), extensions: [extension] }] }),
     });
     if (path === null) {
-      return;
+      return undefined;
     }
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     await writeFile(path, new Uint8Array(await file.blob.arrayBuffer()));
+    // The user may have renamed it in the dialog; the confirmation names what is on disk.
+    return path.split(/[\\/]/).at(-1) || file.filename;
   },
 };
 
@@ -60,7 +64,7 @@ export function exportSaver(): ExportSaver {
   return {
     async save(file) {
       const saver = (await isDesktop()) ? tauriDialogSaver : browserDownloadSaver;
-      await saver.save(file);
+      return saver.save(file);
     },
   };
 }

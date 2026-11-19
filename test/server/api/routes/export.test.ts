@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ExportFile } from "../../../../src/server/application/export.ts";
 import { seedExportCollection, seedExportContent } from "../../../fixtures/export/export-data.ts";
 import { BOB_TOKEN, createHarness, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { readZip } from "../../../../src/tooling/zip-reader.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
 const bob = { authorization: `Bearer ${BOB_TOKEN}` };
@@ -120,6 +121,46 @@ describe("POST /api/contents/:id/export, Amber subtitle package", () => {
     expect((await post({ ...body, includeSpeakers: true })).statusCode).toBe(400);
     expect((await post({ format: "ambersub" })).statusCode).toBe(400);
     expect((await post(body, bob)).statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/contents/:id/export with figures", () => {
+  function addFigure(h: Harness, contentId: string, id: string, image: Buffer): void {
+    h.repository.withTransaction((scope) =>
+      scope.figures.insert(
+        { id, contentId, userId: LOCAL.userId, source: "upload", displayMs: 0, sortKey: 0, widthRatio: 0.7, image: { width: 4, height: 3, bytes: image.length, sha256: "a".repeat(64) }, version: 1, createdAt: 1, updatedAt: 1 },
+        image,
+      ),
+    );
+  }
+
+  it("answers a figure export with a zip attachment whose bytes are the service's, and refuses before streaming when an image is gone", async () => {
+    const { h, app, fixture } = await setup();
+    const url = `/api/contents/${fixture.contentId}/export`;
+    const revisionId = fixture.corrected.revision.id;
+    const image = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0xff, 0x10, 0x80]);
+    addFigure(h, fixture.contentId, "F1", image);
+    const payload = { format: "markdown", sections: { transcript: { revisionId, figures: true } }, backlinks: false };
+    const response = await app.inject({ method: "POST", url, headers: auth, payload });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toBe("application/zip");
+    expect(response.headers["content-disposition"]).toBe(`attachment; filename*=UTF-8''${encodeURIComponent("示例课程：第一讲导论.zip")}`);
+    const entries = readZip(response.rawPayload);
+    expect(entries.map((entry) => entry.name)).toEqual(["示例课程：第一讲导论.md", "images/001.webp"]);
+    expect(entries[1]?.read().equals(image)).toBe(true);
+    expect(entries[0]?.read().toString("utf8")).toContain("![图 1](images/001.webp)");
+
+    const txt = await app.inject({ method: "POST", url, headers: auth, payload: { format: "txt", revisionId, figures: true } });
+    expect(txt.headers["content-type"]).toBe("application/zip");
+    expect(readZip(txt.rawPayload).map((entry) => entry.name)).toEqual(["示例课程：第一讲导论.txt", "images/001.webp"]);
+    // Figures belong to TXT only among the subtitle formats.
+    expect((await app.inject({ method: "POST", url, headers: auth, payload: { format: "srt", revisionId, figures: true } })).statusCode).toBe(400);
+
+    h.db.prepare("DELETE FROM content_figure_image WHERE figure_id = ?").run("F1");
+    const refused = await app.inject({ method: "POST", url, headers: auth, payload });
+    expect(refused.statusCode).toBe(500);
+    expect(refused.headers["content-type"]).toMatch(/^application\/json/);
+    expect(refused.json().error.class).toBe("internal");
   });
 });
 

@@ -20,7 +20,8 @@ const markdownExportSchema = z
       .object({
         summary: z.object({ templateId: idSchema }).strict().exactOptional(),
         chapters: z.boolean().exactOptional(),
-        transcript: z.object({ revisionId: idSchema }).strict().exactOptional(),
+        /** `figures`: put the figures and their captions into the transcript section; the file becomes a zip with an `images/` folder. */
+        transcript: z.object({ revisionId: idSchema, figures: z.boolean().exactOptional() }).strict().exactOptional(),
         subtitles: z.object({ revisionId: idSchema }).strict().exactOptional(),
       })
       .strict(),
@@ -40,11 +41,17 @@ const subtitleExportSchema = z
     includeSpeakers: z.boolean().exactOptional(),
     /** SRT and TXT only: name the speaker on the first cue or paragraph of each turn (default) or on every one. */
     speakerLabels: z.enum(SPEAKER_LABEL_MODES).exactOptional(),
+    /** TXT only: mark where each figure goes and add the images; the file becomes a zip with an `images/` folder. */
+    figures: z.boolean().exactOptional(),
   })
   .strict()
   .refine((body) => BILINGUAL_EXPORT_FORMATS.has(body.format) === (body.translationRevisionId !== undefined), {
     message: "translationRevisionId is required for bilingual formats and only for them",
     path: ["translationRevisionId"],
+  })
+  .refine((body) => body.figures !== true || body.format === "txt", {
+    message: "figures apply to TXT exports only",
+    path: ["figures"],
   })
   .refine((body) => body.style === undefined || STYLED_EXPORT_FORMATS.has(body.format), {
     message: "style applies to ASS exports only",
