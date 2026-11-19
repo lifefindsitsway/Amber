@@ -56,14 +56,14 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(container.querySelector("[data-settings-section]")?.getAttribute("data-settings-section")).toBe("models"));
   });
 
-  it("sends /settings/backup to models in server mode", async () => {
+  it("sends /settings/credentials to models in server mode and keeps /settings/backup for content packs", async () => {
     mockApi({ "GET /api/providers": { body: { items: [] } }, "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } } });
-    const { container } = renderApp(<SettingsPage />, { route: "/settings/backup", path: "/settings/:section", mode: "server" });
+    const { container } = renderApp(<SettingsPage />, { route: "/settings/credentials", path: "/settings/:section", mode: "server" });
     await waitFor(() => expect(container.querySelector("[data-settings-section]")?.getAttribute("data-settings-section")).toBe("models"));
   });
 
   it("lists the same feature sections in both run modes, without appearance, about, account or admin", async () => {
-    const expected = ["/settings/models", "/settings/transcription", "/settings/other-models", "/settings/web-search", "/settings/platform-accounts", "/settings/templates", "/settings/terminology", "/settings/storage", "/settings/shortcuts"];
+    const expected = ["/settings/models", "/settings/transcription", "/settings/other-models", "/settings/web-search", "/settings/platform-accounts", "/settings/templates", "/settings/terminology", "/settings/storage", "/settings/backup", "/settings/shortcuts"];
     for (const mode of ["local", "server"] as const) {
       mockApi({
         "GET /api/version": { body: { ...VERSION, mode } },

@@ -2,6 +2,7 @@ import type { i18n as I18n, TFunction } from "i18next";
 import type { TranscriptRevisionDto } from "../../../shared/dto/content.ts";
 import type { SummaryTemplateDto } from "../../../shared/dto/summary.ts";
 import type { zhCN } from "../../../shared/i18n/zh-CN/index.ts";
+import { TRANSCRIPT_KINDS, type TranscriptKind } from "../../../shared/enums.ts";
 import { isComparisonGeneration } from "../../../shared/speaker-comparison.ts";
 
 type TemplateNameKey = `summaryTemplate.${keyof typeof zhCN.summaryTemplate}`;
@@ -27,8 +28,21 @@ function revisionModel(revision: TranscriptRevisionDto): string | undefined {
   if (generation["kind"] === "asr") {
     return filled(generation["modelId"]);
   }
+  // A revision a content pack brought in keeps only the model's display name.
+  if (generation["kind"] === "pack") return filled(generation["modelName"]);
   if (generation["kind"] !== "llm") return undefined;
   return snapshotModel(generation["modelRef"]);
+}
+
+/**
+ * What a content-pack revision was on the device it came from, when its generation says so.
+ * Anything else, or a malformed generation, is `undefined`.
+ */
+function packOrigin(revision: TranscriptRevisionDto): { kind: string; generation: string | undefined } | undefined {
+  const generation = revision.generation;
+  if (generation["kind"] !== "pack") return undefined;
+  const kind = filled(generation["originalKind"]);
+  return kind === undefined ? undefined : { kind, generation: filled(generation["originalGeneration"]) };
 }
 
 /** The display name a model snapshot keeps, else its id. */
@@ -43,7 +57,10 @@ function snapshotModel(modelRef: unknown): string | undefined {
  * machine translation it was first edited from, when recorded.
  */
 function manualTranslationModel(revision: TranscriptRevisionDto): string | undefined | null {
-  if (revision.kind !== "translated" || revision.generation["kind"] !== "manual") return null;
+  if (revision.kind !== "translated") return null;
+  // A hand-edited translation carried by a content pack keeps the model it was first edited from, as a name.
+  if (packOrigin(revision)?.generation === "manual") return revisionModel(revision);
+  if (revision.generation["kind"] !== "manual") return null;
   const origin = revision.generation["origin"];
   return typeof origin === "object" && origin !== null ? snapshotModel((origin as Record<string, unknown>)["modelRef"]) : undefined;
 }
@@ -74,8 +91,18 @@ function revisionTime(epochMs: number, seconds: boolean): string {
  */
 function kindLabel(revision: TranscriptRevisionDto, t: TFunction): string {
   if (isComparisonGeneration(revision.generation)) return t("speakerCompare.revisionKind");
-  if (revision.kind === "translated" && revision.generation["kind"] === "imported") return t("contentView.revisionKind.importedTranslation");
+  const origin = packOrigin(revision);
+  const importedTranslation = revision.generation["kind"] === "imported" || origin?.generation === "imported";
+  if (revision.kind === "translated" && importedTranslation) return t("contentView.revisionKind.importedTranslation");
+  // A revision whose parent stayed behind arrives as an imported root; it says what it was.
+  if (revision.kind === "imported" && origin !== undefined && origin.kind !== "imported" && isTranscriptKind(origin.kind)) {
+    return t("contentView.revisionKind.packStandalone", { original: t(`contentView.revisionKind.${origin.kind}`) });
+  }
   return t(`contentView.revisionKind.${revision.kind}`);
+}
+
+function isTranscriptKind(value: string): value is TranscriptKind {
+  return (TRANSCRIPT_KINDS as readonly string[]).includes(value);
 }
 
 function baseLabel(revision: TranscriptRevisionDto, t: TFunction, i18n: Pick<I18n, "exists"> | undefined, seconds: boolean): string {

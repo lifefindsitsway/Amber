@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, Download, FileUp, Mic, TriangleAlert } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ASR_DIARIZATION_DEFAULT } from "../../../shared/defaults.ts";
@@ -90,6 +90,8 @@ export function subtitleDownloadBody(
 }
 
 /** 字幕脚本 tab: versions incl. translations, `timestamp | text` rows, filter, follow playback, download, re-transcribe, import. */
+const byTestId = (id: string): string => `[data-testid="${id}"]`;
+
 export function SubtitlesTab() {
   const { t, i18n } = useTranslation();
   const client = useApi();
@@ -99,7 +101,7 @@ export function SubtitlesTab() {
   const capabilities = usePlayerCapabilities();
   const time = usePlayerTime();
   const [picked, setPicked] = useState<string | undefined>(undefined);
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   // A search hit opens the page with its query, which keeps narrowing the rows here.
   const [filter, setFilter] = useState(() => params.get("search") ?? "");
@@ -174,6 +176,36 @@ export function SubtitlesTab() {
     },
   });
 
+  // The reading view's empty state sends the user here for one of the two ways to get a
+  // transcript. Honour it once, then drop it so a reload or Back does not repeat it.
+  const subtitleAction = params.get("subtitleAction");
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarReady = revisions.isSuccess && !asrProfiles.isPending && !settings.isPending;
+  useEffect(() => {
+    if (subtitleAction === null) return;
+    if (subtitleAction === "import") {
+      setImporting(true);
+    } else if (subtitleAction === "transcribe") {
+      if (!toolbarReady && !revisions.isError) return;
+      const toolbar = toolbarRef.current;
+      const button = toolbar?.querySelector<HTMLButtonElement>(byTestId("retranscribe"));
+      // Without a usable model the button is disabled; the control that fixes that takes focus.
+      const target =
+        button !== null && button !== undefined && !button.disabled
+          ? button
+          : (toolbar?.querySelector<HTMLElement>(byTestId("retranscribe-model")) ?? toolbar?.querySelector<HTMLElement>(byTestId("retranscribe-configure")));
+      target?.focus();
+    }
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete("subtitleAction");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [subtitleAction, toolbarReady, revisions.isError, setParams]);
+
   const list = segments.data ?? [];
   const hasSpeakers = list.some((segment) => segment.speakerId !== undefined);
   const speakers = useSpeakers(page.content.id, hasSpeakers);
@@ -220,7 +252,7 @@ export function SubtitlesTab() {
       />
       {/* Two rows whose leading selects share one column, so they line up and keep the same width.
           The column leaves the other controls 16rem, about what either row needs to stay on one line. */}
-      <div className="grid grid-cols-[minmax(11rem,min(22.5rem,calc(100%_-_16.75rem)))_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2" data-testid="subtitles-toolbar">
+      <div ref={toolbarRef} className="grid grid-cols-[minmax(11rem,min(22.5rem,calc(100%_-_16.75rem)))_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2" data-testid="subtitles-toolbar">
         <div className="min-w-0" data-testid="subtitles-toolbar-version">
           {revision === undefined ? null : (
             <select

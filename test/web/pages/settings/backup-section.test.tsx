@@ -71,10 +71,13 @@ function render(routes: Parameters<typeof mockApi>[0], controller = new UpdateCo
 const FRESH = { "GET /api/backup/restore-readiness": { body: { fresh: true, nonEmpty: [], willReplace: ["appearance", "task_concurrency"] } } };
 
 describe("BackupSection", () => {
-  it("is only available in the desktop client", async () => {
+  it("keeps backups to the desktop client; content packs are offered in both modes", async () => {
     fakeShell.desktop = false;
-    render({});
-    expect(await screen.findByText("备份与恢复只在 Amber 桌面客户端中可用。")).toBeTruthy();
+    render({ "GET /api/content-packs/active": { body: {} } });
+    expect(await screen.findByRole("button", { name: "导入内容包…" })).toBeTruthy();
+    expect(screen.getByText("内容包")).toBeTruthy();
+    expect(screen.queryByText("导出备份")).toBeNull();
+    expect(screen.queryByText("从备份恢复")).toBeNull();
   });
 });
 

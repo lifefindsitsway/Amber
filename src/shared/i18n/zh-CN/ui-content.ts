@@ -301,7 +301,8 @@ export const contentView = {
     deleteVersionConfirm: "确认删除",
     deleteVersionFrozen: "已被合集归纳引用，不能删除",
     empty: "还没有总结",
-    emptyHint: "处理完成后会自动生成默认总结；其它模板需要手动生成",
+    /** True for every Content, including one imported from a content pack that never had a processing task. */
+    emptyHint: "从链接或文件新建的内容处理完成后会自动生成默认总结；也可以随时选模板手动生成",
     degraded: "部分引用无法定位到原文",
     needsModel: "尚未配置 AI 模型，配置后即可生成",
   },
@@ -387,6 +388,8 @@ export const contentView = {
     translated: "翻译",
     /** A translation brought in with a bilingual subtitle or a subtitle package. */
     importedTranslation: "导入译文",
+    /** A revision a content pack brought in without its parent: it stands alone here. */
+    packStandalone: "导入自内容包 · 原为{{original}}",
   },
   transcript: {
     version: "版本",
@@ -397,7 +400,15 @@ export const contentView = {
     reproofread: "重新校对",
     setPrimary: "设为当前",
     empty: "还没有字幕或转录稿",
-    emptyHint: "处理完成后这里会显示原文",
+    /** True for every Content: one still processing, one whose processing found no subtitle, one imported without a transcript. */
+    emptyHint: "处理完成，或转录、导入字幕之后，这里会显示原文",
+    /** While a processing task is queued, running or waiting. */
+    emptyHintPending: "处理完成后这里会显示原文",
+    /** When nothing is processing: what the user can do about it. */
+    emptyHintIdle: "可以转录这段音视频，或导入一份字幕文件",
+    /** Empty-state entries; both open the 「字幕」 tab, where transcription and subtitle import live. */
+    emptyTranscribe: "转录…",
+    emptyImportSubtitle: "导入字幕…",
     chapters: "章节",
     chapterOutline: "章节目录（{{count}}）",
     noChapters: "尚无章节",

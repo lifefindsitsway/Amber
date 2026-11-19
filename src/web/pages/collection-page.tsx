@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, BookA, MoreHorizontal, Pencil, Plus, RefreshCw } from "lucide-react";
+import { ArrowUpDown, BookA, MoreHorizontal, Package, Pencil, Plus, RefreshCw } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -22,7 +22,7 @@ import { useContentActions } from "../components/use-content-actions.tsx";
 import { useSearch } from "../search/search.ts";
 import { TerminologyEditor } from "../components/terminology-editor.tsx";
 import { Button } from "../ui/button.tsx";
-import { MENU_CONTENT_CLASS, MenuEntries, useContextMenuTarget, type MenuEntry } from "../ui/context-menu.tsx";
+import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MenuEntries, useContextMenuTarget, type MenuEntry } from "../ui/context-menu.tsx";
 import { EmptyState, Loading, PageHeader } from "../ui/feedback.tsx";
 import { Modal } from "../ui/modal.tsx";
 import { Pagination, usePagination } from "../ui/pagination.tsx";
@@ -31,6 +31,8 @@ import { ItemList, ReorderList } from "./collection/item-list.tsx";
 import { SearchHits } from "./collection/search-hits.tsx";
 import { SummaryCard } from "./collection/summary-card.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
+import { IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
+import { useExportPackWizard } from "./content-pack/pack-entry.tsx";
 
 const summaryKey = (id: string) => [...queryKeys.collection(id), "summary"] as const;
 // Under the collection's key, so the task events that refresh the card read it again.
@@ -135,6 +137,7 @@ export function CollectionPage() {
     const entry = actions.action(actionId);
     return entry === undefined ? [] : [entry];
   });
+  const packWizard = useExportPackWizard();
 
   // Member statuses and the summary task advance through task events. Stage and unit events
   // are ignored: what the lecture list and summary card read is written by the task projection
@@ -199,6 +202,7 @@ export function CollectionPage() {
               <DropdownMenu.Portal>
                 <DropdownMenu.Content align="end" className={MENU_CONTENT_CLASS}>
                   <MenuEntries entries={overflow} testIdPrefix="collection-" />
+                  <ExportPackItem collection={collection} onSelect={(contentIds) => packWizard.open({ contentIds, collectionId: collection.id })} />
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
@@ -294,10 +298,31 @@ export function CollectionPage() {
 
       {actions.dialogs}
       {lectureActions.dialogs}
+      {packWizard.dialog}
       <Modal open={terminology} onOpenChange={setTerminology} title={t("library.collection.terminologyTitle")} wide>
         <TerminologyEditor scope={`collection:${id}`} />
       </Modal>
     </div>
+  );
+}
+
+/**
+ * 「导出内容包…」 in the header's 「⋯」: every member on the page (the trash shows none) and
+ * this collection. A content pack takes at most `IMPORT_BATCH_MAX` Contents, so a larger
+ * collection says so instead of exporting part of it.
+ */
+function ExportPackItem(props: { collection: CollectionDetailDto; onSelect: (contentIds: string[]) => void }) {
+  const { t } = useTranslation();
+  const ids = props.collection.items.map((item) => item.contentId);
+  const reason = ids.length === 0 ? t("contentPack.entry.collectionEmpty") : ids.length > IMPORT_BATCH_MAX ? t("contentPack.entry.collectionTooMany", { max: IMPORT_BATCH_MAX }) : undefined;
+  return (
+    <DropdownMenu.Item className={`${MENU_ITEM_CLASS} flex-col items-start gap-0.5`} disabled={reason !== undefined} onSelect={() => props.onSelect(ids)} data-testid="collection-export-pack">
+      <span className="flex items-center gap-2">
+        <Package size={14} aria-hidden="true" />
+        {t("contentPack.entry.exportPack")}
+      </span>
+      {reason === undefined ? null : <span className="max-w-56 pl-6 text-xs text-muted">{reason}</span>}
+    </DropdownMenu.Item>
   );
 }
 

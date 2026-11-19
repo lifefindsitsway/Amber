@@ -37,6 +37,21 @@ describe("revisionLabel", () => {
     expect(revisionLabel(edited, undefined, t, i18n)).toBe("人工编辑 · 英语 · 10-04 12:20");
   });
 
+  it("names a content-pack revision by its model name, and a standalone one by what it was", () => {
+    const t = i18n.t.bind(i18n);
+    const kept = revision("p1", { kind: "corrected", parentRevisionId: "r0", generation: { kind: "pack", originalKind: "corrected", originalGeneration: "llm", modelName: "deepseek-flash" }, createdAt: at(13, 0) });
+    expect(revisionLabel(kept, undefined, t, i18n)).toBe("校对稿 · deepseek-flash · 10-04 13:00");
+    const standalone = revision("p2", { kind: "imported", generation: { kind: "pack", originalKind: "corrected", originalGeneration: "llm", modelName: "deepseek-flash" }, createdAt: at(13, 5) });
+    expect(revisionLabel(standalone, undefined, t, i18n)).toBe("导入自内容包 · 原为校对稿 · deepseek-flash · 10-04 13:05");
+    // An imported subtitle that came by pack is still just an imported subtitle.
+    const imported = revision("p3", { kind: "imported", generation: { kind: "pack", originalKind: "imported", originalGeneration: "imported" }, createdAt: at(13, 10) });
+    expect(revisionLabel(imported, undefined, t, i18n)).toBe("导入字幕 · 10-04 13:10");
+    const translation = revision("p4", { kind: "translated", language: "en", parentRevisionId: "p1", generation: { kind: "pack", originalKind: "translated", originalGeneration: "imported" }, createdAt: at(13, 15) });
+    expect(revisionLabel(translation, undefined, t, i18n)).toBe("导入译文 · 英语 · 10-04 13:15");
+    const edited = revision("p5", { kind: "translated", language: "en", parentRevisionId: "p1", generation: { kind: "pack", originalKind: "translated", originalGeneration: "manual" }, createdAt: at(13, 20) });
+    expect(revisionLabel(edited, undefined, t, i18n)).toBe("人工编辑 · 英语 · 10-04 13:20");
+  });
+
   it("names kind, model and time so two proofreads by one model tell apart, and marks the current one", () => {
     const t = i18n.t.bind(i18n);
     expect(all.map((item) => revisionLabel(item, "r2", t, i18n, all))).toEqual([

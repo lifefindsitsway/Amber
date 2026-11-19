@@ -31,6 +31,7 @@ import { Button } from "../ui/button.tsx";
 import { FilePicker } from "../ui/file-picker.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { PageHeader } from "../ui/feedback.tsx";
+import { ImportPackButton, PackActiveNotice } from "./content-pack/pack-entry.tsx";
 
 /** Builtin template id used when the user has not chosen a default. */
 const FALLBACK_TEMPLATE_ID = "summary.core";
@@ -435,7 +436,8 @@ export function NewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title={t("shell.newPage.title")} />
+      <PageHeader title={t("shell.newPage.title")} actions={<ImportPackButton variant="ghost" testId="new-pack-import" />} />
+      <PackActiveNotice className="mx-auto mt-4 w-[calc(100%-3rem)] max-w-2xl" />
       <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-4 px-6 py-8">
         {noLlm ? (
           <div data-testid="no-llm-banner" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-soft px-3 py-2 text-sm">

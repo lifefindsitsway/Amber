@@ -41,6 +41,53 @@ function routes() {
 }
 
 describe("LibraryPage", () => {
+  it("picks rows in the selection mode and exports them as one content pack", async () => {
+    const second = { ...content, id: "c2", title: "第二讲" };
+    const api = mockApi({
+      "GET /api/contents": { body: { items: [content, second], total: 2 } },
+      "GET /api/collections": { body: { items: [] } },
+      "GET /api/tasks/events": { body: {} },
+      "GET /api/content-packs/active": { body: {} },
+      "POST /api/content-packs/export-plan": { body: { contents: [], collections: [] } },
+    });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("第二讲");
+    expect(screen.queryByRole("checkbox", { name: "选择「第二讲」" })).toBeNull();
+    fireEvent.click(screen.getByTestId("library-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「第二讲」" }));
+    expect(screen.getByTestId("library-selection-count").textContent).toBe("已选 1 项");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择本页全部内容" }));
+    expect(screen.getByTestId("library-selection-count").textContent).toBe("已选 2 项");
+    fireEvent.click(screen.getByTestId("library-export-selected"));
+    await waitFor(() => expect(api.calls.some((call) => call.path === "/api/content-packs/export-plan")).toBe(true));
+    expect(api.calls.find((call) => call.path === "/api/content-packs/export-plan")?.body).toEqual({ contentIds: ["c2", "c1"] });
+  });
+
+  it("leaves the selection mode with Esc", async () => {
+    routes();
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("第一讲 检索增强");
+    fireEvent.click(screen.getByTestId("library-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「第一讲 检索增强」" }));
+    expect(screen.getByTestId("library-selection-bar")).toBeTruthy();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByTestId("library-selection-bar")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "选择「第一讲 检索增强」" })).toBeNull();
+  });
+
+  it("filters by 「已导入」 and shows it as a status", async () => {
+    const api = mockApi({
+      "GET /api/contents": { body: { items: [{ ...content, processingStatus: "none" }], total: 1 } },
+      "GET /api/collections": { body: { items: [] } },
+      "GET /api/tasks/events": { body: {} },
+    });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    const row = await screen.findByTestId("library-row");
+    expect(within(row).getByText("已导入")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("状态"), { target: { value: "none" } });
+    await waitFor(() => expect(api.calls.some((call) => call.path.includes("status=none"))).toBe(true));
+  });
+
   it("opens a row's notes from the 笔记 button right of 删除", async () => {
     routes();
     renderApp(
@@ -256,7 +303,7 @@ describe("LibraryPage", () => {
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     expect(await screen.findByText("第一讲 检索增强")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "进程调度" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "进程调度" } });
     const snippet = await screen.findByTestId("search-snippet");
     expect(screen.queryByText("第一讲 检索增强")).toBeNull();
     expect(screen.getAllByTestId("library-row")).toHaveLength(1);
@@ -265,7 +312,7 @@ describe("LibraryPage", () => {
     const search = new URL(api.calls.find((call) => call.path.startsWith("/api/search"))?.path ?? "", "http://x");
     expect(search.searchParams.get("scope")).toBe("library");
 
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "" } });
     expect(await screen.findByText("第一讲 检索增强")).toBeTruthy();
     expect(screen.queryByTestId("search-snippet")).toBeNull();
   });
@@ -319,7 +366,7 @@ describe("LibraryPage", () => {
       { route: "/library" },
     );
     await screen.findByText("第一讲 检索增强");
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "进程调度" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "进程调度" } });
     const snippet = await screen.findByTestId("search-snippet");
     const deep = snippet.getAttribute("href") ?? "";
     const open = vi.spyOn(window, "open").mockReturnValue(null);
@@ -371,7 +418,7 @@ describe("LibraryPage", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "不存在" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "不存在" } });
     expect(await screen.findByText("没有找到相关内容")).toBeTruthy();
   });
 });
@@ -496,7 +543,7 @@ describe("LibraryPage pages", () => {
     renderApp(<LibraryPage />, { route: "/library?status=succeeded", path: "/library" });
     await screen.findByText("讲次 1");
     const listReads = api.contentReads().length;
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "讲次" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "讲次" } });
     await waitFor(() => expect(screen.getAllByTestId("library-row").map((row) => row.dataset["contentId"])).toEqual(["c03", "c01"]));
     expect(screen.queryByRole("navigation", { name: "分页" })).toBeNull();
     const reads = api.contentReads().slice(listReads);
@@ -522,7 +569,7 @@ describe("LibraryPage pages", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("还没有内容");
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "讲次" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "讲次" } });
     await waitFor(() => expect(api.contentReads().some((read) => read.includes("ids="))).toBe(true));
     const hitRead = new URLSearchParams(api.contentReads().find((read) => read.includes("ids=")));
     expect(hitRead.get("ids")?.split(",")).toHaveLength(CONTENT_LIST_IDS_MAX);
@@ -534,7 +581,7 @@ describe("LibraryPage pages", () => {
     const api = stubApi({ total: 25, search: () => answer, held: (url) => url.pathname === "/api/search" && url.searchParams.get("q") === "第二次" });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("讲次 1");
-    const search = screen.getByLabelText("搜索标题、字幕与总结");
+    const search = screen.getByLabelText("搜索标题、字幕、总结与插图备注");
     fireEvent.change(search, { target: { value: "第一次" } });
     await waitFor(() => expect(screen.getAllByTestId("library-row").map((row) => row.dataset["contentId"])).toEqual(["c02"]));
     const idReads = () => api.contentReads().filter((read) => read.includes("ids="));
@@ -705,7 +752,7 @@ describe("LibraryPage search with speakers", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "陈明" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "陈明" } });
     const group = await screen.findByRole("region", { name: "发言人（姓名匹配）" });
     const link = within(group).getByTestId("speaker-hit");
     expect(link.getAttribute("href")).toBe("/contents/c1?tab=transcript&speaker=sp7");
@@ -747,7 +794,7 @@ describe("LibraryPage search with speakers", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
-    fireEvent.change(screen.getByLabelText("搜索标题、字幕与总结"), { target: { value: "进程调度" } });
+    fireEvent.change(screen.getByLabelText("搜索标题、字幕、总结与插图备注"), { target: { value: "进程调度" } });
     await waitFor(() => expect(screen.getAllByTestId("search-snippet")).toHaveLength(2));
     const speaker = screen.getByTestId("hit-speaker");
     expect(speaker.getAttribute("data-confirmed")).toBe("false");

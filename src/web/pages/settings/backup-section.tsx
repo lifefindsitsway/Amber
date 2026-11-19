@@ -39,23 +39,37 @@ import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { SettingsBlock } from "./settings-ui.tsx";
+import { ImportPackButton, PackActiveNotice } from "../content-pack/pack-entry.tsx";
 
 /**
- * `/settings/backup`, desktop client only: export a backup of this
- * device, or restore one onto a fresh installation. Export, restore and an update install
- * exclude each other; the update controller carries the shared busy flag.
+ * `/settings/backup`: in the desktop client, export a backup of this device or restore one
+ * onto a fresh installation (export, restore and an update install exclude each other; the
+ * update controller carries the shared busy flag). Content packs exist in both run modes,
+ * so server mode shows only their part.
  */
 export function BackupSection() {
-  const { t } = useTranslation();
   const desktop = useDesktop();
-  if (!desktop) {
-    return <p className="text-sm text-muted">{t("backup.desktopOnly")}</p>;
-  }
   return (
     <div>
-      <ExportCard />
-      <RestoreCard />
+      {desktop ? (
+        <>
+          <ExportCard />
+          <RestoreCard />
+        </>
+      ) : null}
+      <ContentPackCard />
     </div>
+  );
+}
+
+/** Content packs: import here; export starts from the Contents themselves, so this says where. */
+function ContentPackCard() {
+  const { t } = useTranslation();
+  return (
+    <SettingsBlock title={t("contentPack.entry.settingsTitle")} intro={t("contentPack.entry.settingsIntro")}>
+      <PackActiveNotice className="mb-3" />
+      <ImportPackButton testId="settings-pack-import" />
+    </SettingsBlock>
   );
 }
 

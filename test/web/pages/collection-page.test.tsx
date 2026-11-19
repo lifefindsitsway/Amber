@@ -476,11 +476,32 @@ describe("CollectionPage", () => {
     expect(screen.getByTestId("collection-edit-card")).toBeTruthy();
   });
 
+  it("exports every lecture as a content pack with this collection, and says why a large one cannot", async () => {
+    const api = routes({
+      "GET /api/content-packs/active": { body: {} },
+      "POST /api/content-packs/export-plan": { body: { contents: [], collections: [] } },
+    });
+    render();
+    fireEvent.keyDown(await screen.findByRole("button", { name: "更多操作" }), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("collection-export-pack"));
+    await waitFor(() => expect(api.calls.some((call) => call.path === "/api/content-packs/export-plan")).toBe(true));
+    expect(api.calls.find((call) => call.path === "/api/content-packs/export-plan")?.body).toEqual({ contentIds: ["c1", "c2", "c3"], collectionId: "k1" });
+  });
+
+  it("disables the content pack export of a collection larger than a pack takes", async () => {
+    routes({ "GET /api/collections/k1": { body: course(51) } });
+    render();
+    fireEvent.keyDown(await screen.findByRole("button", { name: "更多操作" }), { key: "Enter" });
+    const entry = await screen.findByTestId("collection-export-pack");
+    expect(entry.getAttribute("data-disabled")).not.toBeNull();
+    expect(entry.textContent).toContain("合集超过 50 条");
+  });
+
   it("keeps delete and export in the header 「⋯」", async () => {
     routes();
     render();
     fireEvent.keyDown(await screen.findByRole("button", { name: "更多操作" }), { key: "Enter" });
-    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["删除合集", "导出合集 Markdown"]);
+    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["删除合集", "导出合集 Markdown", "导出内容包…"]);
   });
 
   it("reads the lectures and summary again on task events only, and content lists once a task finishes", async () => {

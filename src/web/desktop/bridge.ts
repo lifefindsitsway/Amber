@@ -160,6 +160,33 @@ export function endUpdateInstall(): Promise<void> {
   return invoke<void>("end_update_install");
 }
 
+/**
+ * Save dialog for a content pack (`.amberpack`): the shell signs the chosen file for
+ * `pack_output` and the sidecar writes the pack there. `null` when the user cancels.
+ */
+export function pickPackDestination(suggestedName: string): Promise<PickedFile | null> {
+  return invoke<PickedFile | null>("pick_pack_destination", { suggestedName });
+}
+
+/**
+ * Open dialog for a content pack to import: the shell signs the chosen file for `pack_input`
+ * and the sidecar reads and checks it. `null` when the user cancels.
+ */
+export function pickPackSource(): Promise<PickedFile | null> {
+  return invoke<PickedFile | null>("pick_pack_source");
+}
+
+/**
+ * Folder dialog for the originals a content pack import carries: the shell signs
+ * `<chosen>/Amber-Imported-<localStamp>` for `pack_originals_dir`, a subdirectory that must not
+ * exist yet and that the import creates, and admits it for playback. `localStamp` is the
+ * user's local time as `yyyyMMdd-HHmmss` (`localTimeStamp`); the shell refuses anything else.
+ * `null` when the user cancels.
+ */
+export function pickPackOriginalsDir(localStamp: string): Promise<PickedFile | null> {
+  return invoke<PickedFile | null>("pick_pack_originals_dir", { localStamp });
+}
+
 /** The asset-protocol URL of a local file for `<video src>`. */
 export async function localFileUrl(path: string): Promise<string> {
   const { convertFileSrc } = await import("@tauri-apps/api/core");

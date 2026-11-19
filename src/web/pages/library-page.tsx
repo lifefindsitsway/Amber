@@ -1,12 +1,12 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderPlus, NotebookPen, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { CheckSquare, FolderPlus, NotebookPen, Package, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { z } from "zod";
-import { CONTENT_LIST_IDS_MAX } from "../../shared/defaults.ts";
+import { CONTENT_LIST_IDS_MAX, IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
 import { contentListDtoSchema, type ContentDto } from "../../shared/dto/content.ts";
-import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../../shared/enums.ts";
+import { CONTENT_PROCESSING_STATUSES, CONTENT_SOURCE_KINDS } from "../../shared/enums.ts";
 import { useApi, useTaskHub } from "../api/context.tsx";
 import { queryKeys, queryString, useCollections, usePatchContent } from "../api/queries.ts";
 import { formatDateTime, formatDuration } from "../format.ts";
@@ -21,6 +21,8 @@ import { SpeakerHitsGroup } from "../search/hit-speaker.tsx";
 import { hitsByContent, normalizeQuery, useSearch, type ContentSideHit } from "../search/search.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { collectionChoiceOf, filtersFromSearch, UNCOLLECTED_CHOICE, withCollectionChoice, withFilter } from "./library/filters.ts";
+import { exportBlock, pageSelection, toggleSelected, togglePage } from "./library/selection.ts";
+import { PackActiveNotice, useExportPackWizard } from "./content-pack/pack-entry.tsx";
 
 const SELECT_CLASS = "h-8 rounded-md border border-line bg-surface px-2 text-sm";
 /** `w-px` with no wrapping shrinks a column to its content. */
@@ -34,6 +36,10 @@ export const COLUMN = "px-2 py-2 font-medium";
  */
 export const WIDE_ONLY = "hidden @5xl:table-cell";
 export const COMPACT_UP = "hidden @3xl:table-cell";
+/** Elements that handle `Esc` themselves, so it does not leave the selection mode there. */
+const KEEPS_ESCAPE = ["input:not([type=checkbox])", "textarea", "select", "[contenteditable=true]", "[role=dialog]", "[role=menu]"].join(",");
+/** A click on these keeps its own action instead of picking the row. */
+const INTERACTIVE = ["a", "button", "input", "select", "label"].join(",");
 /** The outermost columns keep the rows off the page edges, more so on wide lists. */
 const EDGE_START = "pl-6 @5xl:pl-10";
 const EDGE_END = "pr-6 @5xl:pr-10";
@@ -42,7 +48,8 @@ const EDGE_END = "pr-6 @5xl:pr-10";
  * All contents: filters and the page live in the URL so the new page can link to
  * one import batch. The search box goes through the search service with `scope=library`: while
  * a query is in effect the table lists only the Contents it hit, best first, each with one
- * excerpt, unpaged.
+ * excerpt, unpaged. 「选择」 turns on a checkbox column; picked rows, across pages and
+ * filters, go into one content pack through the bar at the page foot.
  */
 export function LibraryPage() {
   const { t, i18n } = useTranslation();
@@ -60,6 +67,11 @@ export function LibraryPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const found = useSearch(query, "library");
   const searching = found.active;
+  // `undefined` outside the selection mode; the ids in the order they were picked.
+  const [selected, setSelected] = useState<string[] | undefined>(undefined);
+  const selecting = selected !== undefined;
+  const wizard = useExportPackWizard();
+  const pageCheckbox = useRef<HTMLInputElement>(null);
 
   // The key starts with `contents`, so a task event re-reads only the page on screen. The
   // previous page's answer stays as placeholder only to keep the pager's total; its rows are
@@ -127,23 +139,46 @@ export function LibraryPage() {
     const item = rows.find((candidate) => candidate.item.id === row?.dataset["contentId"])?.item;
     return item === undefined ? undefined : actions.menu(targetOf(item), hit);
   });
+  const shownIds = pending || failure !== null ? [] : rows.map(({ item }) => item.id);
+  const pagePicked = selected === undefined ? "none" : pageSelection(selected, shownIds);
+  const block = exportBlock(selected?.length ?? 0, IMPORT_BATCH_MAX);
+  useEffect(() => {
+    if (pageCheckbox.current !== null) pageCheckbox.current.indeterminate = pagePicked === "some";
+  }, [pagePicked]);
+  // `Esc` leaves the selection mode, unless a dialog or a field takes the key itself.
+  useEffect(() => {
+    if (!selecting) return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as Element | null;
+      if (target?.closest(KEEPS_ESCAPE) != null) return;
+      if (document.querySelector("[role=dialog]") !== null) return;
+      setSelected(undefined);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [selecting]);
+  // Edge padding moves to the checkbox column while it is shown.
+  const coverEdge = selecting ? "pl-2" : EDGE_START;
+  const titleEdge = selecting ? "pl-2 @3xl:px-2" : "pl-6 @3xl:px-2";
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title={t("library.title")} />
+      <PackActiveNotice className="mx-6 mt-3" />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-6 py-3">
         <input
           className="h-8 w-56 rounded-md border border-line bg-surface px-2 text-sm"
           type="search"
-          placeholder={t("search.libraryPlaceholder")}
-          aria-label={t("search.libraryPlaceholder")}
+          placeholder={t("library.searchPlaceholder")}
+          aria-label={t("library.searchPlaceholder")}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           data-testid="library-search"
         />
         <select className={SELECT_CLASS} aria-label={t("library.filter.status")} value={filters.status ?? ""} onChange={(event) => setFilter("status", event.target.value)}>
           <option value="">{`${t("library.filter.status")} · ${t("library.filter.any")}`}</option>
-          {PROCESSING_STATUSES.map((status) => (
+          {CONTENT_PROCESSING_STATUSES.map((status) => (
             <option key={status} value={status}>
               {t(`common.status.${status}`)}
             </option>
@@ -179,6 +214,17 @@ export function LibraryPage() {
             </button>
           </span>
         )}
+        <Button
+          size="sm"
+          variant={selecting ? "primary" : "secondary"}
+          className="ml-auto"
+          aria-pressed={selecting}
+          onClick={() => setSelected(selecting ? undefined : [])}
+          data-testid="library-select-mode"
+        >
+          <CheckSquare size={14} aria-hidden="true" />
+          {selecting ? t("contentPack.select.exit") : t("contentPack.select.enter")}
+        </Button>
       </div>
       <div ref={scroller} className="@container min-h-0 flex-1 overflow-auto">
         {pending ? (
@@ -209,9 +255,22 @@ export function LibraryPage() {
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-panel text-left text-xs text-muted">
                 <tr>
+                  {selecting ? (
+                    <th className={`${NARROW} ${EDGE_START} pr-2`}>
+                      <input
+                        ref={pageCheckbox}
+                        type="checkbox"
+                        className="align-middle"
+                        aria-label={t("contentPack.select.pageLabel")}
+                        checked={pagePicked === "all"}
+                        onChange={() => setSelected((current) => togglePage(current ?? [], shownIds))}
+                        data-testid="library-select-page"
+                      />
+                    </th>
+                  ) : null}
                   {/* Percentages share the width out in proportion; a column's content width is its floor. */}
-                  <th className={`${COMPACT_UP} ${NARROW} ${EDGE_START} pr-4`}>{t("library.column.cover")}</th>
-                  <th className="w-full py-2 pr-4 pl-6 font-medium @3xl:w-[45%] @3xl:px-2 @5xl:w-[30%]">{t("library.column.title")}</th>
+                  <th className={`${COMPACT_UP} ${NARROW} ${coverEdge} pr-4`}>{t("library.column.cover")}</th>
+                  <th className={`w-full py-2 pr-4 ${titleEdge} font-medium @3xl:w-[45%] @5xl:w-[30%]`}>{t("library.column.title")}</th>
                   <th className={`${WIDE_ONLY} ${COLUMN} w-[9%]`}>{t("library.column.source")}</th>
                   <th className={`${WIDE_ONLY} ${COLUMN} w-[7%]`}>{t("library.column.duration")}</th>
                   <th className={`${COLUMN} w-px whitespace-nowrap @3xl:w-[13%] @5xl:w-[9%]`}>{t("library.column.status")}</th>
@@ -225,12 +284,37 @@ export function LibraryPage() {
                   const duration = item.durationMs === undefined ? undefined : formatDuration(item.durationMs);
                   const updatedAt = formatDateTime(item.updatedAt, i18n.language);
                   const pinned = item.pinnedAt !== undefined;
+                  const picked = selected?.includes(item.id) === true;
+                  const title = item.title ?? t("library.untitled");
                   return (
-                    <tr key={item.id} className="border-b border-line hover:bg-panel" data-testid="library-row" data-content-id={item.id}>
-                      <td className={`${COMPACT_UP} ${EDGE_START} py-2 pr-4`}>
+                    <tr
+                      key={item.id}
+                      className={`border-b border-line ${picked ? "bg-accent-soft" : "hover:bg-panel"}`}
+                      data-testid="library-row"
+                      data-content-id={item.id}
+                      {...(selecting ? { "aria-selected": picked } : {})}
+                      onClick={(event) => {
+                        // In the selection mode a click on the row's plain area picks it; links, buttons and fields keep their own action.
+                        if (!selecting || (event.target as Element).closest(INTERACTIVE) !== null) return;
+                        setSelected((current) => toggleSelected(current ?? [], item.id, !picked));
+                      }}
+                    >
+                      {selecting ? (
+                        <td className={`${EDGE_START} py-2 pr-2`}>
+                          <input
+                            type="checkbox"
+                            className="align-middle"
+                            aria-label={t("contentPack.select.rowLabel", { title })}
+                            checked={picked}
+                            onChange={(event) => setSelected((current) => toggleSelected(current ?? [], item.id, event.target.checked))}
+                            data-testid="library-select-row"
+                          />
+                        </td>
+                      ) : null}
+                      <td className={`${COMPACT_UP} ${coverEdge} py-2 pr-4`}>
                         <Cover url={item.coverUrl} />
                       </td>
-                      <td className="py-2 pr-4 pl-6 @3xl:px-2">
+                      <td className={`py-2 pr-4 ${titleEdge}`}>
                         <div className="flex items-start gap-1">
                           {item.pinnedAt === undefined ? null : (
                             <Pin size={14} className="mt-0.5 shrink-0 text-accent" aria-label={t("library.pinned")} data-testid="library-pinned" />
@@ -305,8 +389,42 @@ export function LibraryPage() {
           </>
         )}
       </div>
+      {selected === undefined || selected.length === 0 ? null : (
+        <div
+          role="region"
+          aria-label={t("contentPack.select.barLabel")}
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line bg-panel px-6 py-2.5"
+          data-testid="library-selection-bar"
+        >
+          <span className="text-sm font-medium" aria-live="polite" data-testid="library-selection-count">
+            {t("contentPack.select.count", { count: selected.length })}
+          </span>
+          {block === "tooMany" ? (
+            <span id="library-selection-limit" className="text-xs text-danger">
+              {t("contentPack.select.tooMany", { max: IMPORT_BATCH_MAX })}
+            </span>
+          ) : null}
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={block !== undefined}
+              aria-describedby={block === "tooMany" ? "library-selection-limit" : undefined}
+              onClick={() => wizard.open({ contentIds: selected })}
+              data-testid="library-export-selected"
+            >
+              <Package size={14} aria-hidden="true" />
+              {t("contentPack.select.exportSelected")}
+            </Button>
+            <Button size="sm" onClick={() => setSelected(undefined)} data-testid="library-selection-clear">
+              {t("contentPack.select.clear")}
+            </Button>
+          </div>
+        </div>
+      )}
       {searching ? null : <Pagination pager={pager} className="border-t border-line px-6 py-3" />}
       {actions.dialogs}
+      {wizard.dialog}
     </div>
   );
 }
@@ -350,6 +468,8 @@ export function Cover({ url, className = "h-12 w-20" }: { url?: string | undefin
 }
 
 const STATUS_TONE: Record<string, string> = {
+  // 「已导入」: a Content from a content pack with no processing task; a neutral fact, not a state of work.
+  none: "text-muted ring-1 ring-line ring-inset",
   queued: "bg-sunken text-muted",
   running: "bg-accent-soft text-accent",
   waiting: "bg-accent-soft text-accent",

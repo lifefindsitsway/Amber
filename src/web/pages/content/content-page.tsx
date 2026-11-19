@@ -10,6 +10,7 @@ import {
   FolderPlus,
   HardDriveDownload,
   MoreHorizontal,
+  Package,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
@@ -79,6 +80,7 @@ import { visibleHighlights } from "./highlight-items.ts";
 import { OutputTabs } from "./output-tabs.tsx";
 import { missingOriginal, RelinkBanner } from "./relink-banner.tsx";
 import { TrackedTask } from "./tracked-task.tsx";
+import { useExportPackWizard } from "../content-pack/pack-entry.tsx";
 
 const WIDTH_KEY = "amber.content.outputsWidth";
 const SWAP_KEY = "amber.content.swapped";
@@ -1008,6 +1010,7 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
   const { content } = useContentPage();
   const [deleting, setDeleting] = useState(false);
   const description = useDescriptionFetch(content.id);
+  const packWizard = useExportPackWizard();
   return (
     <>
       <DropdownMenu.Root>
@@ -1032,7 +1035,15 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
                 {t("contentView.description.refetch")}
               </DropdownMenu.Item>
             )}
-            {props.overflow.length === 0 && content.source.kind === "local" ? null : <DropdownMenu.Separator className="my-1 h-px bg-line" />}
+            <DropdownMenu.Item
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
+              onSelect={() => packWizard.open({ contentIds: [content.id], focusContentId: content.id })}
+              data-testid="content-menu-export-pack"
+            >
+              <Package size={14} aria-hidden="true" />
+              {t("contentPack.entry.exportPack")}
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator className="my-1 h-px bg-line" />
             <DropdownMenu.Item
               className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken"
               onSelect={() => setDeleting(true)}
@@ -1049,6 +1060,7 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
         onOpenChange={setDeleting}
         onDeleted={() => void navigate("/library", { replace: true })}
       />
+      {packWizard.dialog}
     </>
   );
 }

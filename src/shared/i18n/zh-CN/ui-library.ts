@@ -21,6 +21,8 @@ export const library = {
     importBatch: "仅显示本次导入",
     clearImportBatch: "显示全部",
   },
+  /** The library's search box; the search also finds figure captions. */
+  searchPlaceholder: "搜索标题、字幕、总结与插图备注",
   untitled: "未命名内容",
   pinned: "已置顶",
   rename: {

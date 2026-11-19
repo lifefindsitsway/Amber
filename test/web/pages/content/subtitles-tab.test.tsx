@@ -972,3 +972,24 @@ describe("downloading an Amber subtitle package", () => {
     expect(screen.queryByTestId("subtitles-download-ambersub")).toBeNull();
   });
 });
+
+describe("SubtitlesTab opened from the empty reading view", () => {
+  it("opens the subtitle import dialog once when sent for an import", async () => {
+    mockApi(contentRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles&subtitleAction=import", path: "/contents/:id" });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("导入字幕")).toBeTruthy();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The request was consumed: nothing reopens it.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("focuses the control that gets a transcription going when sent to transcribe", async () => {
+    mockApi({ ...contentRoutes(), "GET /api/asr-profiles": { body: { items: [] } } });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles&subtitleAction=transcribe", path: "/contents/:id" });
+    const configure = await screen.findByTestId("retranscribe-configure");
+    await waitFor(() => expect(document.activeElement).toBe(configure));
+  });
+});

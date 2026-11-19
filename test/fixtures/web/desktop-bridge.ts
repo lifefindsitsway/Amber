@@ -31,6 +31,9 @@ export const fakeShell = {
   restoreBackup: vi.fn<(archiveGrant: FileGrant, originalsGrant: FileGrant | null) => Promise<RestoreApplyReport>>(),
   beginUpdateInstall: vi.fn<() => Promise<void>>(),
   endUpdateInstall: vi.fn<() => Promise<void>>(),
+  pickPackDestination: vi.fn<(suggestedName: string) => Promise<PickedFile | null>>(),
+  pickPackSource: vi.fn<() => Promise<PickedFile | null>>(),
+  pickPackOriginalsDir: vi.fn<(localStamp: string) => Promise<PickedFile | null>>(),
   listeners: new Map<string, Set<Handler>>(),
   /** Fires a shell event at every subscriber. */
   emit(event: string, payload?: unknown): void {
@@ -40,7 +43,7 @@ export const fakeShell = {
 
 export function resetFakeShell(): void {
   fakeShell.desktop = false;
-  for (const mock of [fakeShell.pickLocalFile, fakeShell.pickRelinkFile, fakeShell.saveBurnOutput, fakeShell.saveCachedMedia, fakeShell.openBilibiliLogin, fakeShell.clearBilibiliPlayerSession, fakeShell.rotateMasterKey, fakeShell.pickBackupDestination, fakeShell.inspectBackup, fakeShell.pickRestoreOriginalsDir, fakeShell.restoreBackup, fakeShell.beginUpdateInstall, fakeShell.endUpdateInstall]) {
+  for (const mock of [fakeShell.pickLocalFile, fakeShell.pickRelinkFile, fakeShell.saveBurnOutput, fakeShell.saveCachedMedia, fakeShell.openBilibiliLogin, fakeShell.clearBilibiliPlayerSession, fakeShell.rotateMasterKey, fakeShell.pickBackupDestination, fakeShell.inspectBackup, fakeShell.pickRestoreOriginalsDir, fakeShell.restoreBackup, fakeShell.beginUpdateInstall, fakeShell.endUpdateInstall, fakeShell.pickPackDestination, fakeShell.pickPackSource, fakeShell.pickPackOriginalsDir]) {
     mock.mockReset();
   }
   fakeShell.listeners.clear();
@@ -66,6 +69,9 @@ export const fakeBridge = {
   restoreBackup: (archiveGrant: FileGrant, originalsGrant: FileGrant | null) => fakeShell.restoreBackup(archiveGrant, originalsGrant),
   beginUpdateInstall: () => fakeShell.beginUpdateInstall(),
   endUpdateInstall: () => fakeShell.endUpdateInstall(),
+  pickPackDestination: (suggestedName: string) => fakeShell.pickPackDestination(suggestedName),
+  pickPackSource: () => fakeShell.pickPackSource(),
+  pickPackOriginalsDir: (localStamp: string) => fakeShell.pickPackOriginalsDir(localStamp),
   localFileUrl: async (path: string) => `asset://localhost/${encodeURIComponent(path)}`,
   onShellEvent: async <T>(event: string, handler: (payload: T) => void): Promise<() => void> => {
     const set = fakeShell.listeners.get(event) ?? new Set<Handler>();

@@ -25,7 +25,7 @@ export const SETTINGS_SECTIONS = ["models", "transcription", "other-models", "we
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** Sections that exist only in the desktop client. */
-const DESKTOP_SECTIONS: ReadonlySet<SettingsSection> = new Set(["credentials", "backup"]);
+const DESKTOP_SECTIONS: ReadonlySet<SettingsSection> = new Set(["credentials"]);
 const SECTION_VIEWS: Record<SettingsSection, ComponentType> = {
   models: ModelsSection,
   transcription: TranscriptionSection,

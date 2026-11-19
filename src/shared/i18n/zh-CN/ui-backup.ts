@@ -1,6 +1,5 @@
 /** UI copy of the 「备份与恢复」 settings section. */
 export const backup = {
-  desktopOnly: "备份与恢复只在 Amber 桌面客户端中可用。",
   export: {
     title: "导出备份",
     intro: "把这台电脑上的学习资料导出为一个 .amberbackup 文件，可在另一台全新安装 Amber 的电脑上恢复。",

@@ -71,6 +71,7 @@ import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
 import { SpeakerReviewControl } from "./speakers/review/speaker-review-panel.tsx";
 import { LabelSpeakersButton } from "./speakers/label-speakers-button.tsx";
 import { ComparisonSummary } from "./speakers/compare/comparison-summary.tsx";
+import { TranscriptEmptyState } from "./transcript-empty-state.tsx";
 import { VirtualRows, type VirtualRowsHandle } from "./virtual-rows.tsx";
 
 /**
@@ -298,7 +299,7 @@ export function TranscriptTab() {
   const groups = revisionGroups(readable, primaryId);
   const revision = pickShownRevision(readable, primaryId, requested);
   if (revision === undefined) {
-    return <EmptyState title={t("contentView.transcript.empty")} hint={t("contentView.transcript.emptyHint")} />;
+    return <TranscriptEmptyState />;
   }
   const pick = (id: string): void => {
     const next = new URLSearchParams(params);
