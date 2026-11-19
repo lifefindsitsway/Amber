@@ -25,6 +25,9 @@ fn main() {
         "inspect_backup",
         "pick_restore_originals_dir",
         "restore_backup",
+        "pick_pack_destination",
+        "pick_pack_source",
+        "pick_pack_originals_dir",
         "begin_update_install",
         "end_update_install",
     ]);

@@ -13,6 +13,7 @@ mod file_grant;
 mod files;
 mod marker;
 mod master_key;
+mod pack;
 mod sidecar;
 
 /// Named default constants, generated from src/shared/defaults.ts by `pnpm build`.
@@ -98,6 +99,9 @@ fn main() {
             backup::restore_backup,
             backup::begin_update_install,
             backup::end_update_install,
+            pack::pick_pack_destination,
+            pack::pick_pack_source,
+            pack::pick_pack_originals_dir,
             bilibili_login::open_bilibili_login,
             bilibili_login::clear_bilibili_player_session,
             rotate_master_key

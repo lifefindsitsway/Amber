@@ -1,7 +1,9 @@
 //! Local file grants: the shell signs files the user picked in
 //! its own dialogs (`local_file`, `relink`, the backup file to write `backup_output`, the
-//! backup to restore `restore_archive`), the cache directory it will create for the user
-//! (`cache_dir`) and the directory a restore puts originals in (`restore_originals_dir`), and
+//! backup to restore `restore_archive`, the content pack to write `pack_output` or to read
+//! `pack_input`), the cache directory it will create for the user (`cache_dir`), the directory
+//! a restore puts originals in (`restore_originals_dir`) and the directory a content pack
+//! import puts its originals under (`pack_originals_dir`), and
 //! checks the grants the sidecar signs for burn products (`burn_output`) and cached platform
 //! media (`cache_save`).
 //! Both sides share `AMBER_FILE_GRANT_KEY`, which the WebView never sees, so the WebView can
@@ -24,6 +26,9 @@ pub const PURPOSE_CACHE_SAVE: &str = "cache_save";
 pub const PURPOSE_BACKUP_OUTPUT: &str = "backup_output";
 pub const PURPOSE_RESTORE_ARCHIVE: &str = "restore_archive";
 pub const PURPOSE_RESTORE_ORIGINALS_DIR: &str = "restore_originals_dir";
+pub const PURPOSE_PACK_OUTPUT: &str = "pack_output";
+pub const PURPOSE_PACK_INPUT: &str = "pack_input";
+pub const PURPOSE_PACK_ORIGINALS_DIR: &str = "pack_originals_dir";
 
 /// Wire shape shared with the TypeScript `fileGrantSchema`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +130,19 @@ mod tests {
             assert_eq!(grant.sig, sig, "{purpose}");
             assert_eq!(verify(&key, &grant, purpose, expires_at - 1), Ok(()));
         }
+    }
+
+    /// The wire names of the content pack purposes, as the sidecar's verifier expects them.
+    #[test]
+    fn names_the_content_pack_purposes() {
+        assert_eq!(PURPOSE_PACK_OUTPUT, "pack_output");
+        assert_eq!(PURPOSE_PACK_INPUT, "pack_input");
+        assert_eq!(PURPOSE_PACK_ORIGINALS_DIR, "pack_originals_dir");
+        let key = key();
+        let grant = issue(&key, PURPOSE_PACK_INPUT, r"D:\资料\第 1 讲.amberpack", 1_000);
+        assert_eq!(verify(&key, &grant, PURPOSE_PACK_INPUT, 1_000), Ok(()));
+        assert!(verify(&key, &grant, PURPOSE_PACK_OUTPUT, 1_000).is_err());
+        assert!(verify(&key, &grant, PURPOSE_RESTORE_ARCHIVE, 1_000).is_err());
     }
 
     #[test]

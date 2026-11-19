@@ -80,7 +80,7 @@ pub struct InspectedBackup {
 
 /// Whether `stamp` is `yyyyMMdd-HHmmss`: the user's local time, formatted by the WebView,
 /// which knows the time zone. Only digits pass, so the stamp cannot shape the path otherwise.
-fn is_local_stamp(stamp: &str) -> bool {
+pub(crate) fn is_local_stamp(stamp: &str) -> bool {
     let bytes = stamp.as_bytes();
     bytes.len() == 15
         && bytes.iter().enumerate().all(|(index, byte)| if index == 8 { *byte == b'-' } else { byte.is_ascii_digit() })
@@ -105,11 +105,12 @@ fn not_found(path: &Path) -> Result<(), String> {
     }
 }
 
-/// The backup file to write: the chosen name with the backup extension. The dialog confirmed
-/// replacing the name the user chose; an appended name that already exists is refused. The
-/// directory is canonicalized so the grant names where the file will really be.
-fn backup_target(chosen: PathBuf) -> Result<String, String> {
-    let has_extension = chosen.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case(BACKUP_FILE_EXTENSION));
+/// The file a save dialog's choice names: the chosen name with `extension` (the backup or the
+/// content pack extension). The dialog confirmed replacing the name the user chose; an
+/// appended name that already exists is refused. The directory is canonicalized so the grant
+/// names where the file will really be.
+pub(crate) fn target_with_extension(chosen: PathBuf, extension: &str) -> Result<String, String> {
+    let has_extension = chosen.extension().and_then(|chosen_extension| chosen_extension.to_str()).is_some_and(|chosen_extension| chosen_extension.eq_ignore_ascii_case(extension));
     let name = chosen.file_name().ok_or("the chosen location has no file name")?.to_os_string();
     let parent = chosen.parent().ok_or("the chosen location has no directory")?;
     let parent = parent.canonicalize().map_err(|error| format!("the chosen directory is not accessible: {error}"))?;
@@ -118,7 +119,7 @@ fn backup_target(chosen: PathBuf) -> Result<String, String> {
     } else {
         let mut name = name;
         name.push(".");
-        name.push(BACKUP_FILE_EXTENSION);
+        name.push(extension);
         let target = parent.join(name);
         not_found(&target)?;
         target
@@ -134,7 +135,7 @@ pub async fn pick_backup_destination(app: AppHandle, suggested_name: String) -> 
         let Some(chosen) = dialog.blocking_save_file() else {
             return Ok(None);
         };
-        let path = backup_target(chosen.into_path().map_err(|error| format!("unusable location: {error}"))?)?;
+        let path = target_with_extension(chosen.into_path().map_err(|error| format!("unusable location: {error}"))?, BACKUP_FILE_EXTENSION)?;
         let supervisor = app.state::<Supervisor>();
         let grant = file_grant::issue(supervisor.file_grant_key(), PURPOSE_BACKUP_OUTPUT, &path, now_ms());
         Ok(Some(PickedFile { path, grant }))
@@ -188,16 +189,17 @@ pub async fn inspect_backup(app: AppHandle) -> Result<Option<InspectedBackup>, S
     .await
 }
 
-/// The originals directory a grant may name: a not yet existing `Amber-Restored-…` child of
-/// an existing local directory reached without links, outside the data directory. Checked
-/// when signing and again when the grant comes back.
-fn originals_dir(path: &str, data_dir: &Path) -> Result<PathBuf, String> {
+/// The originals directory a grant may name: a not yet existing child named `<prefix>…`
+/// (`Amber-Restored-…` for a restore, `Amber-Imported-…` for a content pack import) of an
+/// existing local directory reached without links, outside the data directory. Checked when
+/// signing and, for a restore, again when the grant comes back.
+pub(crate) fn originals_dir(path: &str, data_dir: &Path, prefix: &str) -> Result<PathBuf, String> {
     if !is_local_volume(path) {
         return Err("the originals directory must be on a local volume".to_owned());
     }
     let target = PathBuf::from(path);
-    if !target.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(RESTORED_ORIGINALS_DIR_PREFIX)) {
-        return Err("not a restore directory".to_owned());
+    if !target.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(prefix)) {
+        return Err("not an originals directory of this kind".to_owned());
     }
     let parent = target.parent().ok_or("the originals directory has no parent")?;
     let canonical = path_string(parent.canonicalize().map_err(|error| format!("the chosen directory is not accessible: {error}"))?)?;
@@ -228,11 +230,19 @@ pub async fn pick_restore_originals_dir(app: AppHandle, local_stamp: String) -> 
         let target = Path::new(&picked).join(format!("{RESTORED_ORIGINALS_DIR_PREFIX}{local_stamp}"));
         let path = path_string(target)?;
         let supervisor = app.state::<Supervisor>();
-        originals_dir(&path, supervisor.data_dir())?;
+        originals_dir(&path, supervisor.data_dir(), RESTORED_ORIGINALS_DIR_PREFIX)?;
         let grant = file_grant::issue(supervisor.file_grant_key(), PURPOSE_RESTORE_ORIGINALS_DIR, &path, now_ms());
         Ok(Some(PickedFile { path, grant }))
     })
     .await
+}
+
+/// Lets `<video>` play from an originals directory and everything below it. Persisted by the
+/// persisted-scope plugin, so the originals stay playable after a restart.
+pub(crate) fn allow_originals_for_playback(app: &AppHandle, dir: &str) -> Result<(), String> {
+    app.asset_protocol_scope()
+        .allow_directory(dir, true)
+        .map_err(|error| format!("could not allow the originals for playback: {error}"))
 }
 
 /// Restores a backup: checks both grants, stops the sidecar, runs the offline restore,
@@ -251,7 +261,7 @@ pub async fn restore_backup(app: AppHandle, archive_grant: FileGrant, originals_
         let originals = match &originals_grant {
             Some(grant) => {
                 file_grant::verify(key, grant, PURPOSE_RESTORE_ORIGINALS_DIR, now_ms())?;
-                Some(originals_dir(&grant.path, supervisor.data_dir())?)
+                Some(originals_dir(&grant.path, supervisor.data_dir(), RESTORED_ORIGINALS_DIR_PREFIX)?)
             }
             None => None,
         };
@@ -274,10 +284,9 @@ pub async fn restore_backup(app: AppHandle, archive_grant: FileGrant, originals_
             && report.get("ok") == Some(&Value::Bool(true))
             && let Some(dir) = report.get("originalsDir").and_then(Value::as_str)
         {
-            // Persisted by the persisted-scope plugin, so the restored originals stay playable.
-            if let Err(error) = app.asset_protocol_scope().allow_directory(dir, true) {
+            if let Err(error) = allow_originals_for_playback(&app, dir) {
                 drop(hold);
-                return Err(format!("could not allow the restored originals for playback: {error}"));
+                return Err(error);
             }
         }
         drop(hold);
@@ -350,11 +359,11 @@ mod tests {
         let data = data.canonicalize().unwrap();
         let ok = path_string(picked.join("Amber-Restored-20261019-000000")).unwrap();
         if is_local_volume(&ok) {
-            assert!(originals_dir(&ok, &data).is_ok());
-            assert!(originals_dir(&path_string(picked.join("Other")).unwrap(), &data).is_err());
-            assert!(originals_dir(&path_string(data.join("Amber-Restored-x")).unwrap(), &data).is_err());
+            assert!(originals_dir(&ok, &data, RESTORED_ORIGINALS_DIR_PREFIX).is_ok());
+            assert!(originals_dir(&path_string(picked.join("Other")).unwrap(), &data, RESTORED_ORIGINALS_DIR_PREFIX).is_err());
+            assert!(originals_dir(&path_string(data.join("Amber-Restored-x")).unwrap(), &data, RESTORED_ORIGINALS_DIR_PREFIX).is_err());
             fs::create_dir(picked.join("Amber-Restored-exists")).unwrap();
-            assert!(originals_dir(&path_string(picked.join("Amber-Restored-exists")).unwrap(), &data).is_err());
+            assert!(originals_dir(&path_string(picked.join("Amber-Restored-exists")).unwrap(), &data, RESTORED_ORIGINALS_DIR_PREFIX).is_err());
         }
         fs::remove_dir_all(&base).unwrap();
     }
