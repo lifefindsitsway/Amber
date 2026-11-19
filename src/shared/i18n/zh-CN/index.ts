@@ -28,6 +28,8 @@ import { subtitleImport } from "./ui-subtitle-import.ts";
 import { subtitleSpeaker } from "./ui-subtitle-speaker.ts";
 import { trash } from "./ui-trash.ts";
 import { usage } from "./ui-usage.ts";
+import { figures } from "./ui-figures.ts";
+import { figureInsert } from "./ui-figure-insert.ts";
 import { danmaku } from "./ui-danmaku.ts";
 
 /** zh-CN resource bundle; namespaces are added as UI areas land. */
@@ -64,5 +66,7 @@ export const zhCN = {
   readerFont,
   subtitleSpeaker,
   subtitleImport,
+  figures,
+  figureInsert,
   danmaku,
 } as const;

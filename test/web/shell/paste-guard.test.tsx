@@ -1,7 +1,7 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
-import { pasteTarget, usePasteGuard, type NewPagePrefill } from "../../../src/web/shell/paste-guard.ts";
+import { pasteTarget, registerImagePasteHandler, usePasteGuard, type NewPagePrefill } from "../../../src/web/shell/paste-guard.ts";
 
 const URL_TEXT = "https://www.youtube.com/watch?v=UF8uR6Z6KLc";
 
@@ -68,5 +68,71 @@ describe("usePasteGuard", () => {
     const event = paste(URL_TEXT);
     expect(event.defaultPrevented).toBe(false);
     expect(screen.getByTestId("where").textContent).toBe("/library|");
+  });
+});
+
+describe("the image paste handler", () => {
+  function pasteWith(text: string): ClipboardEvent {
+    return paste(text);
+  }
+
+  function renderGuard() {
+    render(
+      <MemoryRouter initialEntries={["/contents/c1"]}>
+        <Routes>
+          <Route path="*" element={<Probe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  it("is asked only when the paste is no link gesture, and its answer decides the default", () => {
+    const seen: Array<{ dialogOpen: boolean }> = [];
+    let handles = true;
+    const remove = registerImagePasteHandler((_event, context) => {
+      seen.push({ dialogOpen: context.dialogOpen });
+      return handles;
+    });
+    try {
+      renderGuard();
+      // A link wins: the handler is never asked.
+      expect(pasteWith(URL_TEXT).defaultPrevented).toBe(true);
+      expect(seen).toHaveLength(0);
+      expect(screen.getByTestId("where").textContent).toBe(`/new|${URL_TEXT}`);
+    } finally {
+      remove();
+    }
+    const again = registerImagePasteHandler((_event, context) => {
+      seen.push({ dialogOpen: context.dialogOpen });
+      return handles;
+    });
+    try {
+      cleanup();
+      renderGuard();
+      expect(pasteWith("just some words").defaultPrevented).toBe(true);
+      handles = false;
+      expect(pasteWith("").defaultPrevented).toBe(false);
+      expect(seen).toEqual([{ dialogOpen: false }, { dialogOpen: false }]);
+    } finally {
+      again();
+    }
+  });
+
+  it("is gone once removed, and a stale removal leaves a newer handler in place", () => {
+    const calls: string[] = [];
+    const removeFirst = registerImagePasteHandler(() => {
+      calls.push("first");
+      return true;
+    });
+    const removeSecond = registerImagePasteHandler(() => {
+      calls.push("second");
+      return true;
+    });
+    removeFirst();
+    renderGuard();
+    pasteWith("");
+    removeSecond();
+    pasteWith("");
+    expect(calls).toEqual(["second"]);
   });
 });

@@ -218,7 +218,8 @@ describe("TranscriptTab chapter outline and jump buttons", () => {
     const reader = await open();
     const toolbar = screen.getByTestId("chapter-outline").parentElement as HTMLElement;
     const labels = within(toolbar).getAllByRole("button").map((button) => button.textContent);
-    expect(labels.indexOf("章节")).toBe(labels.indexOf("AI 校对") + 1);
+    expect(labels.indexOf("插入图片")).toBe(labels.indexOf("AI 校对") + 1);
+    expect(labels.indexOf("章节")).toBe(labels.indexOf("插入图片") + 1);
     expect(labels.indexOf("编辑")).toBe(labels.indexOf("章节") + 1);
     fireEvent.click(screen.getByTestId("chapter-outline"));
     expect(screen.getByText("章节目录（2）")).toBeTruthy();

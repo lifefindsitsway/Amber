@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useContentEvents } from "../api/context.tsx";
-import { forgetContent, refreshChapterViews, refreshContentViews, refreshSpeakerReviewViews, refreshSpeakerViews } from "../api/content-events.ts";
+import { forgetContent, refreshChapterViews, refreshContentViews, refreshFigureViews, refreshSpeakerReviewViews, refreshSpeakerViews } from "../api/content-events.ts";
 import { queryKeys } from "../api/queries.ts";
 
 /**
@@ -26,6 +26,10 @@ export function useContentEventSync(): void {
         }
         if (event.type === "speakerReviewChanged") {
           void refreshSpeakerReviewViews(queryClient, event.contentId);
+          return;
+        }
+        if (event.type === "figuresChanged") {
+          void refreshFigureViews(queryClient, event.contentId);
           return;
         }
         if (event.type === "chaptersChanged") {

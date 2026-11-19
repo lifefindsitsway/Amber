@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { PLAYER_SEEK_TOLERANCE_MS } from "../../src/shared/defaults.ts";
+import { DANMAKU_NARROW_PICTURE_PX } from "../../src/web/player/danmaku-narrow.ts";
 import { CITED_INDEX, CITED_START_MS, installMockBackend, LOCAL_CONTENT, segmentId } from "./mock-backend.ts";
 
 const REVISION_PREFIX = "01J0000000000000000000REV3";
@@ -31,8 +32,13 @@ test("local <video> player: a narrow player keeps every control on one row insid
   const player = page.getByTestId("player-local");
   await expect(player.getByTestId("player-fullscreen")).toBeAttached();
   for (const width of [240, 300, 360, 640]) {
-    const layout = await player.evaluate((root, px) => {
+    await player.evaluate((root, px) => {
       (root.parentElement as HTMLElement).style.width = `${px}px`;
+    }, width);
+    // The capture button stands in the bar once the picture (filling the 16:9 player) is wide enough; narrower it is in the settings menu.
+    const expected = ["play", "clock", "rate", ...(width >= DANMAKU_NARROW_PICTURE_PX ? ["figure-capture"] : []), "volume", "settings", "fullscreen"];
+    await expect.poll(() => player.evaluate((root) => [...root.querySelectorAll<HTMLElement>("[data-control]")].map((element) => element.dataset.control))).toEqual(expected);
+    const layout = await player.evaluate((root) => {
       const box = root.getBoundingClientRect();
       const controls = [...root.querySelectorAll<HTMLElement>("[data-control]")].map((element) => {
         const rect = element.getBoundingClientRect();
@@ -40,9 +46,8 @@ test("local <video> player: a narrow player keeps every control on one row insid
       });
       const total = root.querySelector<HTMLElement>('[data-testid="player-clock-total"]');
       return { width: box.width, controls, totalShown: total !== null && total.getBoundingClientRect().width > 0 };
-    }, width);
+    });
     expect(layout.width).toBe(width);
-    expect(layout.controls.map((control) => control.name)).toEqual(["play", "clock", "rate", "volume", "settings", "fullscreen"]);
     const rowTop = layout.controls[0]?.top ?? 0;
     for (const control of layout.controls) {
       expect(control.left, `${control.name} at ${width}px`).toBeGreaterThanOrEqual(0);

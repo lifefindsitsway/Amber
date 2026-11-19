@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { isValidCacheFileName } from "./cache-file-name.ts";
 import { danmakuPrefsSchema } from "./danmaku-prefs.ts";
-import { BACKUP_UI_PREFERENCE_MAX_BYTES, BACKUP_UI_PREFERENCES_MAX_BYTES } from "./defaults.ts";
+import { BACKUP_UI_PREFERENCE_MAX_BYTES, BACKUP_UI_PREFERENCES_MAX_BYTES, FIGURE_WIDTH_MIN_RATIO } from "./defaults.ts";
 import { NOTE_COLORS, PLAYER_END_BEHAVIORS } from "./enums.ts";
 import { readerTypographySchema } from "./reader-typography.ts";
 import { trackPrefSchema } from "./subtitle-prefs.ts";
@@ -139,6 +139,7 @@ const PREFERENCE_RULES: ReadonlyArray<{ key: RegExp; valid: (value: string) => b
   { key: /^amber\.player\.endBehavior$/u, valid: oneOf(PLAYER_END_BEHAVIORS) },
   { key: /^amber\.notes\.color\.(?:underline|background)$/u, valid: oneOf(NOTE_COLORS) },
   { key: /^amber\.player\.danmaku$/u, valid: jsonOf(danmakuPrefsSchema) },
+  { key: /^amber\.figures\.width$/u, valid: (value) => /^(?:0(?:\.\d+)?|1(?:\.0+)?)$/u.test(value) && Number(value) >= FIGURE_WIDTH_MIN_RATIO },
 ];
 
 /** Whether a local-storage key is one a backup may carry. */

@@ -626,3 +626,64 @@ describe("VirtualRows restore loop", () => {
 
 /** More frames than a restore loop ever takes. */
 const RESTORE_FRAME_LIMIT = 30;
+
+describe("VirtualRows rows of different kinds", () => {
+  it("puts a row's extra attributes on its wrapper, beside its key", () => {
+    const items = ["a", "figure:x", "b"];
+    render(<VirtualRows items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} rowAttributes={(item) => (item.startsWith("figure:") ? { "data-figure-row": "" } : undefined)} testId="rows" />);
+    const wrappers = Array.from(screen.getByTestId("rows").querySelectorAll("[data-row-key]"));
+    expect(wrappers.map((wrapper) => wrapper.hasAttribute("data-figure-row"))).toEqual([false, true, false]);
+  });
+
+  it("estimates a windowed list's rows one by one, so a tall row makes the list taller before it is measured", () => {
+    const items = Array.from({ length: 200 }, (_, index) => `row ${index}`);
+    const total = (estimate: number | ((index: number) => number)): number => {
+      const { unmount } = render(<VirtualRows items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={estimate} testId="rows" />);
+      const box = screen.getByTestId("rows").firstElementChild as HTMLElement;
+      const height = Number.parseFloat(box.style.height);
+      unmount();
+      return height;
+    };
+    expect(total(40)).toBe(200 * 40);
+    expect(total((index) => (index === 5 ? 1000 : 40))).toBe(199 * 40 + 1000);
+  });
+});
+
+describe("VirtualRows windowing threshold and centring token", () => {
+  it("windows by the rows the caller counts, not by every row", () => {
+    // 140 text rows and 20 figure rows: below the threshold of text rows, so every row renders.
+    const items = Array.from({ length: 160 }, (_, index) => `row ${index}`);
+    render(<VirtualRows items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} windowCount={140} testId="rows" />);
+    expect(screen.getByTestId("rows").querySelectorAll("[data-row-key]")).toHaveLength(160);
+  });
+
+  it("windows once the counted rows reach the threshold", () => {
+    const items = Array.from({ length: 160 }, (_, index) => `row ${index}`);
+    render(<VirtualRows items={items} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} windowCount={150} testId="rows" />);
+    expect(screen.getByTestId("rows").querySelectorAll("[data-row-key]").length).toBeLessThan(160);
+  });
+
+  it("with a token, centres the target when the token changes, not when the target only moves to another index", () => {
+    const calls: number[] = [];
+    // jsdom has no scrollIntoView: one that records which row asked is put in for this test.
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      calls.push(Number(this.getAttribute("data-row-index")));
+    };
+    onTestFinished(() => {
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+    const items = (extra: number) => [...Array.from({ length: extra }, (_, index) => `figure ${index}`), "a", "b", "c"];
+    const view = (rows: string[], index: number, token: string) => (
+      <VirtualRows items={rows} keyOf={(item) => item} render={(item) => <p>{item}</p>} estimateSize={40} scrollToIndex={index} scrollToToken={token} testId="rows" />
+    );
+    const { rerender } = render(view(items(0), 1, "b"));
+    expect(calls).toEqual([1]);
+    // A figure row joins above: "b" is now at index 2, the token is the same.
+    rerender(view(items(1), 2, "b"));
+    expect(calls).toEqual([1]);
+    // Another sentence is selected.
+    rerender(view(items(1), 3, "c"));
+    expect(calls).toEqual([1, 3]);
+  });
+});

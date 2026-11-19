@@ -98,8 +98,26 @@ export function VirtualRows<T>(props: {
   items: readonly T[];
   keyOf: (item: T) => string;
   render: (item: T, index: number) => ReactNode;
-  estimateSize: number;
+  /**
+   * A row's height before it is measured: one number for every row, or one per row (rows of
+   * very different kinds, such as figures and paragraphs). A per-row estimate should be stable
+   * while the rows and the layout it reads are unchanged.
+   */
+  estimateSize: number | ((index: number) => number);
+  /** Extra attributes for a row's wrapper (the element carrying its key), e.g. to tell rows of another kind apart. */
+  rowAttributes?: ((item: T) => Record<string, string> | undefined) | undefined;
   scrollToIndex?: number | undefined;
+  /**
+   * When given, `scrollToIndex` is followed only when this changes: a caller whose rows gain or
+   * lose rows of another kind around the target (figures among paragraphs) names the target
+   * itself here, so the target moving to another index alone does not centre it again.
+   */
+  scrollToToken?: string | undefined;
+  /**
+   * How many rows decide whether the list windows; all of them by default. A caller mixing in
+   * rows of another kind (figures) counts only the rows the threshold is meant for (the text).
+   */
+  windowCount?: number | undefined;
   /**
    * Rows (by `keyOf`) kept mounted even when they scroll out of the window, so a text selection
    * keeps the nodes its two ends sit in however far the list scrolls. By key, not by index: the
@@ -113,7 +131,7 @@ export function VirtualRows<T>(props: {
   ref?: Ref<VirtualRowsHandle> | undefined;
 }) {
   const parent = useRef<HTMLDivElement>(null);
-  const windowed = props.items.length >= VIRTUALIZE_FROM_ROWS;
+  const windowed = (props.windowCount ?? props.items.length) >= VIRTUALIZE_FROM_ROWS;
   // The keys as one string, so a new array holding the same keys does not look like a change.
   const pinnedKeyList = (props.pinnedKeys ?? []).join("\n");
   const rows = props.items;
@@ -137,10 +155,21 @@ export function VirtualRows<T>(props: {
     },
     [pinned],
   );
+  const { estimateSize } = props;
+  const estimate = useCallback((index: number) => (typeof estimateSize === "number" ? estimateSize : estimateSize(index)), [estimateSize]);
+  // Measured sizes are kept by row key, not by index: a row added or removed above (a figure
+  // moved, a filter changed) must not hand its neighbours each other's heights. A new function
+  // whenever the rows (or the estimate) change makes the virtualizer place the rows again.
+  const getItemKey = useCallback((index: number) => {
+    const item = rows[index];
+    return item === undefined ? index : rowKey.current(item);
+    // `estimate` is listed so that a new estimate places the unmeasured rows again.
+  }, [rows, estimate]);
   const virtualizer = useVirtualizer({
     count: windowed ? props.items.length : 0,
     getScrollElement: () => parent.current,
-    estimateSize: () => props.estimateSize,
+    estimateSize: estimate,
+    getItemKey,
     overscan: 8,
     rangeExtractor,
   });
@@ -154,6 +183,10 @@ export function VirtualRows<T>(props: {
     [scrollerRef],
   );
   const target = props.scrollToIndex;
+  const latestTarget = useRef(target);
+  latestTarget.current = target;
+  // What a change of makes the list centre the target: the token when the caller names one.
+  const trigger = props.scrollToToken ?? target;
   const rowsBox = useRef<HTMLDivElement>(null);
   // Props the handle reads at call time: it is created once per list mode, not per render.
   const latest = useRef({ items: props.items, keyOf: props.keyOf });
@@ -365,7 +398,8 @@ export function VirtualRows<T>(props: {
   );
 
   useEffect(() => {
-    if (target === undefined || target < 0 || scrolledInCommit.current) return;
+    const target = latestTarget.current;
+    if (trigger === undefined || target === undefined || target < 0 || scrolledInCommit.current) return;
     // The reader's own navigation: a restore still correcting would pull the view back.
     endRestore("cancelled");
     if (windowed) {
@@ -376,7 +410,7 @@ export function VirtualRows<T>(props: {
     if (element instanceof HTMLElement && typeof element.scrollIntoView === "function") {
       element.scrollIntoView({ block: "center" });
     }
-  }, [target, windowed, virtualizer, endRestore]);
+  }, [trigger, windowed, virtualizer, endRestore]);
 
   return (
     <div ref={setScroller} className={`overflow-auto ${props.className ?? ""}`} data-testid={props.testId}>
@@ -390,6 +424,7 @@ export function VirtualRows<T>(props: {
                 ref={virtualizer.measureElement}
                 data-index={row.index}
                 data-row-index={row.index}
+                {...props.rowAttributes?.(item)}
                 {...{ [ROW_KEY_ATTRIBUTE]: props.keyOf(item) }}
                 className="absolute top-0 left-0 w-full"
                 style={{ transform: `translateY(${row.start}px)` }}
@@ -401,7 +436,7 @@ export function VirtualRows<T>(props: {
         </div>
       ) : (
         props.items.map((item, index) => (
-          <div key={props.keyOf(item)} data-row-index={index} {...{ [ROW_KEY_ATTRIBUTE]: props.keyOf(item) }}>
+          <div key={props.keyOf(item)} data-row-index={index} {...props.rowAttributes?.(item)} {...{ [ROW_KEY_ATTRIBUTE]: props.keyOf(item) }}>
             {props.render(item, index)}
           </div>
         ))

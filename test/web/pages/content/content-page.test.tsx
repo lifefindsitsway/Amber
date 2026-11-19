@@ -672,7 +672,9 @@ describe("ContentPage in the desktop client", () => {
       await waitFor(() => expect(player.querySelector("video")?.getAttribute("src")).toBe(srcOf("v1080")));
       const trigger = await within(player).findByTestId("player-quality");
       expect(trigger.textContent).toBe("1080P");
-      expect(trigger.closest("[data-control]")?.nextElementSibling?.getAttribute("data-control")).toBe("volume");
+      // Features' buttons (the frame capture here) sit between the quality menu and the volume.
+      expect(trigger.closest("[data-control]")?.nextElementSibling?.getAttribute("data-control")).toBe("figure-capture");
+      expect(trigger.closest("[data-control]")?.nextElementSibling?.nextElementSibling?.getAttribute("data-control")).toBe("volume");
       fireEvent.keyDown(trigger, { key: "Enter" });
       const menu = await within(player).findByTestId("player-quality-menu");
       expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["1080P", "720P", "未知画质"]);

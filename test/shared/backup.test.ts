@@ -32,6 +32,18 @@ describe("archive paths", () => {
 });
 
 describe("filterUiPreferences", () => {
+  it("carries the danmaku preferences and the figure width, and drops damaged ones", () => {
+    const { accepted, dropped } = filterUiPreferences({
+      "amber.player.danmaku": JSON.stringify({ enabled: true, density: 0.5, opacity: 0.8, fontScale: 1.2 }),
+      "amber.figures.width": "0.4",
+    });
+    expect(accepted).toEqual({ "amber.player.danmaku": JSON.stringify({ enabled: true, density: 0.5, opacity: 0.8, fontScale: 1.2 }), "amber.figures.width": "0.4" });
+    expect(dropped).toEqual([]);
+    const bad = filterUiPreferences({ "amber.player.danmaku": JSON.stringify({ enabled: "yes" }), "amber.figures.width": "0.1" });
+    expect(bad.accepted).toEqual({});
+    expect(bad.dropped.map((entry) => entry.reason)).toEqual(["invalid_value", "invalid_value"]);
+  });
+
   it("accepts every whitelisted preference with a valid value, including a full subtitle appearance", () => {
     const appearance = JSON.stringify({ ...defaultSubtitleAppearance(), background: { ...defaultSubtitleAppearance().background, enabled: true } });
     expect(Buffer.byteLength(appearance)).toBeGreaterThan(256);

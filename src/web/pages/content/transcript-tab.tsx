@@ -29,6 +29,7 @@ import { useContentPage } from "./content-context.tsx";
 import {
   contentKeys,
   fetchAllSegments,
+  pickShownRevision,
   readableRevisions,
   revisionGroups,
   segmentsAt,
@@ -39,6 +40,9 @@ import {
   type Paragraph,
 } from "./content-data.ts";
 import { DraftEditor, type SpeakerIntent } from "./draft-editor.tsx";
+import { FigureInsertMenu } from "./figure-insert-menu.tsx";
+import { useReaderFigureRows, useTextRowsHandle } from "./figure-reader.tsx";
+import { FigureRowProvider, FigureRowView } from "./figure-row.tsx";
 import { RETURN_RESTORE_ATTRIBUTE, type EditorCloseResult, type EditTarget, type ReturnPosition, type ReturnRestoreOutcome, type SentenceRef } from "./edit-position.ts";
 import { revisionLabel } from "./labels.ts";
 import { READER_TEXT_ATTRIBUTE, useAppliedReaderFont } from "./reader-font.ts";
@@ -378,16 +382,6 @@ export function TranscriptTab() {
   );
 }
 
-/** The revision the tab shows: the one the address names, else the primary, else the newest visible. */
-function pickShownRevision<T extends TranscriptRevisionListItemDto>(readable: readonly T[], primaryId: string | undefined, requested: string | null): T | undefined {
-  return (
-    readable.find((item) => item.id === requested) ??
-    readable.find((item) => item.id === primaryId) ??
-    visibleRevisions(readable, primaryId).at(-1) ??
-    readable.at(-1)
-  );
-}
-
 function shownRevisionId(list: TranscriptRevisionListDto, requested: string | null): string | undefined {
   return pickShownRevision(readableRevisions(list.revisions), list.primaryTranscriptRevisionId, requested)?.id;
 }
@@ -483,7 +477,10 @@ function TranscriptReader(props: {
   const [showChanges, setShowChanges] = useState(false);
   const parent = useSegments(showChanges ? revision.parentRevisionId : undefined);
   const located = useLocatedSegment(revision.id);
-  const reader = useRef<VirtualRowsHandle>(null);
+  // The list's own handle counts figure rows too; the reader's controls count text rows only and go through `reader`.
+  const rawReader = useRef<VirtualRowsHandle>(null);
+  const displayIndex = useRef<number[]>([]);
+  const reader = useTextRowsHandle(rawReader, displayIndex);
   const notesUi = useOptionalNotesUi();
   const notes = useContentNotes(page.content.id, revision.id);
   const [typography, setTypography, resetTypography] = useReaderTypography();
@@ -599,6 +596,29 @@ function TranscriptReader(props: {
   const overlapKey = overlapping.map((segment) => segment.id).join(",");
   const overlapIds = useMemo(() => new Set(overlapKey === "" ? [] : overlapKey.split(",")), [overlapKey]);
   const turnMarker = useStickyTurn(host, showTurns && !narrow, shownRows, stickyMetrics(typography));
+  const textRowKey = useCallback((row: FilteredRow) => filteredRowKey(row, viewRowKey), []);
+  const readerScroller = useCallback(() => host?.querySelector<HTMLElement>('[data-testid="transcript-reader"]') ?? null, [host]);
+  // Figures join the rows on screen only: selections, copying and notes keep reading `shownRows`.
+  const figureRows = useReaderFigureRows({
+    contentId: page.content.id,
+    revisionId: revision.id,
+    rows,
+    shownRows,
+    textKey: textRowKey,
+    ready: segments.data !== undefined,
+    filter: { active: filter.active, clear: filter.clear },
+    raw: rawReader,
+    displayIndex,
+    host,
+    scroller: readerScroller,
+    segments: list,
+    followingId: current?.id,
+    tracking,
+    time,
+    speakers: speakerById,
+    gutter: showTurns && !narrow,
+    typography: { fontSize: typography.fontSize, lineHeight: typography.lineHeight, sideMargin: readerSideMargin(typography) },
+  });
 
   // The pin ends when playback has been inside the sentence and then left it.
   useEffect(() => {
@@ -664,8 +684,8 @@ function TranscriptReader(props: {
   // every sentence leaves no rows; the return then waits until the filter is cleared.
   useLayoutEffect(() => {
     const plan = pendingReturn.current;
-    const handle = reader.current;
-    if (plan === undefined || handle === null || segments.data === undefined || shownRows.length === 0) return;
+    // The list itself, not the text-row handle in front of it (which always exists): the return waits until the list is mounted.
+    if (plan === undefined || rawReader.current === null || segments.data === undefined || shownRows.length === 0) return;
     pendingReturn.current = undefined;
     onReturnTaken();
     const navigation = returnNavigation(plan);
@@ -722,7 +742,8 @@ function TranscriptReader(props: {
           if (top === undefined) end("unavailable");
           else toSentence(top.segmentId, top.offset, false);
         };
-        if (anchor === undefined || !shownRows.some((row) => filteredRowKey(row, viewRowKey) === anchor.key)) {
+        // The anchor may be a figure row: the list's rows, figures included, are what it is looked up in.
+        if (anchor === undefined || !figureRows.rows.some((row) => figureRows.keyOf(row) === anchor.key)) {
           byTop();
           return;
         }
@@ -783,6 +804,9 @@ function TranscriptReader(props: {
   const copyBody = (): void => void copyText(readingText(rows));
   const copyWithSpeakers = (): void => void copyText(readingTextWithSpeakers(sections, speakerPrefix));
   const targetIndex = located.segmentId === undefined ? undefined : rowIndexOfSegment(shownRows, located.segmentId);
+  const selectionPins = selection.pinnedKeys;
+  const figurePins = figureRows.pinnedKeys;
+  const pinnedKeys = useMemo(() => (figurePins.length === 0 ? selectionPins : [...selectionPins, ...figurePins]), [selectionPins, figurePins]);
   const configured = (providers.data?.items.length ?? 0) > 0;
   const proofreadLabel = revision.kind === "corrected" ? t("contentView.transcript.reproofread") : t("contentView.transcript.proofread");
   // Only a reproofread whose parent is the current version becomes current by itself; any other version needs the user.
@@ -861,7 +885,8 @@ function TranscriptReader(props: {
   });
 
   /** One row of the reader, before it is set in the reading column. */
-  const renderRow = (row: (typeof shownRows)[number], index: number): ReactNode => {
+  const renderRow = (row: (typeof figureRows.rows)[number], index: number): ReactNode => {
+    if (row.kind === "figure") return <FigureRowView row={row} typography={typography} />;
     if (row.kind === "gap")
       return (
         <SpeakerGap
@@ -874,7 +899,8 @@ function TranscriptReader(props: {
         />
       );
     if (row.kind === "chapter") {
-      const seek = headingSeek(index);
+      // Headings play from the text rows under them, which figures do not count among.
+      const seek = headingSeek(shownRows.indexOf(row));
       return <ChapterHeading title={row.title} first={index === 0} {...(seek === undefined ? {} : { seek })} />;
     }
     const sentences: SentenceViewProps = {
@@ -956,6 +982,7 @@ function TranscriptReader(props: {
           </Button>
         )}
         {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={props.primaryId} testId="proofread-speakers-not-read" /> : null}
+        <FigureInsertMenu />
         <ChapterOutline
           entries={outline}
           onPick={(index) => {
@@ -1045,6 +1072,20 @@ function TranscriptReader(props: {
       ) : null}
       {props.missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
       {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
+      {figureRows.missing ? (
+        <p className="px-4 pt-2 text-xs text-muted" role="status" data-testid="figure-locate-missing">
+          {t("figures.locate.missing")}
+        </p>
+      ) : null}
+      {figureRows.loadFailed ? (
+        <p className="px-4 pt-2 text-xs text-muted" data-testid="figures-load-failed">
+          {t("figures.loadFailed")}
+          {" · "}
+          <button type="button" className="text-accent hover:underline" onClick={figureRows.retry}>
+            {t("common.action.retry")}
+          </button>
+        </p>
+      ) : null}
       {currentChapters?.stale === true ? (
         <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-chapters-stale">
           {t("contentView.chapters.stale")}
@@ -1070,23 +1111,30 @@ function TranscriptReader(props: {
             "--reader-margin": `${readerSideMargin(typography)}px`,
           } as CSSProperties}
         >
-          <VirtualRows
-            ref={reader}
-            className={`absolute inset-0 ${READER_SCROLLER_CLASS}`}
-            testId="transcript-reader"
-            items={shownRows}
-            keyOf={(row) => filteredRowKey(row, viewRowKey)}
-            estimateSize={96}
-            scrollToIndex={props.centring ? targetIndex : undefined}
-            pinnedKeys={selection.pinnedKeys}
-            scrollerRef={selection.scrollerRef}
-            render={(row, index) => (
-              // Every row sits in the reading column; a chapter heading indents to the text's edge.
-              <div className={READER_COLUMN_CLASS} {...(row.kind === "chapter" ? { [READER_INDENT_ATTRIBUTE]: "" } : {})}>
-                {renderRow(row, index)}
-              </div>
-            )}
-          />
+          <FigureRowProvider value={figureRows.controller}>
+            <VirtualRows
+              ref={rawReader}
+              className={`absolute inset-0 ${READER_SCROLLER_CLASS}`}
+              testId="transcript-reader"
+              items={figureRows.rows}
+              keyOf={figureRows.keyOf}
+              estimateSize={figureRows.estimate}
+              rowAttributes={figureRows.rowAttributes}
+              scrollToIndex={props.centring && targetIndex !== undefined ? displayIndex.current[targetIndex] : undefined}
+              // Centred when the selected sentence (or its row among the text rows) changes, not when figures move it down.
+              scrollToToken={props.centring && targetIndex !== undefined ? `${located.segmentId ?? ""} ${targetIndex}` : undefined}
+              windowCount={shownRows.length}
+              pinnedKeys={pinnedKeys}
+              scrollerRef={selection.scrollerRef}
+              render={(row, index) => (
+                // Every row sits in the reading column; a chapter heading, and a figure outside a turn, indent to the text's edge.
+                <div className={READER_COLUMN_CLASS} {...(row.kind === "chapter" || (row.kind === "figure" && row.turn === undefined) ? { [READER_INDENT_ATTRIBUTE]: "" } : {})}>
+                  {renderRow(row, index)}
+                </div>
+              )}
+            />
+          </FigureRowProvider>
+          {figureRows.overlay}
           {showTurns && !narrow ? <StickyTurnMarker contentId={page.content.id} speakers={speakerById} turn={turnMarker} typography={typography} /> : null}
           {shownRows.length > 0 ? (
             <ReaderJumpButtons

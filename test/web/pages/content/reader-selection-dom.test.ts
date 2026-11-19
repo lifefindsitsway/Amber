@@ -164,3 +164,25 @@ describe("rows of the list", () => {
     expect([...mountedRowKeys(list)]).toEqual(["chapter:0", "k1", "gap:s3", "k4"]);
   });
 });
+
+describe("figure rows", () => {
+  /** Two paragraphs with a figure between them; the figure's caption is text the selection never takes. */
+  const WITH_FIGURE = `
+<div id="list">
+<div data-row-key="k1" id="r1"><p><span id="a" data-segment-id="s1">第一段。</span></p></div>
+<div data-row-key="figure:f1" data-figure-row="" id="fig"><figure><figcaption id="cap">图注文字</figcaption></figure></div>
+<div data-row-key="k2" id="r2"><p><span id="b" data-segment-id="s2">第二段。</span></p></div>
+</div>`;
+
+  it("reads a point on a figure as the start of the text row after it", () => {
+    document.body.innerHTML = WITH_FIGURE;
+    const list = $("#list");
+    expect(pointFromDom(list, text("#cap"), 2)).toEqual({ rowKey: "k2", part: "sentence", segmentId: "s2", offset: 0 });
+    expect(rowKeyAt(list, text("#cap"))).toBeUndefined();
+  });
+
+  it("leaves figure rows out of the mounted text rows", () => {
+    document.body.innerHTML = WITH_FIGURE;
+    expect(mountedRowKeys($("#list"))).toEqual(new Set(["k1", "k2"]));
+  });
+});

@@ -1,8 +1,13 @@
 import { elementOf, textOffsetIn } from "../../ui/dom-selection.ts";
+import { FIGURE_ROW_ATTRIBUTE } from "./reader-figures.ts";
 import { READER_PART_ATTRIBUTE, type ReaderPart, type ReaderPoint } from "./reader-selection.ts";
 import { ROW_KEY_ATTRIBUTE } from "./scroll-anchor.ts";
 
-const ROW_SELECTOR = `[${ROW_KEY_ATTRIBUTE}]`;
+/**
+ * The text rows of the list. Figure rows stand between them on screen but hold no text a
+ * selection takes: a point on a figure counts as lying between the text rows around it.
+ */
+const ROW_SELECTOR = `[${ROW_KEY_ATTRIBUTE}]:not([${FIGURE_ROW_ATTRIBUTE}])`;
 /** Every element that is one part of a row: the marked ones and the sentences. */
 const PART_SELECTOR = `[${READER_PART_ATTRIBUTE}],[data-segment-id]`;
 const MARKED_PARTS = new Set<string>(["title", "speaker", "time", "gap"]);

@@ -35,6 +35,7 @@ import { handleDescription } from "./mock-description.ts";
 import { handleOtherModels, OtherModelsState } from "./mock-other-models.ts";
 import { handleOutputs } from "./mock-outputs.ts";
 import { handleDanmaku } from "./mock-danmaku.ts";
+import { handleFigures } from "./mock-figures.ts";
 import { handleSearch } from "./mock-search.ts";
 import { handleSpeakers } from "./mock-speakers.ts";
 import { handleTrash, TrashState, type LibraryContent, type MockTrash } from "./mock-trash.ts";
@@ -849,10 +850,18 @@ export async function installMockBackend(page: Page, options: MockOptions = {}):
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (method !== "GET") {
-      mutations.push({ method, path, body: request.postDataJSON() as unknown });
+      // A multipart upload has no JSON body to record.
+      let body: unknown;
+      try {
+        body = request.postDataJSON() as unknown;
+      } catch {
+        body = undefined;
+      }
+      mutations.push({ method, path, body });
     }
     if (
       (await handleSpeakers(route, request, url)) ||
+      (await handleFigures(route, request, url)) ||
       (await handleDanmaku(route, request, url)) ||
       (await handleDescription(route, request, url)) ||
       (await handleTrash(trash, route, request, url)) ||

@@ -7,12 +7,13 @@ import { queryKeys } from "./queries.ts";
 
 /**
  * A Content moved into the trash, out of it, or purged for good, had its speakers changed,
- * had a revision's speaker review confirmed or withdrawn, or had its current chapters switched.
+ * had a revision's speaker review confirmed or withdrawn, had its current chapters switched, or
+ * had a figure added, edited, moved, deleted or restored.
  * Other tabs of the same user show the same lists and pages, so the change is broadcast to them
  * as well.
  */
 export interface ContentEvent {
-  type: "trashed" | "restored" | "purged" | "speakersChanged" | "speakerReviewChanged" | "chaptersChanged";
+  type: "trashed" | "restored" | "purged" | "speakersChanged" | "speakerReviewChanged" | "chaptersChanged" | "figuresChanged";
   contentId: string;
 }
 
@@ -31,6 +32,7 @@ const CONTENT_EVENT_TYPES: ReadonlySet<string> = new Set<ContentEvent["type"]>([
   "speakersChanged",
   "speakerReviewChanged",
   "chaptersChanged",
+  "figuresChanged",
 ]);
 
 /** Messages from other tabs are untrusted input in shape: anything else is ignored. */
@@ -194,4 +196,15 @@ export function publishChaptersChanged(bus: ContentEventBus, queryClient: QueryC
   queryClient.setQueryData(contentKeys.chapters(contentId), chapters);
   void refreshChapterDependents(queryClient, contentId);
   bus.publish({ type: "chaptersChanged", contentId });
+}
+
+/** Re-reads a Content's figures and the search results that may show their captions. */
+export async function refreshFigureViews(queryClient: QueryClient, contentId: string): Promise<void> {
+  await Promise.all([queryClient.invalidateQueries({ queryKey: contentKeys.figures(contentId) }), queryClient.invalidateQueries({ queryKey: searchKeys.all })]);
+}
+
+/** A figure of the Content changed in this tab: this tab's views are read again and other tabs are told. */
+export function publishFiguresChanged(bus: ContentEventBus, queryClient: QueryClient, contentId: string): void {
+  void refreshFigureViews(queryClient, contentId);
+  bus.publish({ type: "figuresChanged", contentId });
 }

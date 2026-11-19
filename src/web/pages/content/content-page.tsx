@@ -66,7 +66,11 @@ import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { DeleteContentDialog } from "../../components/delete-content-dialog.tsx";
 import { CacheMediaDialog } from "./cache-media-dialog.tsx";
 import { ContentPageProvider, useContentPage, type ContentPageState, type ContentTab, type SegmentSelection } from "./content-context.tsx";
+import { ReaderFigureProvider } from "./figure-context.ts";
+import { useFigurePaste } from "./figure-paste.ts";
 import { useDanmakuExtension } from "../../player/danmaku-layer.tsx";
+import { useFigureCaptureExtension } from "../../player/figure-capture-control.tsx";
+import { mergeExtensions } from "../../player/merge-extensions.ts";
 import { useChapters, useContentDetail, useContentTaskRefresh, useHighlights, useUnfinishedCacheTask } from "./content-data.ts";
 import type { QualitySource } from "../../player/player-menus.tsx";
 import { useContentSubtitles } from "./content-subtitles.ts";
@@ -186,13 +190,16 @@ function ContentLayout(props: { content: ContentDetailDto }) {
         <ChatComposerProvider composer={composer}>
           {/* Above the tabs, so a note draft survives switching tab or revision. */}
           <NotesUiProvider>
-            <Columns subtitleEditRequest={subtitleEditRequest} onPlayingCache={setPlayingAssetId} />
-            <SelectionToolbar
-              actions={(snapshot, close) =>
-                snapshot.bounds === undefined ? null : <NoteSelectionActions bounds={snapshot.bounds} rect={snapshot.rect} crossesGap={snapshot.crossesGap === true} close={close} />
-              }
-            />
-            <NotePopover />
+            <ReaderFigureProvider>
+              <FigurePaste />
+              <Columns subtitleEditRequest={subtitleEditRequest} onPlayingCache={setPlayingAssetId} />
+              <SelectionToolbar
+                actions={(snapshot, close) =>
+                  snapshot.bounds === undefined ? null : <NoteSelectionActions bounds={snapshot.bounds} rect={snapshot.rect} crossesGap={snapshot.crossesGap === true} close={close} />
+                }
+              />
+              <NotePopover />
+            </ReaderFigureProvider>
           </NotesUiProvider>
         </ChatComposerProvider>
       </ContentPageProvider>
@@ -1075,6 +1082,8 @@ function MiddleColumn(props: {
   const chapterList = chapters.data?.current?.chapters ?? [];
   const shownHighlights = visibleHighlights(highlights.data?.current?.items ?? [], highlightThreshold);
   const danmakuExtension = useDanmakuExtension(content);
+  const captureExtension = useFigureCaptureExtension(content);
+  const extensions = useMemo(() => mergeExtensions(captureExtension, danmakuExtension), [captureExtension, danmakuExtension]);
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
       {props.toolbar}
@@ -1097,7 +1106,7 @@ function MiddleColumn(props: {
             onEndedAdvance={playback.advance}
             loopCollection={playback.loopCollection}
             subtitles={props.subtitles}
-            extensions={danmakuExtension}
+            extensions={extensions}
             renderBelow={(active) =>
               // The local player draws chapters into its seek bar; only the highlight band stays below it.
               active === "local" ? (
@@ -1244,4 +1253,10 @@ function removeStorage(key: string): void {
   } catch {
     // Nothing to forget.
   }
+}
+
+/** Registers the figure paste handler for as long as the content page is open. */
+function FigurePaste(): null {
+  useFigurePaste();
+  return null;
 }

@@ -38,6 +38,8 @@ export const contentKeys = {
   /** The speaker reviews of the Content's revisions, one key per revision under this prefix. */
   speakerReviews: (contentId: string) => ["content", contentId, "speaker-review"] as const,
   speakerReview: (contentId: string, revisionId: string) => ["content", contentId, "speaker-review", revisionId] as const,
+  /** The Content's figures, live and recently deleted (`FigureListDto`). */
+  figures: (contentId: string) => ["content", contentId, "figures"] as const,
 };
 
 export function useContentDetail(contentId: string) {
@@ -370,6 +372,20 @@ export function visibleRevisions<T extends PickableRevision>(
     if (groups.history.has(revision.id)) return options.showHistory === true;
     return true;
   });
+}
+
+/**
+ * The revision the reading view shows, among the readable ones: the one the address names,
+ * else the primary, else the newest one a picker lists, else the newest. Anything else that
+ * speaks about "the text being read" (the figure insert menu) must choose the same way.
+ */
+export function pickShownRevision<T extends PickableRevision>(readable: readonly T[], primaryId: string | undefined, requested: string | null): T | undefined {
+  return (
+    readable.find((item) => item.id === requested) ??
+    readable.find((item) => item.id === primaryId) ??
+    visibleRevisions(readable, primaryId).at(-1) ??
+    readable.at(-1)
+  );
 }
 
 /** Kinds a person made or chose, which a fresh ASR run does not replace by itself. */
