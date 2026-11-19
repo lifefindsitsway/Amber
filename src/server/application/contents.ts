@@ -12,7 +12,7 @@ import type {
   TranscriptRevisionDto,
   TranscriptRevisionListDto,
 } from "../../shared/dto/content.ts";
-import type { ContentSourceKind, ProcessingStatus } from "../../shared/enums.ts";
+import type { ContentProcessingStatus, ContentSourceKind } from "../../shared/enums.ts";
 import { BYTES_PER_MB } from "../../shared/units.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
 import { amberError } from "../domain/errors.ts";
@@ -45,7 +45,7 @@ export interface ContentListRequest {
   cursor?: string;
   /** Numbered page from 1, in place of `cursor`. */
   page?: number;
-  status?: ProcessingStatus;
+  status?: ContentProcessingStatus;
   source?: ContentSourceKind;
   collectionId?: string;
   uncollected?: boolean;

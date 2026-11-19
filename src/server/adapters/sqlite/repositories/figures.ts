@@ -22,6 +22,7 @@ interface FigureRow {
   image_sha256: string;
   version: number;
   deleted_at: number | null;
+  origin_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -44,6 +45,7 @@ function toFigure(row: FigureRow): ContentFigure {
     image: { width: row.image_width, height: row.image_height, bytes: row.image_bytes, sha256: row.image_sha256 },
     version: row.version,
     deletedAt: row.deleted_at,
+    originId: row.origin_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -57,11 +59,11 @@ export function sqliteFigureRepository(db: SqliteConnection): FigureRepository {
     `INSERT INTO content_figure (
        id, content_id, user_id, source, captured_at_ms, display_ms, anchor_revision_id, anchor_segment_id, anchor_side,
        sort_key, width_ratio, caption, image_width, image_height, image_bytes, image_sha256, version, deleted_at,
-       created_at, updated_at
+       origin_id, created_at, updated_at
      ) VALUES (
        @id, @contentId, @userId, @source, @capturedAtMs, @displayMs, @anchorRevisionId, @anchorSegmentId, @anchorSide,
        @sortKey, @widthRatio, @caption, @imageWidth, @imageHeight, @imageBytes, @imageSha256, @version, @deletedAt,
-       @createdAt, @updatedAt
+       @originId, @createdAt, @updatedAt
      )`,
   );
   const insertImage = db.prepare("INSERT INTO content_figure_image (figure_id, bytes) VALUES (?, ?)");
@@ -134,6 +136,7 @@ export function sqliteFigureRepository(db: SqliteConnection): FigureRepository {
         imageSha256: figure.image.sha256,
         version: figure.version,
         deletedAt: figure.deletedAt ?? null,
+        originId: figure.originId ?? null,
         createdAt: figure.createdAt,
         updatedAt: figure.updatedAt,
       });

@@ -280,3 +280,11 @@ describe("content repository trash", () => {
     });
   });
 });
+
+describe("content transfer origin", () => {
+  it("round-trips the origin id a content pack import writes, and leaves it absent otherwise", () => {
+    repository.withTransaction((scope) => scope.contents.insert(content("p1", "alice", T0 + 9, { processingStatus: "none", originId: "01ORIGINCONTENT" })));
+    expect(repository.withTransaction((scope) => scope.contents.get("alice", "p1"))).toEqual(content("p1", "alice", T0 + 9, { processingStatus: "none", originId: "01ORIGINCONTENT" }));
+    expect(repository.withTransaction((scope) => scope.contents.get("alice", "a1"))).not.toHaveProperty("originId");
+  });
+});

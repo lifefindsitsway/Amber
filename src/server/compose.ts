@@ -54,6 +54,12 @@ import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
 import { FigureService } from "./application/figures.ts";
 import { DanmakuService, danmakuSummaryIn } from "./application/danmaku.ts";
+import { ContentPackExportService } from "./application/content-pack-export.ts";
+import { ContentPackImportService } from "./application/content-pack-import.ts";
+import { CONTENT_PACK_WORK_DIR, PackJobSlots } from "./application/content-pack-jobs.ts";
+import { openPackFile, TarPackWriter } from "./adapters/backup/pack-archive.ts";
+import { createPackCollections } from "./application/content-pack-collections.ts";
+import { createContentPackEngine } from "./application/content-pack-plan.ts";
 import { SpeakerService } from "./application/speakers.ts";
 import { SpeakerLineageReader } from "./application/speaker-lineage.ts";
 import { PendingFileDeleter } from "./application/pending-file-delete.ts";
@@ -492,6 +498,59 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     backgroundReady: () => backgroundReady,
   });
   const danmaku = new DanmakuService({ repository, platforms, logger: lateLogger(() => appLogger?.child({ component: "danmaku" })) });
+  const contentPackEngine = createContentPackEngine({
+    mode: config.mode,
+    repository,
+    collections: createPackCollections({ repository, logger: lateLogger(() => appLogger?.child({ component: "content_pack_collections" })) }),
+    logger: lateLogger(() => appLogger?.child({ component: "content_pack_engine" })),
+  });
+  // One job per user across export and import; both work in `tmp/content-packs`, which the
+  // start-up recovery settles and clears.
+  const contentPackSlots = new PackJobSlots();
+  const contentPackWorkDir = join(layout.root, CONTENT_PACK_WORK_DIR);
+  const contentPacks = {
+    exports: new ContentPackExportService({
+      mode: config.mode,
+      repository,
+      engine: contentPackEngine,
+      files,
+      media,
+      appVersion: packageJson.version,
+      ...(grants === undefined ? {} : { grants }),
+      logger: lateLogger(() => appLogger?.child({ component: "content_pack_export" })),
+      writer: new TarPackWriter(),
+      gate,
+      locks: cachePaths,
+      ingest,
+      workDir: contentPackWorkDir,
+      disk: files,
+      settings: instanceSettings,
+      slots: contentPackSlots,
+      ...(quota === undefined ? {} : { quota }),
+      // Declared further down; read only once requests arrive.
+      backgroundReady: () => backgroundReady,
+    }),
+    imports: new ContentPackImportService({
+      mode: config.mode,
+      repository,
+      engine: contentPackEngine,
+      files,
+      media,
+      ...(grants === undefined ? {} : { grants }),
+      logger: lateLogger(() => appLogger?.child({ component: "content_pack_import" })),
+      openPack: openPackFile,
+      ingest,
+      gate,
+      locks: cachePaths,
+      holds: cacheHoldRegistry,
+      workDir: contentPackWorkDir,
+      disk: files,
+      settings: instanceSettings,
+      ...(quota === undefined ? {} : { quota }),
+      slots: contentPackSlots,
+      backgroundReady: () => backgroundReady,
+    }),
+  };
   const speakers = new SpeakerService({ repository });
   // Local mode only: the client backup and the maintenance state before an update install.
   let backgroundReady = false;
@@ -608,6 +667,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     notes,
     figures,
     danmaku,
+    contentPacks,
     speakers,
     localImport,
     subtitleImport,
@@ -687,8 +747,10 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     logger: logger.child({ component: "asset_janitor" }),
     keepTaskScratch: config.logLevel === "debug",
     pendingRefs: () => fileDeleter.currentPendingRefs(),
-    // Platform caches exist only on the desktop client.
-    ...(config.mode === "local" ? { swaps: { holds: cacheHoldRegistry, locks: cachePaths }, muxer } : {}),
+    // Both modes hold platform caches (server mode gets them from content packs), so both
+    // settle interrupted cache replacements and respect held and locked cache paths.
+    swaps: { holds: cacheHoldRegistry, locks: cachePaths },
+    muxer,
   });
   lateJanitor = janitor;
   janitor.start();
@@ -710,6 +772,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         if (stopping) return;
         // An unfinished cache move is settled next, so the sweep sees a consistent pair of stores.
         await cacheRoot?.recover().catch((error: unknown) => startupLog("cache_root_recovery_failed", { message: String(error) }));
+        if (stopping) return;
+        // Interrupted content pack imports are settled from their journals, after the cache
+        // replacements they may have started and before the sweep looks for orphaned files.
+        await contentPacks.imports.recover().catch((error: unknown) => startupLog("content_pack_recovery_failed", { message: String(error) }));
+        await contentPacks.exports.sweepLeftovers().catch((error: unknown) => startupLog("content_pack_export_sweep_failed", { message: String(error) }));
         if (stopping) return;
         // Expired trash goes before the file sweep; the worker removes their files first, so
         // the sweep walks directories that no longer change under it.
@@ -754,6 +821,9 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       maintenance?.disarm();
       // A running export reads the database and the cache files; it stops before either closes.
       await backupExport?.close();
+      // Content pack jobs read the database and place files; they stop before either closes.
+      await contentPacks.exports.close();
+      await contentPacks.imports.close();
       await scheduler?.stop();
       // Neither the trash timer nor the file worker may write once the database is closed.
       await trash.stop();

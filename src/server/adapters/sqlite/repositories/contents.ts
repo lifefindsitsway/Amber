@@ -27,6 +27,7 @@ interface ContentRow {
   primary_transcript_revision_id: string | null;
   import_batch_id: string | null;
   processing_status: Content["processingStatus"];
+  origin_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -58,6 +59,7 @@ function toContent(row: ContentRow): Content {
     primaryTranscriptRevisionId: row.primary_transcript_revision_id,
     importBatchId: row.import_batch_id,
     processingStatus: row.processing_status,
+    originId: row.origin_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -148,11 +150,11 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
     `INSERT INTO content (
        id, user_id, source_kind, source_url, platform_content_id, platform_part_id, platform_collection_id,
        channel_id, channel_title, title, custom_title, pinned_at, cover_url, duration_ms, published_at, raw_language,
-       primary_transcript_revision_id, import_batch_id, processing_status, created_at, updated_at
+       primary_transcript_revision_id, import_batch_id, processing_status, origin_id, created_at, updated_at
      ) VALUES (
        @id, @userId, @sourceKind, @sourceUrl, @platformContentId, @platformPartId, @platformCollectionId,
        @channelId, @channelTitle, @title, @customTitle, @pinnedAt, @coverUrl, @durationMs, @publishedAt, @rawLanguage,
-       @primaryTranscriptRevisionId, @importBatchId, @processingStatus, @createdAt, @updatedAt
+       @primaryTranscriptRevisionId, @importBatchId, @processingStatus, @originId, @createdAt, @updatedAt
      )`,
   );
   const revisionOfContent = db.prepare("SELECT 1 FROM transcript_revision WHERE id = ? AND content_id = ?");
@@ -294,6 +296,7 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
         primaryTranscriptRevisionId: nullable(content.primaryTranscriptRevisionId),
         importBatchId: nullable(content.importBatchId),
         processingStatus: content.processingStatus,
+        originId: nullable(content.originId),
         createdAt: content.createdAt,
         updatedAt: content.updatedAt,
       });

@@ -35,3 +35,4 @@ export * from "./speaker-context.ts";
 export * from "./subtitle-import.ts";
 export * from "./figure.ts";
 export * from "./danmaku.ts";
+export * from "./content-pack.ts";

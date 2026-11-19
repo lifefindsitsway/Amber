@@ -28,6 +28,8 @@ import type { MediaAssetService } from "./application/media-assets.ts";
 import type { NoteService } from "./application/notes.ts";
 import type { FigureService } from "./application/figures.ts";
 import type { DanmakuService } from "./application/danmaku.ts";
+import type { ContentPackExportService } from "./application/content-pack-export.ts";
+import type { ContentPackImportService } from "./application/content-pack-import.ts";
 import type { SpeakerService } from "./application/speakers.ts";
 import type { PlatformAccountService } from "./application/platform-accounts.ts";
 import type { PlatformQrLoginService } from "./application/platform-qr-login.ts";
@@ -77,6 +79,7 @@ import { registerMediaDeleteRoute, registerMediaPlaybackRoutes } from "./api/rou
 import { registerNoteRoutes } from "./api/routes/notes.ts";
 import { registerFigureRoutes } from "./api/routes/figures.ts";
 import { registerDanmakuRoutes } from "./api/routes/danmaku.ts";
+import { registerContentPackRoutes } from "./api/routes/content-packs.ts";
 import { registerSpeakerRoutes } from "./api/routes/speakers.ts";
 import { registerOtherModelRoutes } from "./api/routes/other-models.ts";
 import { registerPlatformAccountRoutes } from "./api/routes/platform-accounts.ts";
@@ -179,6 +182,8 @@ export interface AppDeps {
   figures?: FigureService;
   /** Danmaku snapshots of platform videos. */
   danmaku?: DanmakuService;
+  /** Content pack export and import. */
+  contentPacks?: { exports: ContentPackExportService; imports: ContentPackImportService };
   /** Speaker identities of a Content and their photos. */
   speakers?: SpeakerService;
   /** "Proofread again", "regenerate chapters", "recompute highlights" and "translate". */
@@ -375,6 +380,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.danmaku !== undefined) {
     registerDanmakuRoutes(app, { danmaku: deps.danmaku });
+  }
+  if (deps.contentPacks !== undefined) {
+    registerContentPackRoutes(app, { mode: deps.mode, ...deps.contentPacks });
   }
   if (deps.speakers !== undefined) {
     registerSpeakerRoutes(app, { speakers: deps.speakers });

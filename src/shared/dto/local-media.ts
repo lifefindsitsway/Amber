@@ -16,7 +16,10 @@ const localPathSchema = z.string().min(1).max(4096);
  * `backup_output`: the shell signs the backup file the user chose in its save dialog; the
  * sidecar checks it before writing. `restore_archive` / `restore_originals_dir`:
  * the shell signs the archive and the originals subdirectory it picked, and checks both itself
- * before running the offline restore command.
+ * before running the offline restore command. `pack_output` / `pack_input`: the content
+ * pack file the user chose to write or to read; `pack_originals_dir`: the directory an import
+ * puts carried original files under. The shell signs them; the sidecar checks them before it
+ * writes or reads.
  */
 export const FILE_GRANT_PURPOSES = [
   "local_file",
@@ -27,6 +30,9 @@ export const FILE_GRANT_PURPOSES = [
   "backup_output",
   "restore_archive",
   "restore_originals_dir",
+  "pack_output",
+  "pack_input",
+  "pack_originals_dir",
 ] as const;
 export type FileGrantPurpose = (typeof FILE_GRANT_PURPOSES)[number];
 

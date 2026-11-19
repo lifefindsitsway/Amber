@@ -237,3 +237,22 @@ describe("speaker repository: name confirmation", () => {
     });
   });
 });
+
+describe("speaker transfer origin", () => {
+  it("round-trips the origin pair a content pack import writes, and leaves it absent otherwise", () => {
+    const origin = { contentId: "01ORIGINCONTENT", speakerId: "0" };
+    // The port's insert shape does not name `origin` yet; the repository accepts it.
+    const insert = (scope: Parameters<Parameters<typeof repository.withTransaction>[0]>[0]) =>
+      scope.speakers.insert("alice", "c1", [{ id: "A", origin }, { id: "B" }], T0);
+    const [carried, local] = repository.withTransaction(insert);
+    expect(carried?.origin).toEqual(origin);
+    expect(local).not.toHaveProperty("origin");
+    expect(repository.withTransaction((scope) => scope.speakers.get("alice", "c1", "A"))?.origin).toEqual(origin);
+    expect(repository.withTransaction((scope) => scope.speakers.list("alice", "c1")).map((speaker) => speaker.origin)).toEqual([origin, undefined]);
+  });
+
+  it("refuses half an origin pair", () => {
+    repository.withTransaction((scope) => scope.speakers.insert("alice", "c1", [{ id: "A" }], T0));
+    expect(() => db.prepare("UPDATE content_speaker SET origin_content_id = 'x' WHERE content_id = 'c1' AND id = 'A'").run()).toThrow(/CHECK/);
+  });
+});

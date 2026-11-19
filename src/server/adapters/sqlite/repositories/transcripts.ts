@@ -22,6 +22,7 @@ interface RevisionRow {
   generation_json: string;
   segment_count: number;
   loose_join: number | null;
+  origin_id: string | null;
   created_at: number;
 }
 
@@ -93,6 +94,7 @@ function toRevision(row: RevisionRow): TranscriptRevision {
     generation: parseJson<TranscriptGeneration>(row.generation_json),
     segmentCount: row.segment_count,
     looseJoin: row.loose_join === 1 ? true : null,
+    originId: row.origin_id,
     createdAt: row.created_at,
   });
 }
@@ -181,9 +183,9 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
   const segmentOfRevision = db.prepare("SELECT 1 FROM transcript_segment WHERE id = ? AND revision_id = ?");
   const insertRevision = db.prepare(
     `INSERT INTO transcript_revision (
-       id, content_id, kind, parent_revision_id, language, timing_fidelity, generation_json, segment_count, loose_join, created_at
+       id, content_id, kind, parent_revision_id, language, timing_fidelity, generation_json, segment_count, loose_join, origin_id, created_at
      ) VALUES (
-       @id, @contentId, @kind, @parentRevisionId, @language, @timingFidelity, @generationJson, @segmentCount, @looseJoin, @createdAt
+       @id, @contentId, @kind, @parentRevisionId, @language, @timingFidelity, @generationJson, @segmentCount, @looseJoin, @originId, @createdAt
      )`,
   );
   const insertSegment = db.prepare(
@@ -239,6 +241,7 @@ export function sqliteTranscriptRepository(db: SqliteConnection): TranscriptRepo
         generationJson: JSON.stringify(revision.generation),
         segmentCount: revision.segmentCount,
         looseJoin: revision.looseJoin === true ? 1 : null,
+        originId: nullable(revision.originId),
         createdAt: revision.createdAt,
       });
       for (const segment of segments) {

@@ -13,7 +13,13 @@ import {
   MASTER_KEY_ACCOUNT,
   MASTER_KEY_SERVICE,
 } from "../shared/app-identity.ts";
-import { BACKUP_FILE_EXTENSION, RESTORE_PROGRESS_PREFIX, RESTORED_ORIGINALS_DIR_PREFIX } from "../shared/backup-names.ts";
+import {
+  BACKUP_FILE_EXTENSION,
+  CONTENT_PACK_FILE_EXTENSION,
+  IMPORTED_ORIGINALS_DIR_PREFIX,
+  RESTORE_PROGRESS_PREFIX,
+  RESTORED_ORIGINALS_DIR_PREFIX,
+} from "../shared/backup-names.ts";
 import { CACHE_EXTENSIONS } from "../shared/cache-file-name.ts";
 import { FILE_GRANT_TTL_MS, SIDECAR_READY_TIMEOUT_MS, SIDECAR_RESTART_MAX, SIDECAR_SHUTDOWN_GRACE_MS } from "../shared/defaults.ts";
 import { INSTALLER_COPY, type InstallerLocale, type ShellCopy } from "../shared/i18n/installer.ts";
@@ -23,7 +29,8 @@ import { INSTALLER_COPY, type InstallerLocale, type ShellCopy } from "../shared/
  * modules stay the only hand-maintained source:
  * - `defaults.rs`: the named defaults;
  * - `identity.rs`: directory, marker and credential names from `app-identity.ts`, the
- *   cache file extensions from `cache-file-name.ts`, and the backup names from `backup-names.ts`;
+ *   cache file extensions from `cache-file-name.ts`, and the backup and content pack names
+ *   from `backup-names.ts`;
  * - `shell_copy.rs`: the shell's native message copy from `i18n/installer.ts`.
  * The output is generated and ignored by git; the shell pulls it in with `include!`.
  */
@@ -55,6 +62,8 @@ const IDENTITY: readonly (readonly [name: string, value: string])[] = [
   ["BACKUP_FILE_EXTENSION", BACKUP_FILE_EXTENSION],
   ["RESTORED_ORIGINALS_DIR_PREFIX", RESTORED_ORIGINALS_DIR_PREFIX],
   ["RESTORE_PROGRESS_PREFIX", RESTORE_PROGRESS_PREFIX],
+  ["CONTENT_PACK_FILE_EXTENSION", CONTENT_PACK_FILE_EXTENSION],
+  ["IMPORTED_ORIGINALS_DIR_PREFIX", IMPORTED_ORIGINALS_DIR_PREFIX],
 ];
 
 /** Rust constant names of the shell copy per locale. */

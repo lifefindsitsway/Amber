@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DISPLAY_NAME_MAX_CHARS } from "../defaults.ts";
-import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../enums.ts";
+import { CONTENT_SOURCE_KINDS, CONTENT_PROCESSING_STATUSES } from "../enums.ts";
 import { STALE_REASONS } from "./chapter.ts";
 import { citationDtoSchema } from "./citation.ts";
 import { importSettingsSchema, languageTagSchema } from "./import.ts";
@@ -41,7 +41,7 @@ export const collectionItemDtoSchema = z.object({
   title: z.string().exactOptional(),
   coverUrl: z.string().exactOptional(),
   durationMs: z.number().int().nonnegative().exactOptional(),
-  processingStatus: z.enum(PROCESSING_STATUSES),
+  processingStatus: z.enum(CONTENT_PROCESSING_STATUSES),
   pinnedAt: msSchema.exactOptional(),
   /** The Content's canonical source URL; absent for local files. */
   sourceUrl: z.string().exactOptional(),

@@ -4,6 +4,11 @@ export interface Collection {
   name: string;
   description?: string;
   platformCollectionId?: string;
+  /**
+   * The id this collection had on the device a content pack carried it from; absent for one
+   * created here. Its transfer identity is `originId ?? id`. Written on insert only.
+   */
+  originId?: string;
   createdAt: number;
   /**
    * Refreshed in the transaction of each change to the collection itself: creation, a new

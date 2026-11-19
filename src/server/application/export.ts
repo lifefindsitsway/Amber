@@ -935,11 +935,19 @@ function labelFor(speakers: SpeakerNames | undefined, labeler: SpeakerLabeler | 
 
 /**
  * `{{revision_label}}`: kind, the model that produced the revision when there is one,
- * and its creation time — the same parts the reading view's version picker shows.
+ * and its creation time — the same parts the reading view's version picker shows. A revision
+ * brought in with a content pack names the model the pack recorded.
  */
 function revisionLabelText(revision: TranscriptRevision): string {
   const { generation } = revision;
-  const model = generation.kind === "llm" ? generation.modelRef.modelDisplaySnapshot || generation.modelRef.modelId : generation.kind === "asr" ? generation.modelId : undefined;
+  const model =
+    generation.kind === "llm"
+      ? generation.modelRef.modelDisplaySnapshot || generation.modelRef.modelId
+      : generation.kind === "asr"
+        ? generation.modelId
+        : generation.kind === "pack"
+          ? generation.modelName || undefined
+          : undefined;
   return [contentView.revisionKind[revision.kind], ...(model === undefined ? [] : [model]), dateTimeText(revision.createdAt)].join(" · ");
 }
 

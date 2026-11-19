@@ -126,6 +126,14 @@ export type TaskKind = (typeof TASK_KINDS)[number];
 export const PROCESSING_STATUSES = ["queued", "running", "waiting", "succeeded", "failed", "cancelled"] as const;
 export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 
+/**
+ * `Content.processingStatus`: the projection of the Content's latest processing Task, or
+ * `none` for a Content that has never had one (it came from a content pack). A Task's own
+ * status never takes `none`; a later Task replaces it with that Task's projection.
+ */
+export const CONTENT_PROCESSING_STATUSES = [...PROCESSING_STATUSES, "none"] as const;
+export type ContentProcessingStatus = (typeof CONTENT_PROCESSING_STATUSES)[number];
+
 /** Retention choices for `managed_upload` offered as the instance default. */
 export const UPLOAD_RETENTION_POLICIES = ["keep", "discard_after_audio"] as const;
 export type UploadRetentionPolicy = (typeof UPLOAD_RETENTION_POLICIES)[number];

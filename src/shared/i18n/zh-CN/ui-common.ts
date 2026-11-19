@@ -80,6 +80,8 @@ export const common = {
     succeeded: "已完成",
     failed: "失败",
     cancelled: "已取消",
+    /** A Content carried in by a content pack that has never had a processing task. */
+    none: "已导入",
   },
   source: {
     bilibili: "B 站",

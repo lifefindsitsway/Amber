@@ -142,6 +142,21 @@ export const API_ROUTES: readonly ApiRoute[] = [
   // danmaku
   { method: "GET", path: "/contents/:id/danmaku", modes: BOTH },
   { method: "POST", path: "/contents/:id/danmaku/fetch", modes: BOTH },
+  // content packs
+  { method: "GET", path: "/content-packs/active", modes: BOTH },
+  { method: "POST", path: "/content-packs/export-plan", modes: BOTH },
+  { method: "POST", path: "/content-packs/exports", modes: BOTH },
+  { method: "GET", path: "/content-packs/exports/:id", modes: BOTH },
+  { method: "POST", path: "/content-packs/exports/:id/cancel", modes: BOTH },
+  { method: "GET", path: "/content-packs/exports/:id/file", modes: ["server"] },
+  { method: "POST", path: "/content-packs/imports", modes: ["local"] },
+  { method: "POST", path: "/content-packs/imports/upload", modes: ["server"] },
+  { method: "GET", path: "/content-packs/imports/:id", modes: BOTH },
+  { method: "POST", path: "/content-packs/imports/:id/compare", modes: BOTH },
+  { method: "POST", path: "/content-packs/imports/:id/commit", modes: BOTH },
+  { method: "POST", path: "/content-packs/imports/:id/cancel", modes: BOTH },
+  { method: "POST", path: "/content-packs/imports/:id/retry-collections", modes: BOTH },
+  { method: "DELETE", path: "/content-packs/imports/:id", modes: BOTH },
   // export
   { method: "POST", path: "/contents/:id/export", modes: BOTH },
   { method: "POST", path: "/collections/:id/export", modes: BOTH },

@@ -187,6 +187,8 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
   });
   row("content_figure_image", { figure_id: figure, bytes: Buffer.from([0]) });
   row("content_danmaku", { content_id: content, user_id: userId, platform_part_id: "1", fetched_at: T0, item_count: 0, items_json: json([]) });
+  row("content_origin_map", { user_id: userId, origin_id: "origin-content", content_id: content, created_at: T0 });
+  row("collection_origin_map", { user_id: userId, origin_id: "origin-collection", collection_id: collection, created_at: T0 });
 
   const terminology = (scope_kind: string, extra: Record<string, unknown>) => {
     const id = nextId();

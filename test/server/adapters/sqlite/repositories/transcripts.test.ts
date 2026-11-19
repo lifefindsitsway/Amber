@@ -276,3 +276,34 @@ describe("transcript revisions: loose joining", () => {
     expect(db.prepare("SELECT count(*) AS n FROM transcript_revision WHERE id = ?").get(bare.revision.id)).toEqual({ n: 0 });
   });
 });
+
+describe("transcript revision transfer origin", () => {
+  const nextId = monotonicFactory();
+  function packRevision(id: string, originId?: string): { revision: TranscriptRevision; segments: TranscriptSegment[] } {
+    const revision: TranscriptRevision = {
+      id,
+      contentId: "c",
+      kind: "imported",
+      language: "zh",
+      timingFidelity: "segment_only",
+      generation: { kind: "pack", originalKind: "corrected", originalGeneration: "llm", modelName: "some-model" },
+      segmentCount: 1,
+      ...(originId === undefined ? {} : { originId }),
+      createdAt: T0,
+    };
+    return { revision, segments: [{ id: nextId() as SegmentId, revisionId: id, ordinal: 0, startMs: 0, endMs: 1000, text: "你好。", sourceSegmentIds: [] }] };
+  }
+
+  it("round-trips the origin id on insert, survives a reopen, and stays immutable", () => {
+    const carried = packRevision("rp", "01ORIGINREV");
+    const local = packRevision("rl");
+    repository.withTransaction((scope) => {
+      scope.transcripts.insertRevision("alice", carried.revision, carried.segments);
+      scope.transcripts.insertRevision("alice", local.revision, local.segments);
+    });
+    reopen();
+    expect(repository.withTransaction((scope) => scope.transcripts.getRevision("alice", "rp"))).toEqual(carried.revision);
+    expect(repository.withTransaction((scope) => scope.transcripts.getRevision("alice", "rl"))).not.toHaveProperty("originId");
+    expect(() => db.prepare("UPDATE transcript_revision SET origin_id = 'x' WHERE id = 'rl'").run()).toThrow(/immutable/);
+  });
+});

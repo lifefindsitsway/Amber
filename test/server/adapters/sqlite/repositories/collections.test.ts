@@ -138,3 +138,78 @@ describe("collection edits", () => {
     expect(updated()).toEqual([["ka", T0 + 3], ["kb", T0 + 3], ["kc", T0 + 2]]);
   });
 });
+
+describe("collection transfer origin", () => {
+  it("round-trips the origin id a content pack import writes, and leaves it absent otherwise", () => {
+    repository.withTransaction((scope) => {
+      scope.collections.insert({ id: "carried", userId: "alice", name: "Course", originId: "01ORIGINCOLL", createdAt: T0, updatedAt: T0 });
+      scope.collections.insert({ id: "local", userId: "alice", name: "Mine", createdAt: T0, updatedAt: T0 });
+    });
+    expect(repository.withTransaction((scope) => scope.collections.get("alice", "carried"))).toEqual({
+      id: "carried", userId: "alice", name: "Course", originId: "01ORIGINCOLL", createdAt: T0, updatedAt: T0,
+    });
+    expect(repository.withTransaction((scope) => scope.collections.get("alice", "local"))).not.toHaveProperty("originId");
+  });
+});
+
+describe("collection renumbering", () => {
+  beforeEach(() => {
+    for (const id of ["c1", "c2", "c3", "n1", "n2", "o1"]) {
+      insertRow(db, "content", { id, user_id: "alice", source_kind: "local", processing_status: "queued", created_at: T0, updated_at: T0 });
+    }
+    insertRow(db, "content", { id: "theirs", user_id: "bob", source_kind: "local", processing_status: "queued", created_at: T0, updated_at: T0 });
+    repository.withTransaction((scope) => {
+      scope.collections.insert({ id: "ca", userId: "alice", name: "Course", createdAt: T0, updatedAt: T0 });
+      scope.collections.insert({ id: "other", userId: "alice", name: "Other", createdAt: T0, updatedAt: T0 });
+      // Duplicate positions: listed by (position, id), so i1, i2, i3.
+      scope.collections.addItem("alice", { id: "i1", collectionId: "ca", contentId: "c1", position: 5, addedAt: T0 });
+      scope.collections.addItem("alice", { id: "i2", collectionId: "ca", contentId: "c2", position: 5, addedAt: T0 });
+      scope.collections.addItem("alice", { id: "i3", collectionId: "ca", contentId: "c3", position: 9, addedAt: T0 });
+      scope.collections.addItem("alice", { id: "o", collectionId: "other", contentId: "o1", position: 7, addedAt: T0 });
+    });
+    repository.withTransaction((scope) => scope.contents.trash("alice", "c2", T0 + 1));
+  });
+
+  const rows = (collectionId = "ca") =>
+    repository.withTransaction((scope) => scope.collections.listItems("alice", collectionId)).map((item) => [item.contentId, item.position, item.addedAt]);
+
+  it("renumbers every member densely in the given order, trashed ones included, and adds the new ones", () => {
+    repository.withTransaction((scope) => scope.collections.renumber("alice", "ca", ["n1", "c1", "c2", "n2", "c3"], T0 + 100));
+    expect(rows()).toEqual([
+      ["n1", 0, T0 + 100],
+      ["c1", 1, T0],
+      ["c2", 2, T0],
+      ["n2", 3, T0 + 100],
+      ["c3", 4, T0],
+    ]);
+    const added = repository.withTransaction((scope) => scope.collections.listItems("alice", "ca")).filter((item) => item.contentId.startsWith("n"));
+    expect(new Set(added.map((item) => item.id)).size).toBe(2);
+    expect(added.every((item) => !["i1", "i2", "i3"].includes(item.id))).toBe(true);
+    // Only the given collection moves.
+    expect(rows("other")).toEqual([["o1", 7, T0]]);
+  });
+
+  it("refuses an order that misses, repeats or smuggles members, all in one transaction", () => {
+    const before = rows();
+    const attempts: string[][] = [
+      ["c1", "c3", "n1"], // misses the trashed c2
+      ["c1", "c2", "c3", "c1"],
+      ["c1", "c2", "c3", "theirs"], // another user's Content
+      ["c1", "c2", "c3", "missing"],
+    ];
+    for (const order of attempts) {
+      expect(() => repository.withTransaction((scope) => scope.collections.renumber("alice", "ca", order, T0 + 100))).toThrow();
+      expect(rows()).toEqual(before);
+    }
+    // Atomic on its own as well: an error caught inside the caller's transaction leaves nothing half done.
+    repository.withTransaction((scope) => {
+      expect(() => scope.collections.renumber("alice", "ca", ["n1", "c1", "c2", "c3", "theirs"], T0 + 100)).toThrow();
+    });
+    expect(rows()).toEqual(before);
+  });
+
+  it("works on the owner's collections only", () => {
+    expect(() => repository.withTransaction((scope) => scope.collections.renumber("bob", "ca", ["c1", "c2", "c3"], T0 + 100))).toThrow();
+    expect(rows()).toEqual([["c1", 5, T0], ["c2", 5, T0], ["c3", 9, T0]]);
+  });
+});

@@ -1602,3 +1602,31 @@ describe("ExportService, figures in Markdown and TXT", () => {
     expect(await text(file)).toBe("Hi world. 你好世界\n\n第二段{\\b1}开始\n\n九十九分 一百分\n\n六小时\n");
   });
 });
+
+describe("ExportService, revisions brought in with a content pack", () => {
+  it("labels the transcript section with the kind and the model the pack recorded, and without a model when it recorded none", async () => {
+    const { h, exports, fixture } = setup();
+    const insert = (modelName: string | undefined): string => {
+      const revisionId = h.newId();
+      const segments: TranscriptSegment[] = [{ id: h.newId() as SegmentId, revisionId, ordinal: 0, startMs: 1000, endMs: 1900, text: "包里的句子。", sourceSegmentIds: [] }];
+      const revision: TranscriptRevision = {
+        id: revisionId,
+        contentId: fixture.contentId,
+        kind: "asr",
+        language: "zh-CN",
+        timingFidelity: "segment_only",
+        generation: { kind: "pack", originalKind: "asr", originalGeneration: "asr", ...(modelName === undefined ? {} : { modelName }) },
+        segmentCount: 1,
+        createdAt: NOW,
+      };
+      h.repository.withTransaction((scope) => scope.transcripts.insertRevision(LOCAL.userId, revision, segments));
+      return revisionId;
+    };
+    const heading = async (revisionId: string): Promise<string | undefined> => {
+      const markdown = await text(exports.exportContent(LOCAL, fixture.contentId, { format: "markdown", sections: { transcript: { revisionId } }, backlinks: false }));
+      return markdown.split("\n").find((line) => line.startsWith("## 原文细读"));
+    };
+    expect(await heading(insert("scribe_v1"))).toBe("## 原文细读（ASR 原稿 · scribe_v1 · 2026-10-01 12:00）");
+    expect(await heading(insert(undefined))).toBe("## 原文细读（ASR 原稿 · 2026-10-01 12:00）");
+  });
+});

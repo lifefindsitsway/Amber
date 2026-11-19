@@ -132,6 +132,10 @@ class StubIngest implements LocalMediaIngest {
     throw new Error("not used");
   }
 
+  async sniffContainer(): Promise<never> {
+    throw new Error("not used");
+  }
+
   async extractAudio(_input: { path: string }, output: { path: string }) {
     writeFileSync(output.path, Buffer.alloc(2048, 1));
     return { sizeBytes: 2048, durationMs: 60_000 };

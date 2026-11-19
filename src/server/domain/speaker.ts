@@ -24,6 +24,14 @@ export interface ContentSpeaker {
   colorIndex: number;
   /** Present when the speaker has a photo; `version` changes with every new photo. */
   avatar?: { mime: SpeakerAvatarMime; version: number };
+  /**
+   * The (Content transfer identity, speaker id) this speaker had on the device a content pack
+   * carried it from; absent for one created here. Its transfer identity is
+   * `origin ?? { contentId: <its Content's transfer identity>, speakerId: id }`: the pair, not
+   * the bare id, because older libraries reuse the same speaker ids across Contents. Written on
+   * insert only.
+   */
+  origin?: { contentId: string; speakerId: string };
   createdAt: number;
   updatedAt: number;
 }

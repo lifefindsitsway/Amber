@@ -28,6 +28,11 @@ export interface ContentFigure {
   image: { width: number; height: number; bytes: number; sha256: string };
   version: number;
   deletedAt?: number;
+  /**
+   * The id this figure had on the device a content pack carried it from; absent for one made
+   * here. Its transfer identity is `originId ?? id`. Written on insert only.
+   */
+  originId?: string;
   createdAt: number;
   updatedAt: number;
 }

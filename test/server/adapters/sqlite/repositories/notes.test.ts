@@ -110,3 +110,12 @@ describe("note repository", () => {
     expect(run((scope) => scope.notes.get("alice", "b1"))?.id).toBe("b1");
   });
 });
+
+describe("note transfer origin", () => {
+  it("round-trips the origin id a content pack import writes, and leaves it absent otherwise", () => {
+    run((scope) => scope.notes.insert(note("n1", { originId: "01ORIGINNOTE" })));
+    run((scope) => scope.notes.insert(note("n2")));
+    expect(run((scope) => scope.notes.get("alice", "n1"))).toEqual({ ...note("n1", { originId: "01ORIGINNOTE" }), startMs: 0 });
+    expect(run((scope) => scope.notes.get("alice", "n2"))).not.toHaveProperty("originId");
+  });
+});

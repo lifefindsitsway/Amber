@@ -1,5 +1,5 @@
 import { TRASH_RETENTION_DAYS } from "../../shared/defaults.ts";
-import type { ProcessingStatus } from "../../shared/enums.ts";
+import type { ContentProcessingStatus } from "../../shared/enums.ts";
 import { isPlatform, type ContentSourceKind } from "./platform.ts";
 
 export interface ContentSource {
@@ -62,9 +62,15 @@ export interface Content {
   importBatchId?: string;
   /**
    * Projection of the latest `process_content` Task; derived tasks (reproofread,
-   * translate, regenerate_summary, ...) never change it. Not a source of truth.
+   * translate, regenerate_summary, ...) never change it. Not a source of truth. `none` for
+   * a Content that has never had a processing Task (one created by a content pack import).
    */
-  processingStatus: ProcessingStatus;
+  processingStatus: ContentProcessingStatus;
+  /**
+   * The id this Content had on the device it was carried from by a content pack; absent for
+   * a Content created here. Its transfer identity is `originId ?? id`.
+   */
+  originId?: string;
   createdAt: number;
   updatedAt: number;
 }

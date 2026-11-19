@@ -18,7 +18,7 @@ import { localFileRequestSchema } from "../../../shared/dto/local-media.ts";
 import { asrModelRefSchema } from "../../../shared/dto/model-ref.ts";
 import { diarizationRequestSchema } from "../../../shared/dto/speaker.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
-import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES } from "../../../shared/enums.ts";
+import { CONTENT_PROCESSING_STATUSES, CONTENT_SOURCE_KINDS } from "../../../shared/enums.ts";
 import type { ContentDescriptionService } from "../../application/content-description.ts";
 import type { ContentService } from "../../application/contents.ts";
 import type { ImportContentService } from "../../application/import-content.ts";
@@ -53,7 +53,7 @@ const listQuerySchema = z
     cursor: z.string().min(1).exactOptional(),
     // A numbered page; excludes `cursor`.
     page: z.coerce.number().int().min(1).safe().exactOptional(),
-    status: z.enum(PROCESSING_STATUSES).exactOptional(),
+    status: z.enum(CONTENT_PROCESSING_STATUSES).exactOptional(),
     source: z.enum(CONTENT_SOURCE_KINDS).exactOptional(),
     collectionId: z.string().min(1).exactOptional(),
     // `uncollected=1` lists the Contents that belong to no collection.

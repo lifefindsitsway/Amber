@@ -37,7 +37,24 @@ export type TranscriptGeneration =
    * speaker differs from the parent revision's. Both are a record for display, nothing
    * decides by them; commits stored before the second was recorded lack it.
    */
-  | { kind: "manual"; origin?: ManualTranslationOrigin; speakerReview?: { acceptedSuggestions: number; changedFromParent?: number } };
+  | { kind: "manual"; origin?: ManualTranslationOrigin; speakerReview?: { acceptedSuggestions: number; changedFromParent?: number } }
+  /**
+   * Carried in by a content pack. Only a whitelist travels: what kind the revision was where it
+   * was made, how it was made there, and the model's display name. No prompt snapshot, speaker
+   * context or Profile id ever crosses devices. A revision whose parent did not come along is a
+   * root here (`kind: "imported"`) and `originalKind` still says what it was, e.g. `corrected`.
+   * Carried again, a pack revision keeps its first origin.
+   */
+  | PackGeneration;
+
+/** What a content pack records about how a revision was made on the device it came from. */
+export interface PackGeneration {
+  kind: "pack";
+  originalKind: TranscriptKind;
+  originalGeneration: "platform" | "imported" | "asr" | "llm" | "manual";
+  /** The model's display name: an LLM model's id for proofreading or translation, the ASR model's id for a transcription. */
+  modelName?: string;
+}
 
 /** What one transcription recorded about speaker identification; fixed when the revision is inserted. */
 export interface AsrDiarizationRecord {
@@ -93,6 +110,11 @@ export interface TranscriptRevision {
    * sentences carry `paragraphStart`.
    */
   looseJoin?: true;
+  /**
+   * The id this revision had on the device a content pack carried it from; absent for one made
+   * here. Its transfer identity is `originId ?? id`. Written on insert only.
+   */
+  originId?: string;
   createdAt: number;
 }
 

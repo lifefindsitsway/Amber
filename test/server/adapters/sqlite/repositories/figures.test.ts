@@ -27,7 +27,7 @@ const run = <T>(work: (scope: RepositoryScope) => NotPromise<T>): T => repositor
 
 describe("figure repository", () => {
   it("round-trips metadata and image bytes for the owner only", () => {
-    const capture = figure("f1", { source: "capture", capturedAtMs: 900, anchor: { revisionId: "r1", segmentId: "s1", side: "after" }, caption: "x" });
+    const capture = figure("f1", { source: "capture", capturedAtMs: 900, anchor: { revisionId: "r1", segmentId: "s1", side: "after" }, caption: "x", originId: "o1" });
     run((scope) => scope.figures.insert(capture, new Uint8Array([1, 2, 3])));
     expect(run((scope) => scope.figures.get("alice", "f1"))).toEqual(capture);
     expect(run((scope) => scope.figures.get("bob", "f1"))).toBeUndefined();

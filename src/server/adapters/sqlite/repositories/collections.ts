@@ -1,3 +1,4 @@
+import { monotonicFactory } from "ulid";
 import type { Collection, CollectionItem } from "../../../domain/collection.ts";
 import type { CollectionRepository } from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
@@ -9,6 +10,7 @@ interface CollectionRow {
   name: string;
   description: string | null;
   platform_collection_id: string | null;
+  origin_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -28,6 +30,7 @@ function toCollection(row: CollectionRow): Collection {
     name: row.name,
     description: row.description,
     platformCollectionId: row.platform_collection_id,
+    originId: row.origin_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
@@ -47,8 +50,8 @@ export function sqliteCollectionRepository(db: SqliteConnection): CollectionRepo
   const select = db.prepare("SELECT * FROM collection WHERE id = ? AND user_id = ?");
   const list = db.prepare("SELECT * FROM collection WHERE user_id = ? ORDER BY created_at, id");
   const insert = db.prepare(
-    `INSERT INTO collection (id, user_id, name, description, platform_collection_id, created_at, updated_at)
-     VALUES (@id, @userId, @name, @description, @platformCollectionId, @createdAt, @updatedAt)`,
+    `INSERT INTO collection (id, user_id, name, description, platform_collection_id, origin_id, created_at, updated_at)
+     VALUES (@id, @userId, @name, @description, @platformCollectionId, @originId, @createdAt, @updatedAt)`,
   );
   const byPlatformId = db.prepare(
     "SELECT * FROM collection WHERE user_id = ? AND platform_collection_id = ? ORDER BY created_at, id LIMIT 1",
@@ -101,6 +104,35 @@ export function sqliteCollectionRepository(db: SqliteConnection): CollectionRepo
      ORDER BY item.added_at, item.id`,
   );
 
+  const newItemId = monotonicFactory();
+  // Its own (nested) transaction, so a refused order leaves every position as it was even when
+  // the caller catches the error and carries on.
+  const renumberRows = (ownerUserId: string, collectionId: string, contentIds: readonly string[], addedAt: number): void => {
+    if (select.get(collectionId, ownerUserId) === undefined) {
+      throw notFound("collection", collectionId);
+    }
+    const items = new Map((listItems.all(collectionId, ownerUserId) as CollectionItemRow[]).map((row) => [row.content_id, row]));
+    const named = new Set(contentIds);
+    if (named.size !== contentIds.length || [...items.keys()].some((contentId) => !named.has(contentId))) {
+      throw new TypeError("the new order must name every member of the collection exactly once");
+    }
+    for (const contentId of contentIds) {
+      if (!items.has(contentId) && ownedContent.get(contentId, ownerUserId) === undefined) {
+        throw notFound("content", contentId);
+      }
+    }
+    // Position carries no uniqueness constraint, so rows can be rewritten one by one; the
+    // fresh positions are dense, which also settles any ties the old ones had.
+    contentIds.forEach((contentId, position) => {
+      const item = items.get(contentId);
+      if (item === undefined) {
+        insertItem.run({ id: newItemId(), collectionId, contentId, position, addedAt });
+      } else if (item.position !== position) {
+        setPosition.run(position, item.id, collectionId);
+      }
+    });
+  };
+
   return {
     get(ownerUserId, collectionId) {
       const row = select.get(collectionId, ownerUserId) as CollectionRow | undefined;
@@ -116,6 +148,7 @@ export function sqliteCollectionRepository(db: SqliteConnection): CollectionRepo
         name: collection.name,
         description: nullable(collection.description),
         platformCollectionId: nullable(collection.platformCollectionId),
+        originId: nullable(collection.originId),
         createdAt: collection.createdAt,
         updatedAt: collection.updatedAt,
       });
@@ -160,6 +193,9 @@ export function sqliteCollectionRepository(db: SqliteConnection): CollectionRepo
     },
     removeItem(ownerUserId, collectionId, itemId) {
       return removeItem.run(itemId, collectionId, ownerUserId).changes > 0;
+    },
+    renumber(ownerUserId, collectionId, contentIds, addedAt) {
+      db.transaction(() => renumberRows(ownerUserId, collectionId, contentIds, addedAt))();
     },
     reorder(ownerUserId, collectionId, itemIds) {
       if (select.get(collectionId, ownerUserId) === undefined) {

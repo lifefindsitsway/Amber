@@ -1,9 +1,9 @@
-import { CONTENT_SOURCE_KINDS, PROCESSING_STATUSES, type ContentSourceKind, type ProcessingStatus } from "../../../shared/enums.ts";
+import { CONTENT_PROCESSING_STATUSES, CONTENT_SOURCE_KINDS, type ContentProcessingStatus, type ContentSourceKind } from "../../../shared/enums.ts";
 import { PAGE_PARAM } from "../../ui/pagination.tsx";
 
 /** Library filters as they live in the URL query. */
 export interface LibraryFilters {
-  status?: ProcessingStatus;
+  status?: ContentProcessingStatus;
   source?: ContentSourceKind;
   collectionId?: string;
   /** `uncollected=1`: Contents in no collection; it gives way to a named collection. */
@@ -20,8 +20,8 @@ export const UNCOLLECTED_CHOICE = "-uncollected";
 export function filtersFromSearch(search: URLSearchParams): LibraryFilters {
   const filters: LibraryFilters = {};
   const status = search.get("status");
-  if (status !== null && (PROCESSING_STATUSES as readonly string[]).includes(status)) {
-    filters.status = status as ProcessingStatus;
+  if (status !== null && (CONTENT_PROCESSING_STATUSES as readonly string[]).includes(status)) {
+    filters.status = status as ContentProcessingStatus;
   }
   const source = search.get("source");
   if (source !== null && (CONTENT_SOURCE_KINDS as readonly string[]).includes(source)) {

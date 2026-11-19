@@ -1,0 +1,72 @@
+/**
+ * Where every table of the library stands with respect to content packs. A new table must be
+ * placed here (a test fails otherwise), so carrying content between devices is decided for it
+ * instead of silently left out.
+ *
+ * - `carried`: its rows travel with a picked Content (as documents, never as rows).
+ * - `dependency`: not carried itself, but read to build or apply what is carried.
+ * - `not_carried`: stays on the device (AI output, chats, tasks, usage, settings, secrets, ...).
+ */
+export const PACK_TABLE_ROLES = {
+  carried: [
+    "content",
+    "content_speaker",
+    "transcript_revision",
+    "transcript_segment",
+    "transcript_segment_source",
+    "transcript_revision_archive",
+    "transcript_revision_speaker_confirmation",
+    "translation_artifact",
+    "note",
+    "content_figure",
+    "content_figure_image",
+    "chapter_artifact",
+    "chapter_revision",
+    "media_asset",
+    "collection",
+    "collection_item",
+  ],
+  dependency: ["content_origin_map", "collection_origin_map", "search_index", "user"],
+  not_carried: [
+    "asr_provider_profile",
+    "asr_usage",
+    "chat_compaction",
+    "chat_message",
+    "chat_thread",
+    "collection_summary_artifact",
+    "collection_summary_revision",
+    "content_danmaku",
+    "highlight_artifact",
+    "highlight_revision",
+    "idempotency_record",
+    "import_batch",
+    "instance_settings",
+    "model_capability",
+    "network_allowlist",
+    "other_model_profile",
+    "pending_file_delete",
+    "platform_account",
+    "prompt_override",
+    "prompt_override_version",
+    "provider_profile",
+    "reference_text",
+    "rollup_partial",
+    "secret",
+    "session",
+    "stage_run",
+    "summary_artifact",
+    "summary_revision",
+    "summary_template",
+    "summary_template_version",
+    "task",
+    "terminology_entry",
+    "terminology_set",
+    "token_usage",
+    "transcript_draft",
+    "user_credential",
+    "user_settings",
+    "web_search_profile",
+    "work_unit",
+    "work_unit_result",
+  ],
+} as const;

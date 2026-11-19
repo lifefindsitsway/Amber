@@ -64,6 +64,7 @@ const EXPECTED: Readonly<Record<string, readonly (string | number)[]>> = {
   PLAYER_END_BEHAVIORS: ["pause", "loop_one", "loop_list"],
   WEB_SEARCH_MODES: ["off", "auto", "force"],
   CHAT_WEB_SEARCH_SETTINGS: ["off", "auto"],
+  CONTENT_PROCESSING_STATUSES: ["queued", "running", "waiting", "succeeded", "failed", "cancelled", "none"],
   WEB_SEARCH_STATUSES: ["searched", "partial", "failed", "skipped", "dropped"],
   WEB_SEARCH_REASONS: ["unconfigured", "not_needed", "planner_failed", "budget"],
   WEB_SEARCH_SERVICES: ["tavily"],

@@ -86,4 +86,12 @@ export interface LocalMediaIngest {
     options: { maxLongEdge: number; quality: number },
     signal: AbortSignal,
   ): Promise<{ width: number; height: number; bytes: number }>;
+  /**
+   * The container family of `path` judged from its leading bytes alone (no ffprobe, never the
+   * whole file): every MIME type a file of that family may be registered as, or `undefined`
+   * when the bytes match no accepted container. A cheap check that a file someone else
+   * described (a content pack's media) is the kind of file it claims to be; it says nothing
+   * about the streams inside.
+   */
+  sniffContainer(path: string): Promise<{ mimeTypes: readonly string[] } | undefined>;
 }

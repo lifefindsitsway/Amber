@@ -16,6 +16,7 @@ interface NoteRow {
   mark: Note["mark"];
   color: Note["color"];
   comment: string | null;
+  origin_id: string | null;
   created_at: number;
   updated_at: number;
   start_ms: number;
@@ -35,6 +36,7 @@ function toNote(row: NoteRow): TimedNote {
     mark: row.mark,
     color: row.color,
     comment: row.comment,
+    originId: row.origin_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     startMs: row.start_ms,
@@ -56,10 +58,10 @@ export function sqliteNoteRepository(db: SqliteConnection): NoteRepository {
   const insert = db.prepare(
     `INSERT INTO note (
        id, user_id, content_id, transcript_revision_id, start_segment_id, start_offset, end_segment_id, end_offset,
-       quote, mark, color, comment, created_at, updated_at
+       quote, mark, color, comment, origin_id, created_at, updated_at
      ) VALUES (
        @id, @userId, @contentId, @transcriptRevisionId, @startSegmentId, @startOffset, @endSegmentId, @endOffset,
-       @quote, @mark, @color, @comment, @createdAt, @updatedAt
+       @quote, @mark, @color, @comment, @originId, @createdAt, @updatedAt
      )`,
   );
   // NULL binds keep a field as it is; `setComment` tells "clear the comment" from "leave it".
@@ -116,6 +118,7 @@ export function sqliteNoteRepository(db: SqliteConnection): NoteRepository {
         mark: note.mark,
         color: note.color,
         comment: nullable(note.comment),
+        originId: nullable(note.originId),
         createdAt: note.createdAt,
         updatedAt: note.updatedAt,
       });

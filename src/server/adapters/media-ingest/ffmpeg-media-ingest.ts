@@ -181,6 +181,16 @@ export class FfmpegMediaIngest implements LocalMediaIngest {
     this.options = options;
   }
 
+  async sniffContainer(path: string): Promise<{ mimeTypes: readonly string[] } | undefined> {
+    const head = await readHead(path);
+    const family = sniffContainer(head);
+    if (family === undefined) {
+      return undefined;
+    }
+    // Without ffprobe the tracks are unknown: a family that names audio-only files apart offers both.
+    return { mimeTypes: [...new Set([true, false].map((hasVideo) => family.mimeType({ hasVideo, head })))] };
+  }
+
   async probe(path: string, signal: AbortSignal): Promise<MediaProbe> {
     const head = await readHead(path);
     const family = sniffContainer(head);

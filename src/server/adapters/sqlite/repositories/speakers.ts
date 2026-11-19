@@ -14,15 +14,28 @@ interface SpeakerRow {
   color_index: number;
   avatar_mime: string | null;
   avatar_version: number;
+  origin_content_id: string | null;
+  origin_speaker_id: string | null;
   created_at: number;
   updated_at: number;
 }
 
-const COLUMNS = "content_id, id, user_id, ordinal, name, name_confirmed_at, color_index, avatar_mime, avatar_version, created_at, updated_at";
+const COLUMNS =
+  "content_id, id, user_id, ordinal, name, name_confirmed_at, color_index, avatar_mime, avatar_version, origin_content_id, origin_speaker_id, created_at, updated_at";
 
 /** A photo type outside the known ones (a restored backup bypasses the API) reads as no photo. */
 function mimeOf(value: string | null): SpeakerAvatarMime | undefined {
   return SPEAKER_AVATAR_MIMES.find((mime) => mime === value);
+}
+
+/** One speaker to add; `origin` only for a speaker a content pack carried in. */
+interface SpeakerInsert {
+  id: string;
+  name?: string;
+  nameConfirmedAt?: number;
+  colorIndex?: number;
+  ordinal?: number;
+  origin?: { contentId: string; speakerId: string };
 }
 
 function toSpeaker(row: SpeakerRow): ContentSpeaker {
@@ -36,6 +49,7 @@ function toSpeaker(row: SpeakerRow): ContentSpeaker {
     ...(row.name_confirmed_at === null ? {} : { nameConfirmedAt: row.name_confirmed_at }),
     colorIndex: row.color_index,
     ...(mime === undefined ? {} : { avatar: { mime, version: row.avatar_version } }),
+    ...(row.origin_content_id === null || row.origin_speaker_id === null ? {} : { origin: { contentId: row.origin_content_id, speakerId: row.origin_speaker_id } }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -95,8 +109,9 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
   const ownsContent = db.prepare("SELECT 1 FROM content WHERE id = ? AND user_id = ?");
   const maxOrdinal = db.prepare("SELECT COALESCE(MAX(ordinal), 0) AS max FROM content_speaker WHERE content_id = ?");
   const insert = db.prepare(
-    `INSERT INTO content_speaker (content_id, id, user_id, ordinal, name, name_confirmed_at, color_index, created_at, updated_at)
-     VALUES (@contentId, @id, @userId, @ordinal, @name, @nameConfirmedAt, @colorIndex, @now, @now)`,
+    `INSERT INTO content_speaker (
+       content_id, id, user_id, ordinal, name, name_confirmed_at, color_index, origin_content_id, origin_speaker_id, created_at, updated_at
+     ) VALUES (@contentId, @id, @userId, @ordinal, @name, @nameConfirmedAt, @colorIndex, @originContentId, @originSpeakerId, @now, @now)`,
   );
   const updateName = db.prepare("UPDATE content_speaker SET name = @name, updated_at = @now WHERE user_id = @owner AND content_id = @contentId AND id = @id");
   const updateNameConfirmed = db.prepare(
@@ -162,7 +177,7 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
       return (list.all(ownerUserId, contentId) as SpeakerRow[]).map(toSpeaker);
     },
     get: getSpeaker,
-    insert(ownerUserId, contentId, speakers, now) {
+    insert(ownerUserId, contentId, speakers: ReadonlyArray<SpeakerInsert>, now) {
       if (ownsContent.get(contentId, ownerUserId) === undefined) {
         throw new Error("content is not the owner's");
       }
@@ -178,6 +193,8 @@ export function sqliteSpeakerRepository(db: SqliteConnection): SpeakerRepository
           name: speaker.name ?? null,
           nameConfirmedAt: speaker.nameConfirmedAt ?? null,
           colorIndex: speaker.colorIndex ?? defaultSpeakerColorIndex(ordinal),
+          originContentId: speaker.origin?.contentId ?? null,
+          originSpeakerId: speaker.origin?.speakerId ?? null,
           now,
         });
         return getSpeaker(ownerUserId, contentId, speaker.id) as ContentSpeaker;

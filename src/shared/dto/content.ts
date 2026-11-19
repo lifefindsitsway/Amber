@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   CONTENT_SOURCE_KINDS,
   MEDIA_ASSET_KINDS,
-  PROCESSING_STATUSES,
+  CONTENT_PROCESSING_STATUSES,
   TIMING_FIDELITIES,
   TRANSCRIPT_KINDS,
 } from "../enums.ts";
@@ -39,7 +39,7 @@ export const contentDtoSchema = z.object({
   rawLanguage: z.string().exactOptional(),
   primaryTranscriptRevisionId: idSchema.exactOptional(),
   importBatchId: idSchema.exactOptional(),
-  processingStatus: z.enum(PROCESSING_STATUSES),
+  processingStatus: z.enum(CONTENT_PROCESSING_STATUSES),
   /** The collections the Content belongs to, oldest membership first; `itemId` is the membership to remove. */
   collections: z.array(z.object({ id: idSchema, name: z.string(), itemId: idSchema })),
   createdAt: epochMsSchema,

@@ -48,6 +48,9 @@ describe("renderDesktopIdentity", () => {
     expect(rust).toContain(`pub const BACKUP_FILE_EXTENSION: &str = "${backupNames.BACKUP_FILE_EXTENSION}";`);
     expect(rust).toContain(`pub const RESTORED_ORIGINALS_DIR_PREFIX: &str = "${backupNames.RESTORED_ORIGINALS_DIR_PREFIX}";`);
     expect(rust).toContain(`pub const RESTORE_PROGRESS_PREFIX: &str = "${backupNames.RESTORE_PROGRESS_PREFIX}";`);
+    // The content pack names the shell shares with the sidecar and the web client.
+    expect(rust).toContain(`pub const CONTENT_PACK_FILE_EXTENSION: &str = "${backupNames.CONTENT_PACK_FILE_EXTENSION}";`);
+    expect(rust).toContain(`pub const IMPORTED_ORIGINALS_DIR_PREFIX: &str = "${backupNames.IMPORTED_ORIGINALS_DIR_PREFIX}";`);
   });
 });
 

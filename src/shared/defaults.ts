@@ -534,3 +534,18 @@ export const DANMAKU_QUEUE_MAX = 300;
 export const DANMAKU_SCROLL_MS = 8000;
 /** Time a top or bottom danmaku stays at normal speed. */
 export const DANMAKU_FIXED_MS = 4000;
+
+/** Most entries one content pack may hold. */
+export const CONTENT_PACK_ENTRIES_MAX = 20000;
+/** Size cap of one JSON document inside a content pack, 64 MiB. */
+export const CONTENT_PACK_DOCUMENT_MAX_BYTES = 67108864;
+/** Most bytes all JSON documents of one content pack may hold together (they stay parsed in memory from preview to commit). */
+export const CONTENT_PACK_DOCUMENTS_TOTAL_MAX_BYTES = 268435456;
+/** A hand-picked merge target whose duration differs from the carried Content's by more than this is warned about. */
+export const CONTENT_PACK_MERGE_DURATION_WARN_MS = 10000;
+/** How often the content pack dialogs ask how an export or import job is doing. */
+export const CONTENT_PACK_POLL_MS = 1000;
+/** How long a pack the server built waits to be downloaded before it is deleted. */
+export const CONTENT_PACK_EXPORT_TTL_MS = 3600000;
+/** How long a previewed import waits for the user's decisions before its staging is discarded. */
+export const CONTENT_PACK_PREVIEW_TTL_MS = 3600000;

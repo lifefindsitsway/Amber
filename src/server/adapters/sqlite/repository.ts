@@ -18,6 +18,7 @@ import { sqliteNetworkAllowlistRepository } from "./repositories/network-allowli
 import { sqliteNoteRepository } from "./repositories/notes.ts";
 import { sqliteFigureRepository } from "./repositories/figures.ts";
 import { sqliteDanmakuRepository } from "./repositories/danmaku.ts";
+import { sqliteTransferOriginRepository } from "./repositories/transfer-origins.ts";
 import { sqlitePendingFileDeleteRepository } from "./repositories/pending-file-deletes.ts";
 import { sqlitePlatformAccountRepository } from "./repositories/platform-accounts.ts";
 import { sqliteOtherModelProfileRepository } from "./repositories/other-model-profiles.ts";
@@ -92,6 +93,7 @@ export class SqliteRepository implements Repository {
       notes: sqliteNoteRepository(db),
       figures: sqliteFigureRepository(db),
       danmaku: sqliteDanmakuRepository(db),
+      transferOrigins: sqliteTransferOriginRepository(db),
       pendingFileDeletes: sqlitePendingFileDeleteRepository(db),
     };
   }

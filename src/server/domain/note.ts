@@ -21,6 +21,11 @@ export interface Note {
   mark: NoteMark;
   color: NoteColor;
   comment?: string;
+  /**
+   * The id this note had on the device a content pack carried it from; absent for one created
+   * here. Its transfer identity is `originId ?? id`. Written on insert only.
+   */
+  originId?: string;
   createdAt: number;
   updatedAt: number;
 }

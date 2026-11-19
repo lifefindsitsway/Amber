@@ -8,7 +8,7 @@ import { SIDEBAR_COLLECTION_ITEMS, SIDEBAR_RECENT_ITEMS, THEME_DEFAULT, UI_LANGU
 import { collectionDetailDtoSchema, collectionDtoSchema, type CollectionDto, type CollectionItemDto } from "../../shared/dto/collection.ts";
 import { contentDetailDtoSchema, type ContentDto } from "../../shared/dto/content.ts";
 import { THEMES } from "../../shared/dto/settings.ts";
-import type { ProcessingStatus } from "../../shared/enums.ts";
+import type { ContentProcessingStatus } from "../../shared/enums.ts";
 import { languageNames } from "../../shared/i18n/zh-CN/languages.ts";
 import { ApiError } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
@@ -43,13 +43,14 @@ const SIDEBAR_WIDTH_DEFAULT_PX = 240;
 /** The icon bar (`w-14`). */
 const SIDEBAR_COLLAPSED_PX = 56;
 
-const STATUS_DOT: Record<ProcessingStatus, string> = {
+const STATUS_DOT: Record<ContentProcessingStatus, string> = {
   queued: "bg-muted",
   running: "bg-accent animate-pulse",
   waiting: "bg-accent",
   succeeded: "bg-ok",
   failed: "bg-danger",
   cancelled: "bg-line",
+  none: "bg-ok",
 };
 
 /** A window of at most `size` items around the current one, so the current lecture is visible. */

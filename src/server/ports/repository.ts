@@ -1,4 +1,4 @@
-import type { ContentSourceKind, NoteColor, NoteMark, Platform, PlatformAccountStatus, ProcessingStatus, TaskKind } from "../../shared/enums.ts";
+import type { ContentProcessingStatus, ContentSourceKind, NoteColor, NoteMark, Platform, PlatformAccountStatus, ProcessingStatus, TaskKind } from "../../shared/enums.ts";
 import type { ModelPricing } from "../../shared/model-pricing.ts";
 import type { ChapterEntry } from "../domain/platform-subtitle.ts";
 import type {
@@ -116,7 +116,7 @@ export interface ContentCursor {
 export type ListPosition<C> = { limit: number; after?: C; offset?: never } | { limit: number; offset: number; after?: never };
 
 export interface ContentListFilters {
-  status?: ProcessingStatus;
+  status?: ContentProcessingStatus;
   source?: ContentSourceKind;
   collectionId?: string;
   /** Only Contents that belong to no collection (the sidebar's "Recent" group). */
@@ -237,6 +237,13 @@ export interface CollectionRepository {
    * theirs, so a trashed member returns to its old slot when restored.
    */
   reorder(ownerUserId: string, collectionId: string, itemIds: readonly string[]): void;
+  /**
+   * Gives every item of the collection (trashed members included) a fresh position following
+   * `contentIds`, which must name each member exactly once, and adds the members it names
+   * that are not in the collection yet. A content pack import computes the order from the
+   * members as they are inside the same transaction, so concurrent edits are never lost.
+   */
+  renumber(ownerUserId: string, collectionId: string, contentIds: readonly string[], addedAt: number): void;
   /**
    * Sets the collection's `updatedAt` to `at`, in the transaction of the change that warrants
    * it: creation, a new name or description, members added or removed, a member entering or
@@ -377,7 +384,7 @@ export interface SpeakerRepository {
   insert(
     ownerUserId: string,
     contentId: string,
-    speakers: ReadonlyArray<{ id: string; name?: string; nameConfirmedAt?: number; colorIndex?: number; ordinal?: number }>,
+    speakers: ReadonlyArray<{ id: string; name?: string; nameConfirmedAt?: number; colorIndex?: number; ordinal?: number; origin?: { contentId: string; speakerId: string } }>,
     now: number,
   ): ContentSpeaker[];
   /** Applies the patch; a new photo raises the photo version. `undefined` when there is no such speaker. */
@@ -1154,6 +1161,21 @@ export interface DanmakuRepository {
   put(ownerUserId: string, snapshot: DanmakuSnapshotRecord): void;
 }
 
+/**
+ * The user's choices to merge a carried Content or collection into a local one of another
+ * identity. Rows go with their target; one identity may map to several targets.
+ */
+export interface TransferOriginRepository {
+  contentTargets(ownerUserId: string, originId: string): string[];
+  addContentTarget(ownerUserId: string, originId: string, contentId: string, now: number): void;
+  collectionTargets(ownerUserId: string, originId: string): string[];
+  addCollectionTarget(ownerUserId: string, originId: string, collectionId: string, now: number): void;
+  /** The owner's Contents whose transfer identity (`origin_id ?? id`) is `originId`, those in the trash included (a preview reports them as such). */
+  contentsByIdentity(ownerUserId: string, originId: string): Content[];
+  /** The owner's collections whose transfer identity is `originId`. */
+  collectionsByIdentity(ownerUserId: string, originId: string): Collection[];
+}
+
 /** A note with the start time of its first sentence, which orders it and is shown with it. */
 export type TimedNote = Note & { startMs: number };
 
@@ -1233,6 +1255,7 @@ export interface RepositoryScope {
   notes: NoteRepository;
   figures: FigureRepository;
   danmaku: DanmakuRepository;
+  transferOrigins: TransferOriginRepository;
   pendingFileDeletes: PendingFileDeleteRepository;
 }
 

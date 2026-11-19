@@ -332,6 +332,24 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.danmaku_unsupported": {},
   // The Content's danmaku was requested too recently; nothing was sent to the platform.
   "rate_limited.danmaku_cooldown": { detailsKeys: ["retryAfterMs"] },
+  // A content pack selection the server refuses; `reason` is a PackSelectionProblem.
+  "invalid_request.pack_selection": { detailsKeys: ["reason", "contentId"] },
+  // A content pack written in a newer format version than this build reads.
+  "invalid_request.pack_newer": { detailsKeys: ["formatVersion", "supportedVersion"] },
+  // A content pack entry with a bad name, type, size or document; `reason` is a PackEntryProblem.
+  "backup_invalid.pack_entry": { detailsKeys: ["entry", "reason"] },
+  // The content pack read for an import is not the one its preview was made from.
+  "backup_invalid.pack_changed": {},
+  // An image inside a content pack that fails the structural WebP check.
+  "backup_invalid.pack_image": { detailsKeys: ["entry"] },
+  // The user already has a content pack import or export running.
+  "conflict.pack_job_active": {},
+  // A Content the pack would export or merge into has an unfinished Task.
+  "conflict.pack_content_busy": { detailsKeys: ["contentId", "taskId"] },
+  // A merge target changed since the preview: it is gone, in the trash, or its primary transcript moved.
+  "conflict.pack_target_changed": { detailsKeys: ["contentId"] },
+  // The content pack job is not in a state that allows this action.
+  "conflict.pack_job_state": {},
   "unauthenticated.csrf": {},
   "unauthenticated.setup_token": {},
   "unauthenticated.bad_credentials": {},
