@@ -1,6 +1,6 @@
 import { Command } from "cmdk";
 import { Dialog, VisuallyHidden } from "radix-ui";
-import { FileText, FolderOpen, Link2, PlayCircle, Quote, TerminalSquare } from "lucide-react";
+import { FileText, FolderOpen, ImageIcon, Link2, PlayCircle, Quote, TerminalSquare } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { API_PAGE_SIZE_MAX, SEARCH_GROUP_LIMIT } from "../../shared/defaults.ts";
@@ -8,6 +8,7 @@ import { useCollections, useContents } from "../api/queries.ts";
 import { COMMANDS, type CommandContext } from "../commands.ts";
 import { formatDuration } from "../format.ts";
 import { SpeakerAvatar } from "../pages/content/speakers/speaker-avatar.tsx";
+import { useFigureHitLabel } from "../search/figure-hit.tsx";
 import { Highlighted } from "../search/highlighted.tsx";
 import { BasisChangedMark, HitSpeaker, speakerHitSubject } from "../search/hit-speaker.tsx";
 import { hitLink, speakerHitLink, summaryBasisChanged, useSearch } from "../search/search.ts";
@@ -125,9 +126,10 @@ function RecentGroups(props: GroupProps) {
   );
 }
 
-/** Typed text: the four groups of the search service, each opening where its hit is. */
+/** Typed text: the groups of the search service, each opening where its hit is. */
 function SearchGroups(props: GroupProps & { text: string }) {
   const { t } = useTranslation();
+  const figureLabel = useFigureHitLabel();
   const search = useSearch(props.text, "global");
   const result = search.data;
   const go = (path: string): void => props.run(() => props.context.navigate(path));
@@ -135,7 +137,7 @@ function SearchGroups(props: GroupProps & { text: string }) {
     return <p className="px-2 py-6 text-center text-sm text-muted">{search.isError ? t("search.failed") : t("search.searching")}</p>;
   }
   const speakers = result.speakers ?? [];
-  const total = result.contents.length + result.segments.length + result.summaries.length + result.collections.length + speakers.length;
+  const total = result.contents.length + result.segments.length + result.summaries.length + result.figures.length + result.collections.length + speakers.length;
   if (total === 0) {
     return search.isFetching ? <p className="px-2 py-6 text-center text-sm text-muted">{t("search.searching")}</p> : <EmptySearch {...props} />;
   }
@@ -186,6 +188,20 @@ function SearchGroups(props: GroupProps & { text: string }) {
                 <span className="block truncate text-xs text-muted">{hit.contentTitle ?? t("search.untitled")}</span>
               </span>
               {summaryBasisChanged(hit) ? <BasisChangedMark /> : null}
+            </Command.Item>
+          ))}
+        </Command.Group>
+      )}
+      {result.figures.length === 0 ? null : (
+        // Several figures of one Content are told apart by 「图 N」 or the capture time beside the title.
+        <Command.Group heading={t("search.group.figures")} className={GROUP} data-testid="omnibox-group-figures">
+          {result.figures.map((hit) => (
+            <Command.Item key={`figure:${hit.figureId}`} value={`figure:${hit.figureId}`} className={ITEM} onSelect={() => go(hitLink({ kind: "figure", hit }, q))}>
+              <ImageIcon size={14} className="shrink-0 text-muted" aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <Highlighted text={hit.snippet} ranges={hit.ranges} className="line-clamp-2 text-ink" />
+                <span className="block truncate text-xs text-muted">{`${hit.contentTitle ?? t("search.untitled")} · ${figureLabel(hit)}`}</span>
+              </span>
             </Command.Item>
           ))}
         </Command.Group>

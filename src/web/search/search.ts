@@ -5,6 +5,7 @@ import {
   searchResultDtoSchema,
   type CollectionHitDto,
   type ContentHitDto,
+  type FigureHitDto,
   type SearchRange,
   type SearchResultDto,
   type SegmentHitDto,
@@ -59,7 +60,8 @@ export function useSearch(text: string, scope: SearchScopeParam) {
 export type ContentSideHit =
   | { kind: "content"; hit: ContentHitDto }
   | { kind: "segment"; hit: SegmentHitDto }
-  | { kind: "summary"; hit: SummaryHitDto };
+  | { kind: "summary"; hit: SummaryHitDto }
+  | { kind: "figure"; hit: FigureHitDto };
 
 /** Where a hit opens; the query travels along for in-page locating. */
 export function hitLink(entry: ContentSideHit | { kind: "collection"; hit: CollectionHitDto }, query: string): string {
@@ -74,6 +76,11 @@ export function hitLink(entry: ContentSideHit | { kind: "collection"; hit: Colle
       break;
     case "summary":
       search.set("tab", "summary");
+      break;
+    case "figure":
+      // The reading view scrolls to the figure, mounting it first when it lies far down a long transcript.
+      search.set("tab", "transcript");
+      search.set("figure", entry.hit.figureId);
       break;
     case "content":
       break;
@@ -98,8 +105,8 @@ export function summaryBasisChanged(hit: Pick<SummaryHitDto, "speakerContextStat
 
 /**
  * The Contents a result mentions, best first, each with the first hit that named it:
- * groups are taken in the order contents, sentences, summaries and kept in their own
- * relevance order, so a title match outranks a sentence match.
+ * groups are taken in the order contents, sentences, summaries, figure captions and kept in
+ * their own relevance order, so a title match outranks a sentence match.
  */
 export function hitsByContent(result: SearchResultDto): Array<{ contentId: string; title: string | undefined; first: ContentSideHit }> {
   const seen = new Map<string, { contentId: string; title: string | undefined; first: ContentSideHit }>();
@@ -111,6 +118,7 @@ export function hitsByContent(result: SearchResultDto): Array<{ contentId: strin
   for (const hit of result.contents) add(hit.contentId, hit.title, { kind: "content", hit });
   for (const hit of result.segments) add(hit.contentId, hit.contentTitle, { kind: "segment", hit });
   for (const hit of result.summaries) add(hit.contentId, hit.contentTitle, { kind: "summary", hit });
+  for (const hit of result.figures) add(hit.contentId, hit.contentTitle, { kind: "figure", hit });
   return [...seen.values()];
 }
 

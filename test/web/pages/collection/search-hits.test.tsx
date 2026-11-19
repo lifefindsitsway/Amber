@@ -60,6 +60,18 @@ const RANKED = {
   },
 } as unknown as ReturnType<typeof useSearch>;
 
+const FIGURE_ONLY = {
+  ...SEARCH,
+  data: {
+    ...SEARCH.data,
+    segments: [],
+    figures: [
+      { contentId: "c2", contentTitle: "第二讲", figureId: "f2", ordinal: 3, snippet: "进程调度的状态图", ranges: [{ start: 0, end: 4 }] },
+      { contentId: "c2", contentTitle: "第二讲", figureId: "f9", ordinal: 1, capturedAtMs: 61_000, snippet: "进程调度板书", ranges: [{ start: 0, end: 4 }] },
+    ],
+  },
+} as unknown as ReturnType<typeof useSearch>;
+
 describe("SearchHits", () => {
   it("lists hits best first in the member table's columns, each numbered by its place in the collection", () => {
     mockApi({});
@@ -94,4 +106,17 @@ describe("SearchHits", () => {
     expect(contextLabels()).not.toContain("移出合集");
   });
 
+  it("lists a member found only by a figure caption once, its excerpt naming the figure and opening it", () => {
+    mockApi({});
+    function Figures() {
+      const actions = useContentActions();
+      return <SearchHits items={ITEMS} search={FIGURE_ONLY} actions={actions} />;
+    }
+    renderApp(<Figures />, { route: "/collections/k1" });
+    const rows = screen.getAllByTestId("collection-hit");
+    expect(rows.map((row) => row.dataset["itemId"])).toEqual(["i2"]);
+    const snippet = within(rows[0] as HTMLElement).getByTestId("search-snippet");
+    expect(snippet.textContent).toBe("图 3进程调度的状态图");
+    expect(snippet.getAttribute("href")).toBe(`/contents/c2?tab=transcript&figure=f2&search=${encodeURIComponent("进程调度")}`);
+  });
 });

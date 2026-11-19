@@ -169,4 +169,31 @@ describe("Omnibox speakers", () => {
     expect(ctx.navigate).toHaveBeenCalledWith("/contents/x3?tab=transcript&speaker=sp5");
   });
 
+  it("lists figure captions as their own group, telling one Content's figures apart, and opens the figure", async () => {
+    mockApi({
+      ...baseRoutes(),
+      "GET /api/search": {
+        body: {
+          contents: [],
+          segments: [],
+          summaries: [],
+          collections: [],
+          figures: [
+            { contentId: "x2", contentTitle: "操作系统", figureId: "f1", ordinal: 1, capturedAtMs: 75_000, snippet: "调度流程的板书", ranges: [{ start: 0, end: 2 }] },
+            { contentId: "x2", contentTitle: "操作系统", figureId: "f3", ordinal: 3, snippet: "调度队列示意", ranges: [{ start: 0, end: 2 }] },
+          ],
+        },
+      },
+    });
+    const ctx = context();
+    renderApp(<Omnibox open onOpenChange={() => undefined} context={ctx} />);
+    fireEvent.change(await screen.findByPlaceholderText("搜索内容与合集，输入 > 执行命令"), { target: { value: "调度" } });
+    const group = await screen.findByTestId("omnibox-group-figures");
+    expect(group.textContent).toContain("插图备注");
+    const options = screen.getAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(["调度流程的板书操作系统 · 截图 1:15", "调度队列示意操作系统 · 图 3"]);
+    expect(options[0]?.querySelector("mark")?.textContent).toBe("调度");
+    fireEvent.click(screen.getByText("队列示意", { exact: false }));
+    expect(ctx.navigate).toHaveBeenCalledWith(`/contents/x2?tab=transcript&figure=f3&search=${encodeURIComponent("调度")}`);
+  });
 });

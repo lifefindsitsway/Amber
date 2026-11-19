@@ -12,7 +12,10 @@ const result: SearchResultDto = {
   ],
   summaries: [{ contentId: "c3", contentTitle: "第三讲", artifactId: "a3", templateId: "summary.core", summaryRevisionId: "sr3", snippet: "总结里的检索", ranges: [{ start: 4, end: 6 }] }],
   collections: [{ collectionId: "k1", name: "检索课程", snippet: "检索课程", ranges: [{ start: 0, end: 2 }] }],
-  figures: [],
+  figures: [
+    { contentId: "c1", contentTitle: "第一讲", figureId: "f1", ordinal: 2, snippet: "检索流程图", ranges: [{ start: 0, end: 2 }] },
+    { contentId: "c4", contentTitle: "第四讲", figureId: "f4", ordinal: 1, capturedAtMs: 61_000, snippet: "检索板书", ranges: [{ start: 0, end: 2 }] },
+  ],
 };
 
 describe("search helpers", () => {
@@ -23,6 +26,9 @@ describe("search helpers", () => {
     expect(hitLink({ kind: "summary", hit: result.summaries[0]! }, "检索")).toBe(`/contents/c3?tab=summary&search=${encodeURIComponent("检索")}`);
     expect(hitLink({ kind: "content", hit: result.contents[0]! }, "检索")).toBe(`/contents/c2?search=${encodeURIComponent("检索")}`);
     expect(hitLink({ kind: "collection", hit: result.collections[0]! }, "检索")).toBe("/collections/k1");
+    const figure = new URL(hitLink({ kind: "figure", hit: result.figures[0]! }, "检索"), "http://x");
+    expect(figure.pathname).toBe("/contents/c1");
+    expect(Object.fromEntries(figure.searchParams)).toEqual({ tab: "transcript", figure: "f1", search: "检索" });
   });
 
   it("orders hit Contents by group then relevance, keeping each Content's first hit", () => {
@@ -31,6 +37,7 @@ describe("search helpers", () => {
       ["c2", "content"],
       ["c1", "segment"],
       ["c3", "summary"],
+      ["c4", "figure"],
     ]);
     expect(listed[1]?.title).toBe("第一讲");
   });

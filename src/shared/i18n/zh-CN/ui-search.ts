@@ -5,11 +5,15 @@ export const search = {
     segments: "字幕命中",
     summaries: "总结命中",
     collections: "合集",
+    figures: "插图备注",
   },
   kind: {
     title: "标题",
     reference: "参考资料",
     summary: "总结",
+    /** Tells several figures of one Content apart: its place among them, or the frame's time for a capture. */
+    figure: "图 {{n}}",
+    figureCapture: "截图 {{time}}",
   },
   searching: "搜索中…",
   failed: "搜索失败，请稍后重试",
