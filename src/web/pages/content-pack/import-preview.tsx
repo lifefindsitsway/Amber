@@ -435,6 +435,19 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
     mutationFn: (contentId: string) => comparePack(client, props.jobId, item.key, contentId),
     onSuccess: (diff) => props.onChange(draftFor(diff, "merge")),
   });
+  // The candidate being compared is held in component state, set in the change handler itself: the
+  // mutation's pending state reaches React only on a later tick, and a controlled radio whose
+  // `checked` has not changed by the end of the event is put back to unchecked.
+  const [comparing, setComparing] = useState<string | undefined>(undefined);
+  const pendingTarget = comparing ?? (compare.isPending ? compare.variables : undefined);
+  const pick = (contentId: string): void => {
+    if (contentId === item.diff.targetContentId) {
+      props.onChange(draftFor(item.diff, "merge"));
+      return;
+    }
+    setComparing(contentId);
+    compare.mutate(contentId, { onSettled: () => setComparing(undefined) });
+  };
   const suggested = props.candidates.find((candidate) => candidate.contentId === item.diff.targetContentId);
   const durationWarning = (localMs: number | undefined): ReactNode =>
     durationsDiffer(item.durationMs, localMs, CONTENT_PACK_MERGE_DURATION_WARN_MS) ? (
@@ -455,9 +468,9 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
                     type="radio"
                     className="mt-1"
                     name={name}
-                    disabled={candidate.trashed || compare.isPending}
-                    checked={compare.isPending ? compare.variables === candidate.contentId : draft.action === "merge" && draft.targetContentId === candidate.contentId && draft.manualTarget !== true}
-                    onChange={() => (candidate.contentId === item.diff.targetContentId ? props.onChange(draftFor(item.diff, "merge")) : compare.mutate(candidate.contentId))}
+                    disabled={candidate.trashed || pendingTarget !== undefined}
+                    checked={pendingTarget !== undefined ? pendingTarget === candidate.contentId : draft.action === "merge" && draft.targetContentId === candidate.contentId && draft.manualTarget !== true}
+                    onChange={() => pick(candidate.contentId)}
                   />
                   <span className="min-w-0">
                     <span className="block break-words">{titleOf(candidate.title, t)}</span>
@@ -493,7 +506,7 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
         <Button size="sm" variant="ghost" onClick={() => setPicking(true)} data-testid="pack-import-merge-other">
           {t("contentPack.import.action.mergeOther")}
         </Button>
-        {compare.isPending ? <span className="text-xs text-muted">{t("contentPack.import.mergeOther.comparing")}</span> : null}
+        {pendingTarget !== undefined ? <span className="text-xs text-muted">{t("contentPack.import.mergeOther.comparing")}</span> : null}
       </div>
       {compare.error === null ? null : <ErrorView error={appErrorOf(compare.error)} />}
       <TargetPicker

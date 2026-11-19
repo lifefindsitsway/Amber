@@ -135,6 +135,19 @@ describe("ImportPackDialog preview", () => {
     expect(body.collections).toEqual([{ key: "k", action: "join", targetCollectionId: "col" }]);
   });
 
+  it("keeps a candidate that needs comparing ticked from the click on, while the comparison runs", async () => {
+    routes("server", () => job(), { "POST /api/content-packs/imports/j1/compare": { body: diff({ targetContentId: "b", media: [] }) } });
+    renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
+    await screen.findByTestId("pack-import-preview");
+    const radio = within(rowOf("two")).getByLabelText(/候选乙/) as HTMLInputElement;
+    fireEvent.click(radio);
+    // Checked at once, not only after the comparison's pending state reaches React on a later tick.
+    expect(radio.checked).toBe(true);
+    expect((within(rowOf("two")).getByLabelText(/候选甲/) as HTMLInputElement).checked).toBe(false);
+    await waitFor(() => expect(within(rowOf("two")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到《候选乙》· 合并资料"));
+    expect(radio.checked).toBe(true);
+  });
+
   it("asks for the originals directory only when 「开始导入」 is pressed in the desktop client", async () => {
     fakeShell.desktop = true;
     const single = { ...PREVIEW, contents: [item("new")], collections: [] };
