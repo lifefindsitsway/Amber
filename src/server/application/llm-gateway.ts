@@ -2,16 +2,26 @@ import { monotonicFactory } from "ulid";
 import { AmberError, amberError, appError, isAmberError } from "../domain/errors.ts";
 import type { LlmCallAttribution, LlmCompletion, LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../domain/llm.ts";
 import type { ModelRef, ModelRefSnapshot } from "../domain/model-ref.ts";
-import { effectiveCapability, type CapabilityFlags, type ModelCapability, type ProviderProfile } from "../domain/provider-profile.ts";
+import { effectiveCapability, type ModelCapability, type ProviderProfile } from "../domain/provider-profile.ts";
+import type { LlmProtocol } from "../../shared/enums.ts";
 import type { RequestStartInfo, TokenUsage, UsageOutcome } from "../domain/usage.ts";
 import type { PriceSnapshot } from "../../shared/model-pricing.ts";
 import { isDeferredLlmRequest, LlmCallDeferred, type LlmInvoker, type LlmModelDescription, type LlmRequestInput } from "../pipeline/executor.ts";
 import { backoffMs, mayRetry, sleep, toAppError } from "../pipeline/retry.ts";
+import { RETRY_MAX } from "../../shared/defaults.ts";
 import { FairSemaphore, taskGroup, type FairGroupRef, type SlotOrder } from "../pipeline/fair-semaphore.ts";
 import type { Logger } from "../ports/logger.ts";
-import type { LlmProbeFlag, LlmProvider } from "../ports/llm-provider.ts";
+import type {
+  LlmProbeBasicResult,
+  LlmProbeCheck,
+  LlmProbeFlag,
+  LlmProbeFlagResult,
+  LlmProbeInconclusiveReason,
+  LlmProbeResult,
+  LlmProvider,
+} from "../ports/llm-provider.ts";
 import { OutboundHttpError } from "../ports/outbound-http.ts";
-import type { Repository } from "../ports/repository.ts";
+import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { SecretStore } from "../ports/secret-store.ts";
 import { LlmLanes, type LaneEffect, type LaneFeedback, type LaneTicket, type LlmLane } from "./llm-lanes.ts";
 
@@ -39,8 +49,18 @@ class LaneCooling extends Error {
   }
 }
 
+/** What started a lane's current cooldown: an upstream rate limit (which wins while it lasts) or an overload. */
+type CoolingCause = "rate_limited" | "overloaded";
+
 /** A foreground call rejected before sending because its lane was already cooling. */
-class ForegroundLaneCooling extends AmberError {}
+class ForegroundLaneCooling extends AmberError {
+  readonly coolingCause: CoolingCause;
+
+  constructor(failure: ConstructorParameters<typeof AmberError>[0], message: string, coolingCause: CoolingCause) {
+    super(failure, message);
+    this.coolingCause = coolingCause;
+  }
+}
 
 /** A call admitted by its lane: the slot to give back and what its lane must be told. */
 interface Admitted {
@@ -56,10 +76,33 @@ export interface LlmStream extends AsyncIterable<LlmStreamEvent> {
   readonly invocationId: string | undefined;
 }
 
-/** What "test connection" measured; the caller writes it back as the model's `observed` flags. */
+/**
+ * The endpoint "test connection" ran against, as read when it started: what its results are
+ * true for. `credentialVersion` is the stored key's version, read without decrypting it.
+ */
+export interface LlmProbeBasis {
+  protocol: LlmProtocol;
+  baseURL: string;
+  credentialVersion: string | undefined;
+  modelId: string;
+}
+
+/** One capability check's verdict; `reason` only for `inconclusive`. */
+export interface LlmProbeCheckOutcome {
+  flag: LlmProbeFlag;
+  result: LlmProbeFlagResult["result"];
+  reason?: LlmProbeInconclusiveReason;
+}
+
+/**
+ * What "test connection" found: the basic call, then the stream, JSON and tools checks in
+ * that order. The caller writes `supported` / `unsupported` back as `observed`, clears it on
+ * `inconclusive`, and only while `basis` still describes the profile.
+ */
 export interface LlmProbeOutcome {
-  observed: Pick<CapabilityFlags, LlmProbeFlag>;
-  latencyMs: number;
+  basic: { status: LlmProbeBasicResult["status"]; latencyMs: number };
+  checks: LlmProbeCheckOutcome[];
+  basis: LlmProbeBasis;
 }
 
 export interface LlmCallOptions {
@@ -108,6 +151,8 @@ export class LlmGateway implements LlmInvoker {
   private readonly options: LlmGatewayOptions;
   private readonly semaphore = new FairSemaphore(() => Number.POSITIVE_INFINITY);
   private readonly lanes: LlmLanes;
+  /** Why each cooling lane cools, so a wait caused by an overload is not reported as a rate limit. */
+  private readonly coolingCauses = new WeakMap<LlmLane, { cause: CoolingCause; until: number }>();
   private readonly newId: () => string;
   private readonly now: () => number;
   private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -222,56 +267,134 @@ export class LlmGateway implements LlmInvoker {
   }
 
   /**
-   * "Test connection": runs the adapter's checks one by one, each in its own
-   * slot and retried on its own, so a failing check never re-sends a completed one. Every
-   * request that crossed the send boundary is recorded as `test_connection` usage at once,
-   * and those rows stay even when a later check finally fails and the probe throws.
+   * "Test connection": runs the adapter's checks one by one (the basic call first), each in
+   * its own slot and retried on its own, so a failing check never re-sends a completed one.
+   * A failed basic call fails the whole probe. A rate limit is never waited out here: on the
+   * basic call it fails the probe, on a later check it ends the probe early, keeping what was
+   * learned and leaving the remaining checks `inconclusive`. Before each request the profile
+   * is read again: once its protocol, endpoint, key version or model list no longer match
+   * what the probe started on, nothing more is sent. Every request that crossed the
+   * send boundary is recorded as `test_connection` usage at once, and those rows stay when
+   * the probe finally throws.
    */
   async probe(userId: string, modelRef: ModelRef, signal: AbortSignal): Promise<LlmProbeOutcome> {
-    const resolved = this.resolve(userId, modelRef);
+    const { resolved, basis } = this.options.repository.withTransaction((scope) => {
+      const found = this.resolveIn(scope, userId, modelRef);
+      return { resolved: found, basis: probeBasisOf(scope, found.profile, modelRef.modelId) as LlmProbeBasis };
+    });
     const checks = resolved.provider.probe(resolved.profile, modelRef.modelId);
-    const observed: Partial<Pick<CapabilityFlags, LlmProbeFlag>> = {};
-    let latencyMs: number | undefined;
+    if (checks[0]?.kind !== "basic") {
+      throw new AmberError(appError("internal"), "probe checks must start with the basic call");
+    }
     const attribution: LlmCallAttribution = { userId, feature: "test_connection" };
+    let basic: LlmProbeOutcome["basic"] | undefined;
+    const results = new Map<LlmProbeFlag, LlmProbeCheckOutcome>();
+    let rateLimited = false;
     for (const check of checks) {
-      for (let retry = 1; ; retry += 1) {
-        try {
-          const admitted = await this.admit(modelRef, this.foreground(userId), signal, undefined);
-          let feedback: LaneFeedback = { kind: "none" };
-          let outcome: Awaited<ReturnType<typeof check.run>>;
-          try {
-            const send = this.sendCapture(resolved);
-            outcome = await check.run({
-              signal,
-              onRequestStart: send.onRequestStart,
-              onCall: (probeCall) => this.record(this.newId(), resolved, attribution, probeCall.outcome, probeCall.usage, send.context()),
-            });
-            feedback = { kind: "success" };
-          } catch (error) {
-            feedback = laneFeedback(error);
-            this.logClassified(error);
-            throw this.withCooldown(error, admitted.lane, this.settle(admitted, feedback));
-          } finally {
-            this.settle(admitted, feedback);
-          }
-          observed[check.flag] = outcome.result;
-          if (check.flag === "stream" || latencyMs === undefined) {
-            latencyMs = outcome.latencyMs;
-          }
-          break;
-        } catch (error) {
-          if (signal.aborted || error instanceof ForegroundLaneCooling || !mayRetry(toAppError(error), retry)) {
-            throw error;
-          }
-          await this.sleep(backoffMs(retry), signal);
+      if (rateLimited && check.kind !== "basic") {
+        results.set(check.kind, { flag: check.kind, result: "inconclusive", reason: "rate_limited" });
+        continue;
+      }
+      let outcome: LlmProbeResult;
+      try {
+        outcome = await this.runProbeCheck(resolved, modelRef, attribution, check, basis, signal);
+      } catch (error) {
+        if (check.kind === "basic" || !isRateLimited(error)) {
+          throw error;
         }
+        rateLimited = true;
+        results.set(check.kind, { flag: check.kind, result: "inconclusive", reason: "rate_limited" });
+        continue;
+      }
+      if (outcome.kind === "basic") {
+        basic = { status: outcome.status, latencyMs: outcome.latencyMs };
+      } else {
+        results.set(outcome.kind, { flag: outcome.kind, result: outcome.result, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) });
       }
     }
-    const missing = PROBE_FLAGS.filter((flag) => observed[flag] === undefined);
-    if (missing.length > 0 || latencyMs === undefined) {
+    const missing = PROBE_FLAGS.filter((flag) => !results.has(flag));
+    if (basic === undefined || missing.length > 0) {
       throw new AmberError(appError("internal"), `probe did not check ${missing.join(", ")}`);
     }
-    return { observed: observed as Pick<CapabilityFlags, LlmProbeFlag>, latencyMs };
+    return { basic, checks: PROBE_FLAGS.map((flag) => results.get(flag) as LlmProbeCheckOutcome), basis };
+  }
+
+  /**
+   * One check in its own slot, retried by the pipeline's policy except on rate limits. An
+   * overload is waited out: the retry goes once its lane's cooldown has ended, and a check
+   * still overloaded after the last retry fails with that overload, never as a rate limit.
+   */
+  private async runProbeCheck(
+    resolved: Resolved,
+    modelRef: ModelRef,
+    attribution: LlmCallAttribution,
+    check: LlmProbeCheck,
+    basis: LlmProbeBasis,
+    signal: AbortSignal,
+  ): Promise<LlmProbeResult> {
+    let overload: unknown;
+    for (let retry = 1; ; retry += 1) {
+      let failure: unknown;
+      try {
+        const admitted = await this.admit(modelRef, this.foreground(attribution.userId), signal, undefined);
+        let feedback: LaneFeedback = { kind: "none" };
+        try {
+          this.assertProbeBasis(attribution.userId, basis, modelRef);
+          const send = this.sendCapture(resolved);
+          const outcome = await check.run({
+            signal,
+            // Checked again as each request leaves, the re-sent one of the token parameter
+            // fallback included; that one also reads its own price and key version.
+            onRequestStart: (info) => {
+              this.assertProbeBasis(attribution.userId, basis, modelRef);
+              send.onRequestStart(info);
+            },
+            onCall: (probeCall) => this.record(this.newId(), resolved, attribution, probeCall.outcome, probeCall.usage, send.context()),
+          });
+          feedback = { kind: "success" };
+          return outcome;
+        } catch (error) {
+          feedback = laneFeedback(error);
+          this.logClassified(error);
+          throw this.withCooldown(error, admitted.lane, this.settle(admitted, feedback));
+        } finally {
+          this.settle(admitted, feedback);
+        }
+      } catch (error) {
+        failure = error;
+      }
+      if (signal.aborted) {
+        throw failure;
+      }
+      if (failure instanceof ForegroundLaneCooling) {
+        if (failure.coolingCause !== "overloaded") {
+          throw failure;
+        }
+        if (retry > RETRY_MAX) {
+          throw overload ?? laneOverloaded(failure);
+        }
+        await this.sleep(retryAfterOf(failure), signal);
+        continue;
+      }
+      if (isRateLimited(failure) || !mayRetry(toAppError(failure), retry)) {
+        throw failure;
+      }
+      if (isAmberError(failure) && failure.appError.code === "llm_failed.overloaded") {
+        overload = failure;
+      }
+      await this.sleep(Math.max(backoffMs(retry), retryAfterOf(failure)), signal);
+    }
+  }
+
+  /** Stops a probe whose profile changed since it started; see `probe`. */
+  private assertProbeBasis(userId: string, basis: LlmProbeBasis, modelRef: ModelRef): void {
+    const current = this.options.repository.withTransaction((scope) => {
+      const profile = scope.providerProfiles.get(userId, modelRef.providerProfileId);
+      return profile === undefined ? undefined : probeBasisOf(scope, profile, modelRef.modelId);
+    });
+    if (current === undefined || !sameProbeBasis(current, basis)) {
+      throw amberError("conflict", "the profile changed while it was being tested", { code: "conflict.probe_config_changed" });
+    }
   }
 
   /**
@@ -362,14 +485,14 @@ export class LlmGateway implements LlmInvoker {
     const lane = this.lanes.get(modelRef);
     const cooling = lane.coolingUntil();
     if (cooling !== undefined) {
-      throw this.turnedAway(cooling, task);
+      throw this.turnedAway(lane, cooling, task);
     }
     lane.waiting += 1;
     try {
       const { release, ticket } = await this.semaphore.acquireAdmitted(group, signal, lane);
       return { modelRef, lane, ticket, release, settled: false };
     } catch (error) {
-      throw error instanceof LaneCooling ? this.turnedAway(error.until, task) : error;
+      throw error instanceof LaneCooling ? this.turnedAway(lane, error.until, task) : error;
     } finally {
       lane.waiting -= 1;
     }
@@ -386,7 +509,13 @@ export class LlmGateway implements LlmInvoker {
     }
     admitted.settled = true;
     const { lane } = admitted;
+    const previous = this.coolingCauses.get(lane);
     const effect = lane.finish(admitted.ticket, feedback);
+    if (effect.cooling && feedback.kind !== "none" && feedback.kind !== "success") {
+      // A rate limit's cooldown stays one while it lasts, even if an overload extends it.
+      const rateLimited = feedback.kind === "rate_limited" || (previous?.cause === "rate_limited" && previous.until > this.now());
+      this.coolingCauses.set(lane, { cause: rateLimited ? "rate_limited" : "overloaded", until: lane.cooldownUntil });
+    }
     if (effect.cooling) {
       this.semaphore.reject(lane, new LaneCooling(lane.cooldownUntil));
     }
@@ -418,7 +547,7 @@ export class LlmGateway implements LlmInvoker {
     return error;
   }
 
-  private turnedAway(until: number, task: SlotOrder | undefined): Error {
+  private turnedAway(lane: LlmLane, until: number, task: SlotOrder | undefined): Error {
     if (task !== undefined) {
       return new LlmCallDeferred(until);
     }
@@ -428,6 +557,7 @@ export class LlmGateway implements LlmInvoker {
         details: { retryAfterMs: Math.max(0, until - this.now()) },
       }),
       "model lane is cooling down",
+      this.coolingCauses.get(lane)?.cause ?? "rate_limited",
     );
   }
 
@@ -573,7 +703,11 @@ export class LlmGateway implements LlmInvoker {
   }
 
   private resolve(userId: string, modelRef: ModelRef): Resolved {
-    const profile = this.options.repository.withTransaction((scope) => scope.providerProfiles.get(userId, modelRef.providerProfileId));
+    return this.options.repository.withTransaction((scope) => this.resolveIn(scope, userId, modelRef));
+  }
+
+  private resolveIn(scope: RepositoryScope, userId: string, modelRef: ModelRef): Resolved {
+    const profile = scope.providerProfiles.get(userId, modelRef.providerProfileId);
     const capability = profile?.models.find((model) => model.modelId === modelRef.modelId);
     if (profile === undefined || capability === undefined) {
       throw amberError("llm_unconfigured", "modelRef does not name a model of the user's profiles");
@@ -629,4 +763,42 @@ function laneFeedback(error: unknown): LaneFeedback {
     return { kind: "overloaded", ...after };
   }
   return { kind: "none" };
+}
+
+/** A rate limit, the upstream's own or a lane still cooling from one. */
+function isRateLimited(error: unknown): boolean {
+  return isAmberError(error) && error.appError.class === "llm_rate_limited";
+}
+
+/** How long an error says to wait before the next send; 0 when it says nothing. */
+function retryAfterOf(error: unknown): number {
+  const value = isAmberError(error) ? error.appError.details?.["retryAfterMs"] : undefined;
+  return typeof value === "number" && value > 0 ? value : 0;
+}
+
+/** A probe check turned away by a lane still cooling from an overload, as that overload. */
+function laneOverloaded(cooling: ForegroundLaneCooling): AmberError {
+  return new AmberError(appError("llm_failed", { code: "llm_failed.overloaded", details: { retryAfterMs: retryAfterOf(cooling) } }), "model lane is cooling down after an overload");
+}
+
+/**
+ * What "test connection" results are true for, read from the profile as stored: protocol,
+ * Base URL, the stored key's version (read without decrypting it) and the model. `undefined`
+ * when the model is no longer listed.
+ */
+export function probeBasisOf(scope: RepositoryScope, profile: ProviderProfile, modelId: string): LlmProbeBasis | undefined {
+  if (!profile.models.some((model) => model.modelId === modelId)) {
+    return undefined;
+  }
+  const ref = profile.credentialRef;
+  return {
+    protocol: profile.protocol,
+    baseURL: profile.baseURL,
+    credentialVersion: ref === undefined ? undefined : scope.secretEnvelopes.get(profile.userId, ref)?.versionId,
+    modelId,
+  };
+}
+
+export function sameProbeBasis(a: LlmProbeBasis, b: LlmProbeBasis): boolean {
+  return a.protocol === b.protocol && a.baseURL === b.baseURL && a.credentialVersion === b.credentialVersion && a.modelId === b.modelId;
 }

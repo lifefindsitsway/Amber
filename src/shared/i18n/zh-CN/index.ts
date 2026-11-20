@@ -32,6 +32,8 @@ import { figures } from "./ui-figures.ts";
 import { figureInsert } from "./ui-figure-insert.ts";
 import { danmaku } from "./ui-danmaku.ts";
 import { contentPack } from "./ui-content-pack.ts";
+import { llmPresets } from "./ui-llm-presets.ts";
+import { modelReadiness } from "./ui-model-readiness.ts";
 
 /** zh-CN resource bundle; namespaces are added as UI areas land. */
 export const zhCN = {
@@ -71,4 +73,6 @@ export const zhCN = {
   figureInsert,
   danmaku,
   contentPack,
+  llmPresets,
+  modelReadiness,
 } as const;

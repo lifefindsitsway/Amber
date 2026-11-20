@@ -150,6 +150,8 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "conflict.pack_content_busy": "这条内容有未完成的任务，请等任务结束后再试",
   "conflict.pack_target_changed": "目标内容在预览之后发生了变化，这一条未导入",
   "conflict.pack_job_state": "内容包作业已结束或尚未就绪，请刷新后重试",
+  "conflict.profile_tasks_unfinished": "有 {{taskCount}} 个未完成的任务正在使用它，等它们结束或取消后再修改连接地址",
+  "conflict.probe_config_changed": "测试期间配置已更改，请重新测试",
   "invalid_request.subtitle_encoding": "字幕文件不是 UTF-8 编码",
   "invalid_request.subtitle_format": "无法识别的字幕格式",
   "invalid_request.subtitle_newer": "这个字幕包来自更新版本的 Amber，请升级后再导入",

@@ -16,8 +16,9 @@ import { principalOf } from "../auth.ts";
 import { idempotencyKeyOf, parseInput, sendValidated } from "../validation.ts";
 import { requestSignal } from "./contents.ts";
 
-/** Secret-bearing request body: defined here on the server only, never in `src/shared` (the shared-secrets guard). */
+/** Secret-bearing request bodies: defined here on the server only, never in `src/shared` (the shared-secrets guard). */
 const putCredentialRequestSchema = z.object({ value: z.string().min(1) }).strict();
+const createWithCredentialRequestSchema = createProviderRequestSchema.extend({ credential: putCredentialRequestSchema.exactOptional() });
 const profileParamsSchema = z.object({ id: z.string().min(1) });
 // Fastify decodes the `encodeURIComponent`-ed model id in the path.
 const modelParamsSchema = z.object({ id: z.string().min(1), mid: z.string().min(1) });
@@ -29,9 +30,10 @@ export function registerProviderRoutes(app: FastifyInstance, deps: { providers: 
   app.get("/api/providers", async (request, reply) => sendValidated(reply, 200, providerListDtoSchema, providers.list(principalOf(request))));
 
   app.post("/api/providers", async (request, reply) => {
-    const body = parseInput(createProviderRequestSchema, request.body, "body");
+    const body = parseInput(createWithCredentialRequestSchema, request.body, "body");
+    const key = idempotencyKeyOf(request);
     await providers.checkBaseUrl(body.baseURL);
-    return sendValidated(reply, 201, providerProfileDtoSchema, providers.create(principalOf(request), body));
+    return sendValidated(reply, 201, providerProfileDtoSchema, providers.create(principalOf(request), body, key));
   });
 
   app.put("/api/providers/order", async (request, reply) => {

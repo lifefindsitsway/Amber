@@ -104,6 +104,7 @@ export const chat = {
   protocol: {
     openai_compatible: "OpenAI 兼容接口",
     anthropic_messages: "Anthropic Messages 接口",
+    openai_responses: "OpenAI Responses 接口",
   },
   modelMissing: {
     title: "原模型已不存在",

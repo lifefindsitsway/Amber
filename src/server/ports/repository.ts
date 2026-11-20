@@ -599,7 +599,7 @@ export interface ProviderProfileRepository {
   getModelPricing(ownerUserId: string, profileId: string, modelId: string): ModelPricing | undefined;
   insert(profile: ProviderProfile): void;
   /**
-   * Rewrites name, baseURL and credentialRef, and replaces the model list with
+   * Rewrites name, baseURL, presetId and credentialRef, and replaces the model list with
    * `profile.models` as given, every capability layer included. Unknown or foreign ids throw.
    */
   update(profile: ProviderProfile): void;

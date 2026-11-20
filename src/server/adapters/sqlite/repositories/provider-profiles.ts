@@ -10,6 +10,7 @@ interface ProviderProfileRow {
   name: string;
   protocol: ProviderProfile["protocol"];
   base_url: string;
+  preset_id: string | null;
   credential_ref: string | null;
   created_at: number;
 }
@@ -66,12 +67,12 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
   );
   const insertProfile = db.prepare(
     // A new profile goes last in the user's order.
-    `INSERT INTO provider_profile (id, user_id, name, protocol, base_url, credential_ref, created_at, position)
-     VALUES (@id, @userId, @name, @protocol, @baseURL, @credentialRef, @createdAt,
+    `INSERT INTO provider_profile (id, user_id, name, protocol, base_url, preset_id, credential_ref, created_at, position)
+     VALUES (@id, @userId, @name, @protocol, @baseURL, @presetId, @credentialRef, @createdAt,
        (SELECT coalesce(max(position) + 1, 0) FROM provider_profile WHERE user_id = @userId))`,
   );
   const updateProfile = db.prepare(
-    `UPDATE provider_profile SET name = @name, base_url = @baseURL, credential_ref = @credentialRef
+    `UPDATE provider_profile SET name = @name, base_url = @baseURL, preset_id = @presetId, credential_ref = @credentialRef
      WHERE id = @id AND user_id = @userId`,
   );
   const deleteModels = db.prepare("DELETE FROM model_capability WHERE profile_id = ?");
@@ -93,6 +94,7 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
       name: row.name,
       protocol: row.protocol,
       baseURL: row.base_url,
+      presetId: row.preset_id,
       credentialRef: row.credential_ref,
       models: (models.all(row.id) as ModelCapabilityRow[]).map(toCapability),
       createdAt: row.created_at,
@@ -120,6 +122,7 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
     userId: profile.userId,
     name: profile.name,
     baseURL: profile.baseURL,
+    presetId: nullable(profile.presetId),
     credentialRef: nullable(profile.credentialRef),
   });
 
@@ -139,7 +142,7 @@ export function sqliteProviderProfileRepository(db: SqliteConnection): ProviderP
       insertProfile.run({ ...fields(profile), protocol: profile.protocol, createdAt: profile.createdAt });
       writeModels(profile);
     },
-    // The protocol is fixed at creation; only name, endpoint, credential and models change.
+    // The protocol is fixed at creation; only name, endpoint, preset, credential and models change.
     update(profile) {
       if (updateProfile.run(fields(profile)).changes === 0) {
         throw notFound("provider profile", profile.id);

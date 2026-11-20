@@ -9,7 +9,16 @@ import { amberError } from "../../../domain/errors.ts";
 import type { LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../../../domain/llm.ts";
 import { effectiveCapability, type EffectiveCapability, type ProviderProfile } from "../../../domain/provider-profile.ts";
 import type { RequestStartInfo } from "../../../domain/usage.ts";
-import type { LlmProbeCall, LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../ports/llm-provider.ts";
+import type {
+  LlmProbeCall,
+  LlmProbeCheck,
+  LlmProbeFlag,
+  LlmProbeFlagResult,
+  LlmProbeKind,
+  LlmProbeResult,
+  LlmProvider,
+  LlmStreamOptions,
+} from "../../../ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../../ports/outbound-http.ts";
 import type { SecretStore } from "../../../ports/secret-store.ts";
 import { beginRequest, endpoint, linkedController, OutputWatchdog, sseEvents, transportFailure, withIdleTimeout, type SseEvent } from "../shared.ts";
@@ -113,27 +122,29 @@ export class AnthropicMessagesProvider implements LlmProvider {
       max_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS,
       messages: [{ role: "user", content: [{ type: "text", text: PROBE_PROMPT }] }],
     };
-    const check = (flag: LlmProbeFlag, body: WireBody, streaming: boolean): LlmProbeCheck => ({
-      flag,
-      run: (opts) => this.probeOnce(profile, flag, body, streaming, opts),
+    const check = (kind: LlmProbeKind, body: WireBody): LlmProbeCheck => ({
+      kind,
+      run: (opts) => this.probeOnce(profile, kind, body, opts),
     });
     return [
-      check("stream", { ...base, stream: true }, true),
-      check("structuredOutput", { ...base, output_config: { format: { type: "json_schema", schema: PROBE_SCHEMA } } }, false),
+      check("basic", base),
+      check("stream", { ...base, stream: true }),
+      check("structuredOutput", { ...base, output_config: { format: { type: "json_schema", schema: PROBE_SCHEMA } } }),
       // Not forced through `tool_choice`: several Claude models reject forced tool use
       // (`tool_choice` `any` or `tool` is an error), so the prompt asks for the call instead.
-      check("tools", { ...base, messages: [{ role: "user", content: [{ type: "text", text: PROBE_TOOL_PROMPT }] }], tools: [PROBE_TOOL] }, false),
+      check("tools", { ...base, messages: [{ role: "user", content: [{ type: "text", text: PROBE_TOOL_PROMPT }] }], tools: [PROBE_TOOL] }),
     ];
   }
 
-  /** One probe request; `onCall` reports it once it ended past the send boundary. */
-  private async probeOnce(
-    profile: ProviderProfile,
-    flag: LlmProbeFlag,
-    body: WireBody,
-    streaming: boolean,
-    opts: Parameters<LlmProbeCheck["run"]>[0],
-  ): Promise<{ result: "supported" | "unsupported"; latencyMs: number }> {
+  /**
+   * One probe request; `onCall` reports it once it ended past the send boundary. The basic
+   * call needs answer text: cut off by the cap before any, it is `incomplete`. A capability
+   * check is `supported` only when the feature visibly worked (for streaming: the event
+   * stream read to `message_stop`); cut off before it could show, it cannot decide; an
+   * answer that ignored the feature, or a whole message where a stream was asked for, is
+   * `unsupported`. Refusals and errors inside the answer fail the check.
+   */
+  private async probeOnce(profile: ProviderProfile, kind: LlmProbeKind, body: WireBody, opts: Parameters<LlmProbeCheck["run"]>[0]): Promise<LlmProbeResult> {
     const { signal } = opts;
     let reported = false;
     const report = (call: LlmProbeCall): void => {
@@ -155,41 +166,49 @@ export class AnthropicMessagesProvider implements LlmProvider {
       throw transportFailure(error, signal);
     }
     try {
+      const text = await readBounded(response, controller, signal);
+      const latencyMs = this.now() - startedAt;
       if (response.status !== 200) {
-        const text = await readBounded(response, controller, signal);
         report({ outcome: "failed" });
-        if (rejectsFeature(response.status, text, flag)) {
-          return { result: "unsupported", latencyMs: this.now() - startedAt };
-        }
-        throw httpError(response.status, text, response.headers);
+        return failedAnswer(kind, response.status, text, response.headers, latencyMs);
       }
+      const whole = kind !== "stream" || isWholeMessage(text);
       let usage: RawUsage | undefined;
+      let answer = "";
       let stopReason: LlmStopReason = "stop";
       let raw: string | undefined;
-      const body = streaming ? undefined : await readBounded(response, controller, signal);
-      const events =
-        body === undefined
-          ? normalizedStream(withIdleTimeout(sseEvents(response.body), LLM_PROBE_TIMEOUT_MS, () => controller.abort()), signal)
-          : fromMessage(body);
+      const events = whole ? fromMessage(text) : normalizedStream(sseEvents(once(text)), signal);
       for await (const event of events) {
         if (event.type === "usage") {
           usage = event.usage;
-        } else if (event.type === "done") {
+        } else if (event.type === "text_delta") {
+          answer += event.delta;
+        } else {
           stopReason = event.stopReason;
           raw = event.raw;
         }
       }
+      const withUsage = usage === undefined ? {} : { usage };
       if (stopReason === "error") {
-        report({ outcome: "failed", ...(usage === undefined ? {} : { usage }) });
+        report({ outcome: "failed", ...withUsage });
         throw amberError("llm_failed", "stream reported an error", raw === undefined ? {} : { upstreamMessage: raw });
       }
       if (stopReason === "refused") {
-        report({ outcome: "failed", ...(usage === undefined ? {} : { usage }) });
+        report({ outcome: "failed", ...withUsage });
         throw amberError("llm_failed", "the model refused the probe", { code: "llm_failed.refused", ...(raw === undefined ? {} : { upstreamMessage: raw }) });
       }
-      report({ outcome: "succeeded", ...(usage === undefined ? {} : { usage }) });
-      const tookEffect = body === undefined || flag === "stream" || probeTookEffect(flag, body);
-      return { result: tookEffect ? "supported" : "unsupported", latencyMs: this.now() - startedAt };
+      report({ outcome: "succeeded", ...withUsage });
+      const truncated = stopReason === "length";
+      if (kind === "basic") {
+        return { kind, status: answer === "" && truncated ? "incomplete" : "connected", latencyMs };
+      }
+      if (kind === "stream") {
+        return { kind, result: whole ? "unsupported" : "supported", latencyMs };
+      }
+      if (probeTookEffect(kind, text)) {
+        return { kind, result: "supported", latencyMs };
+      }
+      return truncated ? { kind, result: "inconclusive", reason: "truncated", latencyMs } : { kind, result: "unsupported", latencyMs };
     } catch (error) {
       // Anything failing after the answer began leaves the request's outcome unknown.
       report({ outcome: "outcome_unknown" });
@@ -350,6 +369,40 @@ function probeTookEffect(flag: Exclude<LlmProbeFlag, "stream">, text: string): b
   } catch {
     return false;
   }
+}
+
+/**
+ * An error answer of a check, already reported. The basic call fails with it. A capability
+ * check learns `unsupported` from an explicit rejection of its feature and cannot decide on
+ * a bad request it cannot classify; every other failure (authentication, unknown model,
+ * quota, rate limit, server errors) fails the check.
+ */
+function failedAnswer(kind: LlmProbeKind, status: number, text: string, headers: ReadonlyMap<string, string>, latencyMs: number): LlmProbeFlagResult {
+  const error = httpError(status, text, headers);
+  if (kind === "basic") {
+    throw error;
+  }
+  if (rejectsFeature(status, text, kind)) {
+    return { kind, result: "unsupported", latencyMs };
+  }
+  if ((status === 400 || status === 422) && error.appError.code === "llm_failed.invalid_request") {
+    return { kind, result: "inconclusive", reason: "upstream_rejected", latencyMs };
+  }
+  throw error;
+}
+
+/** A body that is one JSON document: the whole message a relay sends when it ignores `stream`. */
+function isWholeMessage(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+async function* once(text: string): AsyncIterable<Uint8Array> {
+  yield new TextEncoder().encode(text);
 }
 
 /** A non-streaming answer as the same event sequence: one delta, usage, done. */

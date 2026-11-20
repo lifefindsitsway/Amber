@@ -16,7 +16,8 @@ import { EQUIVALENT_GOLDEN, EQUIVALENT_REQUEST } from "../../fixtures/llm/equiva
 import { FAKE_USAGE, FakeLlmProvider, reply } from "../../fixtures/llm/fake-llm.ts";
 import { openAiStream } from "../../fixtures/llm/openai-compatible/index.ts";
 import { ReplayHttp } from "../../fixtures/llm/replay-http.ts";
-import { BOB, configureLlm, createHarness, createTaskOfKind, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { BOB, configureLlm, createHarness, createTaskOfKind, credentialRefOf, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import { RETRY_MAX } from "../../../src/shared/defaults.ts";
 
 const open: Harness[] = [];
 function setup(options: { protocol?: "openai_compatible" | "anthropic_messages"; audioMimeTypes?: string[]; window?: number } = {}) {
@@ -539,8 +540,8 @@ describe("send-time context", () => {
     );
     await h.llm.probe(LOCAL.userId, modelRef, signal());
     const rows = usageRows(h);
-    expect(rows.map((row) => row.feature)).toEqual(["test_connection", "test_connection", "test_connection", "test_connection"]);
-    expect(fake.requestStarts).toHaveLength(4);
+    expect(rows.map((row) => row.feature)).toEqual(Array(5).fill("test_connection"));
+    expect(fake.requestStarts).toHaveLength(5);
     expect(rows.every((row) => row.priceSnapshot !== undefined && row.credentialVersion === "key-version-1" && row.modelId === "model-a")).toBe(true);
   });
 
@@ -572,19 +573,47 @@ describe("send-time context", () => {
 });
 
 describe("probe", () => {
-  it("records each probe request as test_connection usage and reports what was measured", async () => {
+  const versionOf = (h: Harness, modelRef: ModelRef): string =>
+    (h.db.prepare("SELECT s.version_id AS v FROM secret AS s JOIN provider_profile AS p ON p.credential_ref = s.id WHERE p.id = ?").get(modelRef.providerProfileId) as { v: string }).v;
+
+  it("runs the basic call first, records each probe request as test_connection usage and reports what was measured", async () => {
     const { h, fake, modelRef } = setup();
-    fake.scriptProbe("stream", { result: "supported", latencyMs: 42, call: { outcome: "succeeded", usage: FAKE_USAGE } });
+    fake.scriptProbe("basic", { status: "connected", latencyMs: 42, call: { outcome: "succeeded", usage: FAKE_USAGE } });
     fake.scriptProbe("structuredOutput", { result: "unsupported", call: { outcome: "failed" } });
+    fake.scriptProbe("tools", { result: "inconclusive", reason: "truncated", call: { outcome: "succeeded", usage: FAKE_USAGE } });
     const outcome = await h.llm.probe(LOCAL.userId, modelRef, signal());
-    expect(outcome).toEqual({ observed: { stream: "supported", structuredOutput: "unsupported", tools: "supported" }, latencyMs: 42 });
+    expect(outcome).toEqual({
+      basic: { status: "connected", latencyMs: 42 },
+      checks: [
+        { flag: "stream", result: "supported" },
+        { flag: "structuredOutput", result: "unsupported" },
+        { flag: "tools", result: "inconclusive", reason: "truncated" },
+      ],
+      basis: { protocol: "openai_compatible", baseURL: "https://llm.invalid/v1", credentialVersion: versionOf(h, modelRef), modelId: "model-a" },
+    });
+    expect(outcome.basis.credentialVersion).toEqual(expect.any(String));
     const rows = usageRows(h);
     expect(rows.map((row) => [row.feature, row.outcome, row.inputTokens])).toEqual([
+      ["test_connection", "succeeded", 12],
       ["test_connection", "succeeded", 12],
       ["test_connection", "failed", undefined],
       ["test_connection", "succeeded", 12],
     ]);
-    expect(rows[1]).not.toHaveProperty("inputTokens");
+    expect(rows[2]).not.toHaveProperty("inputTokens");
+  });
+
+  it("passes on an incomplete basic call", async () => {
+    const { h, fake, modelRef } = setup();
+    fake.scriptProbe("basic", { status: "incomplete", call: { outcome: "succeeded", usage: FAKE_USAGE } });
+    expect((await h.llm.probe(LOCAL.userId, modelRef, signal())).basic.status).toBe("incomplete");
+  });
+
+  it("records every request a check sent, a re-sent one included", async () => {
+    const { h, fake, modelRef } = setup();
+    fake.scriptProbe("basic", { status: "connected", call: [{ outcome: "failed" }, { outcome: "succeeded", usage: FAKE_USAGE }] });
+    await h.llm.probe(LOCAL.userId, modelRef, signal());
+    expect(usageRows(h).map((row) => row.outcome)).toEqual(["failed", "succeeded", "succeeded", "succeeded", "succeeded"]);
+    expect(fake.requestStarts).toHaveLength(5);
   });
 
   it("retries only the failing check, never re-sending completed ones", async () => {
@@ -596,29 +625,164 @@ describe("probe", () => {
       { result: "unsupported", call: { outcome: "succeeded", usage: FAKE_USAGE } },
     );
     const outcome = await h.llm.probe(LOCAL.userId, modelRef, signal());
-    expect(outcome.observed.tools).toBe("unsupported");
-    expect(fake.probeRuns).toEqual({ stream: 1, structuredOutput: 1, tools: 3 });
+    expect(outcome.checks[2]).toEqual({ flag: "tools", result: "unsupported" });
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: 1, structuredOutput: 1, tools: 3 });
     // The before-send failure reported no call and left no row.
-    expect(usageRows(h).map((row) => row.outcome)).toEqual(["succeeded", "succeeded", "failed", "succeeded"]);
+    expect(usageRows(h).map((row) => row.outcome)).toEqual(["succeeded", "succeeded", "succeeded", "failed", "succeeded"]);
+  });
+
+  it("fails the whole probe when the basic call fails, without running the other checks", async () => {
+    const { h, fake, modelRef } = setup();
+    fake.scriptProbe("basic", { error: amberError("llm_failed", "no such model", { code: "llm_failed.model_not_found" }), call: { outcome: "failed" } });
+    expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toBe("llm_failed.model_not_found");
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: 0, structuredOutput: 0, tools: 0 });
+    expect(usageRows(h).map((row) => row.outcome)).toEqual(["failed"]);
   });
 
   it("keeps the rows of earlier checks when a later check finally fails", async () => {
     const { h, fake, modelRef } = setup();
     fake.scriptProbe("tools", { error: amberError("llm_failed", "bad key", { code: "llm_failed.auth" }), call: { outcome: "failed" } });
     expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toBe("llm_failed.auth");
-    expect(fake.probeRuns).toEqual({ stream: 1, structuredOutput: 1, tools: 1 });
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: 1, structuredOutput: 1, tools: 1 });
     expect(usageRows(h).map((row) => [row.feature, row.outcome])).toEqual([
+      ["test_connection", "succeeded"],
       ["test_connection", "succeeded"],
       ["test_connection", "succeeded"],
       ["test_connection", "failed"],
     ]);
   });
 
+  it("stops at a rate limit on a capability check without retrying it, keeping what was learned and leaving the rest inconclusive", async () => {
+    const { h, fake, modelRef } = setup();
+    fake.scriptProbe("stream", { result: "unsupported", call: { outcome: "failed" } });
+    fake.scriptProbe("structuredOutput", { error: amberError("llm_rate_limited", "slow down"), call: { outcome: "failed" } });
+    const outcome = await h.llm.probe(LOCAL.userId, modelRef, signal());
+    expect(outcome.basic.status).toBe("connected");
+    expect(outcome.checks).toEqual([
+      { flag: "stream", result: "unsupported" },
+      { flag: "structuredOutput", result: "inconclusive", reason: "rate_limited" },
+      { flag: "tools", result: "inconclusive", reason: "rate_limited" },
+    ]);
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: 1, structuredOutput: 1, tools: 0 });
+    expect(usageRows(h).map((row) => row.outcome)).toEqual(["succeeded", "failed", "failed"]);
+  });
+
+  it("fails the probe on a rate-limited basic call without retrying it", async () => {
+    const { h, fake, modelRef } = setup();
+    fake.scriptProbe("basic", { error: amberError("llm_rate_limited", "slow down"), call: { outcome: "failed" } });
+    expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toMatch(/^llm_rate_limited/);
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: 0, structuredOutput: 0, tools: 0 });
+  });
+
+  /** A gateway over the harness whose clock moves forward by every wait, so lane cooldowns end. */
+  function clocked(h: Harness, fake: FakeLlmProvider) {
+    let clock = 1_000_000;
+    const waits: number[] = [];
+    const llm = new LlmGateway({
+      repository: h.repository,
+      secrets: h.secrets,
+      providers: [fake],
+      now: () => clock,
+      random: () => 0,
+      sleep: async (ms) => {
+        waits.push(ms);
+        clock += ms;
+      },
+    });
+    return { llm, waits };
+  }
+  const overloaded = () => amberError("llm_failed", "busy", { code: "llm_failed.overloaded", details: { retryAfterMs: 5_000 } });
+
+  it("waits out an overload's cooldown and retries the check, instead of taking it for a rate limit", async () => {
+    const { h, fake, modelRef } = setup();
+    const { llm, waits } = clocked(h, fake);
+    fake.scriptProbe("basic", { error: overloaded(), call: { outcome: "failed" } });
+    fake.scriptProbe("structuredOutput", { error: overloaded(), call: { outcome: "failed" } }, { result: "unsupported", call: { outcome: "succeeded", usage: FAKE_USAGE } });
+    const outcome = await llm.probe(LOCAL.userId, modelRef, signal());
+    expect(outcome.basic.status).toBe("connected");
+    expect(outcome.checks).toEqual([
+      { flag: "stream", result: "supported" },
+      { flag: "structuredOutput", result: "unsupported" },
+      { flag: "tools", result: "supported" },
+    ]);
+    expect(fake.probeRuns).toEqual({ basic: 2, stream: 1, structuredOutput: 2, tools: 1 });
+    expect(waits).toEqual([5_000, 5_000]);
+  });
+
+  it("fails the probe with the overload itself once the retries run out", async () => {
+    const { h, fake, modelRef } = setup();
+    const { llm } = clocked(h, fake);
+    fake.scriptProbe("stream", ...Array.from({ length: RETRY_MAX + 1 }, () => ({ error: overloaded(), call: { outcome: "failed" as const } })));
+    expect(await codeOf(llm.probe(LOCAL.userId, modelRef, signal()))).toBe("llm_failed.overloaded");
+    expect(fake.probeRuns).toEqual({ basic: 1, stream: RETRY_MAX + 1, structuredOutput: 0, tools: 0 });
+  });
+
+  it("waits for a lane another call left cooling after an overload, and still stops at a lane cooling from a rate limit", async () => {
+    const { h, fake, modelRef } = setup();
+    const { llm, waits } = clocked(h, fake);
+    fake.script({ events: [], error: overloaded() });
+    await expect(llm.complete({ ...CHAT, feature: "summary", taskId: createTaskOfKind(h, "regenerate_summary", { modelRef }) }, request(modelRef), { signal: signal() })).rejects.toThrow();
+    expect((await llm.probe(LOCAL.userId, modelRef, signal())).basic.status).toBe("connected");
+    expect(waits[0]).toBe(5_000);
+
+    fake.script({ events: [], error: amberError("llm_rate_limited", "slow down", { code: "llm_rate_limited.retry_after", details: { retryAfterMs: 5_000 } }) });
+    await expect(llm.complete({ ...CHAT, feature: "summary", taskId: createTaskOfKind(h, "regenerate_summary", { modelRef }) }, request(modelRef), { signal: signal() })).rejects.toThrow();
+    expect(await codeOf(llm.probe(LOCAL.userId, modelRef, signal()))).toBe("llm_rate_limited.retry_after");
+  });
+
+  it("sends nothing more once the endpoint, the key or the model changed since the probe started", async () => {
+    const edits: Array<[string, (h: Harness, modelRef: ModelRef) => void]> = [
+      ["endpoint", (h, modelRef) => void h.db.prepare("UPDATE provider_profile SET base_url = 'https://moved.invalid/v1' WHERE id = ?").run(modelRef.providerProfileId)],
+      ["key", (h, modelRef) => h.secrets.replace(LOCAL.userId, credentialRefOf(h, modelRef), "<placeholder-other-key>")],
+      ["model", (h, modelRef) => void h.db.prepare("DELETE FROM model_capability WHERE profile_id = ?").run(modelRef.providerProfileId)],
+    ];
+    for (const [what, edit] of edits) {
+      const { h, fake, modelRef } = setup();
+      const probe = fake.probe.bind(fake);
+      // Edited after the stream check: the next check is never run.
+      fake.probe = (profile, modelId) =>
+        probe(profile, modelId).map((check) =>
+          check.kind === "stream" ? { ...check, run: async (options) => (await check.run(options).finally(() => edit(h, modelRef))) } : check,
+        );
+      expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal())), what).toBe("conflict.probe_config_changed");
+      expect(fake.probeRuns, what).toEqual({ basic: 1, stream: 1, structuredOutput: 0, tools: 0 });
+      expect(usageRows(h), what).toHaveLength(2);
+    }
+  });
+
+  it("stops a request about to leave when the profile changed after its check began", async () => {
+    const { h, fake, modelRef } = setup();
+    const probe = fake.probe.bind(fake);
+    fake.probe = (profile, modelId) =>
+      probe(profile, modelId).map((check) =>
+        check.kind === "tools"
+          ? {
+              ...check,
+              run: (options) => {
+                h.db.prepare("UPDATE provider_profile SET base_url = 'https://moved.invalid/v1' WHERE id = ?").run(modelRef.providerProfileId);
+                return check.run(options);
+              },
+            }
+          : check,
+      );
+    expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toBe("conflict.probe_config_changed");
+    // The tools request was stopped at its start report (the fake logs it first): nothing sent, nothing recorded.
+    expect(fake.requestStarts).toHaveLength(4);
+    expect(usageRows(h)).toHaveLength(3);
+  });
+
   it("checks the profile and credential before probing", async () => {
     const { h, fake, modelRef } = setup();
     h.db.prepare("UPDATE provider_profile SET credential_ref = NULL WHERE id = ?").run(modelRef.providerProfileId);
     expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toBe("llm_unconfigured");
-    expect(fake.probeRuns).toEqual({ stream: 0, structuredOutput: 0, tools: 0 });
+    expect(fake.probeRuns).toEqual({ basic: 0, stream: 0, structuredOutput: 0, tools: 0 });
+  });
+
+  it("refuses an adapter whose checks do not start with the basic call", async () => {
+    const { h, fake, modelRef } = setup();
+    const probe = fake.probe.bind(fake);
+    fake.probe = (profile, modelId) => [...probe(profile, modelId)].reverse();
+    expect(await codeOf(h.llm.probe(LOCAL.userId, modelRef, signal()))).toBe("internal");
   });
 });
 
@@ -693,7 +857,7 @@ describe("fair LLM slots", () => {
       probe(profile, modelId).map((check) => ({
         ...check,
         run: (context) => {
-          log.push(`probe:${check.flag}`);
+          log.push(`probe:${check.kind}`);
           return check.run(context);
         },
       }));
@@ -739,12 +903,13 @@ describe("fair LLM slots", () => {
       "task:1",
       "chat:2",
       "task:2",
-      "probe:stream",
+      "probe:basic",
       "task:3",
-      "probe:structuredOutput",
+      "probe:stream",
       "task:4",
-      "probe:tools",
+      "probe:structuredOutput",
       "task:5",
+      "probe:tools",
     ]);
   });
 

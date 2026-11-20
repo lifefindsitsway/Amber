@@ -10,6 +10,7 @@ import { baseRoutes, content, provider, SETTINGS } from "../../fixtures/web/shel
 import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
+import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 
 vi.mock("../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -657,5 +658,61 @@ describe("NewPage with a picked subtitle in the desktop client", () => {
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c9"));
     const body = calls.find((call) => call.path === "/api/contents/local-file")?.body as { initialSubtitle: unknown };
     expect(body.initialSubtitle).toEqual({ path: SUBTITLE, grant: expect.objectContaining({ path: SUBTITLE }), language: "zh-CN", options: { expectedDigest: DIGEST, translationLanguage: "en" } });
+  });
+});
+
+describe("NewPage model readiness", () => {
+  const BARE = JSON.stringify(["p2", "bare"]);
+
+  function readinessRoutes() {
+    const windows = windowRoutes([provider("p1", "主力", ["m1"]), providerWithoutWindow("p2", "备用", ["bare"])]);
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      ...windows.routes,
+      "GET /api/settings": { body: { ...SETTINGS, defaultModelRef: { providerProfileId: "p2", modelId: "bare" } } },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    return { calls, overrides: windows.overrides };
+  }
+
+  it("holds the import while the chosen model has no context window, and lets it go once filled in", async () => {
+    const { calls, overrides } = readinessRoutes();
+    renderApp(page(), { route: "/new" });
+    // The settings stay folded: the notice still names the model the import would use.
+    const notice = await screen.findByTestId("new-context-window");
+    expect(notice.textContent).toContain("「备用 · bare」还没有填写上下文窗口");
+    const submit = screen.getByTestId<HTMLButtonElement>("new-submit");
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
+    fireEvent.submit(submit.closest("form") as HTMLFormElement);
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+
+    fireEvent.change(within(notice).getByLabelText("上下文窗口"), { target: { value: "64000" } });
+    fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByTestId("new-context-window")).toBeNull());
+    expect(overrides[0]?.path).toBe("/api/providers/p2/models/bare/override");
+    expect(overrides[0]?.body).toEqual({ limits: { contextWindowTokens: 64_000, maxOutputTokens: null } });
+    expect(submit.disabled).toBe(false);
+    // The notice took the focus with it: it moves on to the action it was holding back.
+    await waitFor(() => expect(document.activeElement).toBe(submit));
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    expect((calls.find((call) => call.path === "/api/contents/import")?.body as { settings: object }).settings).toMatchObject({ modelRef: { providerProfileId: "p2", modelId: "bare" } });
+  });
+
+  it("asks nothing when only transcribing, or with a model that has its window", async () => {
+    readinessRoutes();
+    renderApp(page(), { route: "/new" });
+    await screen.findByTestId("new-context-window");
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    const model = screen.getByLabelText<HTMLSelectElement>("AI 模型");
+    await waitFor(() => expect(model.value).toBe(BARE));
+    fireEvent.change(model, { target: { value: "" } });
+    expect(screen.queryByTestId("new-context-window")).toBeNull();
+    expect(screen.getByTestId<HTMLButtonElement>("new-submit").disabled).toBe(false);
+    fireEvent.change(model, { target: { value: JSON.stringify(["p1", "m1"]) } });
+    expect(screen.queryByTestId("new-context-window")).toBeNull();
+    fireEvent.change(model, { target: { value: BARE } });
+    expect(screen.getByTestId("new-context-window")).toBeTruthy();
   });
 });

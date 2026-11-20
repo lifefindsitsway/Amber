@@ -15,6 +15,7 @@ import { ElevenLabsAsrProviderFactory } from "./adapters/asr/elevenlabs/index.ts
 import { AnthropicMessagesProvider } from "./adapters/llm/anthropic-messages/index.ts";
 import { TavilyWebSearchProvider } from "./adapters/web-search/tavily/index.ts";
 import { OpenAiCompatibleProvider } from "./adapters/llm/openai-compatible/index.ts";
+import { OpenAiResponsesProvider } from "./adapters/llm/openai-responses/index.ts";
 import { BundledFontMetrics } from "./adapters/fonts/otf-advances.ts";
 import { FfmpegVideoBurner } from "./adapters/media-ingest/ffmpeg-burner.ts";
 import { FfmpegSubtitleMuxer } from "./adapters/media-ingest/ffmpeg-subtitle-muxer.ts";
@@ -390,7 +391,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const llmGateway = new LlmGateway({
     repository,
     secrets,
-    providers: [new OpenAiCompatibleProvider({ http, secrets, files }), new AnthropicMessagesProvider({ http, secrets })],
+    providers: [
+      new OpenAiCompatibleProvider({ http, secrets, files }),
+      new AnthropicMessagesProvider({ http, secrets }),
+      new OpenAiResponsesProvider({ http, secrets, logger: lateLogger(() => appLogger?.child({ component: "llm_responses" })) }),
+    ],
     logger: lateLogger(() => appLogger?.child({ component: "llm_gateway" })),
   });
   const providers = new ProviderService({

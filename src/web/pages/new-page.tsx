@@ -24,6 +24,9 @@ import { useSubtitlePreview, type SubtitlePreviewSource } from "./content/subtit
 import { SubtitleImportPreview, useSubtitleImportChoice } from "./content/subtitle-import-preview.tsx";
 import type { SubtitleImportOptions, TimedSubtitleFormat } from "../../shared/dto/subtitle-import.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
+import { ContextWindowNotice } from "../models/context-window-notice.tsx";
+import { useFocusAfterSave } from "../models/use-focus-after-save.ts";
+import { useModelReadiness } from "../models/use-model-readiness.ts";
 import { linesOf, recognizeLink } from "../links.ts";
 import type { NewPagePrefill } from "../shell/paste-guard.ts";
 import { requestOpenTasks } from "../shell/task-panel.tsx";
@@ -175,6 +178,13 @@ export function NewPage() {
   // The ASR model starts as the user's default while it can be picked, else none: unlike the
   // LLM model, nothing is chosen for the user.
   const asrOptions = asrProfiles.data?.items ?? [];
+  const modelRef = decodeModel(model);
+  // Every import ends in a summary (and chapters unless the platform has its own), both planned
+  // against the context window: a chosen model without one would only fail there.
+  const readiness = useModelReadiness(modelRef, "context_window");
+  const windowMissing = readiness.status === "missing_context_window";
+  const submitId = `${formId}-submit`;
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(submitId));
   const asrModelRef = asrChoice === undefined ? initialAsrModelRef(asrOptions, settings.data?.defaultAsrModelRef) : (asrChoice ?? undefined);
   const asrSetting = asrModelRef === undefined ? {} : { asrModelRef };
   // What the speaker identification setting will do with this model; the length of what is imported is not known yet.
@@ -241,7 +251,6 @@ export function NewPage() {
   const upload = useMutation({
     mutationFn: async (options: { allowDuplicate: boolean }): Promise<void> => {
       if (uploadFile === undefined) return;
-      const modelRef = decodeModel(model);
       const settings: ImportRequest["settings"] = { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting };
       // Part order is fixed by the upload endpoint: the media file last.
       const form = new FormData();
@@ -283,7 +292,6 @@ export function NewPage() {
   const localImport = useMutation({
     mutationFn: async (options: { allowDuplicate: boolean }): Promise<void> => {
       if (localFile === undefined) return;
-      const modelRef = decodeModel(model);
       const body: LocalFileRequest = {
         path: localFile.path,
         grant: localFile.grant,
@@ -310,7 +318,6 @@ export function NewPage() {
   const submit = useMutation({
     mutationFn: async (): Promise<void> => {
       const collection = collectionTarget();
-      const modelRef = decodeModel(model);
       let items: ImportItem[];
       if (tab === "subtitle" && subtitle !== undefined) {
         // The previewed text itself, so the digest the options carry is of what is sent.
@@ -365,6 +372,7 @@ export function NewPage() {
     setError(undefined);
     setProblem(undefined);
     setSkipped(undefined);
+    if (windowMissing) return;
     if (tab === "upload") {
       if (uploadFile === undefined) return setProblem(t("shell.newPage.needFile"));
       if (uploadSubtitle !== undefined && effectiveSubtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
@@ -733,7 +741,7 @@ export function NewPage() {
                   <Button
                     size="sm"
                     data-testid="upload-anyway"
-                    disabled={upload.isPending}
+                    disabled={upload.isPending || windowMissing}
                     onClick={() => {
                       setError(undefined);
                       upload.mutate({ allowDuplicate: true });
@@ -745,7 +753,7 @@ export function NewPage() {
                   <Button
                     size="sm"
                     data-testid="local-anyway"
-                    disabled={localImport.isPending}
+                    disabled={localImport.isPending || windowMissing}
                     onClick={() => {
                       setError(undefined);
                       localImport.mutate({ allowDuplicate: true });
@@ -758,8 +766,9 @@ export function NewPage() {
             ) : undefined}
           </ErrorView>
         )}
+        {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} onSaved={windowSaved} testId="new-context-window" /> : null}
         <div className="flex justify-end">
-          <Button type="submit" variant="primary" data-testid="new-submit" disabled={submit.isPending || upload.isPending || localImport.isPending}>
+          <Button id={submitId} type="submit" variant="primary" data-testid="new-submit" disabled={submit.isPending || upload.isPending || localImport.isPending || windowMissing}>
             {upload.isPending ? t("shell.newPage.uploading") : submit.isPending || localImport.isPending ? t("shell.newPage.submitting") : t("shell.newPage.submit")}
           </Button>
         </div>

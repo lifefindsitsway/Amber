@@ -40,9 +40,21 @@ export function Field(props: { label: string; hint?: string | undefined; childre
         </div>
       )}
       {props.children}
-      {props.hint === undefined ? null : <p className="mt-1 text-xs text-muted">{props.hint}</p>}
+      {props.hint === undefined ? null : (
+        <p id={props.htmlFor === undefined ? undefined : fieldHintId(props.htmlFor)} className="mt-1 text-xs text-muted">
+          {props.hint}
+        </p>
+      )}
     </div>
   );
+}
+
+/**
+ * The id `Field` gives its hint when it labels a control by `htmlFor`, so the control can name
+ * the hint in `aria-describedby` and screen readers read it with the field.
+ */
+export function fieldHintId(controlId: string): string {
+  return `${controlId}-hint`;
 }
 
 export const INPUT_CLASS =

@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Sparkles } from "lucide-react";
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { HighlightRevisionDto } from "../../../shared/dto/highlight.ts";
@@ -10,6 +11,9 @@ import { useProviders, useSettings } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { TaskFlow } from "../../components/task-flow.tsx";
 import { formatDuration } from "../../format.ts";
+import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
+import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
+import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { HighlightBand, highlightTone } from "../../player/timeline.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
@@ -34,6 +38,11 @@ export function HighlightsTab() {
   const highlights = useHighlights(contentId);
   const providers = useProviders();
   const settings = useSettings();
+  // Generation runs with the default model; without one the Task waits for a model instead.
+  const defaultModel = settings.data?.defaultModelRef;
+  const windowMissing = useModelReadiness(defaultModel, "context_window").status === "missing_context_window";
+  const generateId = useId();
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(generateId));
 
   const recompute = useMutation({
     mutationFn: () =>
@@ -60,9 +69,10 @@ export function HighlightsTab() {
       <div className="flex flex-wrap items-center gap-2">
         {configured ? (
           <Button
+            id={generateId}
             size="sm"
             variant={current === undefined ? "primary" : "secondary"}
-            disabled={activeTaskId !== undefined || !hasTranscript || recompute.isPending}
+            disabled={activeTaskId !== undefined || !hasTranscript || recompute.isPending || windowMissing}
             onClick={() => recompute.mutate()}
             data-testid="highlights-generate"
           >
@@ -79,6 +89,9 @@ export function HighlightsTab() {
       </div>
       {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
       {!hasTranscript ? <p className="text-xs text-muted">{t("contentView.highlights.needsTranscript")}</p> : null}
+      {configured && hasTranscript && windowMissing && defaultModel !== undefined ? (
+        <ContextWindowNotice modelRef={defaultModel} density="compact" onSaved={windowSaved} testId="highlights-context-window" />
+      ) : null}
       {recompute.error instanceof ApiError ? <ErrorView error={recompute.error.error} /> : null}
       {activeTaskId === undefined ? null : <TaskFlow taskId={activeTaskId} />}
       {current?.stale === true ? (

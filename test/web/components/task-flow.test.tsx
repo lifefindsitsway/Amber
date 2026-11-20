@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ContentTaskFlow, contentFlowRows, latestStageRuns, runningStep, TaskFlow } from "../../../src/web/components/task-flow.tsx";
+import { ContentTaskFlow, contentFlowRows, latestStageRuns, runningStep, stageModelNeeds, TaskFlow } from "../../../src/web/components/task-flow.tsx";
 import { baseRoutes, provider, stageRun, taskDetail } from "../../fixtures/web/shell-data.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
+import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 
 const FAILURE = { class: "llm_failed", code: "llm_failed", retryDisposition: "policy", userMessage: "AI 模型调用失败", upstreamMessage: "upstream said 500" } as const;
 
@@ -449,5 +450,91 @@ describe("ContentTaskFlow", () => {
     expect(within(asr).queryByTestId("stage-source")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "取消任务" }));
     await waitFor(() => expect(calls.find((call) => call.method === "POST")?.path).toBe("/api/tasks/p1/cancel"));
+  });
+});
+
+describe("stageModelNeeds", () => {
+  it("needs the window for chapters, summary and highlights, and for an earlier LLM stage that carries its model to one", () => {
+    expect(stageModelNeeds(stageRun("t", "chapter", "failed"), { stageRuns: [] })).toBe("context_window");
+    expect(stageModelNeeds(stageRun("t", "highlight", "failed"), { stageRuns: [] })).toBe("context_window");
+    const proofread = stageRun("t", "proofread", "failed");
+    expect(stageModelNeeds(proofread, { stageRuns: [proofread, stageRun("t", "summary", "skipped")] })).toBe("context_window");
+    expect(stageModelNeeds(proofread, { stageRuns: [proofread, stageRun("t", "summary", "succeeded")] })).toBe("none");
+    expect(stageModelNeeds(proofread, { stageRuns: [proofread] })).toBe("none");
+    expect(stageModelNeeds(stageRun("t", "translate", "failed"), { stageRuns: [] })).toBe("none");
+    expect(stageModelNeeds(stageRun("t", "collection_summary", "failed"), { stageRuns: [] })).toBe("none");
+    expect(stageModelNeeds(stageRun("t", "asr", "failed"), { stageRuns: [stageRun("t", "summary", "skipped")] })).toBe("none");
+  });
+});
+
+describe("TaskFlow model readiness", () => {
+  const WINDOW_FAILURE = { class: "llm_capability", code: "llm_capability.context_window_unknown", retryDisposition: "never", userMessage: "请先为该模型填写上下文窗口大小" } as const;
+  const BARE = { providerProfileId: "p2", modelId: "bare" };
+
+  it("holds a chapter re-run on a model without a window until it is filled in, then re-runs with it", async () => {
+    const detail = taskDetail("t9", [stageRun("t9", "chapter", "failed", { error: WINDOW_FAILURE, engine: { kind: "llm", modelRef: BARE } })]);
+    const windows = windowRoutes([provider("p1", "主力", ["m1"]), providerWithoutWindow("p2", "备用", ["bare"])]);
+    const { calls } = mockApi({ ...baseRoutes(), ...windows.routes, "GET /api/tasks/t9": { body: detail }, "POST /api/tasks/t9/retry-stage": { status: 202, body: { taskId: "t9" } } });
+    renderApp(<TaskFlow taskId="t9" />);
+    const notice = await screen.findByTestId("rerun-context-window");
+    expect(notice.textContent).toContain("「备用 · bare」还没有填写上下文窗口");
+    const rerun = screen.getByRole<HTMLButtonElement>("button", { name: "从这步重跑" });
+    expect(rerun.disabled).toBe(true);
+    expect(notice.dataset["variant"]).toBe("minimal");
+    expect(within(notice).queryByRole("group", { name: "常用值" })).toBeNull();
+
+    fireEvent.change(within(notice).getByLabelText("上下文窗口"), { target: { value: "32000" } });
+    fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByTestId("rerun-context-window")).toBeNull());
+    expect(windows.overrides[0]?.body).toEqual({ limits: { contextWindowTokens: 32_000, maxOutputTokens: null } });
+    expect(rerun.disabled).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(rerun));
+    fireEvent.click(rerun);
+    await waitFor(() => expect(calls.find((call) => call.path === "/api/tasks/t9/retry-stage")?.body).toEqual({ stage: "chapter" }));
+  });
+
+  it("asks when switching a summary re-run to a model without a window, and not for one with it", async () => {
+    const detail = taskDetail("t10", [stageRun("t10", "summary", "failed", { error: FAILURE, engine: { kind: "llm", modelRef: { providerProfileId: "p1", modelId: "m1" } } })]);
+    mockApi({ ...baseRoutes(), ...windowRoutes([provider("p1", "主力", ["m1"]), providerWithoutWindow("p2", "备用", ["bare"])]).routes, "GET /api/tasks/t10": { body: detail } });
+    renderApp(<TaskFlow taskId="t10" />);
+    const model = await screen.findByLabelText<HTMLSelectElement>("重跑所用模型");
+    await waitFor(() => expect(model.options).toHaveLength(2));
+    expect(screen.queryByTestId("rerun-context-window")).toBeNull();
+    fireEvent.change(model, { target: { value: JSON.stringify(["p2", "bare"]) } });
+    expect(await screen.findByTestId("rerun-context-window")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "从这步重跑" }).disabled).toBe(true);
+    fireEvent.change(model, { target: { value: JSON.stringify(["p1", "m1"]) } });
+    expect(screen.queryByTestId("rerun-context-window")).toBeNull();
+  });
+
+  it("asks nothing for a proofread re-run that reaches no summary, but does when it reopens one", async () => {
+    const proofread = stageRun("t11", "proofread", "failed", { error: FAILURE, engine: { kind: "llm", modelRef: BARE } });
+    const alone = taskDetail("t11", [proofread]);
+    const carried = taskDetail("t12", [{ ...proofread, id: "t12-proofread-1", taskId: "t12" }, stageRun("t12", "summary", "skipped")]);
+    mockApi({ ...baseRoutes(), ...windowRoutes([providerWithoutWindow("p2", "备用", ["bare"])]).routes, "GET /api/tasks/t11": { body: alone }, "GET /api/tasks/t12": { body: carried } });
+    renderApp(
+      <>
+        <TaskFlow taskId="t11" />
+        <TaskFlow taskId="t12" />
+      </>,
+    );
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "从这步重跑" })).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId("rerun-context-window")).toHaveLength(1));
+    const [first, second] = screen.getAllByTestId("task-flow");
+    expect(within(first as HTMLElement).queryByTestId("rerun-context-window")).toBeNull();
+    expect(within(second as HTMLElement).getByTestId("rerun-context-window")).toBeTruthy();
+  });
+
+  it("holds 「继续」 of a stage waiting for a model while the one picked has no window", async () => {
+    const detail = taskDetail("t13", [stageRun("t13", "chapter", "waiting_configuration")], { statusProjection: "waiting" });
+    mockApi({ ...baseRoutes(), ...windowRoutes([providerWithoutWindow("p2", "备用", ["bare"]), provider("p1", "主力", ["m1"])]).routes, "GET /api/tasks/t13": { body: detail } });
+    renderApp(<TaskFlow taskId="t13" />);
+    const notice = await screen.findByTestId("flow-context-window");
+    expect(notice.textContent).toContain("「备用 · bare」");
+    const proceed = screen.getByRole<HTMLButtonElement>("button", { name: "继续" });
+    expect(proceed.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("选择用于这一步的模型"), { target: { value: JSON.stringify(["p1", "m1"]) } });
+    expect(screen.queryByTestId("flow-context-window")).toBeNull();
+    expect(proceed.disabled).toBe(false);
   });
 });

@@ -1,0 +1,125 @@
+{
+  "sanitized": true,
+  "_fixture": "Error answers in the shape { error: { message, type, param, code } } (OpenAI Responses API reference and error codes guide, read 2026-11-20). Messages are synthetic.",
+  "auth": {
+    "status": 401,
+    "body": {
+      "error": {
+        "message": "Incorrect API key provided.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": "invalid_api_key"
+      }
+    }
+  },
+  "insufficientQuota": {
+    "status": 429,
+    "body": {
+      "error": {
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "type": "insufficient_quota",
+        "param": null,
+        "code": "insufficient_quota"
+      }
+    }
+  },
+  "rateLimited": {
+    "status": 429,
+    "body": {
+      "error": {
+        "message": "Rate limit reached for requests.",
+        "type": "requests",
+        "param": null,
+        "code": "rate_limit_exceeded"
+      }
+    }
+  },
+  "contextLength": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "Your input exceeds the context window of this model.",
+        "type": "invalid_request_error",
+        "param": "input",
+        "code": "context_length_exceeded"
+      }
+    }
+  },
+  "modelNotFound": {
+    "status": 404,
+    "body": {
+      "error": {
+        "message": "The model `model-under-test` does not exist or you do not have access to it.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": "model_not_found"
+      }
+    }
+  },
+  "serverError": {
+    "status": 500,
+    "body": {
+      "error": {
+        "message": "The server had an error while processing your request.",
+        "type": "server_error",
+        "param": null,
+        "code": null
+      }
+    }
+  },
+  "storeRejected": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "Invalid value for 'store': false is not allowed for this organization.",
+        "type": "invalid_request_error",
+        "param": "store",
+        "code": "invalid_value"
+      }
+    }
+  },
+  "badRequest": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "Invalid value for 'input[0].role'.",
+        "type": "invalid_request_error",
+        "param": "input",
+        "code": null
+      }
+    }
+  },
+  "streamUnsupported": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "Unsupported value: 'stream' does not support true with this model.",
+        "type": "invalid_request_error",
+        "param": "stream",
+        "code": "unsupported_value"
+      }
+    }
+  },
+  "textFormatUnsupported": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "Invalid parameter: 'text.format' of type 'json_schema' is not supported with this model.",
+        "type": "invalid_request_error",
+        "param": "text.format",
+        "code": null
+      }
+    }
+  },
+  "toolsUnsupported": {
+    "status": 400,
+    "body": {
+      "error": {
+        "message": "This model does not support tools.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": null
+      }
+    }
+  }
+}

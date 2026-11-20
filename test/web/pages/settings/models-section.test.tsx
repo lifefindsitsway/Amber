@@ -65,20 +65,36 @@ describe("ModelsSection", () => {
     expect(screen.queryByPlaceholderText("粘贴新的 Key，保存后不再显示")).toBeNull();
   });
 
-  it("runs the connection test on click without a confirmation and labels the context window as declared", async () => {
+  it("runs the connection test on click with a fresh Idempotency-Key and shows the verdict and the three capability badges", async () => {
     const api = mockApi({
       "GET /api/providers": { body: { items: [profile(true)] } },
       "GET /api/settings": { body: SETTINGS },
       "POST /api/providers/p1/probe": {
-        body: { modelId: "model-a", observed: { stream: "supported", structuredOutput: "supported", tools: "unsupported" }, latencyMs: 812, observedAt: 2 },
+        body: {
+          modelId: "model-a",
+          basic: { status: "connected", latencyMs: 812 },
+          checks: [
+            { flag: "stream", result: "supported" },
+            { flag: "structuredOutput", result: "supported" },
+            { flag: "tools", result: "inconclusive", reason: "rate_limited" },
+          ],
+          observed: { stream: "supported", structuredOutput: "supported" },
+          observedAt: 2,
+        },
       },
     });
     renderApp(<ModelsSection />);
-    expect(await screen.findByText(/用户声明值，非实测/)).toBeTruthy();
+    // The live region is there before any result, so the first verdict is announced too.
+    const live = await screen.findByTestId("probe-live");
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.textContent).toBe("");
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({ modelId: "model-a" }));
-    expect(await screen.findByText("延迟 812 ms")).toBeTruthy();
+    expect(api.calls.find((call) => call.method === "POST")?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect((await screen.findByTestId("probe-connected")).textContent).toBe("连接成功 · 延迟 812 ms");
+    expect(screen.getByTestId("probe-live")).toBe(live);
+    expect(screen.getByTestId("probe-check-tools").textContent).toBe("工具未能确认· 被限流，稍后再试");
   });
 
   it("words a rate-limited connection test as advice to test again, not as a pipeline retry", async () => {
@@ -100,9 +116,89 @@ describe("ModelsSection", () => {
     });
     renderApp(<ModelsSection />);
     fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("请约 59 秒后再测试");
-    expect(alert.textContent).not.toContain("重跑");
+    const result = await screen.findByTestId("probe-unconfirmed");
+    expect(result.textContent).toBe("无法确认：被限流，请约 59 秒后再测试");
+    expect(screen.getByTestId("probe-result").textContent).not.toContain("重跑");
+  });
+
+  it("adds the region hint to a rejected key only for a service with several regions", async () => {
+    const auth = {
+      status: 401,
+      body: { error: { class: "llm_failed", code: "llm_failed.auth", retryDisposition: "never", userMessage: "AI 模型的 API Key 无效或无权访问，请检查配置", upstreamMessage: "Invalid Authentication" } },
+    };
+    const qwen = { ...profile(true), presetId: "qwen", baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" };
+    mockApi({ "GET /api/providers": { body: { items: [qwen] } }, "GET /api/settings": { body: SETTINGS }, "POST /api/providers/p1/probe": auth });
+    renderApp(<ModelsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
+    expect((await screen.findByTestId("probe-unavailable")).textContent).toBe("模型不可用：API Key 无效，或没有该模型的使用权限");
+    expect(screen.getByTestId("probe-region-hint").textContent).toBe("也可能是 Key 与所选地域不一致");
+    expect(screen.getByTestId("probe-result").textContent).not.toContain("Invalid Authentication");
+  });
+
+  it("shows the conflict's wording when the configuration changed during the test", async () => {
+    mockApi({
+      "GET /api/providers": { body: { items: [profile(true)] } },
+      "GET /api/settings": { body: SETTINGS },
+      "POST /api/providers/p1/probe": {
+        status: 409,
+        body: { error: { class: "conflict", code: "conflict.probe_config_changed", retryDisposition: "never", userMessage: "测试期间配置已更改，请重新测试" } },
+      },
+    });
+    renderApp(<ModelsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
+    expect((await screen.findByTestId("probe-conflict")).textContent).toBe("测试期间配置已更改，请重新测试");
+  });
+
+  it("puts the vendor mark before the name and says where the profile points", async () => {
+    const kimi = { ...profile(true), id: "p2", name: "Kimi", presetId: "kimi", baseURL: "https://api.moonshot.ai/v1/" };
+    const relay = { ...profile(true), id: "p3", name: "Relay", presetId: "openai", baseURL: "https://relay.example.com/v1" };
+    const plain = { ...profile(true), id: "p4", name: "Plain" };
+    mockApi({ "GET /api/providers": { body: { items: [kimi, relay, plain] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<ModelsSection />);
+    await waitFor(() => expect(screen.getAllByTestId("profile-card")).toHaveLength(3));
+    const [kimiCard, relayCard, plainCard] = screen.getAllByTestId("profile-card") as [HTMLElement, HTMLElement, HTMLElement];
+    const mark = (card: HTMLElement) => card.querySelector("h2 svg[data-vendor-icon]")?.getAttribute("data-vendor-icon");
+    expect([mark(kimiCard), mark(relayCard), mark(plainCard)]).toEqual(["kimi", "openai", "neutral"]);
+    expect(within(kimiCard).getByTestId("profile-endpoint").textContent).toBe("OpenAI 兼容·api.moonshot.ai/v1·国际");
+    expect(within(kimiCard).queryByTestId("profile-custom-address")).toBeNull();
+    expect(within(relayCard).getByTestId("profile-custom-address").textContent).toBe("自定义地址");
+    expect(within(plainCard).queryByTestId("profile-custom-address")).toBeNull();
+  });
+
+  it.each([
+    ["missing", "待配置"],
+    ["configured", "已配置"],
+    ["unavailable", "凭据不可用"],
+  ] as const)("words a %s key as 「%s」", async (status, text) => {
+    mockApi({ "GET /api/providers": { body: { items: [{ ...profile(status !== "missing"), credentialStatus: status }] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<ModelsSection />);
+    expect((await screen.findByTestId("profile-credential-status")).textContent).toBe(text);
+  });
+
+  it("fills in a missing context window on the card through the model's override", async () => {
+    const bare = { ...profile(true), models: [{ ...model("model-a"), limits: { declared: {}, userOverride: { maxOutputTokens: 4096 } }, effective: { flags: FLAGS, limits: { maxOutputTokens: 4096 } } }] };
+    const api = mockApi({
+      "GET /api/providers": { body: { items: [bare] } },
+      "GET /api/settings": { body: SETTINGS },
+      "PUT /api/providers/p1/models/model-a/override": { body: profile(true) },
+    });
+    renderApp(<ModelsSection />);
+    const limits = await screen.findByTestId("model-limits");
+    expect(limits.textContent).toBe("上下文窗口 未填写 · 填写 · 最大输出 4,096");
+    fireEvent.click(screen.getByRole("button", { name: "填写 model-a 的上下文窗口" }));
+    const input = screen.getByLabelText("model-a 的上下文窗口（tokens）");
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: "200K" } });
+    fireEvent.click(within(screen.getByTestId("model-limits-form")).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ limits: { contextWindowTokens: 200_000, maxOutputTokens: 4096 } }),
+    );
+  });
+
+  it("shows a filled-in context window as a number", async () => {
+    mockApi({ "GET /api/providers": { body: { items: [profile(true)] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<ModelsSection />);
+    expect((await screen.findByTestId("model-limits")).textContent).toBe("上下文窗口 128,000（用户声明值，非实测）");
   });
 
   it("shows a model's price and edits it with the units of AI models", async () => {
@@ -189,7 +285,8 @@ describe("ModelsSection", () => {
   it("shows the key status beside its label and gives 「手动覆盖」 the same bordered look as the connection test", async () => {
     mockApi({ "GET /api/providers": { body: { items: [profile(true)] } }, "GET /api/settings": { body: SETTINGS } });
     renderApp(<ModelsSection />);
-    const status = await screen.findByText("已配置");
+    const status = await screen.findByTestId("profile-credential-status");
+    expect(status.textContent).toBe("已配置");
     expect(status.parentElement?.querySelector("label")?.textContent).toBe("API Key");
     const test = screen.getByRole("button", { name: "测试连接" });
     const override = screen.getByRole("button", { name: "手动覆盖" });
@@ -231,62 +328,11 @@ describe("ModelsSection", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.keyDown(within(dialog).getByRole("button", { name: "拖动调整模型顺序 · model-c" }), { key: "ArrowUp" });
     fireEvent.keyDown(within(dialog).getByRole("button", { name: "拖动调整模型顺序 · model-c" }), { key: "ArrowUp" });
-    const ids = () => within(dialog).getAllByLabelText("模型 ID").map((input) => (input as HTMLInputElement).value);
+    const ids = () => within(dialog).getAllByLabelText(/^模型 ID（第/u).map((input) => (input as HTMLInputElement).value);
     expect(ids()).toEqual(["model-c", "model-a", "model-b"]);
     // Nothing is saved until the dialog is.
     expect(api.calls.some((call) => call.method === "PATCH")).toBe(false);
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toMatchObject({ models: [{ modelId: "model-c" }, { modelId: "model-a" }, { modelId: "model-b" }] }));
-  });
-
-  describe("creating a profile from a preset", () => {
-    async function openCreate(api = mockApi({ "GET /api/providers": { body: { items: [] } } })) {
-      renderApp(<ModelsSection />);
-      fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
-      const dialog = await screen.findByRole("dialog");
-      const field = (label: string) => within(dialog).getByLabelText(label) as HTMLSelectElement & HTMLInputElement;
-      const options = (label: string) => Array.from(field(label).options).map((option) => option.textContent);
-      return { api, dialog, field, options };
-    }
-
-    it("names the open-ended preset 「自定义」 and offers both protocols for it", async () => {
-      const { field, options } = await openCreate();
-      expect(options("预设")).toEqual(["OpenAI", "Anthropic", "DeepSeek", "自定义"]);
-      fireEvent.change(field("预设"), { target: { value: "custom" } });
-      expect(options("协议")).toEqual(["OpenAI 兼容", "Anthropic Messages"]);
-      expect(field("Base URL").value).toBe("");
-    });
-
-    it("only offers the protocol a single-protocol vendor serves", async () => {
-      const { field, options } = await openCreate();
-      expect(options("协议")).toEqual(["OpenAI 兼容"]);
-      fireEvent.change(field("预设"), { target: { value: "anthropic" } });
-      expect(options("协议")).toEqual(["Anthropic Messages"]);
-      expect(field("协议").value).toBe("anthropic_messages");
-      expect(field("Base URL").value).toBe("https://api.anthropic.com");
-    });
-
-    it("switches DeepSeek's Base URL with the protocol and saves the Anthropic endpoint", async () => {
-      const api = mockApi({ "GET /api/providers": { body: { items: [] } }, "POST /api/providers": { body: profile(false) } });
-      const { dialog, field, options } = await openCreate(api);
-      fireEvent.change(field("预设"), { target: { value: "deepseek" } });
-      expect(options("协议")).toEqual(["OpenAI 兼容", "Anthropic Messages"]);
-      expect(field("Base URL").value).toBe("https://api.deepseek.com");
-      fireEvent.change(field("协议"), { target: { value: "anthropic_messages" } });
-      expect(field("Base URL").value).toBe("https://api.deepseek.com/anthropic");
-      fireEvent.change(field("协议"), { target: { value: "openai_compatible" } });
-      expect(field("Base URL").value).toBe("https://api.deepseek.com");
-      fireEvent.change(field("协议"), { target: { value: "anthropic_messages" } });
-      fireEvent.change(within(dialog).getByLabelText("模型 ID"), { target: { value: "deepseek-chat" } });
-      fireEvent.change(within(dialog).getByLabelText("上下文窗口（tokens）"), { target: { value: "128000" } });
-      fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
-      await waitFor(() =>
-        expect(api.calls.find((call) => call.method === "POST")?.body).toMatchObject({
-          name: "DeepSeek",
-          protocol: "anthropic_messages",
-          baseURL: "https://api.deepseek.com/anthropic",
-        }),
-      );
-    });
   });
 });

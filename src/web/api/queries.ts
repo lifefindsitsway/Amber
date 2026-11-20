@@ -18,7 +18,7 @@ import {
   type OtherModelProfilePatch,
 } from "../../shared/dto/other-model.ts";
 import { platformAccountListDtoSchema } from "../../shared/dto/platform-account.ts";
-import { providerListDtoSchema, providerProfileDtoSchema } from "../../shared/dto/provider.ts";
+import { type ModelCapabilityDto, providerListDtoSchema, providerProfileDtoSchema } from "../../shared/dto/provider.ts";
 import { instanceSettingsDtoSchema } from "../../shared/dto/instance-settings.ts";
 import { userSettingsDtoSchema, type UserSettingsDto, type UserSettingsPatch } from "../../shared/dto/settings.ts";
 import { authMeDtoSchema, setupStatusDtoSchema, versionDtoSchema } from "../../shared/dto/system.ts";
@@ -222,6 +222,33 @@ export function useAsrModelTest(profileId: string) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.asrProfiles });
       await queryClient.invalidateQueries({ queryKey: queryKeys.usage });
     },
+  });
+}
+
+/**
+ * Fills in (or with `null` clears) one LLM model's context window through its user override.
+ * The override's limits layer is replaced as a whole, so the model's current user-declared
+ * max output goes along unchanged. Shared by the model settings and every "needs a context
+ * window" notice; the profile list is re-read so every model picker sees the new value.
+ */
+export function useSetContextWindow() {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { profileId: string; model: ModelCapabilityDto; contextWindowTokens: number | null }) =>
+      client.put(
+        `/api/providers/${encodeURIComponent(input.profileId)}/models/${encodeURIComponent(input.model.modelId)}/override`,
+        providerProfileDtoSchema,
+        {
+          body: {
+            limits: {
+              contextWindowTokens: input.contextWindowTokens,
+              maxOutputTokens: input.model.limits.userOverride?.maxOutputTokens ?? null,
+            },
+          },
+        },
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.providers }),
   });
 }
 

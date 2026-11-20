@@ -18,7 +18,7 @@ import {
   type ChatThreadsDto,
   type WebSourceDto,
 } from "../../shared/dto/chat.ts";
-import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
+import { modelRefSchema, type ModelRefDto } from "../../shared/dto/model-ref.ts";
 import type { ChatMessageStatus, ChatWebSearchSetting, WebSearchMode } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { ApiError } from "../api/client.ts";
@@ -26,6 +26,8 @@ import { useApi } from "../api/context.tsx";
 import { queryKeys, usePatchSettings, useProviders, useSettings, useWebSearchProfile } from "../api/queries.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { formatBeijingDateTime } from "../format.ts";
+import { ContextWindowNotice } from "../models/context-window-notice.tsx";
+import { useModelReadiness } from "../models/use-model-readiness.ts";
 import { useContentPage } from "../pages/content/content-context.tsx";
 import { ConfirmDialog } from "../pages/content/confirm-dialog.tsx";
 import { usePlayerController } from "../player/player-controller.tsx";
@@ -135,6 +137,12 @@ export function pendingTurn(kind: PendingTurn["kind"], question: string, quote: 
 const CONTEXT_WINDOW_UNKNOWN = "llm_capability.context_window_unknown";
 const MODEL_MISSING = "llm_unconfigured.model_missing";
 
+/** The model a refusal for an unknown context window names; a retry may run with another than the one selected. */
+function refusedModel(error: AppError | undefined): ModelRefDto | undefined {
+  const named = modelRefSchema.safeParse({ providerProfileId: error?.details?.["providerProfileId"], modelId: error?.details?.["modelId"] });
+  return named.success ? named.data : undefined;
+}
+
 /** Folds one SSE event of the answer into the pending turn. */
 export function applyChatEvent(turn: PendingTurn, event: ChatStreamEvent): PendingTurn {
   switch (event.type) {
@@ -214,6 +222,8 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   const [picked, setPicked] = useState<ModelRefDto | undefined>(undefined);
   const modelRef = picked ?? defaultChatModel(options, settings.data);
   const ready = !providers.isPending && !settings.isPending;
+  // Known from the provider list before any question is asked; the server refuses the same.
+  const windowMissing = useModelReadiness(modelRef, "context_window").status === "missing_context_window";
 
   const threads = useChatThreads(contentId);
   const [chosen, setChosen] = useState<string | undefined>(() => readStoredThread(contentId));
@@ -318,7 +328,9 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
 
   const context: ChatContextDto | undefined = chat.data?.context;
   const marker = context === undefined ? undefined : chatContextMarker(context, stored, { running: state.running, used: state.streamedContext });
-  const contextUnknown = state.error?.code === CONTEXT_WINDOW_UNKNOWN;
+  const refusedWindow = state.error?.code === CONTEXT_WINDOW_UNKNOWN;
+  const contextUnknown = refusedWindow || windowMissing;
+  const windowModel = (refusedWindow ? refusedModel(state.error) : undefined) ?? modelRef;
   const unavailableReason = modelRef === undefined && providers.isSuccess ? "no_model" : contextUnknown ? "context_window_unknown" : context?.mode === "unavailable" ? context.reason : undefined;
   const blocked = unavailableReason !== undefined || modelRef === undefined;
   const threadBusy = state.running || stored.some((message) => message.status === "streaming");
@@ -693,7 +705,25 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
     );
   };
 
-  const refusal = state.error === undefined || contextUnknown ? undefined : state.error;
+  const refusal = state.error === undefined || refusedWindow ? undefined : state.error;
+
+  /** The window was filled in: refusals for it are dropped and the context is planned again. */
+  const windowFilled = (): void => {
+    setStates((all) => Object.fromEntries(Object.entries(all).map(([stateKey, item]) => [stateKey, item.error?.code === CONTEXT_WINDOW_UNKNOWN ? { ...item, error: undefined } : item])));
+    void refreshAll();
+  };
+  // Filled in anywhere (the summary tab's notice, the model settings), not only here.
+  const wasMissing = useRef(windowMissing);
+  useEffect(() => {
+    if (wasMissing.current && !windowMissing) windowFilled();
+    wasMissing.current = windowMissing;
+  });
+  const windowSaved = (): void => {
+    windowFilled();
+    inputRef.current?.focus();
+  };
+  // A missing window only holds the question back: it can still be written meanwhile.
+  const inputLocked = blocked && unavailableReason !== "context_window_unknown";
 
   // One box like a chat app's: the quote above the text; the model, web search, the context
   // mode and send along its bottom edge.
@@ -701,7 +731,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
     <div className="flex items-end gap-2">
       {collapsed ? <MessageSquare size={14} className="mb-2.5 shrink-0 text-muted" aria-hidden="true" /> : null}
       <div
-        className={`flex min-w-0 flex-1 flex-col rounded-lg border border-line bg-surface focus-within:border-accent ${blocked ? "opacity-60" : ""}`}
+        className={`flex min-w-0 flex-1 flex-col rounded-lg border border-line bg-surface focus-within:border-accent ${inputLocked ? "opacity-60" : ""}`}
         data-testid="chat-box"
       >
         {collapsed ? null : <ChatInputResizer target={inputRef} />}
@@ -719,7 +749,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
             ref={inputRef}
             rows={collapsed ? 1 : 2}
             value={input}
-            disabled={blocked}
+            disabled={inputLocked}
             placeholder={t("chat.placeholder")}
             aria-label={t("chat.placeholder")}
             data-testid="chat-input"
@@ -938,7 +968,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
           }}
         />
       ) : null}
-      {unavailableReason === undefined ? null : <Unavailable reason={unavailableReason} />}
+      {unavailableReason === undefined ? null : <Unavailable reason={unavailableReason} modelRef={windowModel} onSaved={windowSaved} />}
       {unavailableReason === undefined && context?.mode === "metadata" ? (
         <p className="rounded-md bg-sunken px-2 py-1.5 text-xs text-muted" data-testid="chat-metadata-hint">
           {t("chat.metadataHint")}
@@ -1023,12 +1053,19 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   );
 }
 
-function Unavailable(props: { reason: "no_model" | "context_window_unknown" }) {
+function Unavailable(props: { reason: "no_model" | "context_window_unknown"; modelRef: ModelRefDto | undefined; onSaved: () => void }) {
   const { t } = useTranslation();
+  if (props.reason === "context_window_unknown" && props.modelRef !== undefined) {
+    return (
+      <div data-testid="chat-unavailable" data-reason={props.reason}>
+        <ContextWindowNotice modelRef={props.modelRef} density="compact" defer onSaved={props.onSaved} testId="chat-context-window" />
+      </div>
+    );
+  }
   return (
     <p className="flex flex-wrap items-center gap-2 rounded-md bg-sunken px-2 py-1.5 text-xs text-muted" data-testid="chat-unavailable" data-reason={props.reason}>
       {t(`chat.unavailable.${props.reason}`)}
-      <Link to="/settings/models" className="text-accent hover:underline" data-testid="chat-configure">
+      <Link to="/settings/models" className="text-accent-ink underline-offset-2 hover:underline dark:text-accent" data-testid="chat-configure">
         {t("chat.configure")}
       </Link>
     </p>

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { importResponseSchema } from "../../../shared/dto/import.ts";
 import type { AppError } from "../../../shared/errors.ts";
@@ -9,6 +9,9 @@ import { initialAsrModelRef } from "../asr-model-select.tsx";
 import { appErrorOf } from "../confirm-dialog.tsx";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
+import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
+import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { ErrorView } from "../error-view.tsx";
 
 /** One link per line, imported straight into the collection with the user's default settings. */
@@ -21,6 +24,11 @@ export function BatchAddDialog(props: { open: boolean; onOpenChange: (open: bool
   const [text, setText] = useState("");
   const [error, setError] = useState<AppError | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  // Each link is processed up to its summary with the default model, which needs a context window.
+  const defaultModel = settings.data?.defaultModelRef;
+  const windowMissing = useModelReadiness(defaultModel, "context_window").status === "missing_context_window";
+  const addId = useId();
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(addId));
   const urls = text
     .split("\n")
     .map((line) => line.trim())
@@ -72,9 +80,10 @@ export function BatchAddDialog(props: { open: boolean; onOpenChange: (open: bool
           <ErrorView error={error} />
         </div>
       )}
+      {windowMissing && defaultModel !== undefined ? <ContextWindowNotice modelRef={defaultModel} variant="minimal" onSaved={windowSaved} className="mt-2" testId="batch-add-context-window" /> : null}
       <div className="mt-3 flex justify-end gap-2">
         <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
-        <Button variant="primary" disabled={busy || urls.length === 0} onClick={() => void submit()}>
+        <Button id={addId} variant="primary" disabled={busy || urls.length === 0 || windowMissing} onClick={() => void submit()}>
           {t("library.collection.batchAddSubmit")}
         </Button>
       </div>

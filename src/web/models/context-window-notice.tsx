@@ -1,0 +1,231 @@
+import { Info } from "lucide-react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
+import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
+import { useProviders, useSetContextWindow } from "../api/queries.ts";
+import { appErrorOf } from "../components/confirm-dialog.tsx";
+import { Button } from "../ui/button.tsx";
+import { CONTEXT_WINDOW_SUGGESTIONS, parseTokenCount } from "./context-window.ts";
+import { findModel } from "./use-model-readiness.ts";
+
+/** Links on the notice's tinted ground: the accent itself is too light there in the light themes. */
+const LINK = "text-accent-ink underline-offset-2 hover:underline dark:text-accent";
+
+/**
+ * The full notices on screen, by model: a deferring notice for the same model (the chat beside
+ * a summary tab) only points to one of them, so a page never asks the same thing twice.
+ */
+const shown = new Map<string, Set<() => void>>();
+const listeners = new Set<() => void>();
+let shownVersion = 0;
+
+function modelKey(ref: ModelRefDto): string {
+  return JSON.stringify([ref.providerProfileId, ref.modelId]);
+}
+
+function changed(): void {
+  shownVersion += 1;
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Focuses the field of a full notice for `ref` on screen, if there is one. */
+function fullNoticeFor(ref: ModelRefDto): (() => void) | undefined {
+  return shown.get(modelKey(ref))?.values().next().value;
+}
+
+/**
+ * Where a feature needs the chosen model's context window and it has none: one sentence, a
+ * number field and 「保存」, written through the model's capability override. Saving re-reads
+ * the provider list, so every entry waiting on that model becomes usable on its own and drops
+ * its notice. Never a `<form>`: it sits inside other forms, and Enter in its field saves only here.
+ */
+export function ContextWindowNotice(props: {
+  modelRef: ModelRefDto;
+  /** `compact` for tight rows (a stage's actions, the chat box); `regular` in page forms. */
+  density?: "regular" | "compact";
+  /**
+   * `full` offers the common sizes as buttons and a way to the model settings; `minimal` (a
+   * stage's re-run row, a dialog) keeps to the field and 「保存」, the sizes as input suggestions.
+   */
+  variant?: "full" | "minimal";
+  /** Only points to a full notice for the same model when one is on screen. */
+  defer?: boolean;
+  /** Runs after a save from this notice, even once the notice itself has gone. */
+  onSaved?: () => void;
+  className?: string;
+  testId?: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const id = useId();
+  const providers = useProviders();
+  const save = useSetContextWindow();
+  const [text, setText] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const found = findModel(providers.data?.items ?? [], props.modelRef);
+  const testId = props.testId ?? "context-window-notice";
+  const compact = props.density === "compact";
+  const minimal = props.variant === "minimal";
+  const defer = props.defer === true;
+  const key = modelKey(props.modelRef);
+  const modelLabel = found === undefined ? props.modelRef.modelId : `${found.profile.name} · ${found.model.modelId}`;
+  const failure = save.error === null ? undefined : appErrorOf(save.error);
+  const fillable = found !== undefined;
+
+  useEffect(() => {
+    if (defer || !fillable) return undefined;
+    const focus = (): void => {
+      inputRef.current?.scrollIntoView?.({ block: "nearest" });
+      inputRef.current?.focus();
+    };
+    const entries = shown.get(key) ?? new Set();
+    entries.add(focus);
+    shown.set(key, entries);
+    changed();
+    return () => {
+      entries.delete(focus);
+      if (entries.size === 0) shown.delete(key);
+      changed();
+    };
+  }, [defer, fillable, key]);
+  useSyncExternalStore(subscribe, () => shownVersion);
+  const elsewhere = defer ? fullNoticeFor(props.modelRef) : undefined;
+
+  const submit = (): void => {
+    if (found === undefined || save.isPending) return;
+    const tokens = parseTokenCount(text);
+    if (tokens === undefined) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    const onSaved = props.onSaved;
+    // Awaited rather than a per-call callback: those do not run once this notice has unmounted,
+    // which a successful save usually causes before it answers.
+    save
+      .mutateAsync({
+        profileId: found.profile.id,
+        model: found.model,
+        contextWindowTokens: tokens,
+      })
+      .then(
+        () => onSaved?.(),
+        () => undefined,
+      );
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+    // The surrounding form, if any, must not submit: the entry is still unusable here.
+    event.preventDefault();
+    submit();
+  };
+  const problem = invalid ? t("modelReadiness.invalid") : failure === undefined ? undefined : failure.userMessage !== "" ? failure.userMessage : t(`errors.${failure.class}`);
+  const box = `rounded-md border border-accent/40 bg-accent-soft ${compact ? "px-2.5 py-2 text-xs" : "px-3 py-2.5 text-sm"} ${props.className ?? ""}`;
+
+  if (elsewhere !== undefined) {
+    return (
+      <p data-testid={testId} data-variant="pointer" className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${box}`}>
+        <Info size={compact ? 13 : 14} className="shrink-0 text-accent" aria-hidden="true" />
+        <span>{t("modelReadiness.elsewhere", { model: modelLabel })}</span>
+        <button type="button" className={`font-medium ${LINK}`} onClick={elsewhere} data-testid={`${testId}-goto`}>
+          {t("modelReadiness.gotoFill")}
+        </button>
+      </p>
+    );
+  }
+
+  return (
+    <div role="group" aria-labelledby={`${id}-text`} data-testid={testId} data-variant={minimal ? "minimal" : "full"} className={`flex flex-col gap-2 ${box}`}>
+      <p id={`${id}-text`} className="flex items-start gap-1.5">
+        <Info size={compact ? 13 : 14} className={`shrink-0 text-accent ${compact ? "mt-px" : "mt-0.5"}`} aria-hidden="true" />
+        <span>{t("modelReadiness.notice", { model: modelLabel })}</span>
+      </p>
+      {found === undefined ? null : (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <label htmlFor={`${id}-input`} className="sr-only">
+            {t("modelReadiness.inputLabel")}
+          </label>
+          <span className="inline-flex h-7 items-center rounded-md border border-line bg-surface focus-within:border-accent">
+            <input
+              ref={inputRef}
+              id={`${id}-input`}
+              list={minimal ? `${id}-suggestions` : undefined}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              spellCheck={false}
+              value={text}
+              placeholder={t("modelReadiness.placeholder")}
+              aria-invalid={problem === undefined ? undefined : true}
+              aria-describedby={problem === undefined ? undefined : `${id}-problem`}
+              data-testid={`${testId}-input`}
+              className="h-full w-28 min-w-0 bg-transparent px-2 font-mono text-xs outline-none"
+              onChange={(event) => {
+                setText(event.target.value);
+                setInvalid(false);
+                if (save.isError) save.reset();
+              }}
+              onKeyDown={onKeyDown}
+            />
+            <span className="pr-2 text-xs text-muted" aria-hidden="true">
+              {t("modelReadiness.unit")}
+            </span>
+          </span>
+          <Button size="sm" variant="primary" disabled={save.isPending || text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
+            {save.isPending ? t("modelReadiness.saving") : t("modelReadiness.save")}
+          </Button>
+          {minimal ? (
+            <datalist id={`${id}-suggestions`}>
+              {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
+                <option key={suggestion.tokens} value={suggestion.tokens} label={suggestion.label} />
+              ))}
+            </datalist>
+          ) : null}
+          {minimal ? null : (
+            <span role="group" aria-label={t("modelReadiness.suggestions")} className="flex flex-wrap items-center gap-0.5">
+              {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion.label}
+                  type="button"
+                  aria-label={t("modelReadiness.suggestionFill", {
+                    label: suggestion.label,
+                    value: suggestion.tokens.toLocaleString(i18n.language),
+                  })}
+                  className="h-6 rounded px-1.5 text-xs text-muted transition hover:bg-surface hover:text-ink focus-visible:bg-surface focus-visible:text-ink"
+                  onClick={() => {
+                    setText(String(suggestion.tokens));
+                    setInvalid(false);
+                    if (save.isError) save.reset();
+                  }}
+                >
+                  {suggestion.label}
+                </button>
+              ))}
+            </span>
+          )}
+          {minimal ? null : (
+            <Link to="/settings/models" className={`ml-auto text-xs ${LINK}`} data-testid={`${testId}-settings`}>
+              {t("modelReadiness.settings")}
+            </Link>
+          )}
+        </div>
+      )}
+      {found === undefined ? (
+        <Link to="/settings/models" className={`self-start text-xs ${LINK}`} data-testid={`${testId}-settings`}>
+          {t("modelReadiness.settings")}
+        </Link>
+      ) : null}
+      {problem === undefined ? null : (
+        <p id={`${id}-problem`} role="alert" className="text-xs text-danger" data-testid={`${testId}-error`}>
+          {problem}
+        </p>
+      )}
+    </div>
+  );
+}

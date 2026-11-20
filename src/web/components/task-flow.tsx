@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { CheckCircle2, Circle, CircleAlert, CircleDashed, CircleSlash, Clock, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { AsrModelRefDto, ModelRefDto } from "../../shared/dto/model-ref.ts";
@@ -15,11 +15,31 @@ import { AsrModelSelect, encodeAsrModel, initialAsrModelRef, useAsrModelLabel } 
 import { Button } from "../ui/button.tsx";
 import { Spinner } from "../ui/feedback.tsx";
 import { ErrorView, useEngineLabel } from "./error-view.tsx";
+import { ContextWindowNotice } from "../models/context-window-notice.tsx";
+import { useFocusAfterSave } from "../models/use-focus-after-save.ts";
+import { CONTEXT_WINDOW_STAGES, useModelReadiness, type ModelNeeds } from "../models/use-model-readiness.ts";
 
 /** Stages whose work is an LLM call; they wait for a model binding when none is configured. */
 const LLM_STAGES: ReadonlySet<StageId> = new Set(["proofread", "chapter", "summary", "highlight", "translate", "collection_summary"]);
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+
+/** Later stages a resumed or re-run stage carries along: those not done that are waiting on it. */
+const CARRIED_STATUSES: ReadonlySet<StageStatus> = new Set(["pending", "waiting_configuration", "skipped"]);
+
+/**
+ * Whether resuming or re-running `run` reaches a stage that needs the model's context window:
+ * the stage itself, or for an earlier LLM stage a later one of the same Task that the model
+ * choice is carried to (a re-run reopens the stages a failure skipped; a resumed stage hands
+ * its model to the rest).
+ */
+export function stageModelNeeds(run: StageRunDto, owner: Pick<TaskDetailDto, "stageRuns">): ModelNeeds {
+  if (CONTEXT_WINDOW_STAGES.has(run.stage)) return "context_window";
+  if (!LLM_STAGES.has(run.stage)) return "none";
+  const position = STAGE_IDS.indexOf(run.stage);
+  const carried = latestStageRuns(owner).some((other) => STAGE_IDS.indexOf(other.stage) > position && CONTEXT_WINDOW_STAGES.has(other.stage) && CARRIED_STATUSES.has(other.status));
+  return carried ? "context_window" : "none";
+}
 
 /** The latest attempt of each stage, in pipeline order. */
 export function latestStageRuns(detail: Pick<TaskDetailDto, "stageRuns">): StageRunDto[] {
@@ -234,6 +254,7 @@ function FlowSection(props: { task: TaskDetailDto; status: TaskDetailDto["status
             taskId={owner.id}
             run={run}
             step={runningStep(owner, run.id)}
+            needs={stageModelNeeds(run, owner)}
             // Only parked units: the resend prompt authorizes a paid re-send for each unit it is given.
             units={owner.workUnits.filter((unit) => unit.stageRunId === run.id && unit.status === "waiting_user_action")}
             {...(redone === true ? { redoneBy: { kind: owner.kind, at: run.startedAt ?? owner.createdAt } } : {})}
@@ -255,7 +276,7 @@ function RedoneBy(props: { kind: TaskKind; at: number }) {
   );
 }
 
-function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | undefined; units: WorkUnitDto[]; redoneBy?: { kind: TaskKind; at: number } }) {
+function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | undefined; needs: ModelNeeds; units: WorkUnitDto[]; redoneBy?: { kind: TaskKind; at: number } }) {
   const { t } = useTranslation();
   const api = useApi();
   const hub = useTaskHub();
@@ -303,7 +324,7 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
       {run.status === "failed" && run.error !== undefined ? (
         <div className="mt-2">
           <ErrorView error={run.error} stage={run.stage} {...(run.engine === undefined ? {} : { engine: run.engine })}>
-            <RerunControls run={run} pending={retry.isPending} onRerun={(choice) => retry.mutate(choice ?? {})} />
+            <RerunControls run={run} needs={props.needs} pending={retry.isPending} onRerun={(choice) => retry.mutate(choice ?? {})} />
             {/* A re-run reads the prompts in effect now, so an edit or a restore made since the failure applies. */}
             {LLM_STAGES.has(run.stage) ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunPromptHint")}</span> : null}
             {run.error.class === "auth_required" ? (
@@ -314,7 +335,7 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
           </ErrorView>
         </div>
       ) : null}
-      {run.status === "waiting_configuration" ? <WaitingConfiguration run={run} pending={retry.isPending} onContinue={(choice) => retry.mutate(choice ?? {})} /> : null}
+      {run.status === "waiting_configuration" ? <WaitingConfiguration run={run} needs={props.needs} pending={retry.isPending} onContinue={(choice) => retry.mutate(choice ?? {})} /> : null}
       <ResendPrompt taskId={props.taskId} units={props.units} />
       {actionError instanceof ApiError ? (
         <div className="mt-2">
@@ -331,11 +352,11 @@ interface StageChoice {
   asrModelRef?: AsrModelRefDto;
 }
 
-function WaitingConfiguration(props: { run: StageRunDto; pending: boolean; onContinue: (choice?: StageChoice) => void }) {
+function WaitingConfiguration(props: { run: StageRunDto; needs: ModelNeeds; pending: boolean; onContinue: (choice?: StageChoice) => void }) {
   if (props.run.stage === "asr") {
     return <WaitingAsrConfiguration run={props.run} pending={props.pending} onContinue={props.onContinue} />;
   }
-  return <WaitingModelConfiguration run={props.run} pending={props.pending} onContinue={props.onContinue} />;
+  return <WaitingModelConfiguration run={props.run} needs={props.needs} pending={props.pending} onContinue={props.onContinue} />;
 }
 
 /**
@@ -378,7 +399,7 @@ function WaitingAsrConfiguration(props: { run: StageRunDto; pending: boolean; on
   );
 }
 
-function WaitingModelConfiguration(props: { run: StageRunDto; pending: boolean; onContinue: (choice?: StageChoice) => void }) {
+function WaitingModelConfiguration(props: { run: StageRunDto; needs: ModelNeeds; pending: boolean; onContinue: (choice?: StageChoice) => void }) {
   const { t } = useTranslation();
   const isLlm = LLM_STAGES.has(props.run.stage);
   const needsModel = isLlm && props.run.engine === undefined;
@@ -386,6 +407,12 @@ function WaitingModelConfiguration(props: { run: StageRunDto; pending: boolean; 
   // Undefined until the user picks; the first listed model is offered meanwhile.
   const [picked, setPicked] = useState<string | undefined>(undefined);
   const chosen = picked ?? options[0]?.value;
+  // The model the stage will run with: the one picked here, else the one it is bound to.
+  const engine = props.run.engine;
+  const modelRef = needsModel ? (chosen === undefined ? undefined : decodeModel(chosen)) : engine?.kind === "llm" ? engine.modelRef : undefined;
+  const windowMissing = useModelReadiness(isLlm ? modelRef : undefined, props.needs).status === "missing_context_window";
+  const continueId = useId();
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(continueId));
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
       <span className="text-muted">{t("shell.flow.waitingConfiguration")}</span>
@@ -402,15 +429,14 @@ function WaitingModelConfiguration(props: { run: StageRunDto; pending: boolean; 
         </select>
       ) : null}
       <Button
+        id={continueId}
         size="sm"
-        disabled={props.pending || (needsModel && options.length === 0)}
-        onClick={() => {
-          const modelRef = needsModel && chosen !== undefined ? decodeModel(chosen) : undefined;
-          props.onContinue(modelRef === undefined ? {} : { modelRef });
-        }}
+        disabled={props.pending || (needsModel && options.length === 0) || windowMissing}
+        onClick={() => props.onContinue(needsModel && modelRef !== undefined ? { modelRef } : {})}
       >
         {t("shell.flow.continue")}
       </Button>
+      {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} density="compact" variant="minimal" onSaved={windowSaved} className="basis-full" testId="flow-context-window" /> : null}
     </div>
   );
 }
@@ -419,7 +445,7 @@ function WaitingModelConfiguration(props: { run: StageRunDto; pending: boolean; 
  * "Re-run from this step"; a bound LLM stage may switch its model and the ASR stage its
  * profile for the re-run.
  */
-function RerunControls(props: { run: StageRunDto; pending: boolean; onRerun: (choice?: StageChoice) => void }) {
+function RerunControls(props: { run: StageRunDto; needs: ModelNeeds; pending: boolean; onRerun: (choice?: StageChoice) => void }) {
   const { t } = useTranslation();
   const engine = props.run.engine;
   if (props.run.stage === "asr" && engine?.kind === "asr") {
@@ -432,7 +458,7 @@ function RerunControls(props: { run: StageRunDto; pending: boolean; onRerun: (ch
       </Button>
     );
   }
-  return <RerunWithModel current={engine.modelRef} pending={props.pending} onRerun={(modelRef) => props.onRerun(modelRef === undefined ? {} : { modelRef })} />;
+  return <RerunWithModel current={engine.modelRef} needs={props.needs} pending={props.pending} onRerun={(modelRef) => props.onRerun(modelRef === undefined ? {} : { modelRef })} />;
 }
 
 /**
@@ -467,7 +493,7 @@ function RerunWithAsrModel(props: { current: AsrModelRefDto; provider: string | 
   );
 }
 
-function RerunWithModel(props: { current: ModelRefDto; pending: boolean; onRerun: (modelRef?: ModelRefDto) => void }) {
+function RerunWithModel(props: { current: ModelRefDto; needs: ModelNeeds; pending: boolean; onRerun: (modelRef?: ModelRefDto) => void }) {
   const { t } = useTranslation();
   const listed = useModelOptions();
   const currentLabel = useEngineLabel({ kind: "llm", modelRef: props.current });
@@ -477,6 +503,11 @@ function RerunWithModel(props: { current: ModelRefDto; pending: boolean; onRerun
   const options = listed.some((option) => option.value === current) ? listed : [{ value: current, label: currentLabel ?? props.current.modelId }, ...listed];
   const [selected, setSelected] = useState(current);
   const changed = selected !== current;
+  // The kept model is checked too: a re-run with it would meet the same missing window.
+  const selectedRef = decodeModel(selected);
+  const windowMissing = useModelReadiness(selectedRef, props.needs).status === "missing_context_window";
+  const rerunId = useId();
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(rerunId));
   return (
     <>
       <select aria-label={t("shell.flow.rerunModel")} className="h-7 rounded border border-line bg-surface px-1 text-xs" value={selected} onChange={(event) => setSelected(event.target.value)}>
@@ -486,10 +517,11 @@ function RerunWithModel(props: { current: ModelRefDto; pending: boolean; onRerun
           </option>
         ))}
       </select>
-      <Button size="sm" disabled={props.pending} onClick={() => props.onRerun(changed ? decodeModel(selected) : undefined)}>
+      <Button id={rerunId} size="sm" disabled={props.pending || windowMissing} onClick={() => props.onRerun(changed ? selectedRef : undefined)}>
         {t("shell.flow.rerun")}
       </Button>
       {changed ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunModelHint")}</span> : null}
+      {windowMissing && selectedRef !== undefined ? <ContextWindowNotice modelRef={selectedRef} density="compact" variant="minimal" onSaved={windowSaved} className="order-last basis-full" testId="rerun-context-window" /> : null}
     </>
   );
 }

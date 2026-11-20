@@ -34,7 +34,8 @@ interface ChatMessage {
  * The output cap is sent as `max_tokens`, the name DeepSeek documents and relays accept;
  * OpenAI's reasoning models reject it in favour of `max_completion_tokens`. Which name a
  * model wants is not knowable from its capability record, and behaviour must never depend
- * on the model name, so the broadly accepted field is used.
+ * on the model name, so the broadly accepted field is used. Only "test connection" sends
+ * `max_completion_tokens`, after the upstream explicitly rejected `max_tokens`.
  */
 export interface ChatCompletionsBody {
   model: string;
@@ -42,6 +43,7 @@ export interface ChatCompletionsBody {
   stream: boolean;
   stream_options?: { include_usage: true };
   max_tokens?: number;
+  max_completion_tokens?: number;
   temperature?: number;
   response_format?: { type: "json_schema"; json_schema: { name: string; schema: unknown; strict: true } };
   tools?: unknown[];

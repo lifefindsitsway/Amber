@@ -179,7 +179,7 @@ export type WebSearchService = (typeof WEB_SEARCH_SERVICES)[number];
 export const TRI_STATES = ["supported", "unsupported", "unknown"] as const;
 export type Tri = (typeof TRI_STATES)[number];
 
-export const LLM_PROTOCOLS = ["openai_compatible", "anthropic_messages"] as const;
+export const LLM_PROTOCOLS = ["openai_compatible", "anthropic_messages", "openai_responses"] as const;
 export type LlmProtocol = (typeof LLM_PROTOCOLS)[number];
 
 export const FRESHNESS_VALUES = ["fresh", "stale"] as const;

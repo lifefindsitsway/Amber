@@ -192,6 +192,7 @@ describe("chat prompt fragments", () => {
       "【模型】你在 Amber 中通过 Provider 档案「中转」（协议：OpenAI 兼容接口）调用模型 gpt-5.5。用户问你是什么模型时，如实说明以上配置；经中转站等服务调用时，Amber 无法核实实际路由到的底层模型，不要声称知道。",
     );
     expect(prompts.chatModelSection({ profileName: "官方", modelId: "c", protocol: "anthropic_messages" })).toContain("（协议：Anthropic Messages 接口）");
+    expect(prompts.chatModelSection({ profileName: "xAI", modelId: "g", protocol: "openai_responses" })).toContain("（协议：OpenAI Responses 接口）");
     expect(prompts.chatModelSection({ profileName: "旧", modelId: "m" })).toBe(
       "【模型】你在 Amber 中通过 Provider 档案「旧」调用模型 m。用户问你是什么模型时，如实说明以上配置；经中转站等服务调用时，Amber 无法核实实际路由到的底层模型，不要声称知道。",
     );

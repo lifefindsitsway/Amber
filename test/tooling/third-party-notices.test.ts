@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FONT_ASSETS } from "../../src/tooling/runtime-assets.ts";
 import {
   collectNpmPackages,
+  collectVendoredNotices,
   complianceArtifactsOf,
   cratesFromMetadata,
   ffmpegProvenanceOf,
@@ -15,6 +16,8 @@ import {
   renderThirdPartyNotices,
   runtimeLicenseTexts,
   RUNTIME_LICENSES_ASSET,
+  VENDOR_MARKS_NOTE,
+  VENDORED_COMPONENTS,
 } from "../../src/tooling/third-party-notices.ts";
 import { makeZip } from "../tools/zip.ts";
 
@@ -198,6 +201,7 @@ describe("renderThirdPartyNotices", () => {
       ],
       cargo: [{ name: "serde", version: "1.0.229", license: "MIT OR Apache-2.0", texts: [{ file: "LICENSE-MIT", text: "```fence``` inside" }] }],
       cargoComplete: true,
+      vendored: [],
     });
     for (const file of SHIPPED) {
       expect(notices).toContain(file.replace("|", "\\|"));
@@ -221,21 +225,21 @@ describe("renderThirdPartyNotices", () => {
 
   it("says so when the crate list only came from Cargo.lock", () => {
     const manifest = parseRuntimeManifest(MANIFEST);
-    const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: false });
+    const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: false, vendored: [] });
     expect(notices).toContain("取自 `Cargo.lock`");
   });
 
   it("refuses a shipped file that the manifest does not list", () => {
     const manifest = parseRuntimeManifest(MANIFEST);
     const render = () =>
-      renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: [...SHIPPED, "yt-dlp.exe"], runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true });
+      renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: [...SHIPPED, "yt-dlp.exe"], runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true, vendored: [] });
     expect(render).toThrow(/shipped Runtime Assets missing from manifest\.json: yt-dlp\.exe/u);
   });
 
   it("refuses a shipped component without a license text, naming it", () => {
     const manifest = parseRuntimeManifest(MANIFEST);
     const texts = runtimeLicenseTexts(licensesZip({ "node/LICENSE": "Node license", "noto-sans-sc/OFL.txt": "OFL text" }));
-    const render = () => renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: SHIPPED, runtimeTexts: texts, npm: [], cargo: [], cargoComplete: true });
+    const render = () => renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest, shippedAssets: SHIPPED, runtimeTexts: texts, npm: [], cargo: [], cargoComplete: true, vendored: [] });
     expect(render).toThrow(/no license text in runtime-licenses\.zip for shipped component\(s\): ffmpeg$/u);
   });
 });
@@ -268,6 +272,7 @@ describe("renderThirdPartyNotices for the bundled fonts", () => {
       npm: [],
       cargo: [],
       cargoComplete: true,
+      vendored: [],
     });
 
   it("lists all three fonts and embeds the shared Noto license text once", () => {
@@ -285,6 +290,45 @@ describe("renderThirdPartyNotices for the bundled fonts", () => {
   it.each(["noto-serif-sc", "lxgw-wenkai-lite"])("refuses to render when %s has no license text", (component) => {
     const licenses = Object.fromEntries(Object.entries(FONT_LICENSES).filter(([name]) => !name.startsWith(`${component}/`)));
     expect(() => render(licenses)).toThrow(new RegExp(`no license text in runtime-licenses\\.zip for shipped component\\(s\\): ${component}$`, "u"));
+  });
+});
+
+describe("renderThirdPartyNotices for works copied into the source tree", () => {
+  const manifest = () => parseRuntimeManifest(MANIFEST);
+  const TEXTS = runtimeLicenseTexts(licensesZip({ "node/LICENSE": "Node license", "ffmpeg/LICENSE.txt": "GPL text", "noto-sans-sc/OFL.txt": "OFL text" }));
+  const REPO = join(import.meta.dirname, "../..");
+  const ICONS_LICENSE = readFileSync(join(REPO, "src/web/ui/vendor-icons/LICENSE"), "utf8");
+
+  it("lists the vendor icons with their source and embeds the MIT text kept beside them", () => {
+    const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest(), shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true, vendored: collectVendoredNotices(REPO) });
+    expect(notices).toContain("## 随源码分发的第三方作品（界面）");
+    expect(notices).toContain("| LobeHub Icons (@lobehub/icons-static-svg) | 1.104.0 | MIT | 设置页模型服务的厂商图标 | https://github.com/lobehub/lobe-icons |");
+    expect(notices).toContain(VENDOR_MARKS_NOTE);
+    expect(notices).toContain("适用于：LobeHub Icons (@lobehub/icons-static-svg) 1.104.0（LICENSE）");
+    expect(ICONS_LICENSE).toContain("Copyright (c) 2023 LobeHub");
+    expect(notices).toContain(ICONS_LICENSE.trim());
+  });
+
+  it("shares one copy of a license text an npm package also carries", () => {
+    const notices = renderThirdPartyNotices({
+      amberVersion: "0.1.0",
+      runtime: manifest(),
+      shippedAssets: SHIPPED,
+      runtimeTexts: TEXTS,
+      npm: [{ name: "a", version: "1.0.0", license: "MIT", texts: [{ file: "LICENSE", text: ICONS_LICENSE }] }],
+      cargo: [],
+      cargoComplete: true,
+      vendored: collectVendoredNotices(REPO),
+    });
+    expect(notices.split("Copyright (c) 2023 LobeHub")).toHaveLength(2);
+    expect(notices).toContain("适用于：a@1.0.0（LICENSE）、LobeHub Icons (@lobehub/icons-static-svg) 1.104.0（LICENSE）");
+  });
+
+  it("refuses to collect a vendored work whose license text is missing", () => {
+    const root = dir();
+    expect(() => collectVendoredNotices(root, VENDORED_COMPONENTS)).toThrow(/license text of vendored LobeHub Icons .* is missing: src\/web\/ui\/vendor-icons\/LICENSE$/u);
+    write(root, "src/web/ui/vendor-icons/LICENSE", "MIT text");
+    expect(collectVendoredNotices(root)).toEqual([{ ...VENDORED_COMPONENTS[0], texts: [{ file: "LICENSE", text: "MIT text" }] }]);
   });
 });
 

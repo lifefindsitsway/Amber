@@ -481,37 +481,51 @@ describe("AnthropicMessagesProvider.probe", () => {
     const calls: LlmProbeCall[] = [];
     return { calls, result: check.run({ signal, onRequestStart: ignoreStart, onCall: (call) => calls.push(call) }) };
   };
-  const okJson = JSON.stringify({ type: "message", content: [{ type: "text", text: '{"ok":true}' }], stop_reason: "end_turn", usage: { input_tokens: 9, output_tokens: 5 } });
-
-  it("returns the stream, JSON and tools checks without sending anything yet", () => {
-    const http = new ScriptedHttp();
-    const checks = provider(http).probe(PROFILE, "model-under-test");
-    expect(checks.map((check) => check.flag)).toEqual(["stream", "structuredOutput", "tools"]);
-    expect(http.requests).toHaveLength(0);
-  });
-
+  const checkOf = (http: ScriptedHttp, kind: string, profile: ProviderProfile = PROFILE): LlmProbeCheck =>
+    provider(http).probe(profile, "model-under-test").find((check) => check.kind === kind) as LlmProbeCheck;
+  const message = (content: unknown[], stopReason = "end_turn") =>
+    JSON.stringify({ type: "message", content, stop_reason: stopReason, usage: { input_tokens: 9, output_tokens: 5 } });
+  const okJson = message([{ type: "text", text: '{"ok":true}' }]);
+  const plain = message([{ type: "text", text: "OK" }]);
+  const cutOff = message([{ type: "thinking", thinking: "Let me", signature: "s" }], "max_tokens");
   const toolUse = JSON.stringify({
     type: "message",
     content: [{ type: "tool_use", id: "t1", name: "report_status", input: { ok: true } }],
     stop_reason: "tool_use",
     usage: { input_tokens: 290, output_tokens: 16 },
   });
+  const sseOf = (...events: object[]): string => events.map((event) => `event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+
+  it("returns the basic call, then the stream, JSON and tools checks, without sending anything yet", () => {
+    const http = new ScriptedHttp();
+    const checks = provider(http).probe(PROFILE, "model-under-test");
+    expect(checks.map((check) => check.kind)).toEqual(["basic", "stream", "structuredOutput", "tools"]);
+    expect(http.requests).toHaveLength(0);
+  });
 
   it("sends one minimal request per check and reports each call once with its usage", async () => {
     let clock = 1_000;
-    const http = new ScriptedHttp({ chunks: [anthropicFixture("equivalent.sse")] }, { chunks: [okJson] }, { chunks: [toolUse] });
+    const http = new ScriptedHttp({ chunks: [anthropicFixture("non-stream.json")] }, { chunks: [anthropicFixture("equivalent.sse")] }, { chunks: [okJson] }, { chunks: [toolUse] });
     const checks = provider(http, () => (clock += 25)).probe(PROFILE, "model-under-test");
+    const results: unknown[] = [];
     for (const check of checks) {
       const { calls, result } = run(check);
-      // The counting clock is also read once for the request-start report, between the two latency readings.
-      expect(await result).toEqual({ result: "supported", latencyMs: 50 });
+      results.push(await result);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.outcome).toBe("succeeded");
       expect(calls[0]?.usage?.outputTokens).toBeGreaterThan(0);
     }
-    expect(http.requests.map((request) => request.timeoutMs)).toEqual([LLM_PROBE_TIMEOUT_MS, LLM_PROBE_TIMEOUT_MS, LLM_PROBE_TIMEOUT_MS]);
-    const [stream, json, tools] = http.bodies;
-    expect(http.bodies.map((body) => body["max_tokens"])).toEqual([LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_MAX_OUTPUT_TOKENS]);
+    // The counting clock is also read once for the request-start report, between the two latency readings.
+    expect(results).toEqual([
+      { kind: "basic", status: "connected", latencyMs: 50 },
+      { kind: "stream", result: "supported", latencyMs: 50 },
+      { kind: "structuredOutput", result: "supported", latencyMs: 50 },
+      { kind: "tools", result: "supported", latencyMs: 50 },
+    ]);
+    expect(http.requests.map((request) => request.timeoutMs)).toEqual(Array(4).fill(LLM_PROBE_TIMEOUT_MS));
+    const [basic, stream, json, tools] = http.bodies;
+    expect(http.bodies.map((body) => body["max_tokens"])).toEqual(Array(4).fill(LLM_PROBE_MAX_OUTPUT_TOKENS));
+    expect(basic).toEqual({ model: "model-under-test", max_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS, messages: [{ role: "user", content: [{ type: "text", text: "Reply with OK." }] }] });
     expect(stream).toMatchObject({ model: "model-under-test", stream: true });
     expect(json).toMatchObject({ output_config: { format: { type: "json_schema" } } });
     expect(Object.hasOwn(json ?? {}, "stream") || Object.hasOwn(tools ?? {}, "stream")).toBe(false);
@@ -522,51 +536,101 @@ describe("AnthropicMessagesProvider.probe", () => {
     expect(Object.hasOwn(stream ?? {}, "tools") || Object.hasOwn(stream ?? {}, "output_config")).toBe(false);
   });
 
+  it("calls a basic answer cut off before any text incomplete, and connected once there is text", async () => {
+    const cut = run(checkOf(new ScriptedHttp({ chunks: [cutOff] }), "basic"));
+    expect(await cut.result).toMatchObject({ kind: "basic", status: "incomplete" });
+    expect(cut.calls).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
+    const partial = run(checkOf(new ScriptedHttp({ chunks: [message([{ type: "text", text: "O" }], "max_tokens")] }), "basic"));
+    expect(await partial.result).toMatchObject({ kind: "basic", status: "connected" });
+  });
+
+  it("fails the basic call on every error answer, an unclassified bad request included", async () => {
+    for (const [name, code] of [
+      ["authentication", "llm_failed.auth"],
+      ["payment", "llm_failed.quota"],
+      ["not_found", "llm_failed.model_not_found"],
+      ["rate_limit", "llm_rate_limited"],
+      ["server", "llm_failed"],
+      ["invalid_request", "llm_failed.invalid_request"],
+    ] as const) {
+      const { calls, result } = run(checkOf(new ScriptedHttp(errorAnswer(name)), "basic"));
+      const error = await failure(result);
+      expect(isAmberError(error) && error.appError.code, name).toBe(code);
+      expect(calls).toEqual([{ outcome: "failed" }]);
+    }
+  });
+
+  it("supports streaming once the stream reaches message_stop, a cut-off answer included", async () => {
+    const start = { type: "message_start", message: { usage: { input_tokens: 3, output_tokens: 1 } } };
+    const delta = { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hm" } };
+    const cut = run(checkOf(new ScriptedHttp({ chunks: [sseOf(start, delta, { type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 1024 } }, { type: "message_stop" })] }), "stream"));
+    expect(await cut.result).toMatchObject({ kind: "stream", result: "supported" });
+    expect(cut.calls).toEqual([{ outcome: "succeeded", usage: expect.objectContaining({ outputTokens: 1024 }) }]);
+  });
+
+  it("learns unsupported when a stream was asked for and a whole message came back, or streaming was refused", async () => {
+    const whole = run(checkOf(new ScriptedHttp({ chunks: [plain] }), "stream"));
+    expect(await whole.result).toMatchObject({ kind: "stream", result: "unsupported" });
+    expect(whole.calls).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
+    const refused = run(checkOf(new ScriptedHttp(errorAnswer("unsupported_stream")), "stream"));
+    expect(await refused.result).toMatchObject({ kind: "stream", result: "unsupported" });
+    expect(refused.calls).toEqual([{ outcome: "failed" }]);
+  });
+
   it("records unsupported when a 200 answer shows the output format or the tools were silently ignored", async () => {
     // DeepSeek's Anthropic endpoint accepts `output_config` but only honours `effort`.
-    const plain = JSON.stringify({ type: "message", content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", usage: { input_tokens: 34, output_tokens: 2 } });
-    const http = new ScriptedHttp({ chunks: [plain] }, { chunks: [plain] });
-    const [, json, tools] = provider(http).probe(PROFILE, "model-under-test");
-    for (const check of [json!, tools!]) {
-      const { calls, result } = run(check);
-      expect((await result) as { result: string }).toMatchObject({ result: "unsupported" });
+    for (const kind of ["structuredOutput", "tools"]) {
+      const { calls, result } = run(checkOf(new ScriptedHttp({ chunks: [plain] }), kind));
+      expect(await result).toMatchObject({ kind, result: "unsupported" });
       expect(calls).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
     }
   });
 
-  it("records unsupported only when the upstream explicitly rejects the probed feature", async () => {
-    const http = new ScriptedHttp(errorAnswer("unsupported_output_config"), errorAnswer("unsupported_tools"), errorAnswer("unsupported_tools"));
-    const [stream, json, tools] = provider(http).probe(PROFILE, "model-under-test");
-    const jsonRun = run(json!);
-    expect((await jsonRun.result) as { result: string }).toMatchObject({ result: "unsupported" });
-    expect(jsonRun.calls).toEqual([{ outcome: "failed" }]);
-    const toolsRun = run(tools!);
-    expect((await toolsRun.result) as { result: string }).toMatchObject({ result: "unsupported" });
+  it("cannot decide a JSON or tools check cut off before the feature could show", async () => {
+    for (const kind of ["structuredOutput", "tools"]) {
+      const { calls, result } = run(checkOf(new ScriptedHttp({ chunks: [cutOff] }), kind));
+      expect(await result).toMatchObject({ kind, result: "inconclusive", reason: "truncated" });
+      expect(calls).toEqual([expect.objectContaining({ outcome: "succeeded" })]);
+    }
+  });
+
+  it("records unsupported only when the upstream explicitly rejects the probed feature, and cannot decide on another bad request", async () => {
+    const json = run(checkOf(new ScriptedHttp(errorAnswer("unsupported_output_config")), "structuredOutput"));
+    expect(await json.result).toMatchObject({ result: "unsupported" });
+    expect(json.calls).toEqual([{ outcome: "failed" }]);
+    const tools = run(checkOf(new ScriptedHttp(errorAnswer("unsupported_tools")), "tools"));
+    expect(await tools.result).toMatchObject({ result: "unsupported" });
     // A rejection naming another feature proves nothing about streaming.
-    const streamRun = run(stream!);
-    const error = await failure(streamRun.result);
-    expect(isAmberError(error) && error.appError.code).toBe("llm_failed.invalid_request");
-    expect(streamRun.calls).toEqual([{ outcome: "failed" }]);
+    const stream = run(checkOf(new ScriptedHttp(errorAnswer("unsupported_tools")), "stream"));
+    expect(await stream.result).toMatchObject({ kind: "stream", result: "inconclusive", reason: "upstream_rejected" });
+    expect(stream.calls).toEqual([{ outcome: "failed" }]);
+    for (const kind of ["stream", "structuredOutput", "tools"]) {
+      const unclear = run(checkOf(new ScriptedHttp(errorAnswer("invalid_request")), kind));
+      expect(await unclear.result).toMatchObject({ kind, result: "inconclusive", reason: "upstream_rejected" });
+    }
   });
 
   it("classifies a probe's limit answer with its retry-after header", async () => {
     const { status, body } = anthropicError("overloaded");
     const http = new ScriptedHttp({ status, headers: { "retry-after": "5" }, chunks: [body] });
-    const { calls, result } = run(provider(http).probe(PROFILE, "model-under-test")[1]!);
+    const { calls, result } = run(checkOf(http, "structuredOutput"));
     const error = await failure(result);
     expect(isAmberError(error) && error.appError).toMatchObject({ code: "llm_failed.overloaded", retryDisposition: "policy", details: { retryAfterMs: 5000 } });
     expect(calls).toEqual([{ outcome: "failed" }]);
   });
 
-  it("throws other failures as probe errors and still reports the call", async () => {
+  it("throws other failures of a capability check as probe errors and still reports the call", async () => {
     for (const [name, code] of [
       ["authentication", "llm_failed.auth"],
       ["payment", "llm_failed.quota"],
+      ["billing", "llm_failed.quota"],
       ["not_found", "llm_failed.model_not_found"],
+      ["rate_limit", "llm_rate_limited"],
       ["server", "llm_failed"],
+      ["context_length", "llm_capability.context_length"],
     ] as const) {
       const http = new ScriptedHttp(errorAnswer(name));
-      const { calls, result } = run(provider(http).probe(PROFILE, "model-under-test")[1]!);
+      const { calls, result } = run(checkOf(http, "tools"));
       const error = await failure(result);
       expect(isAmberError(error) && error.appError.code, name).toBe(code);
       expect(calls).toEqual([{ outcome: "failed" }]);
@@ -574,32 +638,33 @@ describe("AnthropicMessagesProvider.probe", () => {
   });
 
   it("reports nothing for a failure before the send boundary and an unknown outcome after it", async () => {
-    const before = run(provider(new ScriptedHttp(new OutboundHttpError("before_send", "network"))).probe(PROFILE, "m")[0]!);
+    const before = run(checkOf(new ScriptedHttp(new OutboundHttpError("before_send", "network")), "basic"));
     const beforeError = await failure(before.result);
     expect(isAmberError(beforeError) && beforeError.appError.code).toBe("llm_failed.unreachable");
     expect(before.calls).toEqual([]);
 
-    const after = run(provider(new ScriptedHttp(new OutboundHttpError("after_send", "network"))).probe(PROFILE, "m")[0]!);
+    const after = run(checkOf(new ScriptedHttp(new OutboundHttpError("after_send", "network")), "stream"));
     const afterError = await failure(after.result);
     expect(isAmberError(afterError) && afterError.appError.class).toBe("llm_outcome_unknown");
     expect(after.calls).toEqual([{ outcome: "outcome_unknown" }]);
 
-    const truncated = run(provider(new ScriptedHttp({ chunks: [anthropicFixture("truncated.sse")] })).probe(PROFILE, "m")[0]!);
-    await failure(truncated.result);
+    const truncated = run(checkOf(new ScriptedHttp({ chunks: [anthropicFixture("truncated.sse")] }), "stream"));
+    const truncatedError = await failure(truncated.result);
+    expect(isAmberError(truncatedError) && truncatedError.appError.class).toBe("llm_outcome_unknown");
     expect(truncated.calls).toEqual([{ outcome: "outcome_unknown" }]);
   });
 
   it("follows the send boundary on cancellation: nothing before it, outcome_unknown after it", async () => {
     const early = new AbortController();
     early.abort();
-    const before = run(provider(new ScriptedHttp(new OutboundHttpError("before_send", "aborted"))).probe(PROFILE, "m")[1]!, early.signal);
+    const before = run(checkOf(new ScriptedHttp(new OutboundHttpError("before_send", "aborted")), "structuredOutput"), early.signal);
     const beforeError = await failure(before.result);
     expect(beforeError instanceof OutboundHttpError && beforeError.phase).toBe("before_send");
     expect(before.calls).toEqual([]);
 
     const late = new AbortController();
     const http = new ScriptedHttp({ chunks: ['event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}\n\n'], stall: true });
-    const after = run(provider(http).probe(PROFILE, "m")[0]!, late.signal);
+    const after = run(checkOf(http, "stream"), late.signal);
     setTimeout(() => late.abort(), 5);
     const afterError = await failure(after.result);
     expect(afterError instanceof OutboundHttpError && afterError.phase).toBe("after_send");
@@ -609,7 +674,7 @@ describe("AnthropicMessagesProvider.probe", () => {
   it("does not report a request that never started because the profile has no key", async () => {
     const http = new ScriptedHttp();
     const { credentialRef: _dropped, ...withoutKey } = PROFILE;
-    const { calls, result } = run(provider(http).probe(withoutKey, "m")[0]!);
+    const { calls, result } = run(checkOf(http, "basic", withoutKey));
     const error = await failure(result);
     expect(isAmberError(error) && error.appError.class).toBe("llm_unconfigured");
     expect(calls).toEqual([]);
@@ -621,7 +686,7 @@ describe("AnthropicMessagesProvider.probe stream errors", () => {
   it("fails the stream check on an error event inside the stream and reports the call as failed", async () => {
     const http = new ScriptedHttp({ chunks: [anthropicFixture("in-stream-error.sse")] });
     const calls: LlmProbeCall[] = [];
-    const [stream] = provider(http).probe(PROFILE, "m");
+    const [, stream] = provider(http).probe(PROFILE, "m");
     const error = await failure(stream!.run({ signal: new AbortController().signal, onRequestStart: ignoreStart, onCall: (call) => calls.push(call) }));
     expect(isAmberError(error) && [error.appError.code, error.appError.upstreamMessage]).toEqual(["llm_failed", "overloaded_error: Overloaded"]);
     expect(calls).toEqual([{ outcome: "failed" }]);
@@ -664,7 +729,7 @@ describe("AnthropicMessagesProvider safety refusals", () => {
   it("fails a probe check the model refused as llm_failed.refused and reports the call as failed", async () => {
     const http = new ScriptedHttp({ chunks: [sse(start, refusal(cyber), stop)] });
     const calls: LlmProbeCall[] = [];
-    const [stream] = provider(http).probe(PROFILE, "m");
+    const [, stream] = provider(http).probe(PROFILE, "m");
     const error = await failure(stream!.run({ signal: new AbortController().signal, onRequestStart: ignoreStart, onCall: (call) => calls.push(call) }));
     expect(isAmberError(error) && [error.appError.code, error.appError.retryDisposition, error.appError.upstreamMessage]).toEqual([
       "llm_failed.refused",
@@ -815,14 +880,14 @@ describe("AnthropicMessagesProvider request start", () => {
 
   it("reports every probe request, and nothing is sent when the callback throws", async () => {
     const log: string[] = [];
-    const http = new ScriptedHttp({ chunks: [anthropicFixture("equivalent.sse")] }, { status: 500, chunks: ["{}"] }, { status: 500, chunks: ["{}"] });
+    const http = new ScriptedHttp({ chunks: [anthropicFixture("non-stream.json")] }, { chunks: [anthropicFixture("equivalent.sse")] }, { status: 500, chunks: ["{}"] }, { status: 500, chunks: ["{}"] });
     const checks = rotating(log, http).probe(PROFILE, "model-under-test");
     const infos: RequestStartInfo[] = [];
     for (const check of checks) {
       await check.run({ signal: new AbortController().signal, onRequestStart: (info) => infos.push(info), onCall: () => undefined }).catch(() => undefined);
     }
-    expect(infos.map((info) => info.credential.versionId)).toEqual(["version-1", "version-2", "version-3"]);
-    expect(log.filter((entry) => entry.startsWith("send"))).toEqual(["send key-1", "send key-2", "send key-3"]);
+    expect(infos.map((info) => info.credential.versionId)).toEqual(["version-1", "version-2", "version-3", "version-4"]);
+    expect(log.filter((entry) => entry.startsWith("send"))).toEqual(["send key-1", "send key-2", "send key-3", "send key-4"]);
 
     const refused = new ScriptedHttp({ chunks: [anthropicFixture("equivalent.sse")] });
     const calls: LlmProbeCall[] = [];

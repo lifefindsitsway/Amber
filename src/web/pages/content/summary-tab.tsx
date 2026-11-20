@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { chaptersDtoSchema, type ChapterRevisionDto, type ChaptersDto } from "../../../shared/dto/chapter.ts";
@@ -18,6 +18,9 @@ import { plainText } from "../../components/plain-text.ts";
 import { RichText } from "../../components/rich-text.tsx";
 import { ContentTaskFlow, latestStageRuns, TaskFlow, type RedoStage } from "../../components/task-flow.tsx";
 import { formatDuration } from "../../format.ts";
+import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
+import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
+import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { usePlayerController } from "../../player/player-controller.tsx";
 import { Button } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
@@ -159,6 +162,11 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
     },
   });
   const configured = (providers.data?.items.length ?? 0) > 0;
+  // Generation runs with the default model; without one the Task waits for a model instead.
+  const defaultModel = settings.data?.defaultModelRef;
+  const windowMissing = useModelReadiness(defaultModel, "context_window").status === "missing_context_window";
+  const generateId = useId();
+  const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(generateId));
   const copyAll = (text: string): void => {
     void copyText(text).then((copied) => setCopied(copied));
   };
@@ -183,7 +191,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
   };
 
   const generateButton = configured ? (
-    <Button size="sm" variant={current === undefined ? "primary" : "secondary"} onClick={() => generate.mutate()} disabled={entry.activeTaskId !== undefined || generate.isPending} data-testid="summary-generate">
+    <Button id={generateId} size="sm" variant={current === undefined ? "primary" : "secondary"} onClick={() => generate.mutate()} disabled={entry.activeTaskId !== undefined || generate.isPending || windowMissing} data-testid="summary-generate">
       {current === undefined ? <Sparkles size={14} /> : <RefreshCw size={14} />}
       {current === undefined ? t("contentView.summary.generate") : t("contentView.summary.regenerate")}
     </Button>
@@ -219,6 +227,8 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
         {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={page.primaryRevisionId} testId="summary-speakers-not-read" /> : null}
       </div>
       {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
+      {/* One notice for the tab: the chapters below run with the same default model. */}
+      {configured && windowMissing && defaultModel !== undefined ? <ContextWindowNotice modelRef={defaultModel} density="compact" onSaved={windowSaved} testId="summary-context-window" /> : null}
       {generate.error instanceof ApiError ? <ErrorView error={generate.error.error} /> : null}
       {entry.activeTaskId !== undefined ? <TaskFlow taskId={entry.activeTaskId} /> : null}
       {entry.stale ? (
@@ -459,6 +469,8 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
   }, [hub, queryClient, contentId, activeTaskId]);
   // Without a model the Task would only wait for configuration, so offer the way there instead.
   const configured = (providers.data?.items.length ?? 0) > 0;
+  // The notice to fill it in is the summary's above, which uses the same default model.
+  const windowMissing = useModelReadiness(settings.data?.defaultModelRef, "context_window").status === "missing_context_window";
   // The server freezes the primary transcript into the Task, so there is nothing to regenerate from without one.
   const hasTranscript = page.primaryRevisionId !== undefined;
   const hasChapters = list.length > 0;
@@ -507,11 +519,11 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
             </Link>
           ) : (
             // A disabled button shows no tooltip of its own, so the wrapper carries it.
-            <span title={activeStage === "waiting" ? t("contentView.chapters.waitingHint") : undefined}>
+            <span title={activeStage === "waiting" ? t("contentView.chapters.waitingHint") : windowMissing && !busy ? t("modelReadiness.blockedHint") : undefined}>
               <Button
                 size="sm"
                 variant={hasChapters || !hasTranscript ? "ghost" : "secondary"}
-                disabled={!loaded || busy || !hasTranscript}
+                disabled={!loaded || busy || !hasTranscript || windowMissing}
                 onClick={() => regenerate.mutate()}
                 data-testid="chapters-regenerate"
               >

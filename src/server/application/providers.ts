@@ -10,11 +10,13 @@ import type {
 } from "../../shared/dto/provider.ts";
 import type { ModelPricingRequest } from "../../shared/dto/model-pricing.ts";
 import { pricingFitsScope } from "../../shared/model-pricing.ts";
+import { CUSTOM_PRESET_ID } from "../../shared/llm-presets.ts";
 import { amberError } from "../domain/errors.ts";
 import type { ModelRef } from "../domain/model-ref.ts";
 import {
   effectiveCapability,
   newModelCapability,
+  withoutObserved,
   withUserLimits,
   type CapabilityFlags,
   type CapabilityLimits,
@@ -22,7 +24,7 @@ import {
   type ProviderProfile,
 } from "../domain/provider-profile.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
-import type { LlmProbeFlag } from "../ports/llm-provider.ts";
+import { probeBasisOf, sameProbeBasis, type LlmProbeOutcome } from "./llm-gateway.ts";
 import { PERMISSIVE_TARGET_CHECK, type NetworkTargetCheck } from "../ports/network-target-check.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import type { SecretStore } from "../ports/secret-store.ts";
@@ -31,11 +33,18 @@ import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idemp
 import { unfinishedTasksUsingModel } from "./profile-references.ts";
 
 export const PROBE_ROUTE = "POST /api/providers/:id/probe";
+export const CREATE_ROUTE = "POST /api/providers";
 
 /** "Test connection" as the LlmGateway runs it: measures, records usage, writes nothing else. */
 export interface ModelProber {
-  probe(userId: string, modelRef: ModelRef, signal: AbortSignal): Promise<{ observed: Pick<CapabilityFlags, LlmProbeFlag>; latencyMs: number }>;
+  probe(userId: string, modelRef: ModelRef, signal: AbortSignal): Promise<LlmProbeOutcome>;
 }
+
+/**
+ * A new profile as the API takes it: the shared request plus, optionally, its key. The key
+ * is part of the server's request type only and never of anything shared with the client.
+ */
+export type CreateProviderInput = CreateProviderRequest & { credential?: { value: string } };
 
 export interface ProviderServiceOptions {
   repository: Repository;
@@ -108,26 +117,62 @@ export class ProviderService {
     return this.dto(this.options.repository.withTransaction((scope) => requireProfile(scope, principal.userId, profileId)));
   }
 
-  create(principal: RequestPrincipal, request: CreateProviderRequest): ProviderProfileDto {
+  /**
+   * Creates a profile and, when given, its key in one transaction: a failure leaves neither
+   * behind. Under an `Idempotency-Key` a repeated request replays the first answer. The
+   * request digest covers every field but says only whether a key came along, never the key,
+   * so a retry with another key value is the same request and replays.
+   */
+  create(principal: RequestPrincipal, request: CreateProviderInput, idempotencyKey?: string): ProviderProfileDto {
+    const owner = principal.userId;
+    const { credential, ...fields } = request;
+    const context = {
+      userId: owner,
+      route: CREATE_ROUTE,
+      key: idempotencyKey,
+      requestDigest: jsonRequestDigest({ ...fields, hasCredential: credential !== undefined }),
+    };
     const profile: ProviderProfile = {
       id: this.newId(),
-      userId: principal.userId,
-      name: request.name,
-      protocol: request.protocol,
-      baseURL: normalizeBaseUrl(request.baseURL),
-      models: modelList(request.models, []),
+      userId: owner,
+      name: fields.name,
+      protocol: fields.protocol,
+      baseURL: normalizeBaseUrl(fields.baseURL),
+      ...presetField(fields.presetId),
+      models: modelList(fields.models, []),
       createdAt: this.now(),
     };
-    this.options.repository.withTransaction((scope) => scope.providerProfiles.insert(profile));
-    return this.dto(profile);
+    const { secrets } = this.options;
+    return this.options.repository.withTransaction((scope) =>
+      runIdempotent(scope, context, profile.createdAt, () => {
+        const created = credential === undefined ? profile : { ...profile, credentialRef: secrets.store(owner, credential.value) };
+        scope.providerProfiles.insert(created);
+        return { status: 201, body: this.dto(created), resourceRefs: [created.id] };
+      }),
+    ).body;
   }
 
+  /**
+   * Edits a profile. A new Base URL is refused while an unfinished Task uses the profile, so
+   * queued work is never sent somewhere else unnoticed; once changed, every model's measured
+   * layer is dropped, since it described the old endpoint.
+   */
   update(principal: RequestPrincipal, profileId: string, request: UpdateProviderRequest): ProviderProfileDto {
     const owner = principal.userId;
     const baseURL = request.baseURL === undefined ? undefined : normalizeBaseUrl(request.baseURL);
     let changed: { modelIds?: string[] } | undefined;
     const updated = this.options.repository.withTransaction((scope) => {
       const existing = requireProfile(scope, owner, profileId);
+      const moved = baseURL !== undefined && baseURL !== existing.baseURL;
+      if (moved) {
+        const taskCount = unfinishedTasksUsingModel(scope, owner, profileId).length;
+        if (taskCount > 0) {
+          throw amberError("conflict", "an unfinished task still uses the profile whose endpoint was to change", {
+            code: "conflict.profile_tasks_unfinished",
+            details: { taskCount },
+          });
+        }
+      }
       let models = existing.models;
       if (request.models !== undefined) {
         models = modelList(request.models, existing.models);
@@ -138,11 +183,14 @@ export class ProviderService {
           }
         }
       }
+      const { presetId: _preset, ...rest } = existing;
+      const presetId = request.presetId === undefined ? existing.presetId : presetField(request.presetId).presetId;
       const profile: ProviderProfile = {
-        ...existing,
+        ...rest,
         ...(request.name === undefined ? {} : { name: request.name }),
         ...(baseURL === undefined ? {} : { baseURL }),
-        models,
+        ...(presetId === undefined ? {} : { presetId }),
+        models: moved ? models.map(withoutObserved) : models,
       };
       scope.providerProfiles.update(profile);
       // Remembered and default model choices must keep naming a listed model.
@@ -175,28 +223,46 @@ export class ProviderService {
     this.options.onChanged?.(profileId);
   }
 
-  /** Stores the key as a Secret; re-entering it replaces the ciphertext under the same reference. */
+  /**
+   * Stores the key as a Secret; re-entering it replaces the ciphertext under the same
+   * reference. A key that starts a new version drops every model's measured layer in the same
+   * transaction (a relay may route keys to different upstreams); re-entering the same key
+   * keeps its version and the measurements.
+   */
   putCredential(principal: RequestPrincipal, profileId: string, value: string): ProviderProfileDto {
     const owner = principal.userId;
     const { secrets } = this.options;
     const updated = this.options.repository.withTransaction((scope) => {
       const existing = requireProfile(scope, owner, profileId);
+      let profile = existing;
+      let rotated: boolean;
       if (existing.credentialRef === undefined) {
-        const profile = { ...existing, credentialRef: secrets.store(owner, value) };
-        scope.providerProfiles.update(profile);
-        return profile;
+        profile = { ...existing, credentialRef: secrets.store(owner, value) };
+        rotated = true;
+      } else {
+        const before = scope.secretEnvelopes.get(owner, existing.credentialRef)?.versionId;
+        secrets.replace(owner, existing.credentialRef, value);
+        rotated = scope.secretEnvelopes.get(owner, existing.credentialRef)?.versionId !== before;
       }
-      secrets.replace(owner, existing.credentialRef, value);
-      return existing;
+      if (rotated) {
+        profile = { ...profile, models: profile.models.map(withoutObserved) };
+      }
+      if (profile !== existing) {
+        scope.providerProfiles.update(profile);
+      }
+      return profile;
     });
     this.options.onChanged?.(profileId);
     return this.dto(updated);
   }
 
   /**
-   * "Test connection": the measured flags become the model's `observed`
-   * layer only when every check finished; a failed probe writes nothing. A repeated
-   * `Idempotency-Key` replays the stored answer without calling the upstream again.
+   * "Test connection". A probe that fails writes nothing. Otherwise, in one transaction, its
+   * results are checked against what it ran on (protocol, Base URL, key version and the model
+   * still listed): any change meanwhile discards them as `conflict.probe_config_changed`.
+   * `supported` / `unsupported` become the model's `observed` flags, `inconclusive` clears
+   * that flag's `observed` so lower layers show through. A repeated `Idempotency-Key`
+   * replays the stored answer without calling the upstream again.
    */
   async probe(principal: RequestPrincipal, profileId: string, modelId: string, signal: AbortSignal, idempotencyKey?: string): Promise<IdempotentResult<ProbeResultDto>> {
     const owner = principal.userId;
@@ -220,11 +286,29 @@ export class ProviderService {
     return this.options.repository.withTransaction((scope) =>
       runIdempotent(scope, context, observedAt, () => {
         const profile = requireProfile(scope, owner, profileId);
-        const model = requireModel(profile, modelId);
-        const observed: Partial<CapabilityFlags> = { ...model.flags.observed, ...measured.observed };
-        const updated: ModelCapability = { ...model, flags: { ...model.flags, observed }, observedAt };
+        const model = profile.models.find((candidate) => candidate.modelId === modelId);
+        const current = probeBasisOf(scope, profile, modelId);
+        if (model === undefined || current === undefined || !sameProbeBasis(current, measured.basis)) {
+          throw amberError("conflict", "the profile changed while it was being tested", { code: "conflict.probe_config_changed" });
+        }
+        const observed: Partial<CapabilityFlags> = { ...model.flags.observed };
+        for (const check of measured.checks) {
+          if (check.result === "inconclusive") {
+            delete observed[check.flag];
+          } else {
+            observed[check.flag] = check.result;
+          }
+        }
+        const { observed: _previous, ...flagLayers } = model.flags;
+        const updated: ModelCapability = { ...model, flags: { ...flagLayers, ...(Object.keys(observed).length === 0 ? {} : { observed }) }, observedAt };
         scope.providerProfiles.update(replaceModel(profile, updated));
-        const body: ProbeResultDto = { modelId, observed: measured.observed, latencyMs: measured.latencyMs, observedAt };
+        const body: ProbeResultDto = {
+          modelId,
+          basic: { status: measured.basic.status, latencyMs: measured.basic.latencyMs },
+          checks: measured.checks.map((check) => ({ flag: check.flag, result: check.result, ...(check.reason === undefined ? {} : { reason: check.reason }) })),
+          observed: probedFlags(observed),
+          observedAt,
+        };
         return { status: 200, body, resourceRefs: [] };
       }),
     );
@@ -283,6 +367,7 @@ export class ProviderService {
       name: profile.name,
       protocol: profile.protocol,
       baseURL: profile.baseURL,
+      ...presetField(profile.presetId),
       models: profile.models.map(modelDto),
       createdAt: profile.createdAt,
       credentialStatus,
@@ -313,8 +398,8 @@ function replaceModel(profile: ProviderProfile, model: ModelCapability): Provide
 
 /**
  * The model list as requested, in its order: models kept by id keep their measured and
- * overridden layers and their price, and take the newly stated limits; new ones start all
- * `unknown`.
+ * overridden layers and their price, with the stated limits applied (omitted keeps, a number
+ * replaces, `null` clears); new ones start all `unknown`, with whatever limits were stated.
  */
 function modelList(input: CreateProviderRequest["models"], existing: readonly ModelCapability[]): ModelCapability[] {
   const ids = input.map((model) => model.modelId);
@@ -325,6 +410,20 @@ function modelList(input: CreateProviderRequest["models"], existing: readonly Mo
     const kept = existing.find((model) => model.modelId === modelId);
     return kept === undefined ? newModelCapability(modelId, limits) : withUserLimits(kept, limits);
   });
+}
+
+/** The preset as stored and shown: "custom" is the absence of one, like `null`. */
+function presetField(presetId: string | null | undefined): { presetId?: string } {
+  return presetId === undefined || presetId === null || presetId === CUSTOM_PRESET_ID ? {} : { presetId };
+}
+
+/** The flags "test connection" measures, as the model's observed layer now holds them. */
+function probedFlags(observed: Partial<CapabilityFlags>): ProbeResultDto["observed"] {
+  return {
+    ...(observed.stream === undefined ? {} : { stream: observed.stream }),
+    ...(observed.structuredOutput === undefined ? {} : { structuredOutput: observed.structuredOutput }),
+    ...(observed.tools === undefined ? {} : { tools: observed.tools }),
+  };
 }
 
 /** The fields that are not `null`, or `undefined` when none are left. */

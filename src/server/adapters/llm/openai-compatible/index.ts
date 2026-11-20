@@ -1,15 +1,30 @@
-import { LLM_FIRST_OUTPUT_TIMEOUT_MS, LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_TIMEOUT_MS, LLM_STREAM_IDLE_TIMEOUT_MS } from "../../../../shared/defaults.ts";
+import {
+  LLM_FIRST_OUTPUT_TIMEOUT_MS,
+  LLM_PROBE_MAX_OUTPUT_TOKENS,
+  LLM_PROBE_TIMEOUT_MS,
+  LLM_STREAM_IDLE_TIMEOUT_MS,
+  LLM_TOKEN_PARAM_CACHE_MAX,
+} from "../../../../shared/defaults.ts";
 import { amberError } from "../../../domain/errors.ts";
 import type { LlmRequest, LlmStopReason, LlmStreamEvent, RawUsage } from "../../../domain/llm.ts";
 import { effectiveCapability, type ProviderProfile } from "../../../domain/provider-profile.ts";
 import type { RequestStartInfo } from "../../../domain/usage.ts";
 import type { FileStore } from "../../../ports/file-store.ts";
-import type { LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../ports/llm-provider.ts";
+import type {
+  LlmProbeCall,
+  LlmProbeCheck,
+  LlmProbeFlag,
+  LlmProbeFlagResult,
+  LlmProbeKind,
+  LlmProbeResult,
+  LlmProvider,
+  LlmStreamOptions,
+} from "../../../ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../../ports/outbound-http.ts";
 import type { SecretStore } from "../../../ports/secret-store.ts";
 import { beginRequest, endpoint, linkedController, OutputWatchdog, sseEvents, transportFailure } from "../shared.ts";
 import { encodeRequest, OPENAI_AUDIO_MIME_TYPES, type ChatCompletionsBody } from "./encode.ts";
-import { errorDetail, httpError, refusesProbedFeature, upstreamText } from "./errors.ts";
+import { errorDetail, httpError, refusesProbedFeature, rejectsMaxTokens, rejectsTokenParam, upstreamText } from "./errors.ts";
 
 export interface OpenAiCompatibleProviderOptions {
   http: OutboundHttpClient;
@@ -40,6 +55,11 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   readonly audioMimeTypes = OPENAI_AUDIO_MIME_TYPES;
   private readonly options: OpenAiCompatibleProviderOptions;
   private readonly now: () => number;
+  /**
+   * Endpoints known to want `max_completion_tokens`, by profile, protocol, Base URL and model.
+   * Insertion order is age: past `LLM_TOKEN_PARAM_CACHE_MAX` entries the oldest goes first.
+   */
+  private readonly completionTokenEndpoints = new Map<string, true>();
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     this.options = options;
@@ -79,9 +99,9 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   }
 
   probe(profile: ProviderProfile, modelId: string): readonly LlmProbeCheck[] {
-    return (["stream", "structuredOutput", "tools"] as const).map((flag) => ({
-      flag,
-      run: (opts: ProbeRunOptions) => this.runCheck(profile, modelId, flag, opts),
+    return PROBE_KINDS.map((kind) => ({
+      kind,
+      run: (opts: ProbeRunOptions) => this.runCheck(profile, modelId, kind, opts),
     }));
   }
 
@@ -111,36 +131,58 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   }
 
   /**
-   * One probe request bounded by `LLM_PROBE_TIMEOUT_MS` as a whole. `onCall` reports it
-   * once it ended past the send boundary: an answer of any status, or a failure after the
-   * request left. A failure before that reports nothing.
+   * One check. The output cap goes out as `max_tokens` unless this endpoint already turned it
+   * down; an explicit refusal of `max_tokens` is answered by sending the same check once more
+   * with `max_completion_tokens`. That is remembered only once the re-sent request was not
+   * refused over its output cap as well. The refused request was sent and is reported.
    */
-  private async runCheck(
-    profile: ProviderProfile,
-    modelId: string,
-    flag: LlmProbeFlag,
-    opts: ProbeRunOptions,
-  ): Promise<{ result: "supported" | "unsupported"; latencyMs: number }> {
+  private async runCheck(profile: ProviderProfile, modelId: string, kind: LlmProbeKind, opts: ProbeRunOptions): Promise<LlmProbeResult> {
+    const cacheKey = tokenParamKey(profile, modelId);
+    let param: TokenParam = this.completionTokenEndpoints.has(cacheKey) ? "max_completion_tokens" : "max_tokens";
+    let fellBack = false;
+    for (;;) {
+      const answer = await this.probeRequest(profile, probeBody(modelId, kind, param), opts);
+      if (fellBack && !(answer.status !== 200 && rejectsTokenParam(answer.status, answer.text))) {
+        this.rememberCompletionTokens(cacheKey);
+      }
+      if (answer.status === 200) {
+        return judgeAnswer(kind, answer, opts.onCall);
+      }
+      opts.onCall({ outcome: "failed" });
+      if (param === "max_tokens" && rejectsMaxTokens(answer.status, answer.text)) {
+        param = "max_completion_tokens";
+        fellBack = true;
+        continue;
+      }
+      return failedAnswer(kind, answer);
+    }
+  }
+
+  private rememberCompletionTokens(cacheKey: string): void {
+    this.completionTokenEndpoints.delete(cacheKey);
+    this.completionTokenEndpoints.set(cacheKey, true);
+    for (const oldest of this.completionTokenEndpoints.keys()) {
+      if (this.completionTokenEndpoints.size <= LLM_TOKEN_PARAM_CACHE_MAX) {
+        break;
+      }
+      this.completionTokenEndpoints.delete(oldest);
+    }
+  }
+
+  /**
+   * One probe request bounded by `LLM_PROBE_TIMEOUT_MS` as a whole, body included. A failure
+   * after the request left reports it with an unknown outcome; one before reports nothing.
+   * An answer of any status is returned for the caller to report and judge.
+   */
+  private async probeRequest(profile: ProviderProfile, body: ChatCompletionsBody, opts: ProbeRunOptions): Promise<ProbeAnswer> {
     const controller = linkedController(opts.signal);
     const timer = setTimeout(() => controller.abort(), LLM_PROBE_TIMEOUT_MS);
     const started = this.now();
     try {
-      const response = await this.send(profile, probeBody(modelId, flag), controller.signal, opts.onRequestStart);
+      const response = await this.send(profile, body, controller.signal, opts.onRequestStart);
       const text = await response.text();
-      const latencyMs = Math.max(0, this.now() - started);
-      if (response.status === 200) {
-        const usage = flag === "stream" ? streamUsage(text) : completionUsage(text);
-        opts.onCall({ outcome: "succeeded", ...(usage === undefined ? {} : { usage }) });
-        return { result: flag === "stream" || probeTookEffect(flag, text) ? "supported" : "unsupported", latencyMs };
-      }
-      opts.onCall({ outcome: "failed" });
-      if (refusesProbedFeature(flag, response.status, text)) {
-        return { result: "unsupported", latencyMs };
-      }
-      throw httpError(response.status, text, response.headers);
+      return { status: response.status, headers: response.headers, text, latencyMs: Math.max(0, this.now() - started) };
     } catch (error) {
-      // Past the send boundary (an answer that broke off included) the request may have
-      // been processed: it counts, with an unknown outcome.
       if (error instanceof OutboundHttpError && error.phase === "after_send") {
         opts.onCall({ outcome: "outcome_unknown" });
       }
@@ -152,18 +194,49 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   }
 }
 
-/** The smallest request that exercises one capability; the cap keeps it to a few tokens. */
-function probeBody(modelId: string, flag: LlmProbeFlag): ChatCompletionsBody {
-  const base = { model: modelId, max_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS };
-  switch (flag) {
+type TokenParam = "max_tokens" | "max_completion_tokens";
+
+/** One probe answer, read whole. */
+interface ProbeAnswer {
+  status: number;
+  headers: ReadonlyMap<string, string>;
+  text: string;
+  latencyMs: number;
+}
+
+/** The basic call goes first: the capability checks only mean something once it connected. */
+const PROBE_KINDS: readonly LlmProbeKind[] = ["basic", "stream", "structuredOutput", "tools"];
+/** Asks for no JSON, so only an enforced schema makes the JSON check's answer conform. */
+const PROBE_PROMPT = "Reply with OK.";
+const PROBE_TOOL_PROMPT = "Call the report_ok tool.";
+
+/**
+ * What the token-parameter memory is about: the same model behind the same endpoint and
+ * profile. The Base URL is compared without trailing slashes, as requests are sent.
+ */
+function tokenParamKey(profile: ProviderProfile, modelId: string): string {
+  return JSON.stringify([profile.id, profile.protocol, profile.baseURL.replace(/\/+$/u, ""), modelId]);
+}
+
+/** The smallest request that exercises one check; the cap keeps it short. */
+function probeBody(modelId: string, kind: LlmProbeKind, param: TokenParam): ChatCompletionsBody {
+  const base = {
+    model: modelId,
+    ...(param === "max_tokens" ? { max_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS } : { max_completion_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS }),
+  };
+  const messages: ChatCompletionsBody["messages"] = [{ role: "user", content: PROBE_PROMPT }];
+  switch (kind) {
+    case "basic":
+      return { ...base, stream: false, messages };
     case "stream":
-      return { ...base, stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "Reply with OK." }] };
+      // Shaped like every streamed request: an endpoint that refuses the usage option
+      // could not serve them either, so that refusal counts against streaming.
+      return { ...base, stream: true, stream_options: { include_usage: true }, messages };
     case "structuredOutput":
       return {
         ...base,
         stream: false,
-        // The prompt does not ask for JSON: only an enforced schema makes the answer conform.
-        messages: [{ role: "user", content: "Reply with OK." }],
+        messages,
         response_format: {
           type: "json_schema",
           json_schema: {
@@ -178,7 +251,7 @@ function probeBody(modelId: string, flag: LlmProbeFlag): ChatCompletionsBody {
         ...base,
         stream: false,
         // Not forced through `tool_choice`: some models reject forced tool use.
-        messages: [{ role: "user", content: "Call the report_ok tool." }],
+        messages: [{ role: "user", content: PROBE_TOOL_PROMPT }],
         tools: [
           {
             type: "function",
@@ -191,6 +264,144 @@ function probeBody(modelId: string, flag: LlmProbeFlag): ChatCompletionsBody {
         ],
       };
   }
+}
+
+const withUsage = (usage: RawUsage | undefined): { usage?: RawUsage } => (usage === undefined ? {} : { usage });
+
+function refusedError(finishReason: string): Error {
+  return amberError("llm_failed", "the model refused the probe", { code: "llm_failed.refused", upstreamMessage: finishReason });
+}
+
+/**
+ * A 200 answer, reported and judged. The basic call needs answer text: cut off by the cap
+ * before any, it is `incomplete`. A capability check is `supported` only when the feature
+ * visibly worked; cut off before it could show, it cannot decide; otherwise the upstream
+ * ignored the feature. A refusal or an error body fails the check.
+ */
+async function judgeAnswer(kind: LlmProbeKind, answer: ProbeAnswer, onCall: (call: LlmProbeCall) => void): Promise<LlmProbeResult> {
+  if (kind === "stream") {
+    return judgeStream(answer, onCall);
+  }
+  const { latencyMs } = answer;
+  const completion = probeCompletion(answer.text, onCall);
+  if (stopReasonOf(completion.finishReason) === "refused") {
+    onCall({ outcome: "failed", ...withUsage(completion.usage) });
+    throw refusedError(completion.finishReason);
+  }
+  onCall({ outcome: "succeeded", ...withUsage(completion.usage) });
+  const truncated = completion.finishReason === LENGTH_FINISH;
+  if (kind === "basic") {
+    return { kind, status: completion.text === "" && truncated ? "incomplete" : "connected", latencyMs };
+  }
+  if (probeTookEffect(kind, answer.text)) {
+    return { kind, result: "supported", latencyMs };
+  }
+  return truncated ? { kind, result: "inconclusive", reason: "truncated", latencyMs } : { kind, result: "unsupported", latencyMs };
+}
+
+/** The body as a JSON object, or `undefined` when it is not one. */
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A 200 probe answer read as a completion. An error object in it fails the check as such;
+ * a body that cannot be read as a chat completion (not JSON, cut off, another shape) was
+ * processed with an unknown outcome. Either way the call is reported before throwing.
+ */
+function probeCompletion(text: string, onCall: (call: LlmProbeCall) => void): Completion {
+  const usage = completionUsage(text);
+  if (jsonObject(text)?.["error"] !== undefined) {
+    onCall({ outcome: "failed", ...withUsage(usage) });
+    return parseCompletion(text);
+  }
+  try {
+    return parseCompletion(text);
+  } catch {
+    onCall({ outcome: "outcome_unknown", ...withUsage(usage) });
+    throw amberError("llm_outcome_unknown", "unreadable chat completions answer");
+  }
+}
+
+/**
+ * The stream check: `supported` once the event stream is read to the chunk that says how the
+ * answer finished, exactly what a streamed request needs. A body without a single event (a
+ * relay that ignores `stream` answers with one JSON document) is `unsupported`; an error
+ * inside the stream fails the check; a stream that stops before finishing leaves the outcome
+ * unknown, as it would for a streamed request.
+ */
+async function judgeStream(answer: ProbeAnswer, onCall: (call: LlmProbeCall) => void): Promise<LlmProbeFlagResult> {
+  const { text, latencyMs } = answer;
+  let finishReason: string | undefined;
+  let usage: RawUsage | undefined;
+  let events = 0;
+  for await (const event of sseEvents(once(text))) {
+    events += 1;
+    if (event.data.trim() === DONE_SENTINEL) {
+      break;
+    }
+    const chunk = jsonObject(event.data);
+    if (chunk === undefined) {
+      // The stream broke off or garbled: the request was processed, how is unknown.
+      onCall({ outcome: "outcome_unknown", ...withUsage(usage) });
+      throw amberError("llm_outcome_unknown", "unreadable chat completions stream chunk");
+    }
+    if (chunk["error"] !== undefined) {
+      const upstream = upstreamText(errorDetail(event.data));
+      onCall({ outcome: "failed", ...withUsage(usage) });
+      throw amberError("llm_failed", "chat completions stream reported an error", upstream === undefined ? {} : { upstreamMessage: upstream });
+    }
+    const finish = firstChoice(chunk)?.["finish_reason"];
+    if (typeof finish === "string" && finish !== "") {
+      finishReason = finish;
+    }
+    usage = normalizeUsage(chunk["usage"]) ?? usage;
+  }
+  if (events === 0) {
+    const whole = probeCompletion(text, onCall);
+    onCall({ outcome: "succeeded", ...withUsage(whole.usage) });
+    return { kind: "stream", result: "unsupported", latencyMs };
+  }
+  if (finishReason === undefined) {
+    onCall({ outcome: "outcome_unknown", ...withUsage(usage) });
+    throw amberError("llm_outcome_unknown", "stream ended before the answer finished");
+  }
+  if (stopReasonOf(finishReason) === "refused") {
+    onCall({ outcome: "failed", ...withUsage(usage) });
+    throw refusedError(finishReason);
+  }
+  onCall({ outcome: "succeeded", ...withUsage(usage) });
+  return { kind: "stream", result: "supported", latencyMs };
+}
+
+/**
+ * An error answer of a check, already reported. The basic call fails with it. A capability
+ * check learns `unsupported` from an explicit refusal of its feature and cannot decide on a
+ * bad request it cannot classify; every other failure (authentication, unknown model,
+ * quota, rate limit, server errors) fails the check.
+ */
+function failedAnswer(kind: LlmProbeKind, answer: ProbeAnswer): LlmProbeFlagResult {
+  const { status, text, latencyMs } = answer;
+  const error = httpError(status, text, answer.headers);
+  if (kind === "basic") {
+    throw error;
+  }
+  if (refusesProbedFeature(kind, status, text)) {
+    return { kind, result: "unsupported", latencyMs };
+  }
+  if ((status === 400 || status === 422) && error.appError.code === "llm_failed.invalid_request") {
+    return { kind, result: "inconclusive", reason: "upstream_rejected", latencyMs };
+  }
+  throw error;
+}
+
+async function* once(text: string): AsyncIterable<Uint8Array> {
+  yield new TextEncoder().encode(text);
 }
 
 /**
@@ -375,24 +586,6 @@ export function normalizeUsage(raw: unknown): RawUsage | undefined {
     ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
     rawJson: JSON.stringify(raw),
   };
-}
-
-/** Usage of a probe's streamed answer, read from its last chunk that carries one. */
-function streamUsage(text: string): RawUsage | undefined {
-  let usage: RawUsage | undefined;
-  for (const line of text.split(/\r\n|\r|\n/)) {
-    const data = line.startsWith("data:") ? line.slice("data:".length).trim() : undefined;
-    if (data === undefined || data === DONE_SENTINEL) {
-      continue;
-    }
-    try {
-      usage = normalizeUsage(field(JSON.parse(data), "usage")) ?? usage;
-    } catch {
-      // A chunk that is not JSON carries no usage.
-    }
-  }
-  // A relay that ignores `stream` answers with one JSON body instead.
-  return usage ?? completionUsage(text);
 }
 
 function completionUsage(text: string): RawUsage | undefined {

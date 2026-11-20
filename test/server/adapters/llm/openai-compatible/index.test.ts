@@ -4,12 +4,13 @@ import { AmberError, isAmberError } from "../../../../../src/server/domain/error
 import type { LlmRequest, LlmStreamEvent } from "../../../../../src/server/domain/llm.ts";
 import type { CapabilityFlags, ModelCapability, ProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
 import type { RequestStartInfo } from "../../../../../src/server/domain/usage.ts";
-import type { LlmProbeCall, LlmProbeCheck } from "../../../../../src/server/ports/llm-provider.ts";
+import type { LlmProbeCall, LlmProbeCheck, LlmProbeResult } from "../../../../../src/server/ports/llm-provider.ts";
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse } from "../../../../../src/server/ports/outbound-http.ts";
 import {
   LLM_FIRST_OUTPUT_TIMEOUT_MS,
   LLM_PROBE_MAX_OUTPUT_TOKENS,
   LLM_STREAM_IDLE_TIMEOUT_MS,
+  LLM_TOKEN_PARAM_CACHE_MAX,
 } from "../../../../../src/shared/defaults.ts";
 import { EQUIVALENT_GOLDEN, EQUIVALENT_REQUEST } from "../../../../fixtures/llm/equivalent.ts";
 import { openAiCompletion, openAiError, openAiStream } from "../../../../fixtures/llm/openai-compatible/index.ts";
@@ -561,100 +562,219 @@ describe("OpenAiCompatibleProvider.stream output watchdog", () => {
 });
 
 describe("OpenAiCompatibleProvider.probe", () => {
-  const usageBody = (extra: Record<string, unknown> = {}) =>
-    JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 4 }, ...extra });
+  const completion = (message: Record<string, unknown>, finishReason = "stop") =>
+    JSON.stringify({ choices: [{ message, finish_reason: finishReason }], usage: { prompt_tokens: 9, completion_tokens: 4 } });
+  const answered = completion({ content: "OK" });
+  const jsonBody = completion({ content: "{\"ok\":true}" });
+  const toolCallBody = completion({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "report_ok", arguments: "{}" } }] }, "tool_calls");
+  const truncatedBody = completion({ content: "", reasoning_content: "Let me think" }, "length");
+  const error = (name: string): Answer => {
+    const { status, body } = openAiError(name);
+    return { status, body };
+  };
 
-  async function runAll(http: ScriptedHttp) {
-    const { provider } = setup(http);
-    const checks = provider.probe(PROFILE, "model-under-test");
-    const calls: Array<[string, LlmProbeCall]> = [];
-    const results: Array<[string, unknown]> = [];
-    for (const check of checks) {
-      try {
-        results.push([check.flag, await check.run({ signal: live(), onRequestStart: noStartReport, onCall: (call) => calls.push([check.flag, call]) })]);
-      } catch (error) {
-        results.push([check.flag, error]);
-      }
+  type Run = { kind: string; result?: LlmProbeResult; error?: unknown; calls: LlmProbeCall[] };
+
+  async function runCheck(check: LlmProbeCheck, signal = live()): Promise<Run> {
+    const calls: LlmProbeCall[] = [];
+    try {
+      return { kind: check.kind, result: await check.run({ signal, onRequestStart: noStartReport, onCall: (call) => calls.push(call) }), calls };
+    } catch (thrown) {
+      return { kind: check.kind, error: thrown, calls };
     }
-    return { checks, calls, results, bodies: http.bodies };
   }
 
-  const toolCallBody = () =>
-    usageBody({ choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "report_ok", arguments: "{}" } }] }, finish_reason: "tool_calls" }] });
+  async function runAll(http: ScriptedHttp, provider = setup(http).provider, modelId = "model-under-test", profile = PROFILE) {
+    const checks = provider.probe(profile, modelId);
+    const runs: Run[] = [];
+    for (const check of checks) {
+      runs.push(await runCheck(check));
+    }
+    return { checks, runs, bodies: http.bodies };
+  }
 
-  it("offers the stream, JSON and tools checks, one request each with the probe token cap", async () => {
-    const http = new ScriptedHttp({ body: openAiStream("equivalent") }, { body: usageBody() }, { body: toolCallBody() });
-    const { checks, calls, results, bodies } = await runAll(http);
-    expect(checks.map((check) => check.flag)).toEqual(["stream", "structuredOutput", "tools"]);
-    expect(http.requests).toHaveLength(3);
-    expect(bodies.map((body) => body["max_tokens"])).toEqual([LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_MAX_OUTPUT_TOKENS, LLM_PROBE_MAX_OUTPUT_TOKENS]);
-    expect(bodies[0]).toMatchObject({ stream: true, stream_options: { include_usage: true } });
-    expect(bodies[1]).toMatchObject({ stream: false, response_format: { type: "json_schema" } });
-    expect(bodies[2]).toMatchObject({ stream: false, tools: [{ type: "function" }] });
+  /** The check of one kind, alone. */
+  async function runOne(http: ScriptedHttp, kind: string, provider = setup(http).provider, modelId = "model-under-test", profile = PROFILE): Promise<Run> {
+    const check = provider.probe(profile, modelId).find((candidate) => candidate.kind === kind) as LlmProbeCheck;
+    return runCheck(check);
+  }
+
+  const codeOf = (run: Run): string | undefined => (isAmberError(run.error) ? run.error.appError.code : undefined);
+
+  it("offers the basic call, then the stream, JSON and tools checks, one request each with the probe token cap", async () => {
+    const http = new ScriptedHttp({ body: openAiCompletion() }, { body: openAiStream("equivalent") }, { body: jsonBody }, { body: toolCallBody });
+    const { checks, runs, bodies } = await runAll(http);
+    expect(checks.map((check) => check.kind)).toEqual(["basic", "stream", "structuredOutput", "tools"]);
+    expect(http.requests).toHaveLength(4);
+    expect(bodies.map((body) => body["max_tokens"])).toEqual(Array(4).fill(LLM_PROBE_MAX_OUTPUT_TOKENS));
+    expect(bodies.some((body) => Object.hasOwn(body, "max_completion_tokens"))).toBe(false);
+    expect(bodies[0]).toEqual({ model: "model-under-test", max_tokens: LLM_PROBE_MAX_OUTPUT_TOKENS, stream: false, messages: [{ role: "user", content: "Reply with OK." }] });
+    // The stream check is shaped like every streamed request, usage option included.
+    expect(bodies[1]).toMatchObject({ stream: true, stream_options: { include_usage: true } });
+    expect(bodies[2]).toMatchObject({ stream: false, response_format: { type: "json_schema" } });
+    expect(bodies[3]).toMatchObject({ stream: false, tools: [{ type: "function" }] });
     // The JSON prompt asks for no JSON, and tool use is requested, never forced.
-    expect(JSON.stringify(bodies[1]?.["messages"])).not.toMatch(/ok/);
-    expect(Object.hasOwn(bodies[2] ?? {}, "tool_choice")).toBe(false);
-    expect(results.map(([, result]) => (result as { result: string }).result)).toEqual(["supported", "supported", "supported"]);
-    expect(results.every(([, result]) => (result as { latencyMs: number }).latencyMs >= 0)).toBe(true);
-    expect(calls).toEqual([
-      ["stream", { outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 42, outputTokens: 23 }) }],
-      ["structuredOutput", { outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4 }) }],
-      ["tools", { outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4 }) }],
+    expect(JSON.stringify(bodies[2]?.["messages"])).not.toMatch(/ok/);
+    expect(Object.hasOwn(bodies[3] ?? {}, "tool_choice")).toBe(false);
+    expect(runs.map((run) => run.result)).toEqual([
+      { kind: "basic", status: "connected", latencyMs: 14 },
+      { kind: "stream", result: "supported", latencyMs: 14 },
+      { kind: "structuredOutput", result: "supported", latencyMs: 14 },
+      { kind: "tools", result: "supported", latencyMs: 14 },
+    ]);
+    expect(runs.map((run) => run.calls)).toEqual([
+      [{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 42, outputTokens: 23 }) }],
+      [{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 42, outputTokens: 23 }) }],
+      [{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4 }) }],
+      [{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4 }) }],
     ]);
   });
 
-  it("learns unsupported when a 200 answer shows the JSON schema or the tools were silently ignored", async () => {
-    const ignored = usageBody({ choices: [{ message: { content: "OK" }, finish_reason: "stop" }] });
-    const http = new ScriptedHttp({ body: openAiStream("equivalent") }, { body: ignored }, { body: ignored });
-    const { calls, results } = await runAll(http);
-    expect(results.map(([, result]) => (result as { result: string }).result)).toEqual(["supported", "unsupported", "unsupported"]);
-    expect(calls.map(([, call]) => call.outcome)).toEqual(["succeeded", "succeeded", "succeeded"]);
+  it("calls a basic answer cut off before any answer text incomplete, and connected once there is text", async () => {
+    const cut = await runOne(new ScriptedHttp({ body: truncatedBody }), "basic");
+    expect(cut.result).toMatchObject({ kind: "basic", status: "incomplete" });
+    expect(cut.calls).toEqual([{ outcome: "succeeded", usage: expect.objectContaining({ outputTokens: 4 }) }]);
+    const partial = await runOne(new ScriptedHttp({ body: completion({ content: "O" }, "length") }), "basic");
+    expect(partial.result).toMatchObject({ kind: "basic", status: "connected" });
   });
 
-  it("learns unsupported from a refusal saying the response format is unavailable, and goes on to the tools check", async () => {
+  it("fails the basic call on every error answer, a refusal and an unclassified bad request included, after reporting it", async () => {
+    for (const [answer, code] of [
+      [error("auth"), "llm_failed.auth"],
+      [error("modelNotFound"), "llm_failed.model_not_found"],
+      [error("insufficientBalance"), "llm_failed.quota"],
+      [error("rateLimited"), "llm_rate_limited"],
+      [{ status: 429, headers: { "retry-after": "3" }, body: "{}" }, "llm_rate_limited.retry_after"],
+      [error("serverError"), "llm_failed"],
+      [error("badRequest"), "llm_failed.invalid_request"],
+      [{ body: completion({ content: "" }, "content_filter") }, "llm_failed.refused"],
+    ] as const) {
+      const run = await runOne(new ScriptedHttp(answer), "basic");
+      expect(codeOf(run), JSON.stringify(answer)).toBe(code);
+      expect(run.calls.map((call) => call.outcome)).toEqual(["failed"]);
+    }
+  });
+
+  it("leaves a 200 answer it cannot read with an unknown outcome, and fails one carrying an error object", async () => {
+    for (const [kind, body] of [
+      ["basic", "<html>gateway</html>"],
+      ["structuredOutput", '{"choices":[{"message":{"content":"O'],
+      ["tools", JSON.stringify({ result: "ok" })],
+      ["stream", "<html>gateway</html>"],
+      ["stream", 'data: {"choices":[{"delta":{"content":"O"},"finish_reason":null}]}\n\ndata: {"choi\n\n'],
+    ] as const) {
+      const run = await runOne(new ScriptedHttp({ body }), kind);
+      expect(isAmberError(run.error) && run.error.appError.class, `${kind} ${body}`).toBe("llm_outcome_unknown");
+      expect(run.calls.map((call) => call.outcome), `${kind} ${body}`).toEqual(["outcome_unknown"]);
+    }
+    const inStream = openAiError("inStream");
+    for (const kind of ["basic", "tools", "stream"]) {
+      const run = await runOne(new ScriptedHttp({ body: inStream.body }), kind);
+      expect(isAmberError(run.error) && run.error.appError.code, kind).toBe("llm_failed");
+      expect(run.calls.map((call) => call.outcome), kind).toEqual(["failed"]);
+    }
+  });
+
+  it("still connects a model that cannot stream, and learns unsupported from the refusal of streaming or its usage option", async () => {
+    const usageOptionRefused = JSON.stringify({ error: { message: "Unrecognized request argument supplied: stream_options", type: "invalid_request_error", param: null, code: null } });
+    const http = new ScriptedHttp({ body: answered }, error("streamUnsupported"), { body: jsonBody }, { body: toolCallBody });
+    const { runs } = await runAll(http);
+    expect(runs.map((run) => run.result && ("status" in run.result ? run.result.status : run.result.result))).toEqual(["connected", "unsupported", "supported", "supported"]);
+    expect(runs[1]?.calls).toEqual([{ outcome: "failed" }]);
+    const refused = await runOne(new ScriptedHttp({ status: 400, body: usageOptionRefused }), "stream");
+    expect(refused.result).toMatchObject({ kind: "stream", result: "unsupported" });
+  });
+
+  it("learns unsupported when a stream was asked for and one JSON answer came back", async () => {
+    const run = await runOne(new ScriptedHttp({ body: openAiCompletion() }), "stream");
+    expect(run.result).toMatchObject({ kind: "stream", result: "unsupported" });
+    expect(run.calls).toEqual([{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 42 }) }]);
+  });
+
+  it("supports streaming once the stream says how it finished, a cut-off answer included, and fails it otherwise", async () => {
+    // Cut off by the cap, the stream still worked as a stream.
+    const cut = await runOne(new ScriptedHttp({ body: openAiStream("regression") }), "stream");
+    expect(cut.result).toMatchObject({ kind: "stream", result: "supported" });
+    expect(cut.calls).toEqual([{ outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 1200, reasoningTokens: 48 }) }]);
+    // A relay that sends no [DONE] after the finishing chunk.
+    const noDone = await runOne(new ScriptedHttp({ body: 'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\n' }), "stream");
+    expect(noDone.result).toMatchObject({ result: "supported" });
+    expect(noDone.calls).toEqual([{ outcome: "succeeded" }]);
+
+    const unfinished = await runOne(new ScriptedHttp({ body: 'data: {"choices":[{"delta":{"content":"O"},"finish_reason":null}]}\n\n' }), "stream");
+    expect(isAmberError(unfinished.error) && unfinished.error.appError.class).toBe("llm_outcome_unknown");
+    expect(unfinished.calls).toEqual([{ outcome: "outcome_unknown" }]);
+
+    const inStream = openAiError("inStream");
+    const failed = await runOne(new ScriptedHttp({ body: `data: ${inStream.body}\n\n` }), "stream");
+    expect(isAmberError(failed.error) && [failed.error.appError.code, failed.error.appError.upstreamMessage]).toEqual(["llm_failed", "server_error: The server had an error while processing your request."]);
+    expect(failed.calls).toEqual([{ outcome: "failed" }]);
+
+    const filtered = await runOne(new ScriptedHttp({ body: 'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\ndata: [DONE]\n\n' }), "stream");
+    expect(codeOf(filtered)).toBe("llm_failed.refused");
+    expect(filtered.calls).toEqual([{ outcome: "failed" }]);
+  });
+
+  it("learns unsupported when a 200 answer shows the JSON schema or the tools were silently ignored", async () => {
+    for (const kind of ["structuredOutput", "tools"]) {
+      const run = await runOne(new ScriptedHttp({ body: answered }), kind);
+      expect(run.result).toMatchObject({ kind, result: "unsupported" });
+      expect(run.calls.map((call) => call.outcome)).toEqual(["succeeded"]);
+    }
+  });
+
+  it("cannot decide a JSON or tools check whose answer was cut off before the feature could show", async () => {
+    for (const kind of ["structuredOutput", "tools"]) {
+      const run = await runOne(new ScriptedHttp({ body: truncatedBody }), kind);
+      expect(run.result).toMatchObject({ kind, result: "inconclusive", reason: "truncated" });
+      expect(run.calls.map((call) => call.outcome)).toEqual(["succeeded"]);
+    }
+    // Schema-shaped JSON proves the feature even when the cap was reached right after it.
+    const complete = await runOne(new ScriptedHttp({ body: completion({ content: "{\"ok\":true}" }, "length") }), "structuredOutput");
+    expect(complete.result).toMatchObject({ result: "supported" });
+  });
+
+  it("learns unsupported from a refusal saying the response format is unavailable", async () => {
     // DeepSeek's answer to a `json_schema` response format, recorded 2026-10-01.
     const unavailable = JSON.stringify({ error: { message: "This response_format type is unavailable now (request_id: <redacted>)", type: "invalid_request_error" } });
-    const http = new ScriptedHttp({ body: openAiStream("equivalent") }, { status: 400, body: unavailable }, { body: toolCallBody() });
-    const { calls, results } = await runAll(http);
-    expect(results.map(([, result]) => (result as { result: string }).result)).toEqual(["supported", "unsupported", "supported"]);
-    expect(calls.map(([, call]) => call.outcome)).toEqual(["succeeded", "failed", "succeeded"]);
+    const run = await runOne(new ScriptedHttp({ status: 400, body: unavailable }), "structuredOutput");
+    expect(run.result).toMatchObject({ result: "unsupported" });
+    expect(run.calls).toEqual([{ outcome: "failed" }]);
   });
 
-  it("reports a call without usage when the upstream returns none", async () => {
-    const http = new ScriptedHttp({ body: 'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n' });
-    const { calls } = await runAll(http);
-    expect(calls[0]).toEqual(["stream", { outcome: "succeeded" }]);
+  it("learns unsupported only from an explicit refusal of the probed feature, and cannot decide on another bad request", async () => {
+    const http = new ScriptedHttp({ body: answered }, error("streamUnsupported"), error("responseFormatUnsupported"), error("toolsUnsupported"));
+    const { runs } = await runAll(http);
+    expect(runs.slice(1).map((run) => run.result)).toEqual([
+      { kind: "stream", result: "unsupported", latencyMs: 14 },
+      { kind: "structuredOutput", result: "unsupported", latencyMs: 14 },
+      { kind: "tools", result: "unsupported", latencyMs: 14 },
+    ]);
+    for (const kind of ["stream", "structuredOutput", "tools"]) {
+      const unclear = await runOne(new ScriptedHttp(error("badRequest")), kind);
+      expect(unclear.result).toEqual({ kind, result: "inconclusive", reason: "upstream_rejected", latencyMs: 14 });
+      expect(unclear.calls).toEqual([{ outcome: "failed" }]);
+      const unprocessable = await runOne(new ScriptedHttp({ status: 422, body: "{}" }), kind);
+      expect(unprocessable.result).toMatchObject({ result: "inconclusive", reason: "upstream_rejected" });
+    }
   });
 
-  it("learns unsupported only from an explicit refusal of the probed feature", async () => {
-    const stream = openAiError("streamUnsupported");
-    const json = openAiError("responseFormatUnsupported");
-    const tools = openAiError("toolsUnsupported");
-    const http = new ScriptedHttp({ status: stream.status, body: stream.body }, { status: json.status, body: json.body }, { status: tools.status, body: tools.body });
-    const { calls, results } = await runAll(http);
-    expect(results.map(([, result]) => (result as { result: string }).result)).toEqual(["unsupported", "unsupported", "unsupported"]);
-    expect(calls.map(([, call]) => call)).toEqual([{ outcome: "failed" }, { outcome: "failed" }, { outcome: "failed" }]);
-  });
-
-  it("throws, after reporting the call, for any other error answer", async () => {
-    const auth = openAiError("auth");
-    const unrelated = openAiError("maxTokensRejected");
-    const server = openAiError("serverError");
-    const http = new ScriptedHttp({ status: auth.status, body: auth.body }, { status: unrelated.status, body: unrelated.body }, { status: server.status, body: server.body });
-    const { calls, results } = await runAll(http);
-    expect(results.map(([, error]) => (error as AmberError).appError.code)).toEqual(["llm_failed.auth", "llm_failed.invalid_request", "llm_failed"]);
-    expect(calls.map(([, call]) => call.outcome)).toEqual(["failed", "failed", "failed"]);
-  });
-
-  it("classifies a probe's limit answer with its retry-after header", async () => {
-    const http = new ScriptedHttp(
-      { status: 429, headers: { "retry-after": "2" }, body: JSON.stringify({ error: { message: "slow", code: null } }) },
-      { status: 503, body: JSON.stringify({ error: { message: "busy", type: "server_is_overloaded" } }) },
-      { status: 429, body: JSON.stringify({ code: 1008, msg: "余额不足，请充值" }) },
-    );
-    const { results } = await runAll(http);
-    expect(results.map(([, error]) => (error as AmberError).appError.code)).toEqual(["llm_rate_limited.retry_after", "llm_failed.overloaded", "llm_failed.quota"]);
-    expect((results[0]?.[1] as AmberError).appError.details).toEqual({ retryAfterMs: 2000 });
+  it("fails a capability check on authentication, unknown model, quota, rate limit and server errors", async () => {
+    for (const [answer, code] of [
+      [error("auth"), "llm_failed.auth"],
+      [error("modelNotFound"), "llm_failed.model_not_found"],
+      [error("insufficientQuota"), "llm_failed.quota"],
+      [{ status: 429, headers: { "retry-after": "2" }, body: JSON.stringify({ error: { message: "slow", code: null } }) }, "llm_rate_limited.retry_after"],
+      [{ status: 503, body: JSON.stringify({ error: { message: "busy", type: "server_is_overloaded" } }) }, "llm_failed.overloaded"],
+      [error("serverError"), "llm_failed"],
+      [error("contextLength"), "llm_capability.context_length"],
+    ] as const) {
+      const run = await runOne(new ScriptedHttp(answer), "tools");
+      expect(codeOf(run), JSON.stringify(answer)).toBe(code);
+      expect(run.calls).toEqual([{ outcome: "failed" }]);
+    }
+    const limited = await runOne(new ScriptedHttp({ status: 429, headers: { "retry-after": "2" }, body: "{}" }), "structuredOutput");
+    expect(isAmberError(limited.error) && limited.error.appError.details).toEqual({ retryAfterMs: 2000 });
   });
 
   it("reports nothing for a failure before sending and an unknown outcome after it", async () => {
@@ -662,14 +782,16 @@ describe("OpenAiCompatibleProvider.probe", () => {
       body: ["{\"choices\":"],
       bodyError: new OutboundHttpError("after_send", "network"),
     });
-    const { calls, results } = await runAll(http);
-    expect((results[0]?.[1] as AmberError).appError.code).toBe("llm_failed.unreachable");
-    expect((results[1]?.[1] as AmberError).appError.class).toBe("llm_outcome_unknown");
-    expect((results[2]?.[1] as AmberError).appError.class).toBe("llm_outcome_unknown");
-    expect(calls).toEqual([
-      ["structuredOutput", { outcome: "outcome_unknown" }],
-      ["tools", { outcome: "outcome_unknown" }],
-    ]);
+    const { provider } = setup(http);
+    const before = await runOne(http, "basic", provider);
+    const after = await runOne(http, "structuredOutput", provider);
+    const broken = await runOne(http, "tools", provider);
+    expect(codeOf(before)).toBe("llm_failed.unreachable");
+    expect(isAmberError(after.error) && after.error.appError.class).toBe("llm_outcome_unknown");
+    expect(isAmberError(broken.error) && broken.error.appError.class).toBe("llm_outcome_unknown");
+    expect([before.calls, after.calls, broken.calls]).toEqual([[], [{ outcome: "outcome_unknown" }], [{ outcome: "outcome_unknown" }]]);
+    // A network failure is never answered with the other token parameter.
+    expect(http.bodies.every((body) => Object.hasOwn(body, "max_tokens"))).toBe(true);
   });
 
   it("follows the send boundary when the caller cancels", async () => {
@@ -677,12 +799,125 @@ describe("OpenAiCompatibleProvider.probe", () => {
     const [first, second] = provider.probe(PROFILE, "model-under-test");
     const controller = new AbortController();
     controller.abort();
+    const before = await runCheck(first as LlmProbeCheck, controller.signal);
+    const after = await runCheck(second as LlmProbeCheck, controller.signal);
+    expect(before.error).toBeInstanceOf(OutboundHttpError);
+    expect(after.error).toBeInstanceOf(OutboundHttpError);
+    expect([...before.calls, ...after.calls]).toEqual([{ outcome: "outcome_unknown" }]);
+  });
+});
+
+describe("OpenAiCompatibleProvider.probe max_tokens fallback", () => {
+  const answered = JSON.stringify({ choices: [{ message: { content: "OK" }, finish_reason: "stop" }], usage: { prompt_tokens: 9, completion_tokens: 4 } });
+  const rejected = (): Answer => {
+    const { status, body } = openAiError("maxTokensRejected");
+    return { status, body };
+  };
+  // Both parameters named in the message, without `param`.
+  const namesBoth: Answer = { status: 400, body: JSON.stringify({ error: { message: "max_tokens is deprecated for this model, please use max_completion_tokens", type: "invalid_request_error" } }) };
+  const tokenParams = (http: ScriptedHttp) => http.bodies.map((body) => (Object.hasOwn(body, "max_tokens") ? "max_tokens" : Object.hasOwn(body, "max_completion_tokens") ? "max_completion_tokens" : "none"));
+
+  async function run(provider: OpenAiCompatibleProvider, kind = "basic", modelId = "model-under-test", profile = PROFILE) {
+    const check = provider.probe(profile, modelId).find((candidate) => candidate.kind === kind) as LlmProbeCheck;
     const calls: LlmProbeCall[] = [];
-    const before = await failure((first as NonNullable<typeof first>).run({ signal: controller.signal, onRequestStart: noStartReport, onCall: (call) => calls.push(call) }));
-    const after = await failure((second as NonNullable<typeof second>).run({ signal: controller.signal, onRequestStart: noStartReport, onCall: (call) => calls.push(call) }));
-    expect(before).toBeInstanceOf(OutboundHttpError);
-    expect(after).toBeInstanceOf(OutboundHttpError);
-    expect(calls).toEqual([{ outcome: "outcome_unknown" }]);
+    const starts: RequestStartInfo[] = [];
+    try {
+      const result = await check.run({ signal: live(), onRequestStart: (info) => starts.push(info), onCall: (call) => calls.push(call) });
+      return { result, calls, starts };
+    } catch (error) {
+      return { error, calls, starts };
+    }
+  }
+
+  it("re-sends the check once with max_completion_tokens when the upstream names max_tokens as the rejected parameter, reporting both requests", async () => {
+    const http = new ScriptedHttp(rejected(), { body: answered });
+    const { provider } = setup(http);
+    const outcome = await run(provider);
+    expect(outcome.result).toMatchObject({ kind: "basic", status: "connected" });
+    expect(outcome.calls).toEqual([{ outcome: "failed" }, { outcome: "succeeded", usage: expect.objectContaining({ inputTokens: 9 }) }]);
+    expect(outcome.starts).toHaveLength(2);
+    expect(tokenParams(http)).toEqual(["max_tokens", "max_completion_tokens"]);
+    expect(http.bodies[1]?.["max_completion_tokens"]).toBe(LLM_PROBE_MAX_OUTPUT_TOKENS);
+  });
+
+  it("also falls back when the error names both parameters, on any check", async () => {
+    const http = new ScriptedHttp(namesBoth, { body: answered });
+    const outcome = await run(setup(http).provider, "tools");
+    expect(outcome.result).toMatchObject({ kind: "tools", result: "unsupported" });
+    expect(outcome.calls.map((call) => call.outcome)).toEqual(["failed", "succeeded"]);
+    expect(tokenParams(http)).toEqual(["max_tokens", "max_completion_tokens"]);
+  });
+
+  it("does not fall back on a bad request about something else, on wording naming only one parameter, or twice", async () => {
+    const vague: Answer = { status: 400, body: JSON.stringify({ error: { message: "max_tokens is too large", type: "invalid_request_error" } }) };
+    for (const answer of [{ status: openAiError("badRequest").status, body: openAiError("badRequest").body }, vague]) {
+      const http = new ScriptedHttp(answer, { body: answered });
+      const outcome = await run(setup(http).provider);
+      expect(isAmberError(outcome.error) && outcome.error.appError.code).toBe("llm_failed.invalid_request");
+      expect(http.requests).toHaveLength(1);
+    }
+    const twice = new ScriptedHttp(rejected(), rejected(), { body: answered });
+    const provider = setup(twice).provider;
+    const outcome = await run(provider, "structuredOutput");
+    expect(outcome.result).toMatchObject({ result: "inconclusive", reason: "upstream_rejected" });
+    expect(outcome.calls.map((call) => call.outcome)).toEqual(["failed", "failed"]);
+    // The re-sent request was refused over its cap too: nothing was learned to remember.
+    await run(provider, "basic");
+    expect(tokenParams(twice)).toEqual(["max_tokens", "max_completion_tokens", "max_tokens"]);
+  });
+
+  it("remembers the fallback only when the re-sent request was not refused over max_completion_tokens", async () => {
+    const completionRejected: Answer = { status: 400, body: JSON.stringify({ error: { message: "max_completion_tokens is not supported", type: "invalid_request_error", param: "max_completion_tokens" } }) };
+    const refused = new ScriptedHttp(rejected(), completionRejected, { body: answered });
+    const refusedProvider = setup(refused).provider;
+    await run(refusedProvider, "basic");
+    await run(refusedProvider, "basic");
+    expect(tokenParams(refused)).toEqual(["max_tokens", "max_completion_tokens", "max_tokens"]);
+
+    // Refused for another reason, the re-sent request still showed the parameter is accepted.
+    const auth = openAiError("auth");
+    const other = new ScriptedHttp(rejected(), { status: auth.status, body: auth.body }, { body: answered });
+    const otherProvider = setup(other).provider;
+    expect(isAmberError((await run(otherProvider, "basic")).error)).toBe(true);
+    await run(otherProvider, "basic");
+    expect(tokenParams(other)).toEqual(["max_tokens", "max_completion_tokens", "max_completion_tokens"]);
+
+    // A re-sent request that never got an answer settles nothing.
+    const lost = new ScriptedHttp(rejected(), new OutboundHttpError("after_send", "network"), { body: answered });
+    const lostProvider = setup(lost).provider;
+    await run(lostProvider, "basic");
+    await run(lostProvider, "basic");
+    expect(tokenParams(lost)).toEqual(["max_tokens", "max_completion_tokens", "max_tokens"]);
+  });
+
+  it("remembers the endpoint: later checks and probes of the same profile, endpoint and model start with max_completion_tokens", async () => {
+    const http = new ScriptedHttp(rejected(), ...Array.from({ length: 8 }, () => ({ body: answered })));
+    const { provider } = setup(http);
+    await run(provider, "basic");
+    await run(provider, "tools");
+    // Equal up to a trailing slash: the same endpoint.
+    await run(provider, "basic", "model-under-test", { ...PROFILE, baseURL: `${PROFILE.baseURL}/` });
+    await run(provider, "basic", "other-model");
+    await run(provider, "basic", "model-under-test", { ...PROFILE, id: "other-profile" });
+    await run(provider, "basic", "model-under-test", { ...PROFILE, baseURL: "https://elsewhere.example.invalid/v1" });
+    expect(tokenParams(http)).toEqual(["max_tokens", "max_completion_tokens", "max_completion_tokens", "max_completion_tokens", "max_tokens", "max_tokens", "max_tokens"]);
+  });
+
+  it("keeps at most LLM_TOKEN_PARAM_CACHE_MAX endpoints, forgetting the oldest first", async () => {
+    const answers: Answer[] = [];
+    for (let index = 0; index <= LLM_TOKEN_PARAM_CACHE_MAX; index += 1) {
+      answers.push(rejected(), { body: answered });
+    }
+    answers.push({ body: answered }, { body: answered });
+    const http = new ScriptedHttp(...answers);
+    const { provider } = setup(http);
+    for (let index = 0; index <= LLM_TOKEN_PARAM_CACHE_MAX; index += 1) {
+      await run(provider, "basic", `model-${index}`);
+    }
+    const before = http.requests.length;
+    await run(provider, "basic", "model-0");
+    await run(provider, "basic", "model-1");
+    expect(tokenParams(http).slice(before)).toEqual(["max_tokens", "max_completion_tokens"]);
   });
 });
 
@@ -695,7 +930,7 @@ describe("OpenAiCompatibleProvider request start", () => {
   /** A store whose key and version change at every reveal, so a second reveal would show in the request. */
   function rotating(log: string[]): { provider: OpenAiCompatibleProvider; http: ScriptedHttp } {
     let reveals = 0;
-    const http = new ScriptedHttp({ body: openAiStream("equivalent") }, { body: openAiStream("equivalent") }, { body: openAiStream("equivalent") }, { body: openAiStream("equivalent") });
+    const http = new ScriptedHttp(...Array.from({ length: 5 }, () => ({ body: openAiStream("equivalent") })));
     const original = http.request.bind(http);
     http.request = (request) => {
       log.push(`send ${String(request.headers?.["authorization"])}`);
@@ -779,8 +1014,8 @@ describe("OpenAiCompatibleProvider request start", () => {
     for (const check of checks) {
       await check.run({ signal: live(), onRequestStart: (info) => infos.push(info), onCall: () => undefined }).catch(() => undefined);
     }
-    expect(infos.map((info) => info.credential.versionId)).toEqual(["version-1", "version-2", "version-3"]);
-    expect(log.filter((entry) => entry.startsWith("send"))).toEqual(["send Bearer key-1", "send Bearer key-2", "send Bearer key-3"]);
+    expect(infos.map((info) => info.credential.versionId)).toEqual(["version-1", "version-2", "version-3", "version-4"]);
+    expect(log.filter((entry) => entry.startsWith("send"))).toEqual(["send Bearer key-1", "send Bearer key-2", "send Bearer key-3", "send Bearer key-4"]);
 
     const http = new ScriptedHttp({ body: openAiStream("equivalent") });
     const refused = setup(http).provider.probe(PROFILE, "model-under-test")[0] as LlmProbeCheck;

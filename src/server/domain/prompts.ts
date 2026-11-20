@@ -459,6 +459,7 @@ export const CHAT_SYSTEM_METADATA_PROMPT: BuiltinPrompt = {
 export const LLM_PROTOCOL_DISPLAY_NAMES: Readonly<Record<LlmProtocol, string>> = {
   openai_compatible: "OpenAI 兼容接口",
   anthropic_messages: "Anthropic Messages 接口",
+  openai_responses: "OpenAI Responses 接口",
 };
 
 /**

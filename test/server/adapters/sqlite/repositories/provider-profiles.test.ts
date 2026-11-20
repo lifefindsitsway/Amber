@@ -223,6 +223,20 @@ describe("provider profile writes", () => {
     expect(get("alice", "p1")?.protocol).toBe("openai_compatible");
   });
 
+  it("stores, rewrites and clears the preset a profile was created from", () => {
+    repository.withTransaction((scope) => {
+      scope.providerProfiles.insert(profile("p1", "alice", { presetId: "kimi" }));
+      scope.providerProfiles.insert(profile("p2", "alice"));
+    });
+    expect(get("alice", "p1")?.presetId).toBe("kimi");
+    expect(get("alice", "p2")).not.toHaveProperty("presetId");
+    repository.withTransaction((scope) => scope.providerProfiles.update(profile("p1", "alice", { presetId: "glm" })));
+    expect(get("alice", "p1")?.presetId).toBe("glm");
+    repository.withTransaction((scope) => scope.providerProfiles.update(profile("p1", "alice")));
+    expect(get("alice", "p1")).not.toHaveProperty("presetId");
+    expect(db.prepare("SELECT preset_id FROM provider_profile WHERE id = 'p1'").get()).toEqual({ preset_id: null });
+  });
+
   it("treats another user's profile id like an unknown one on update and delete", () => {
     repository.withTransaction((scope) => scope.providerProfiles.insert(profile("p1", "alice", { models: [model("a")] })));
     const code = (work: () => unknown): string | undefined => {

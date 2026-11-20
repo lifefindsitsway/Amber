@@ -11,6 +11,7 @@ import { ContextMenuHost } from "../../../src/web/ui/context-menu.tsx";
 import { CITED_SEGMENT_ID, contentDetail, revision, SEGMENTS } from "../../fixtures/web/content-data.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../fixtures/web/render.tsx";
 import { provider } from "../../fixtures/web/shell-data.ts";
+import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 
 const MODEL = { providerProfileId: "p1", modelId: "m-chat" };
 const PROVIDERS = { items: [provider("p1", "Relay", ["m-default", "m-chat"])] };
@@ -278,7 +279,7 @@ describe("ChatPanel", () => {
     });
   });
 
-  it("greys the input out with a way to configure when the model's context window is unknown", async () => {
+  it("holds the question back with a way to fill the window in when it is unknown, the input still writable", async () => {
     const calls = api({ chat: () => chatOf([], { mode: "unavailable", reason: "context_window_unknown" }) });
     renderApp(
       <Page>
@@ -287,10 +288,65 @@ describe("ChatPanel", () => {
     );
     const notice = await screen.findByTestId("chat-unavailable");
     expect(notice.getAttribute("data-reason")).toBe("context_window_unknown");
-    expect(screen.getByTestId("chat-configure").getAttribute("href")).toBe("/settings/models");
-    expect(input().disabled).toBe(true);
+    expect(screen.getByTestId("chat-context-window-settings").getAttribute("href")).toBe("/settings/models");
+    expect(input().disabled).toBe(false);
+    fireEvent.change(input(), { target: { value: "能讲讲吗" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
     expect((screen.getByTestId("chat-send") as HTMLButtonElement).disabled).toBe(true);
     expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+  });
+
+  it("offers to fill in the selected model's window before anything is asked, then lets the question go", async () => {
+    const profiles = [providerWithoutWindow("p1", "Relay", ["m-default", "m-chat"])];
+    const windows = windowRoutes(profiles);
+    const known = (): boolean => profiles[0]?.models.find((model) => model.modelId === "m-chat")?.effective.limits.contextWindowTokens !== undefined;
+    const calls = api({
+      chat: () => chatOf([], known() ? { mode: "full", estimatedTokens: 100 } : { mode: "unavailable", reason: "context_window_unknown" }),
+      post: () => stream([frame("done", { status: "complete", messageId: "m2", threadId: "th1" })]),
+      routes: windows.routes,
+    });
+    renderApp(
+      <Page>
+        <ChatPanel fill={false} />
+      </Page>,
+    );
+    const notice = await screen.findByTestId("chat-context-window");
+    expect(notice.textContent).toContain("「Relay · m-chat」还没有填写上下文窗口");
+    expect(input().disabled).toBe(false);
+    expect((screen.getByTestId("chat-send") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(within(notice).getByLabelText("上下文窗口"), { target: { value: "128000" } });
+    fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByTestId("chat-unavailable")).toBeNull());
+    expect(windows.overrides[0]?.path).toBe("/api/providers/p1/models/m-chat/override");
+    expect(windows.overrides[0]?.body).toEqual({ limits: { contextWindowTokens: 128_000, maxOutputTokens: null } });
+    await waitFor(() => expect(document.activeElement).toBe(input()));
+    fireEvent.change(input(), { target: { value: "讲什么？" } });
+    fireEvent.click(screen.getByTestId("chat-send"));
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/chat/messages"))).toBe(true));
+  });
+
+  it("names the model a refusal for an unknown window was about", async () => {
+    const profiles = [provider("p1", "Relay", ["m-default", "m-chat"]), providerWithoutWindow("p9", "旧档案", ["m-old"])];
+    api({
+      providers: { items: profiles },
+      post: () =>
+        new Response(
+          JSON.stringify({
+            error: { class: "llm_capability", code: "llm_capability.context_window_unknown", retryDisposition: "never", userMessage: "", details: { providerProfileId: "p9", modelId: "m-old" } },
+          }),
+          { status: 422, headers: { "content-type": "application/json" } },
+        ),
+    });
+    renderApp(
+      <Page>
+        <ChatPanel fill={false} />
+      </Page>,
+    );
+    await screen.findByTestId("chat-mode");
+    expect(screen.queryByTestId("chat-context-window")).toBeNull();
+    fireEvent.change(input(), { target: { value: "能讲讲吗" } });
+    fireEvent.click(screen.getByTestId("chat-send"));
+    expect((await screen.findByTestId("chat-context-window")).textContent).toContain("「旧档案 · m-old」");
   });
 
   it("shows the same hint and gives the question back when the POST is refused with 422", async () => {

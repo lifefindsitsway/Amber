@@ -1,0 +1,42 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_synthetic","object":"response","created_at":0,"model":"model-under-test","store":false,"status":"in_progress","output":[],"usage":null},"sequence_number":1}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_synthetic","object":"response","created_at":0,"model":"model-under-test","store":false,"status":"in_progress","output":[],"usage":null},"sequence_number":2}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[],"status":"in_progress"},"sequence_number":3}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"<encrypted>","status":"completed"},"sequence_number":4}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]},"sequence_number":5}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":6}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"Amber 把封存","logprobs":[],"sequence_number":7}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"在音视频里的知识","logprobs":[],"sequence_number":8}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"取出来，","logprobs":[],"sequence_number":9}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"让它重新活过来。","logprobs":[],"sequence_number":10}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","item_id":"msg_1","output_index":1,"content_index":0,"text":"Amber 把封存在音视频里的知识取出来，让它重新活过来。","logprobs":[],"sequence_number":11}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"Amber 把封存在音视频里的知识取出来，让它重新活过来。","annotations":[]},"sequence_number":12}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Amber 把封存在音视频里的知识取出来，让它重新活过来。","annotations":[]}]},"sequence_number":13}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_synthetic","object":"response","created_at":0,"model":"model-under-test","store":false,"status":"completed","error":null,"incomplete_details":null,"output":[{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"<encrypted>","status":"completed"},{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Amber 把封存在音视频里的知识取出来，让它重新活过来。","annotations":[]}]}],"usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":0},"output_tokens":23,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":65}},"sequence_number":14}
+

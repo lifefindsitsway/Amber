@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CREDENTIAL_STATUSES, LLM_PROTOCOLS, TRI_STATES } from "../enums.ts";
+import { LLM_PRESET_IDS } from "../llm-presets.ts";
 import { modelPricingSchema } from "../model-pricing.ts";
 
 const triSchema = z.enum(TRI_STATES);
@@ -46,6 +47,8 @@ export const providerProfileDtoSchema = z.object({
   name: z.string().min(1),
   protocol: z.enum(LLM_PROTOCOLS),
   baseURL: z.string().min(1),
+  /** The preset chosen at creation; display only (icon and region). A preset id later retired reads back as is. */
+  presetId: z.string().min(1).exactOptional(),
   models: z.array(modelCapabilityDtoSchema),
   createdAt: z.number().int(),
   credentialStatus: z.enum(CREDENTIAL_STATUSES),
@@ -60,12 +63,16 @@ export type ProviderListDto = z.infer<typeof providerListDtoSchema>;
 export const providerOrderRequestSchema = z.object({ profileIds: z.array(z.string().min(1)).min(1) }).strict();
 export type ProviderOrderRequest = z.infer<typeof providerOrderRequestSchema>;
 
-/** `contextWindowTokens` is required because probing cannot measure it. */
+/**
+ * Both limits are optional (probing cannot measure them; features that need the window ask for
+ * it where they start). On update, for a model kept by id: an omitted limit keeps the stored
+ * value, a number replaces it, `null` clears it. On create, `null` equals omitted.
+ */
 export const providerModelInputSchema = z
   .object({
     modelId: z.string().trim().min(1),
-    contextWindowTokens: tokenCountSchema,
-    maxOutputTokens: tokenCountSchema.exactOptional(),
+    contextWindowTokens: tokenCountSchema.nullable().exactOptional(),
+    maxOutputTokens: tokenCountSchema.nullable().exactOptional(),
   })
   .strict();
 
@@ -74,15 +81,19 @@ export const createProviderRequestSchema = z
     name: z.string().trim().min(1),
     protocol: z.enum(LLM_PROTOCOLS),
     baseURL: z.string().trim().min(1),
+    presetId: z.enum(LLM_PRESET_IDS).exactOptional(),
     models: z.array(providerModelInputSchema),
   })
   .strict();
+/** The key that may come with it is defined at the server's API boundary only. */
 export type CreateProviderRequest = z.infer<typeof createProviderRequestSchema>;
 
 /** `models` replaces the whole list; models kept by id keep their probed and overridden layers. */
 export const updateProviderRequestSchema = z
   .object({
     name: z.string().trim().min(1).exactOptional(),
+    /** Display only; `null` clears it. */
+    presetId: z.enum(LLM_PRESET_IDS).nullable().exactOptional(),
     baseURL: z.string().trim().min(1).exactOptional(),
     models: z.array(providerModelInputSchema).exactOptional(),
   })
@@ -115,11 +126,34 @@ export type ModelOverrideRequest = z.infer<typeof modelOverrideRequestSchema>;
 
 export const probeRequestSchema = z.object({ modelId: z.string().min(1) }).strict();
 
-/** What "test connection" measured and wrote back as the model's `observed` flags. */
+export const PROBE_BASIC_STATUSES = ["connected", "incomplete"] as const;
+export type ProbeBasicStatus = (typeof PROBE_BASIC_STATUSES)[number];
+export const PROBE_CHECK_FLAGS = ["stream", "structuredOutput", "tools"] as const;
+export type ProbeCheckFlag = (typeof PROBE_CHECK_FLAGS)[number];
+export const PROBE_CHECK_RESULTS = ["supported", "unsupported", "inconclusive"] as const;
+export type ProbeCheckResult = (typeof PROBE_CHECK_RESULTS)[number];
+/** Why a check could not decide: cut off by the output cap, a 400/422 it could not classify, or rate limited. */
+export const PROBE_INCONCLUSIVE_REASONS = ["truncated", "upstream_rejected", "rate_limited"] as const;
+export type ProbeInconclusiveReason = (typeof PROBE_INCONCLUSIVE_REASONS)[number];
+
+/**
+ * What "test connection" found. `basic` is the plain non-streamed call; each check is one
+ * capability. `supported` / `unsupported` were written to `observed`, `inconclusive` cleared
+ * that flag's `observed`; `observed` repeats the model's observed flags after the write.
+ */
 export const probeResultDtoSchema = z.object({
   modelId: z.string().min(1),
-  observed: capabilityFlagsSchema.pick({ stream: true, structuredOutput: true, tools: true }),
-  latencyMs: z.number().nonnegative(),
+  basic: z.object({ status: z.enum(PROBE_BASIC_STATUSES), latencyMs: z.number().nonnegative() }).strict(),
+  checks: z.array(
+    z
+      .object({
+        flag: z.enum(PROBE_CHECK_FLAGS),
+        result: z.enum(PROBE_CHECK_RESULTS),
+        reason: z.enum(PROBE_INCONCLUSIVE_REASONS).exactOptional(),
+      })
+      .strict(),
+  ),
+  observed: capabilityFlagsSchema.pick({ stream: true, structuredOutput: true, tools: true }).partial(),
   observedAt: z.number().int(),
 });
 export type ProbeResultDto = z.infer<typeof probeResultDtoSchema>;

@@ -109,3 +109,41 @@ export function refusesProbedFeature(flag: LlmProbeFlag, status: number, body: s
   const text = [detail.code, detail.type, detail.message].filter((part) => part !== undefined).join(" ");
   return subject.test(text) && REFUSAL_WORDING.test(text);
 }
+
+const MAX_TOKENS_NAME = /\bmax_tokens\b/;
+const MAX_COMPLETION_TOKENS_NAME = /\bmax_completion_tokens\b/;
+
+/**
+ * Whether an error answer explicitly rejects `max_tokens` in favour of
+ * `max_completion_tokens`: a validation status whose `param` is `max_tokens`, or whose error
+ * names both parameters (OpenAI's wording for models that only take the newer one). Vaguer
+ * answers do not qualify, so an unrelated bad request is never sent twice.
+ */
+export function rejectsMaxTokens(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) {
+    return false;
+  }
+  const detail = errorDetail(body);
+  if (detail.param === "max_tokens") {
+    return true;
+  }
+  const text = [detail.code, detail.type, detail.message].filter((part) => part !== undefined).join(" ");
+  return MAX_TOKENS_NAME.test(text) && MAX_COMPLETION_TOKENS_NAME.test(text);
+}
+
+/**
+ * Whether an error answer is about the output cap parameter at all: a validation status whose
+ * `param` is either cap parameter or whose error names `max_completion_tokens`. After falling
+ * back, such an answer means the fallback did not settle which parameter the endpoint takes.
+ */
+export function rejectsTokenParam(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) {
+    return false;
+  }
+  const detail = errorDetail(body);
+  if (detail.param === "max_tokens" || detail.param === "max_completion_tokens") {
+    return true;
+  }
+  const text = [detail.code, detail.type, detail.message].filter((part) => part !== undefined).join(" ");
+  return MAX_COMPLETION_TOKENS_NAME.test(text);
+}

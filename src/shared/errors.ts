@@ -350,6 +350,10 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.pack_target_changed": { detailsKeys: ["contentId"] },
   // The content pack job is not in a state that allows this action.
   "conflict.pack_job_state": {},
+  // An unfinished task still uses the LLM profile whose Base URL was to change.
+  "conflict.profile_tasks_unfinished": { detailsKeys: ["taskCount"] },
+  // The profile's protocol, address, key or model changed while "test connection" ran.
+  "conflict.probe_config_changed": {},
   "unauthenticated.csrf": {},
   "unauthenticated.setup_token": {},
   "unauthenticated.bad_credentials": {},

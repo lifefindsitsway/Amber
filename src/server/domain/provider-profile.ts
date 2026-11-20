@@ -68,6 +68,8 @@ export interface ProviderProfile {
   name: string;
   protocol: LlmProtocol;
   baseURL: string;
+  /** The preset chosen at creation; display only, never consulted for requests or policy. */
+  presetId?: string;
   credentialRef?: string;
   models: ModelCapability[];
   createdAt: number;
@@ -156,29 +158,59 @@ export const UNKNOWN_CAPABILITY_FLAGS: CapabilityFlags = {
 };
 
 /**
- * A model as the user adds it: every declared flag `unknown`, and the limits the user
- * states (the context window is required because probing cannot measure it) recorded as
- * the user's own override, never as a measured value.
+ * The limits a user states for one model. Omitted keeps what is stored (a new model has
+ * nothing), a number replaces it, `null` clears it.
  */
-export function newModelCapability(modelId: string, limits: { contextWindowTokens: number; maxOutputTokens?: number }): ModelCapability {
+export interface UserLimitsInput {
+  contextWindowTokens?: number | null;
+  maxOutputTokens?: number | null;
+}
+
+/**
+ * A model as the user adds it: every declared flag `unknown`, and the limits the user
+ * states (both optional: probing cannot measure them) recorded as the user's own override,
+ * never as a measured value. Without any, the model has no override layer.
+ */
+export function newModelCapability(modelId: string, limits: UserLimitsInput = {}): ModelCapability {
+  const userOverride = applyUserLimits(undefined, limits);
   return {
     modelId,
     flags: { declared: { ...UNKNOWN_CAPABILITY_FLAGS } },
-    limits: { declared: {}, userOverride: userLimits(limits) },
+    limits: { declared: {}, ...(userOverride === undefined ? {} : { userOverride }) },
   };
 }
 
-/** The user-stated limits of a model kept in a new model list; its other layers stay as they were. */
-export function withUserLimits(capability: ModelCapability, limits: { contextWindowTokens: number; maxOutputTokens?: number }): ModelCapability {
-  const rest: Partial<CapabilityLimits> = { ...capability.limits.userOverride };
-  delete rest.contextWindowTokens;
-  delete rest.maxOutputTokens;
-  return { ...capability, limits: { ...capability.limits, userOverride: { ...rest, ...userLimits(limits) } } };
+/**
+ * A model kept in a new model list, with the limits the request stated applied to its user
+ * override (see `UserLimitsInput`); its other layers stay as they were. An override left
+ * empty is removed so lower layers show through.
+ */
+export function withUserLimits(capability: ModelCapability, limits: UserLimitsInput): ModelCapability {
+  const { userOverride: _previous, ...layers } = capability.limits;
+  const userOverride = applyUserLimits(capability.limits.userOverride, limits);
+  return { ...capability, limits: { ...layers, ...(userOverride === undefined ? {} : { userOverride }) } };
 }
 
-function userLimits(limits: { contextWindowTokens: number; maxOutputTokens?: number }): Partial<CapabilityLimits> {
-  return {
-    contextWindowTokens: limits.contextWindowTokens,
-    ...(limits.maxOutputTokens === undefined ? {} : { maxOutputTokens: limits.maxOutputTokens }),
-  };
+/**
+ * A model as measurements made against another endpoint or key leave it: no observed flags
+ * or limits and no time of measurement; declared values and the user's overrides stay.
+ */
+export function withoutObserved(capability: ModelCapability): ModelCapability {
+  const { observedAt: _at, ...model } = capability;
+  const { observed: _flags, ...flags } = capability.flags;
+  const { observed: _limits, ...limits } = capability.limits;
+  return { ...model, flags, limits };
+}
+
+function applyUserLimits(current: Partial<CapabilityLimits> | undefined, limits: UserLimitsInput): Partial<CapabilityLimits> | undefined {
+  const next: Partial<CapabilityLimits> = { ...current };
+  for (const key of ["contextWindowTokens", "maxOutputTokens"] as const) {
+    const value = limits[key];
+    if (value === null) {
+      delete next[key];
+    } else if (value !== undefined) {
+      next[key] = value;
+    }
+  }
+  return Object.keys(next).length === 0 ? undefined : next;
 }

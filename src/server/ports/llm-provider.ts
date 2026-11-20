@@ -27,25 +27,54 @@ export interface LlmProbeCall {
 /** The capability flags "test connection" measures; the rest are never probed. */
 export type LlmProbeFlag = Extract<keyof CapabilityFlags, "stream" | "structuredOutput" | "tools">;
 
+/** Which part of "test connection" a check is: the plain call first, then one per flag. */
+export type LlmProbeKind = "basic" | LlmProbeFlag;
+
+/** Why a capability check could not decide. */
+export type LlmProbeInconclusiveReason = "truncated" | "upstream_rejected" | "rate_limited";
+
 /**
- * One check of "test connection": exactly one upstream request. `onCall` fires once when
- * that request ended after crossing the send boundary and never for a failure before it,
- * so the caller records usage per request even when a later check fails. A check never
- * retries; the LlmGateway retries a failed check on its own, never the completed ones.
+ * The plain non-streamed call. `connected`: an answer came back. `incomplete`: the output cap
+ * cut it off before any answer text (typical of models that reason first). Any failure is
+ * thrown as an AppError and fails the whole test.
+ */
+export interface LlmProbeBasicResult {
+  kind: "basic";
+  status: "connected" | "incomplete";
+  latencyMs: number;
+}
+
+/**
+ * One capability. `supported` only when the feature visibly worked; `unsupported` when the
+ * upstream explicitly rejected the parameter or feature, or ignored it; `inconclusive` when the
+ * answer was cut off (`truncated`) or a 400/422 could not be classified (`upstream_rejected`).
+ * Authentication, unknown model, quota, rate limit, 5xx and network failures are thrown.
+ */
+export interface LlmProbeFlagResult {
+  kind: LlmProbeFlag;
+  result: "supported" | "unsupported" | "inconclusive";
+  reason?: LlmProbeInconclusiveReason;
+  latencyMs: number;
+}
+
+export type LlmProbeResult = LlmProbeBasicResult | LlmProbeFlagResult;
+
+/**
+ * One check of "test connection". `onCall` fires once for every request that ended after
+ * crossing the send boundary and never for a failure before it, so the caller records usage
+ * per request even when a later check fails. A check sends one request, except that an
+ * OpenAI-compatible check may re-send once with `max_completion_tokens` after the upstream
+ * explicitly rejected `max_tokens`; the rejected request is reported through `onCall` too.
+ * The LlmGateway retries a failed check on its own (never on rate limits), never the completed ones.
  */
 export interface LlmProbeCheck {
-  readonly flag: LlmProbeFlag;
-  /**
-   * `unsupported` only when the upstream explicitly rejected the parameter or feature;
-   * every other failure (authentication, quota, unknown model, other 4xx, 5xx, network)
-   * is thrown as an AppError and nothing is learned.
-   */
+  readonly kind: LlmProbeKind;
   run(opts: {
     signal: AbortSignal;
-    /** As `LlmStreamOptions.onRequestStart`. */
+    /** As `LlmStreamOptions.onRequestStart`; called before each request sent. */
     onRequestStart(info: RequestStartInfo): void;
     onCall(call: LlmProbeCall): void;
-  }): Promise<{ result: "supported" | "unsupported"; latencyMs: number }>;
+  }): Promise<LlmProbeResult>;
 }
 
 /**
@@ -67,6 +96,6 @@ export interface LlmProvider {
    * tells the caller whether the request had been sent and may be billed.
    */
   stream(request: LlmRequest, opts: LlmStreamOptions): AsyncIterable<LlmStreamEvent>;
-  /** "Test connection": the stream, JSON and tools checks, run one by one by the LlmGateway. */
+  /** "Test connection": the basic call, then the stream, JSON and tools checks, run one by one by the LlmGateway. */
   probe(profile: ProviderProfile, modelId: string): readonly LlmProbeCheck[];
 }

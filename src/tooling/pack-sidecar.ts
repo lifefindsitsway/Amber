@@ -27,6 +27,7 @@ import {
   parseRuntimeManifest,
   renderSourceNotice,
   renderThirdPartyNotices,
+  collectVendoredNotices,
   RUNTIME_LICENSES_ASSET,
   type RuntimeManifest,
   runtimeLicenseTexts,
@@ -335,6 +336,7 @@ export function writeLegalFiles(input: LegalFilesInput): { cargoComplete: boolea
     npm: collectNpmPackages(join(input.serverDir, "node_modules")),
     cargo: cargo.packages,
     cargoComplete: cargo.complete,
+    vendored: collectVendoredNotices(input.root),
   });
   const source = renderSourceNotice({
     amberVersion: input.version,

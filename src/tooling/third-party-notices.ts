@@ -8,7 +8,8 @@ import { readZip } from "./zip-reader.ts";
 /**
  * The distribution notices the installer carries beside Amber's own `LICENSE`:
  * `THIRD_PARTY_NOTICES.md` lists every bundled component (the Runtime Assets files the
- * installer actually ships, npm production dependencies, Rust crates of the shell) and embeds
+ * installer actually ships, npm production dependencies, works copied into the source tree,
+ * Rust crates of the shell) and embeds
  * their license texts once each; `SOURCE.md` says where the source of Amber and the
  * corresponding source of the GPL FFmpeg build can be obtained. The download URLs are fixed at
  * build time from the verified Runtime Assets manifest (its release tag and the file names of
@@ -317,6 +318,54 @@ export function collectCargoPackages(desktopDir: string): { packages: PackageNot
   return { packages: parseCargoLock(lock).map((pkg) => ({ ...pkg, license: null, texts: [] })), complete: false };
 }
 
+/**
+ * A third-party work copied into Amber's own source tree (not an npm package), so it ships
+ * inside Amber's build and needs its own entry and license text in the notices.
+ */
+export interface VendoredComponent {
+  name: string;
+  version: string;
+  license: string;
+  /** What Amber uses it for, as the notices say it. */
+  usage: string;
+  source: string;
+  /** Repository-relative path of the unmodified license text kept beside the copied files. */
+  licenseFile: string;
+}
+
+export const VENDORED_COMPONENTS: readonly VendoredComponent[] = [
+  {
+    name: "LobeHub Icons (@lobehub/icons-static-svg)",
+    version: "1.104.0",
+    license: "MIT",
+    usage: "设置页模型服务的厂商图标",
+    source: "https://github.com/lobehub/lobe-icons",
+    licenseFile: "src/web/ui/vendor-icons/LICENSE",
+  },
+];
+
+/** Said under the vendored works: the vendor marks among them are trademarks, used only to name the service. */
+export const VENDOR_MARKS_NOTE = "厂商图标是其各自所有者的商标，Amber 只在设置页用它们标示对应的服务，并始终与服务名称一同显示；这不表示这些厂商认可 Amber 或与之存在合作关系。";
+
+export interface VendoredNotice extends VendoredComponent {
+  texts: LicenseText[];
+}
+
+/**
+ * The vendored works with their license texts read from the repository. A missing license
+ * file fails the build: the work may only ship with its notice.
+ */
+export function collectVendoredNotices(root: string, components: readonly VendoredComponent[] = VENDORED_COMPONENTS): VendoredNotice[] {
+  return components.map((component) => {
+    const path = join(root, component.licenseFile);
+    if (!existsSync(path)) {
+      throw new Error(`license text of vendored ${component.name} is missing: ${component.licenseFile}`);
+    }
+    const file = component.licenseFile.split("/").at(-1) ?? component.licenseFile;
+    return { ...component, texts: [{ file, text: readFileSync(path, "utf8") }] };
+  });
+}
+
 /** A Markdown fence longer than any backtick run inside `text`. */
 function fenced(text: string): string {
   const longest = Math.max(2, ...Array.from(text.matchAll(/`+/gu), (match) => match[0].length));
@@ -337,6 +386,8 @@ export interface NoticesInput {
   npm: readonly PackageNotice[];
   cargo: readonly PackageNotice[];
   cargoComplete: boolean;
+  /** Works copied into the source tree (`collectVendoredNotices`). */
+  vendored: readonly VendoredNotice[];
 }
 
 /**
@@ -398,6 +449,12 @@ export function renderThirdPartyNotices(input: NoticesInput): string {
     lines.push(`| ${cell(pkg.name)} | ${cell(pkg.version)} | ${cell(pkg.license ?? "—")} |`);
     addTexts(`${pkg.name}@${pkg.version}`, pkg.texts);
   }
+  lines.push("", "## 随源码分发的第三方作品（界面）", "", "| 组件 | 版本 | 许可证 | 用途 | 来源 |", "|---|---|---|---|---|");
+  for (const work of input.vendored) {
+    lines.push(`| ${cell(work.name)} | ${cell(work.version)} | ${cell(work.license)} | ${cell(work.usage)} | ${cell(work.source)} |`);
+    addTexts(`${work.name} ${work.version}`, work.texts);
+  }
+  lines.push("", VENDOR_MARKS_NOTE);
   lines.push("", `## Rust 依赖（桌面外壳，目标 \`${WINDOWS_TARGET}\`）`, "");
   if (!input.cargoComplete) {
     lines.push(CARGO_LOCK_ONLY_NOTE, "");

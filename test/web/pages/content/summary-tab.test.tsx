@@ -9,6 +9,7 @@ import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, SEGMENTS, segment } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, task, taskDetail } from "../../../fixtures/web/shell-data.ts";
+import { providerWithoutWindow, windowRoutes } from "../../../fixtures/web/context-window.ts";
 
 const PROVIDERS = { body: { items: [{ id: "p1", name: "P", protocol: "openai_compatible", baseURL: "https://x", credentialStatus: "configured", hasCredential: true, models: [], createdAt: 1 }] } };
 
@@ -855,5 +856,40 @@ describe("restoring the video's own chapters", () => {
     fireEvent.click(await within(section).findByTestId("chapters-restore-platform"));
     expect((await within(section).findByRole("alert")).textContent).toContain("找不到这份章节");
     expect(within(section).getByRole("button", { name: /^AI 开场/ })).toBeTruthy();
+  });
+});
+
+describe("summary and chapters model readiness", () => {
+  it("holds 生成 and 重新生成 with one notice while the default model has no window, then frees both", async () => {
+    const windows = windowRoutes([providerWithoutWindow("p1", "备用", ["bare"])]);
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      ...windows.routes,
+      "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, defaultModelRef: { providerProfileId: "p1", modelId: "bare" }, updatedAt: 1 } },
+      "POST /api/contents/c1/summaries": { status: 202, body: { taskId: "t9" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=summary", path: "/contents/:id" });
+    const notice = await screen.findByTestId("summary-context-window", {}, { timeout: 5_000 });
+    expect(notice.textContent).toContain("「备用 · bare」还没有填写上下文窗口");
+    // The chapters below run with the same model: their button waits too, without a second notice.
+    expect(within(screen.getByTestId("chapter-section")).queryByTestId(/context-window$/)).toBeNull();
+    // The chat beside it, on the same model, only points here.
+    await waitFor(() => expect(screen.getByTestId("chat-context-window").dataset["variant"]).toBe("pointer"));
+    const generate = screen.getByTestId<HTMLButtonElement>("summary-generate");
+    const chapters = await within(screen.getByTestId("chapter-section")).findByTestId<HTMLButtonElement>("chapters-regenerate");
+    expect(generate.disabled).toBe(true);
+    await waitFor(() => expect(chapters.disabled).toBe(true));
+    expect(chapters.parentElement?.getAttribute("title")).toBe("先为所选模型填写上下文窗口");
+
+    fireEvent.change(within(notice).getByLabelText("上下文窗口"), { target: { value: "256000" } });
+    fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByTestId("summary-context-window")).toBeNull());
+    expect(windows.overrides[0]?.body).toEqual({ limits: { contextWindowTokens: 256_000, maxOutputTokens: null } });
+    expect(generate.disabled).toBe(false);
+    expect(chapters.disabled).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(generate));
+    expect(screen.queryByTestId("chat-context-window")).toBeNull();
+    fireEvent.click(generate);
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/contents/c1/summaries")).toBe(true));
   });
 });

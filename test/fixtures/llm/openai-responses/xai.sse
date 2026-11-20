@@ -1,0 +1,12 @@
+data: {"type":"response.created","response":{"id":"resp_synthetic","object":"response","created_at":0,"model":"model-under-test","store":false,"status":"in_progress","output":[]},"sequence_number":1}
+
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_x","output_index":0,"summary_index":0,"delta":"Thinking","sequence_number":2}
+
+data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":1,"content_index":0,"delta":"Hi ","sequence_number":3}
+
+data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":1,"content_index":0,"delta":"there.","sequence_number":4}
+
+data: {"type":"response.completed","response":{"id":"resp_synthetic","object":"response","created_at":0,"model":"model-under-test","store":false,"status":"completed","output":[{"type":"reasoning","id":"rs_x","summary":[],"status":"completed"},{"type":"message","id":"msg_x","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Hi there.","annotations":[]}]}],"usage":{"input_tokens":32,"input_tokens_details":{"cached_tokens":6},"output_tokens":9,"output_tokens_details":{"reasoning_tokens":110},"total_tokens":151,"num_sources_used":0,"cost_in_usd_ticks":12345}},"sequence_number":5}
+
+data: [DONE]
+

@@ -49,7 +49,7 @@ const EXPECTED: Readonly<Record<string, readonly (string | number)[]>> = {
   ASR_USAGE_FEATURES: ["transcribe", "test_connection"],
   CHAT_MESSAGE_STATUSES: ["streaming", "complete", "interrupted", "failed"],
   TRI_STATES: ["supported", "unsupported", "unknown"],
-  LLM_PROTOCOLS: ["openai_compatible", "anthropic_messages"],
+  LLM_PROTOCOLS: ["openai_compatible", "anthropic_messages", "openai_responses"],
   FRESHNESS_VALUES: ["fresh", "stale"],
   CREDENTIAL_STATUSES: ["missing", "configured", "unavailable"],
   CACHE_MEDIA_QUALITIES: [360, 480, 720, 1080],

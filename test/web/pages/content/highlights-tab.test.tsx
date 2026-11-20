@@ -5,6 +5,7 @@ import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx"
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 import { CITED_SEGMENT_ID, contentRoutes, highlightsBody, revision, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { providerWithoutWindow, windowRoutes } from "../../../fixtures/web/context-window.ts";
 
 const PROVIDERS = { body: { items: [{ id: "p1", name: "P", protocol: "openai_compatible", baseURL: "https://x", credentialStatus: "configured", hasCredential: true, models: [], createdAt: 1 }] } };
 
@@ -52,6 +53,28 @@ describe("HighlightsTab", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(calls.find((call) => call.method === "POST")?.path).toBe("/api/contents/c1/highlights/recompute"));
     expect(calls.find((call) => call.method === "POST")?.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("holds generation while the default model has no window, and generates once it is filled in", async () => {
+    const windows = windowRoutes([providerWithoutWindow("p1", "备用", ["bare"])]);
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      ...windows.routes,
+      "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, defaultModelRef: { providerProfileId: "p1", modelId: "bare" }, updatedAt: 1 } },
+      "POST /api/contents/c1/highlights/recompute": { status: 202, body: { taskId: "t9" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=ai-highlights", path: "/contents/:id" });
+    const notice = await screen.findByTestId("highlights-context-window");
+    expect(notice.textContent).toContain("「备用 · bare」");
+    const generate = screen.getByTestId<HTMLButtonElement>("highlights-generate");
+    expect(generate.disabled).toBe(true);
+    fireEvent.click(within(notice).getByRole("button", { name: /^填入 1M/ }));
+    fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByTestId("highlights-context-window")).toBeNull());
+    expect(windows.overrides[0]?.body).toEqual({ limits: { contextWindowTokens: 1_000_000, maxOutputTokens: null } });
+    await waitFor(() => expect(document.activeElement).toBe(generate));
+    fireEvent.click(generate);
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.path).toBe("/api/contents/c1/highlights/recompute"));
   });
 
   it("offers configuration instead of generation without a model, and flags stale highlights", async () => {

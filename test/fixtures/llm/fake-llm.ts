@@ -2,7 +2,7 @@ import type { LlmProtocol } from "../../../src/shared/enums.ts";
 import type { LlmRequest, LlmStreamEvent, RawUsage } from "../../../src/server/domain/llm.ts";
 import type { ProviderProfile } from "../../../src/server/domain/provider-profile.ts";
 import type { RequestStartInfo } from "../../../src/server/domain/usage.ts";
-import type { LlmProbeCall, LlmProbeCheck, LlmProbeFlag, LlmProvider, LlmStreamOptions } from "../../../src/server/ports/llm-provider.ts";
+import type { LlmProbeCall, LlmProbeCheck, LlmProbeInconclusiveReason, LlmProbeKind, LlmProvider, LlmStreamOptions } from "../../../src/server/ports/llm-provider.ts";
 
 /**
  * One scripted adapter call: events to yield, optionally followed by a thrown error. Like a
@@ -13,10 +13,15 @@ export type FakeLlmStep =
   | { events: readonly LlmStreamEvent[]; error?: unknown; delayMs?: number; noStart?: boolean }
   | ((request: LlmRequest, opts: LlmStreamOptions) => AsyncIterable<LlmStreamEvent>);
 
-/** One scripted probe request: the call to report (if it crossed the send boundary), then a result or an error. */
-export type FakeProbeStep =
-  | { result: "supported" | "unsupported"; latencyMs?: number; call?: LlmProbeCall }
-  | { error: unknown; call?: LlmProbeCall };
+/**
+ * One scripted probe check: the calls to report (each one crossed the send boundary), then a
+ * result or an error. `status` is the basic call's result, `result` a capability check's.
+ */
+export type FakeProbeStep = (
+  | { status: "connected" | "incomplete"; latencyMs?: number }
+  | { result: "supported" | "unsupported" | "inconclusive"; reason?: LlmProbeInconclusiveReason; latencyMs?: number }
+  | { error: unknown }
+) & { call?: LlmProbeCall | readonly LlmProbeCall[] };
 
 export const FAKE_USAGE: RawUsage = { inputTokens: 12, outputTokens: 5, rawJson: '{"prompt_tokens":12,"completion_tokens":5}' };
 
@@ -32,15 +37,15 @@ export function reply(text: string, usage: RawUsage | null = FAKE_USAGE): LlmStr
 /**
  * Scriptable LlmProvider. Each `stream` call takes the next scripted step (a default reply
  * when none is left) and records the request and options it received; each probe check
- * takes the next step of its flag.
+ * takes the next step of its kind.
  */
 export class FakeLlmProvider implements LlmProvider {
   readonly protocol: LlmProtocol;
   readonly audioMimeTypes: readonly string[];
   readonly calls: Array<{ request: LlmRequest; opts: LlmStreamOptions }> = [];
-  readonly probeRuns: Record<LlmProbeFlag, number> = { stream: 0, structuredOutput: 0, tools: 0 };
+  readonly probeRuns: Record<LlmProbeKind, number> = { basic: 0, stream: 0, structuredOutput: 0, tools: 0 };
   private readonly steps: FakeLlmStep[] = [];
-  private readonly probeSteps: Record<LlmProbeFlag, FakeProbeStep[]> = { stream: [], structuredOutput: [], tools: [] };
+  private readonly probeSteps: Record<LlmProbeKind, FakeProbeStep[]> = { basic: [], stream: [], structuredOutput: [], tools: [] };
   /** Called whenever a stream starts or ends, to observe concurrency. */
   onActive?: (delta: 1 | -1) => void;
   /** What the request-start reports carry: the key version in force and the send time (now when unset). */
@@ -59,8 +64,8 @@ export class FakeLlmProvider implements LlmProvider {
     return this;
   }
 
-  scriptProbe(flag: LlmProbeFlag, ...steps: FakeProbeStep[]): this {
-    this.probeSteps[flag].push(...steps);
+  scriptProbe(kind: LlmProbeKind, ...steps: FakeProbeStep[]): this {
+    this.probeSteps[kind].push(...steps);
     return this;
   }
 
@@ -100,21 +105,34 @@ export class FakeLlmProvider implements LlmProvider {
   }
 
   probe(_profile: ProviderProfile, _modelId: string): readonly LlmProbeCheck[] {
-    const flags: LlmProbeFlag[] = ["stream", "structuredOutput", "tools"];
-    return flags.map((flag) => ({
-      flag,
+    const kinds: LlmProbeKind[] = ["basic", "stream", "structuredOutput", "tools"];
+    return kinds.map((kind) => ({
+      kind,
       run: async ({ onCall, onRequestStart }) => {
-        this.probeRuns[flag] += 1;
-        const step = this.probeSteps[flag].shift() ?? { result: "supported", call: { outcome: "succeeded", usage: FAKE_USAGE } };
-        // A request that crossed the send boundary reports its start first.
-        if (step.call !== undefined) {
+        this.probeRuns[kind] += 1;
+        const fallback: FakeProbeStep =
+          kind === "basic" ? { status: "connected", call: { outcome: "succeeded", usage: FAKE_USAGE } } : { result: "supported", call: { outcome: "succeeded", usage: FAKE_USAGE } };
+        const step = this.probeSteps[kind].shift() ?? fallback;
+        const calls = step.call === undefined ? [] : Array.isArray(step.call) ? step.call : [step.call as LlmProbeCall];
+        // Each request that crossed the send boundary reports its start first.
+        for (const call of calls) {
           onRequestStart(this.requestInfo());
-          onCall(step.call);
+          onCall(call);
         }
         if ("error" in step) {
           throw step.error;
         }
-        return { result: step.result, latencyMs: step.latencyMs ?? 7 };
+        const latencyMs = step.latencyMs ?? 7;
+        if ("status" in step) {
+          if (kind !== "basic") {
+            throw new Error(`a status was scripted for the ${kind} check`);
+          }
+          return { kind, status: step.status, latencyMs };
+        }
+        if (kind === "basic") {
+          throw new Error("a capability result was scripted for the basic call");
+        }
+        return { kind, result: step.result, ...(step.reason === undefined ? {} : { reason: step.reason }), latencyMs };
       },
     }));
   }

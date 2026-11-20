@@ -1,0 +1,48 @@
+{
+  "id": "resp_synthetic",
+  "object": "response",
+  "created_at": 0,
+  "model": "model-under-test",
+  "store": false,
+  "status": "completed",
+  "error": null,
+  "incomplete_details": null,
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_1",
+      "summary": [],
+      "encrypted_content": "<encrypted>",
+      "status": "completed"
+    },
+    {
+      "type": "message",
+      "id": "msg_1",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Amber 把封存在音视频里的知识",
+          "annotations": []
+        },
+        {
+          "type": "output_text",
+          "text": "取出来，让它重新活过来。",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 42,
+    "input_tokens_details": {
+      "cached_tokens": 32
+    },
+    "output_tokens": 23,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 65
+  }
+}

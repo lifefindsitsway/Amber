@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { registerProviderRoutes } from "../../../../src/server/api/routes/providers.ts";
 import { PolicyOutboundHttpClient } from "../../../../src/server/adapters/outbound-http/policy-client.ts";
 import { ProviderService, type ModelProber } from "../../../../src/server/application/providers.ts";
+import type { ProviderProfile } from "../../../../src/server/domain/provider-profile.ts";
 import type { NetworkTargetCheck } from "../../../../src/server/ports/network-target-check.ts";
 import { BOB_TOKEN, createHarness, createTaskOfKind, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
@@ -19,9 +20,22 @@ async function setup(targets?: NetworkTargetCheck) {
   open.push(h);
   const probes: string[] = [];
   const prober: ModelProber = {
-    async probe(_userId, modelRef) {
+    async probe(userId, modelRef) {
       probes.push(modelRef.modelId);
-      return { observed: { stream: "supported", structuredOutput: "supported", tools: "unsupported" }, latencyMs: 5 };
+      const basis = h.repository.withTransaction((scope) => {
+        const profile = scope.providerProfiles.get(userId, modelRef.providerProfileId) as ProviderProfile;
+        const ref = profile.credentialRef;
+        return { protocol: profile.protocol, baseURL: profile.baseURL, credentialVersion: ref === undefined ? undefined : scope.secretEnvelopes.get(userId, ref)?.versionId, modelId: modelRef.modelId };
+      });
+      return {
+        basic: { status: "connected", latencyMs: 5 },
+        checks: [
+          { flag: "stream", result: "supported" },
+          { flag: "structuredOutput", result: "supported" },
+          { flag: "tools", result: "unsupported" },
+        ],
+        basis,
+      };
     },
   };
   const providers = new ProviderService({ repository: h.repository, secrets: h.secrets, prober, newId: h.newId, ...(targets === undefined ? {} : { targets }) });
@@ -83,18 +97,46 @@ describe("/api/providers", () => {
     expect((await app.inject({ method: "DELETE", url: `/api/providers/${profile.id}`, headers: auth })).statusCode).toBe(404);
   });
 
-  it("validates bodies: a context window is required, unknown fields and bad URLs are refused", async () => {
+  it("validates bodies: limits are optional, unknown fields, unknown presets and bad URLs are refused", async () => {
     const { app } = await setup();
-    const noWindow = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, models: [{ modelId: "m" }] } });
-    expect(noWindow.statusCode).toBe(400);
+    const noWindow = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, models: [{ modelId: "m" }, { modelId: "n", contextWindowTokens: null }] } });
+    expect(noWindow.statusCode).toBe(201);
+    expect(noWindow.json().models.map((model: { limits: unknown }) => model.limits)).toEqual([{ declared: {} }, { declared: {} }]);
     const extra = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, apiKey: KEY } });
     expect(extra.statusCode).toBe(400);
     expect(extra.body).not.toContain(KEY);
+    const extraInCredential = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, credential: { value: KEY, note: 1 } } });
+    expect(extraInCredential.statusCode).toBe(400);
+    expect(extraInCredential.body).not.toContain(KEY);
+    const emptyKey = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, credential: { value: "" } } });
+    expect(emptyKey.statusCode).toBe(400);
+    const unknownPreset = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, presetId: "acme" } });
+    expect(unknownPreset.statusCode).toBe(400);
     const ftp = await app.inject({ method: "POST", url: "/api/providers", headers: auth, payload: { ...profileBody, baseURL: "ftp://llm.invalid" } });
     expect(ftp.json().error.code).toBe("invalid_request");
     const badKey = await app.inject({ method: "PUT", url: "/api/providers/x/credential", headers: auth, payload: { value: KEY, extra: 1 } });
     expect(badKey.statusCode).toBe(400);
     expect(badKey.body).not.toContain(KEY);
+  });
+
+  it("creates a profile with its preset and key at once, and replays a keyed create", async () => {
+    const { h, app, lines } = await setup();
+    const request = { method: "POST" as const, url: "/api/providers", headers: { ...auth, "idempotency-key": "create-1" }, payload: { ...profileBody, presetId: "anthropic", credential: { value: KEY } } };
+    const created = await app.inject(request);
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ presetId: "anthropic", credentialStatus: "configured", hasCredential: true });
+    const again = await app.inject(request);
+    expect(again.statusCode).toBe(201);
+    expect(again.json()).toEqual(created.json());
+    expect(h.db.prepare("SELECT count(*) AS n FROM provider_profile").get()).toEqual({ n: 1 });
+    expect(h.db.prepare("SELECT count(*) AS n FROM secret").get()).toEqual({ n: 1 });
+    const conflicting = await app.inject({ ...request, payload: { ...request.payload, name: "other" } });
+    expect(conflicting.statusCode).toBe(409);
+    for (const text of [created.body, again.body, conflicting.body, JSON.stringify(h.db.prepare("SELECT * FROM idempotency_record").all()), ...lines]) {
+      expect(text).not.toContain(KEY);
+    }
+    const cleared = await app.inject({ method: "PATCH", url: `/api/providers/${created.json().id}`, headers: auth, payload: { presetId: null } });
+    expect(cleared.json()).not.toHaveProperty("presetId");
   });
 
   it("probes and overrides a model addressed by its encoded id, and replays a keyed probe", async () => {
@@ -103,7 +145,16 @@ describe("/api/providers", () => {
     const probeRequest = { method: "POST" as const, url: `/api/providers/${profile.id}/probe`, headers: { ...auth, "idempotency-key": "probe-1" }, payload: { modelId: "vendor/model a" } };
     const probed = await app.inject(probeRequest);
     expect(probed.statusCode).toBe(200);
-    expect(probed.json()).toMatchObject({ modelId: "vendor/model a", observed: { stream: "supported", structuredOutput: "supported", tools: "unsupported" }, latencyMs: 5 });
+    expect(probed.json()).toMatchObject({
+      modelId: "vendor/model a",
+      basic: { status: "connected", latencyMs: 5 },
+      checks: [
+        { flag: "stream", result: "supported" },
+        { flag: "structuredOutput", result: "supported" },
+        { flag: "tools", result: "unsupported" },
+      ],
+      observed: { stream: "supported", structuredOutput: "supported", tools: "unsupported" },
+    });
     expect((await app.inject(probeRequest)).json()).toEqual(probed.json());
     expect(probes).toEqual(["vendor/model a"]);
     const missing = await app.inject({ ...probeRequest, headers: auth, payload: { modelId: "other" } });
@@ -142,6 +193,9 @@ describe("/api/providers", () => {
     expect((await app.inject({ method: "DELETE", url: `/api/providers/${profile.id}`, headers: auth })).statusCode).toBe(409);
     const renamed = await app.inject({ method: "PATCH", url: `/api/providers/${profile.id}`, headers: auth, payload: { name: "renamed" } });
     expect(renamed.json().name).toBe("renamed");
+    const moved = await app.inject({ method: "PATCH", url: `/api/providers/${profile.id}`, headers: auth, payload: { baseURL: "https://moved.invalid" } });
+    expect(moved.statusCode).toBe(409);
+    expect(moved.json().error).toMatchObject({ code: "conflict.profile_tasks_unfinished", details: { taskCount: 1 } });
   });
 
   it("prices a model addressed in the body, keeps the price through list edits and while bound, and isolates users", async () => {

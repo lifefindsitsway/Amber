@@ -130,6 +130,8 @@ export const EXPECTED_REFINED_CODES = [
   { code: "conflict.pack_content_busy", detailsKeys: ["contentId", "taskId"], retryDisposition: null, action: null },
   { code: "conflict.pack_target_changed", detailsKeys: ["contentId"], retryDisposition: null, action: null },
   { code: "conflict.pack_job_state", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "conflict.profile_tasks_unfinished", detailsKeys: ["taskCount"], retryDisposition: null, action: null },
+  { code: "conflict.probe_config_changed", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.mutation_lane", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.setting_env_overridden", detailsKeys: [], retryDisposition: null, action: null },
   { code: "conflict.duplicate_file", detailsKeys: ["duplicateOfContentId", "trashed"], retryDisposition: null, action: null },

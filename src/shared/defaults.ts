@@ -256,8 +256,16 @@ export const LLM_FIRST_OUTPUT_TIMEOUT_MS = 300000;
 export const LLM_STREAM_IDLE_TIMEOUT_MS = 60000;
 /** Timeout of one "test connection" request. */
 export const LLM_PROBE_TIMEOUT_MS = 20000;
-/** `max_tokens` of "test connection" requests. */
-export const LLM_PROBE_MAX_OUTPUT_TOKENS = 256;
+/**
+ * Output cap of "test connection" requests (`max_tokens`, `max_completion_tokens` or
+ * `max_output_tokens`). Reasoning counts against it on models that think by default.
+ */
+export const LLM_PROBE_MAX_OUTPUT_TOKENS = 1024;
+/**
+ * Entries kept of "this endpoint wants `max_completion_tokens` instead of `max_tokens`", keyed
+ * by profile, protocol, Base URL and model; the oldest goes first.
+ */
+export const LLM_TOKEN_PARAM_CACHE_MAX = 256;
 /** `maxOutputTokens` default for protocols that require it when no capability declares one. */
 export const LLM_MAX_OUTPUT_TOKENS_DEFAULT = 8192;
 

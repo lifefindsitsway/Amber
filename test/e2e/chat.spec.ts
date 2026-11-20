@@ -62,28 +62,28 @@ test("chat: a streamed answer renders with a clickable citation, suggestions onl
   expect(backend.mutations.filter((mutation) => mutation.path.endsWith("/chat/messages"))).toHaveLength(1);
 });
 
-test("chat: an unknown context window greys the input out with a way to configure, until an override exists", async ({ page }) => {
+test("chat: an unknown context window blocks sending with a way to configure, until an override exists", async ({ page }) => {
   const backend = await installMockBackend(page);
   setContextWindowUnknown(page, BILIBILI_CONTENT);
   await page.goto(`/contents/${BILIBILI_CONTENT}`);
 
   const panel = page.getByTestId("chat-panel");
   await expect(panel.getByTestId("chat-unavailable")).toHaveAttribute("data-reason", "context_window_unknown");
-  await expect(panel.getByTestId("chat-input")).toBeDisabled();
+  await expect(panel.getByTestId("chat-input")).toBeEnabled();
   await expect(panel.getByTestId("chat-send")).toBeDisabled();
 
-  await panel.getByTestId("chat-configure").click();
+  await panel.getByTestId("chat-context-window-settings").click();
   await expect(page).toHaveURL(/\/settings\/models/);
   // The model's context window is filled in through the Profile editor, which stores it as
   // the user override.
   const card = page.locator('[data-model="mock-model"]');
-  await expect(card).toContainText("—");
+  await expect(card).toContainText("未填写");
   await page.getByRole("button", { name: "编辑" }).first().click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("上下文窗口").fill("128000");
+  await dialog.getByLabel("上下文窗口（第 1 行）").fill("128000");
   await dialog.getByRole("button", { name: "保存" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(card).toContainText("128000");
+  await expect(card).toContainText("128,000");
   expect(backend.mutations.filter((mutation) => mutation.method === "PATCH" && mutation.path === `/api/providers/${PROFILE}`)).toHaveLength(1);
   await page.goBack();
 

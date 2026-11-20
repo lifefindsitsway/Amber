@@ -131,6 +131,7 @@ function fixture(options: { version?: string; artifacts?: unknown[]; licenses?: 
   put(root, "src/desktop/Cargo.lock", '[[package]]\nname = "serde"\nversion = "1.0.229"\nsource = "registry+x"\n');
   put(root, "server/node_modules/zod/package.json", '{"name":"zod","version":"4.6.5","license":"MIT"}');
   put(root, "server/node_modules/zod/LICENSE", "zod MIT text");
+  put(root, "src/web/ui/vendor-icons/LICENSE", "LobeHub MIT text");
   const assetsDir = join(root, "assets");
   const manifest = JSON.stringify({ version: options.version ?? VERSION, assets: ASSETS, artifacts: options.artifacts ?? ARTIFACTS });
   const licenses = makeZip(Object.entries(options.licenses ?? LICENSES).map(([name, text]) => ({ name, data: Buffer.from(text), method: 8 as const })));
@@ -202,6 +203,7 @@ describe("writeLegalFiles", () => {
     expect(notices).toContain("Deno MIT text");
     expect(notices).toContain("FFmpeg GPL text");
     expect(notices).toContain("serde MIT text");
+    expect(notices).toContain("LobeHub MIT text");
     expect(notices).not.toContain(CARGO_LOCK_ONLY_NOTE);
     const source = readFileSync(join(input.outDir, "legal/SOURCE.md"), "utf8");
     expect(source).toContain("https://github.com/lifefindsitsway/amber-runtime-assets/releases/download/runtime-assets-test/ffmpeg-ccs.tar.xz");
