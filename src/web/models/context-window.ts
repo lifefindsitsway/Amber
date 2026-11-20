@@ -12,6 +12,9 @@ export const CONTEXT_WINDOW_SUGGESTIONS = [
   { label: "1M", tokens: 1_000_000 },
 ] as const;
 
+/** The quick fills as written in an input; "128K" reads back as 128000. */
+export const CONTEXT_WINDOW_SUGGESTION_LABELS: readonly string[] = CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => suggestion.label);
+
 const SUFFIX_FACTORS: Readonly<Record<string, number>> = { k: 1_000, m: 1_000_000 };
 
 /**

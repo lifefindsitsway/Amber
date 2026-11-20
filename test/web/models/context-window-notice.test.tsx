@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRefDto } from "../../../src/shared/dto/model-ref.ts";
@@ -85,7 +85,7 @@ describe("ContextWindowNotice", () => {
     const chips = screen.getByRole("group", { name: "常用值" });
     expect(chips.textContent).toBe("32K64K128K200K256K1M");
     fireEvent.click(screen.getByRole("button", { name: "填入 200K（200,000 tokens）" }));
-    expect(input().value).toBe("200000");
+    expect(input().value).toBe("200K");
     // Default prevented: the form around it would otherwise take Enter as its own submit.
     expect(fireEvent.keyDown(input(), { key: "Enter" })).toBe(false);
     await waitFor(() => expect(overrides).toHaveLength(1));
@@ -126,16 +126,11 @@ describe("ContextWindowNotice variants", () => {
     await waitFor(() => expect(input()).toBeTruthy());
     expect(screen.queryByRole("group", { name: "常用值" })).toBeNull();
     expect(screen.queryByTestId("context-window-notice-settings")).toBeNull();
-    const list = input().getAttribute("list");
-    expect(list).toBeTruthy();
-    expect([...(notice.querySelector(`datalist[id="${list}"]`)?.querySelectorAll("option") ?? [])].map((option) => option.value)).toEqual([
-      "32000",
-      "64000",
-      "128000",
-      "200000",
-      "256000",
-      "1000000",
-    ]);
+    expect(input().getAttribute("role")).toBe("combobox");
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    const list = await screen.findByRole("listbox", { name: "常用值" });
+    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual(["32K", "64K", "128K", "200K", "256K", "1M"]);
+    expect(notice.querySelector("datalist")).toBeNull();
   });
 
   it("gives its links a colour that reads on the tinted ground in every theme", async () => {

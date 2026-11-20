@@ -31,7 +31,8 @@ describe("BatchAddDialog model readiness", () => {
     expect(notice.dataset["variant"]).toBe("minimal");
     expect(within(notice).queryByRole("group", { name: "常用值" })).toBeNull();
     expect(within(notice).queryByTestId("batch-add-context-window-settings")).toBeNull();
-    expect([...notice.querySelectorAll("datalist option")].map((option) => option.getAttribute("label"))).toEqual(["32K", "64K", "128K", "200K", "256K", "1M"]);
+    fireEvent.keyDown(within(notice).getByLabelText("上下文窗口"), { key: "ArrowDown" });
+    expect(within(screen.getByRole("listbox", { name: "常用值" })).getAllByRole("option").map((option) => option.textContent)).toEqual(["32K", "64K", "128K", "200K", "256K", "1M"]);
     fireEvent.change(within(notice).getByLabelText("上下文窗口"), { target: { value: "128000" } });
     fireEvent.click(within(notice).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(screen.queryByTestId("batch-add-context-window")).toBeNull());

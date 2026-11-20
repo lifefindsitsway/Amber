@@ -149,6 +149,7 @@ export const settings = {
     optionalTokens: "选填 · tokens",
     contextWindowNote: "总结、章节、高光与 AI 对话需要它，可在厂商的模型说明里查到，也可以以后再填。",
     tokenPlaceholder: "如 128K",
+    contextWindowSuggestions: "常用上下文窗口",
     addModel: "添加模型",
     removeModel: "移除",
     removeModelOf: "移除 · {{model}}",

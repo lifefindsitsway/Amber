@@ -69,7 +69,7 @@ test("model readiness on the new page: the import waits for the model's context 
   // A common size fills the field; Enter saves it without submitting the page's form.
   await notice.getByRole("button", { name: /^填入 128K/ }).click();
   const field = notice.getByLabel("上下文窗口");
-  await expect(field).toHaveValue("128000");
+  await expect(field).toHaveValue("128K");
   await field.press("Enter");
   await expect(notice).toHaveCount(0);
   expect(overrides).toEqual([{ limits: { contextWindowTokens: 128000, maxOutputTokens: null } }]);

@@ -3,7 +3,7 @@ export const modelReadiness = {
   notice: "「{{model}}」还没有填写上下文窗口，总结、章节、高光与 AI 对话需要它。可在厂商的模型说明里查到。",
   inputLabel: "上下文窗口",
   unit: "tokens",
-  placeholder: "如 128000",
+  placeholder: "如 128K",
   suggestions: "常用值",
   suggestionFill: "填入 {{label}}（{{value}} tokens）",
   save: "保存",

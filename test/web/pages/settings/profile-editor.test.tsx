@@ -242,15 +242,15 @@ describe("adding a profile", () => {
     const { dialog, choose, field } = await openCreate();
     await choose("服务", "DeepSeek");
     const input = field("上下文窗口（第 1 行）");
-    const list = document.getElementById(input.getAttribute("list") ?? "");
-    expect([...(list?.querySelectorAll("option") ?? [])].map((option) => [option.getAttribute("label"), option.getAttribute("value")])).toEqual([
-      ["32K", "32000"],
-      ["64K", "64000"],
-      ["128K", "128000"],
-      ["200K", "200000"],
-      ["256K", "256000"],
-      ["1M", "1000000"],
-    ]);
+    // One way of writing each size, in the app's own menu style rather than the browser's list.
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    const list = screen.getByRole("listbox", { name: "常用上下文窗口" });
+    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual(["32K", "64K", "128K", "200K", "256K", "1M"]);
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    expect(input.value).toBe("128K");
+    expect(screen.queryByRole("listbox")).toBeNull();
     expect(within(dialog).getByTestId("context-window-note").textContent).toBe("总结、章节、高光与 AI 对话需要它，可在厂商的模型说明里查到，也可以以后再填。");
   });
 

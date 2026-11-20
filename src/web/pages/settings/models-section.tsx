@@ -18,14 +18,16 @@ import { useApi } from "../../api/context.tsx";
 import { queryKeys, useCacheObservedModel, usePatchSettings, useProviders, useSetContextWindow, useSetModelPricing, useSettings } from "../../api/queries.ts";
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
 import { formatDateTime } from "../../format.ts";
+import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { SuggestionInput } from "../../ui/suggestion-input.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { VendorIcon } from "../../ui/vendor-icon.tsx";
 import { ProbeResult } from "./probe-result.tsx";
 import { ProfileEditor } from "./profile-editor.tsx";
 import { ConfirmButton, CredentialInput, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
-import { ContextWindowSuggestions, parseTokenCount } from "./token-count.tsx";
+import { parseTokenCount } from "./token-count.tsx";
 
 type TriState = (typeof TRI_STATES)[number];
 
@@ -394,7 +396,6 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
   const [invalid, setInvalid] = useState(false);
   const setWindow = useSetContextWindow();
   const inputId = useId();
-  const suggestionsId = useId();
   const { contextWindowTokens, maxOutputTokens } = model.effective.limits;
   const number = (value: number): string => value.toLocaleString(i18n.language);
   const maxPart = maxOutputTokens === undefined ? null : (
@@ -450,19 +451,22 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
         {t("settings.models.limits.inputLabel", { model: model.modelId })}
       </label>
       <div className="flex flex-wrap items-center gap-2">
-        <input
+        <SuggestionInput
           id={inputId}
           // Opened by an explicit click on 「填写」, so the field it reveals takes the focus.
           autoFocus
-          list={suggestionsId}
+          suggestions={CONTEXT_WINDOW_SUGGESTION_LABELS}
+          listLabel={t("settings.models.contextWindowSuggestions")}
           inputMode="numeric"
           autoComplete="off"
+          spellCheck={false}
           placeholder={t("settings.models.tokenPlaceholder")}
           aria-invalid={invalid ? true : undefined}
-          className={`${INPUT_CLASS} h-7 w-44 text-xs`}
+          wrapperClassName="w-36"
+          className={`${INPUT_CLASS} h-7 text-xs`}
           value={text}
-          onChange={(event) => {
-            setText(event.target.value);
+          onValueChange={(value) => {
+            setText(value);
             setInvalid(false);
           }}
           onKeyDown={(event) => {
@@ -472,7 +476,6 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
             }
           }}
         />
-        <ContextWindowSuggestions id={suggestionsId} />
         <Button type="submit" size="sm" variant="primary" disabled={setWindow.isPending || text.trim() === ""}>
           {t("common.action.save")}
         </Button>

@@ -2,7 +2,7 @@
 export const backup = {
   export: {
     title: "导出备份",
-    intro: "把这台电脑上的学习资料导出为一个 .amberbackup 文件，可在另一台全新安装 Amber 的电脑上恢复。",
+    intro: "把这台电脑上的资料导出为一个 .amberbackup 文件，可在另一台全新安装 Amber 的电脑上恢复。",
     includeOriginals: "包含本地原始音视频",
     includeCache: "包含平台缓存视频",
     estimate: "预计大小",

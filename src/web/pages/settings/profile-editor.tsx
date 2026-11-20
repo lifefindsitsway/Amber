@@ -24,14 +24,16 @@ import {
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { queryKeys } from "../../api/queries.ts";
+import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { PasswordInput } from "../../ui/password-input.tsx";
 import { Select, type SelectOption } from "../../ui/select.tsx";
+import { SuggestionInput } from "../../ui/suggestion-input.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { VendorIcon } from "../../ui/vendor-icon.tsx";
 import { Field, fieldHintId, INPUT_CLASS, RequestError } from "./settings-ui.tsx";
-import { ContextWindowSuggestions, parseTokenCount } from "./token-count.tsx";
+import { parseTokenCount } from "./token-count.tsx";
 
 /** The edit dialog's "no service" choice; never a preset id. */
 const NO_PRESET = "none";
@@ -815,17 +817,19 @@ function ModelTable(props: {
                   {duplicate ? <InlineError testId="model-duplicate">{t("settings.models.duplicateModel")}</InlineError> : null}
                 </td>
                 <td className="pb-2 pl-2">
-                  <input
+                  <SuggestionInput
                     aria-label={rowLabel(t("settings.models.contextWindow"), index)}
                     aria-describedby={noteId}
                     aria-invalid={Number.isNaN(row.window) ? true : undefined}
-                    list={props.suggestionsId}
+                    suggestions={CONTEXT_WINDOW_SUGGESTION_LABELS}
+                    listLabel={t("settings.models.contextWindowSuggestions")}
                     inputMode="numeric"
                     autoComplete="off"
+                    spellCheck={false}
                     placeholder={t("settings.models.tokenPlaceholder")}
                     className={`${INPUT_CLASS} placeholder:text-muted/70`}
                     value={model.contextWindowTokens}
-                    onChange={(event) => props.onChange(model.key, { contextWindowTokens: event.target.value })}
+                    onValueChange={(text) => props.onChange(model.key, { contextWindowTokens: text })}
                   />
                   {Number.isNaN(row.window) ? <InlineError>{t("settings.models.invalidNumber")}</InlineError> : null}
                 </td>
@@ -862,7 +866,6 @@ function ModelTable(props: {
           })}
         </tbody>
       </table>
-      <ContextWindowSuggestions id={props.suggestionsId} />
       <p id={noteId} className="mb-2 text-xs text-muted" data-testid="context-window-note">
         {t("settings.models.contextWindowNote")}
       </p>

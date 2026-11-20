@@ -6,7 +6,8 @@ import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
 import { useProviders, useSetContextWindow } from "../api/queries.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { Button } from "../ui/button.tsx";
-import { CONTEXT_WINDOW_SUGGESTIONS, parseTokenCount } from "./context-window.ts";
+import { SuggestionInput } from "../ui/suggestion-input.tsx";
+import { CONTEXT_WINDOW_SUGGESTION_LABELS, CONTEXT_WINDOW_SUGGESTIONS, parseTokenCount } from "./context-window.ts";
 import { findModel } from "./use-model-readiness.ts";
 
 /** Links on the notice's tinted ground: the accent itself is too light there in the light themes. */
@@ -152,10 +153,12 @@ export function ContextWindowNotice(props: {
             {t("modelReadiness.inputLabel")}
           </label>
           <span className="inline-flex h-7 items-center rounded-md border border-line bg-surface focus-within:border-accent">
-            <input
+            <SuggestionInput
               ref={inputRef}
               id={`${id}-input`}
-              list={minimal ? `${id}-suggestions` : undefined}
+              suggestions={minimal ? CONTEXT_WINDOW_SUGGESTION_LABELS : []}
+              listLabel={t("modelReadiness.suggestions")}
+              toggle={false}
               type="text"
               inputMode="numeric"
               autoComplete="off"
@@ -165,9 +168,10 @@ export function ContextWindowNotice(props: {
               aria-invalid={problem === undefined ? undefined : true}
               aria-describedby={problem === undefined ? undefined : `${id}-problem`}
               data-testid={`${testId}-input`}
+              wrapperClassName="h-full"
               className="h-full w-28 min-w-0 bg-transparent px-2 font-mono text-xs outline-none"
-              onChange={(event) => {
-                setText(event.target.value);
+              onValueChange={(value) => {
+                setText(value);
                 setInvalid(false);
                 if (save.isError) save.reset();
               }}
@@ -180,13 +184,6 @@ export function ContextWindowNotice(props: {
           <Button size="sm" variant="primary" disabled={save.isPending || text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
             {save.isPending ? t("modelReadiness.saving") : t("modelReadiness.save")}
           </Button>
-          {minimal ? (
-            <datalist id={`${id}-suggestions`}>
-              {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
-                <option key={suggestion.tokens} value={suggestion.tokens} label={suggestion.label} />
-              ))}
-            </datalist>
-          ) : null}
           {minimal ? null : (
             <span role="group" aria-label={t("modelReadiness.suggestions")} className="flex flex-wrap items-center gap-0.5">
               {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
@@ -199,7 +196,7 @@ export function ContextWindowNotice(props: {
                   })}
                   className="h-6 rounded px-1.5 text-xs text-muted transition hover:bg-surface hover:text-ink focus-visible:bg-surface focus-visible:text-ink"
                   onClick={() => {
-                    setText(String(suggestion.tokens));
+                    setText(suggestion.label);
                     setInvalid(false);
                     if (save.isError) save.reset();
                   }}
