@@ -406,7 +406,7 @@ describe("TaskFlow ASR stage", () => {
       </>,
     );
     await waitFor(() => expect(screen.getAllByTestId("stage-engine").map((line) => line.textContent)).toEqual(["引擎：中转 · claude-opus-5-5", "引擎：中转 · relay-x"]));
-    expect(screen.getAllByTestId("stage-engine").map((line) => marksIn(line)[0])).toEqual(["anthropic", "deepseek"]);
+    expect(screen.getAllByTestId("stage-engine").map((line) => marksIn(line)[0])).toEqual(["claude", "deepseek"]);
   });
 });
 

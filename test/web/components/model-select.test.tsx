@@ -51,7 +51,7 @@ describe("ModelSelect", () => {
     const options = within(listbox).getAllByRole("option");
     expect(options.map((option) => option.textContent)).toEqual(["未设置", "gpt-6-sol", "claude-opus-5-5", "deepseek-chat", "deepseek-chat", "relay-x"]);
     // By model name first, then the profile's service, else neutral.
-    expect(options.slice(1).map((option) => marks(option)[0])).toEqual(["openai", "anthropic", "deepseek", "deepseek", "qwen"]);
+    expect(options.slice(1).map((option) => marks(option)[0])).toEqual(["openai", "claude", "deepseek", "deepseek", "qwen"]);
     expect(marks(options[0] as HTMLElement)).toEqual([]);
   });
 

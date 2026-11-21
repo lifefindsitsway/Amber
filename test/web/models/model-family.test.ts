@@ -8,7 +8,7 @@ describe("modelFamily", () => {
     ["o1", "openai"],
     ["o3-mini", "openai"],
     ["o4.1", "openai"],
-    ["claude-sonnet-5-5", "anthropic"],
+    ["claude-sonnet-5-5", "claude"],
     ["gemini-3-pro", "gemini"],
     ["gemma-3-27b", "gemini"],
     ["deepseek-chat", "deepseek"],
@@ -27,7 +27,7 @@ describe("modelFamily", () => {
 
   it("reads the last path segment, ignoring case and surrounding space", () => {
     expect(modelFamily("openai/gpt-6")).toBe("openai");
-    expect(modelFamily("vendor/sub/Claude-Opus")).toBe("anthropic");
+    expect(modelFamily("vendor/sub/Claude-Opus")).toBe("claude");
     expect(modelFamily("  DeepSeek-R2 ")).toBe("deepseek");
     expect(modelFamily("models/gemini-3-flash")).toBe("gemini");
   });

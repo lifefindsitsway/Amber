@@ -128,7 +128,7 @@ describe("ChatPanel model picker", () => {
 
     await chooseOption(trigger, "claude-sonnet-5", "Other");
     expect(trigger.textContent).toBe("Other · claude-sonnet-5");
-    expect(marksIn(trigger)).toEqual(["anthropic"]);
+    expect(marksIn(trigger)).toEqual(["claude"]);
     await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/c1/chat?providerProfileId=p2&modelId=claude-sonnet-5")).toBe(true));
 
     fireEvent.change(input(), { target: { value: "讲了什么？" } });

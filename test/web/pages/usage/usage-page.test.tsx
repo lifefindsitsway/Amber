@@ -906,7 +906,7 @@ describe("model marks in the by-model view", () => {
   it("marks the by-model rows by model name, and transcription by its service", async () => {
     mount(SCENARIOS.main(), "/usage?view=models");
     await waitFor(() => expect(marksIn(screen.getByTestId("usage-models"))).toHaveLength(5));
-    expect(marksIn(await modelRow("claude-sonnet-4-5"))).toEqual(["anthropic"]);
+    expect(marksIn(await modelRow("claude-sonnet-4-5"))).toEqual(["claude"]);
     expect(marksIn(await modelRow("gpt-5.6-sol"))).toEqual(["openai"]);
     expect(marksIn(await modelRow("deepseek-v4-chat"))).toEqual(["deepseek"]);
     await waitFor(async () => expect(marksIn(await modelRow("fun-asr"))).toEqual(["dashscope"]));

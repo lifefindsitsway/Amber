@@ -2,10 +2,17 @@ import { Server } from "lucide-react";
 import type { ComponentType } from "react";
 import { ASR_PROVIDERS, type AsrProviderId } from "../../shared/enums.ts";
 import { LLM_PRESET_IDS, type LlmPresetId } from "../../shared/llm-presets.ts";
-import { AnthropicMark, BailianMark, DeepSeekMark, ElevenLabsMark, GeminiMark, GrokMark, KimiMark, OpenAiMark, QwenMark, ZaiMark, type MarkProps } from "./vendor-icons/marks.tsx";
+import { AnthropicMark, BailianMark, ClaudeMark, DeepSeekMark, ElevenLabsMark, GeminiMark, GrokMark, KimiMark, OpenAiMark, QwenMark, ZaiMark, type MarkProps } from "./vendor-icons/marks.tsx";
 
-/** A vendor that has a mark: an LLM service preset other than "custom", or a transcription service. */
-export type VendorMarkId = Exclude<LlmPresetId, "custom"> | AsrProviderId;
+/**
+ * Model families whose models carry a mark of their own, apart from their vendor's: Claude
+ * models get the orange Claude mark, while the Anthropic service keeps the company mark. Keyed
+ * like the ids the model-name guess returns; never an LLM preset, so no profile shows them.
+ */
+const MODEL_FAMILY_MARKS = { claude: ClaudeMark } as const;
+
+/** A mark that can be drawn: an LLM service preset other than "custom", a transcription service, or a model family above. */
+export type VendorMarkId = Exclude<LlmPresetId, "custom"> | AsrProviderId | keyof typeof MODEL_FAMILY_MARKS;
 
 const MARKS: Readonly<Record<VendorMarkId, ComponentType<MarkProps>>> = {
   deepseek: DeepSeekMark,
@@ -18,6 +25,7 @@ const MARKS: Readonly<Record<VendorMarkId, ComponentType<MarkProps>>> = {
   grok: GrokMark,
   elevenlabs: ElevenLabsMark,
   dashscope: BailianMark,
+  ...MODEL_FAMILY_MARKS,
 };
 
 /** The mark of an LLM service preset id as stored on a profile; free text, so unknown ids have none. */

@@ -8,7 +8,7 @@ import type { VendorMarkId } from "../ui/vendor-icon.tsx";
  */
 const FAMILIES: ReadonlyArray<readonly [VendorMarkId, readonly string[]]> = [
   ["openai", ["gpt", "chatgpt", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9"]],
-  ["anthropic", ["claude"]],
+  ["claude", ["claude"]],
   ["gemini", ["gemini", "gemma"]],
   ["deepseek", ["deepseek"]],
   ["qwen", ["qwen", "qwq", "qvq"]],

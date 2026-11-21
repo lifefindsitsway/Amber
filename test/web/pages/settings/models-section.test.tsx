@@ -332,7 +332,7 @@ describe("ModelsSection", () => {
     renderApp(<ModelsSection />);
     await waitFor(() => expect(screen.getAllByTestId("profile-card")).toHaveLength(2));
     const row = (modelId: string) => document.querySelector(`li[data-model="${modelId}"]`) as HTMLElement;
-    expect(["claude-opus-5-5", "model-a", "model-b"].map((modelId) => marks(row(modelId).firstElementChild as Element))).toEqual([["anthropic"], ["deepseek"], ["neutral"]]);
+    expect(["claude-opus-5-5", "model-a", "model-b"].map((modelId) => marks(row(modelId).firstElementChild as Element))).toEqual([["claude"], ["deepseek"], ["neutral"]]);
     const mark = row("model-a").querySelector("svg[data-vendor-icon]") as SVGElement;
     expect(mark.getAttribute("width")).toBe("14");
     // The mark sits beside the id, centred on its line, and the id alone is what gets cut short.

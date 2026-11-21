@@ -14,8 +14,10 @@ describe("VendorIcon", () => {
         <VendorIcon presetId="retired-vendor" />
         <VendorIcon presetId="constructor" />
         <VendorIcon presetId="dashscope" />
+        <VendorIcon presetId="claude" />
         <VendorMark mark="elevenlabs" />
         <VendorMark mark="dashscope" />
+        <VendorMark mark="claude" />
       </div>,
     );
     const icons = [...container.querySelectorAll("svg")];
@@ -33,8 +35,10 @@ describe("VendorIcon", () => {
       "neutral",
       "neutral",
       "neutral",
+      "neutral",
       "elevenlabs",
       "dashscope",
+      "claude",
     ]);
     for (const icon of icons) {
       expect(icon.getAttribute("aria-hidden")).toBe("true");
@@ -56,6 +60,20 @@ describe("VendorIcon", () => {
     for (const icon of container.querySelectorAll("svg")) {
       expect(icon.getAttribute("fill")).toBe("currentColor");
     }
+  });
+
+  it("draws Claude models in the brand orange, apart from the single-colour company mark", () => {
+    const { container } = render(
+      <div>
+        <VendorMark mark="claude" />
+        <VendorMark mark="anthropic" />
+      </div>,
+    );
+    const [claude, anthropic] = [...container.querySelectorAll("svg")];
+    expect(claude?.getAttribute("fill")).toBeNull();
+    expect(claude?.querySelector("path")?.getAttribute("fill")).toBe("#D97757");
+    expect(anthropic?.getAttribute("fill")).toBe("currentColor");
+    expect(claude?.querySelector("path")?.getAttribute("d")).not.toBe(anthropic?.querySelector("path")?.getAttribute("d"));
   });
 
   it("gives each copy of a gradient mark its own gradient ids, all resolvable", () => {

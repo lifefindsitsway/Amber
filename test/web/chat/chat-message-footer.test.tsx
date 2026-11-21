@@ -48,7 +48,7 @@ describe("ChatMessageFooter", () => {
 
   it("marks the model by its name, at the small size", () => {
     renderFooter({ ...ANSWER, modelRef: { ...ANSWER.modelRef!, modelId: "claude-opus-5-5" } });
-    expect(footerMark()).toBe("anthropic");
+    expect(footerMark()).toBe("claude");
     expect(screen.getByTestId("chat-turn-footer").querySelector("svg[data-vendor-icon]")?.getAttribute("width")).toBe("14");
   });
 

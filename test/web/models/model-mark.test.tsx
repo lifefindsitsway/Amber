@@ -20,6 +20,18 @@ describe("LlmModelMark", () => {
     const sizes = [...container.querySelectorAll("svg")].map((icon) => icon.getAttribute("width"));
     expect(sizes).toEqual(["16", "16", "16", "16", "16", "14"]);
   });
+
+  it("gives Claude models their own mark, and keeps the company mark for the service", () => {
+    const { container } = render(
+      <div>
+        <LlmModelMark modelId="claude-opus-5-5" presetId="anthropic" />
+        <LlmModelMark modelId="claude-sonnet-5-5" presetId="custom" />
+        <LlmModelMark modelId="relay-model" presetId="anthropic" />
+        <LlmModelMark modelId="relay-model" presetId="claude" />
+      </div>,
+    );
+    expect(marks(container)).toEqual(["claude", "claude", "anthropic", "neutral"]);
+  });
 });
 
 describe("AsrServiceMark", () => {
