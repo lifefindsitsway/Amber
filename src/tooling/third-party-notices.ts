@@ -338,14 +338,14 @@ export const VENDORED_COMPONENTS: readonly VendoredComponent[] = [
     name: "LobeHub Icons (@lobehub/icons-static-svg)",
     version: "1.104.0",
     license: "MIT",
-    usage: "设置页模型服务的厂商图标",
+    usage: "模型与转录服务的厂商图标",
     source: "https://github.com/lobehub/lobe-icons",
     licenseFile: "src/web/ui/vendor-icons/LICENSE",
   },
 ];
 
 /** Said under the vendored works: the vendor marks among them are trademarks, used only to name the service. */
-export const VENDOR_MARKS_NOTE = "厂商图标是其各自所有者的商标，Amber 只在设置页用它们标示对应的服务，并始终与服务名称一同显示；这不表示这些厂商认可 Amber 或与之存在合作关系。";
+export const VENDOR_MARKS_NOTE = "厂商图标是其各自所有者的商标，Amber 只用它们标示对应的模型与转录服务，并始终与服务或模型名称一同显示；这不表示这些厂商认可 Amber 或与之存在合作关系。";
 
 export interface VendoredNotice extends VendoredComponent {
   texts: LicenseText[];

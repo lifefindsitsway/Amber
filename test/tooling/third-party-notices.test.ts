@@ -302,7 +302,7 @@ describe("renderThirdPartyNotices for works copied into the source tree", () => 
   it("lists the vendor icons with their source and embeds the MIT text kept beside them", () => {
     const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest(), shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true, vendored: collectVendoredNotices(REPO) });
     expect(notices).toContain("## 随源码分发的第三方作品（界面）");
-    expect(notices).toContain("| LobeHub Icons (@lobehub/icons-static-svg) | 1.104.0 | MIT | 设置页模型服务的厂商图标 | https://github.com/lobehub/lobe-icons |");
+    expect(notices).toContain("| LobeHub Icons (@lobehub/icons-static-svg) | 1.104.0 | MIT | 模型与转录服务的厂商图标 | https://github.com/lobehub/lobe-icons |");
     expect(notices).toContain(VENDOR_MARKS_NOTE);
     expect(notices).toContain("适用于：LobeHub Icons (@lobehub/icons-static-svg) 1.104.0（LICENSE）");
     expect(ICONS_LICENSE).toContain("Copyright (c) 2023 LobeHub");

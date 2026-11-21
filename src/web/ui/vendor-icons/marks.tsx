@@ -1,7 +1,7 @@
 import { useId, type ReactNode, type SVGProps } from "react";
 
 /*
- * Vendor marks for the LLM service presets.
+ * Vendor marks for the LLM and transcription services.
  *
  * Source: LobeHub Icons (https://github.com/lobehub/lobe-icons), npm package
  * `@lobehub/icons-static-svg` 1.104.0, MIT licensed; the license text is `LICENSE` beside this
@@ -32,6 +32,18 @@ const GEMINI =
 const GROK =
   "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815";
 
+
+const ELEVENLABS = "M5 0h5v24H5V0zM14 0h5v24h-5V0z";
+/** Alibaba Cloud Model Studio (Bailian): seven facets, each in its own brand colour. */
+const BAILIAN: ReadonlyArray<readonly [string, string]> = [
+  ["M6.336 8.919v6.162l5.335-3.083L6.337 8.92z", "#1C54E3"],
+  ["M21.394 5.288s-.006-.006-.01-.006L17.01 2.754 6.336 8.92l5.335 3.082 9.701-5.6.016-.01a.635.635 0 00.006-1.1v-.003z", "#AA9AFF"],
+  ["M21.71 12.465a.62.62 0 00-.316.085s-.006 0-.009.003l-4.375 2.528 5.05 2.915h.006a2.06 2.06 0 00.28-1.04v-3.855a.637.637 0 00-.636-.636z", "#00EAD1"],
+  ["M22.06 17.996l-5.05-2.915L6.34 21.242l4.27 2.465s.016.006.022.012a2.102 2.102 0 002.093 0c.006-.003.016-.006.022-.012l8.538-4.93c.003 0 .006-.003.01-.006.321-.183.589-.45.775-.772h-.006l-.004-.003z", "#00CEC9"],
+  ["M11.672 11.998l-5.336 3.083-1.444.832-3.605 2.083H1.28c.173.303.416.555.709.738l.078.044.016.01.02.012 4.232 2.442 10.671-6.161-5.335-3.082z", "#00EAD1"],
+  ["M12.74.29c-.1-.06-.208-.107-.315-.148-.02-.006-.038-.016-.057-.022a2.121 2.121 0 00-.7-.12c-.233 0-.457.038-.668.11l-.031.01a2.196 2.196 0 00-.372.17L2.068 5.222s-.003 0-.006.003c-.324.183-.592.451-.781.773h.006l5.049 2.918L17.01 2.758 12.74.29z", "#7347FF"],
+  ["M1.287 6.001H1.28A2.06 2.06 0 001 7.041v9.915c0 .378.1.735.28 1.043h.007l5.049-2.918V8.919l-5.05-2.918z", "#0423DA"],
+];
 
 function Mark({ children, ...rest }: MarkProps & { children: ReactNode; fill?: string }) {
   return (
@@ -134,6 +146,24 @@ export function GrokMark(props: MarkProps) {
   return (
     <Mark {...props} fill="currentColor" fillRule="evenodd">
       <path d={GROK} />
+    </Mark>
+  );
+}
+
+export function ElevenLabsMark(props: MarkProps) {
+  return (
+    <Mark {...props} fill="currentColor" fillRule="evenodd">
+      <path d={ELEVENLABS} />
+    </Mark>
+  );
+}
+
+export function BailianMark(props: MarkProps) {
+  return (
+    <Mark {...props}>
+      {BAILIAN.map(([d, colour]) => (
+        <path key={d} d={d} fill={colour} />
+      ))}
     </Mark>
   );
 }

@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { LLM_PRESET_IDS } from "../../../src/shared/llm-presets.ts";
-import { VendorIcon } from "../../../src/web/ui/vendor-icon.tsx";
+import { VendorIcon, VendorMark } from "../../../src/web/ui/vendor-icon.tsx";
 
 describe("VendorIcon", () => {
   it("draws a decorative mark for every vendor preset and one neutral glyph for the rest", () => {
@@ -13,6 +13,9 @@ describe("VendorIcon", () => {
         <VendorIcon presetId={undefined} />
         <VendorIcon presetId="retired-vendor" />
         <VendorIcon presetId="constructor" />
+        <VendorIcon presetId="dashscope" />
+        <VendorMark mark="elevenlabs" />
+        <VendorMark mark="dashscope" />
       </div>,
     );
     const icons = [...container.querySelectorAll("svg")];
@@ -29,6 +32,9 @@ describe("VendorIcon", () => {
       "neutral",
       "neutral",
       "neutral",
+      "neutral",
+      "elevenlabs",
+      "dashscope",
     ]);
     for (const icon of icons) {
       expect(icon.getAttribute("aria-hidden")).toBe("true");
@@ -42,8 +48,8 @@ describe("VendorIcon", () => {
   it("follows the text colour with the single-colour marks", () => {
     const { container } = render(
       <div>
-        {(["kimi", "glm", "openai", "anthropic", "grok"] as const).map((id) => (
-          <VendorIcon key={id} presetId={id} />
+        {(["kimi", "glm", "openai", "anthropic", "grok", "elevenlabs"] as const).map((id) => (
+          <VendorMark key={id} mark={id} />
         ))}
       </div>,
     );
