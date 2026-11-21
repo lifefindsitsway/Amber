@@ -1461,6 +1461,8 @@ describe("content pack: files and failures", () => {
   const filesUnder = (dir: string): string[] =>
     existsSync(dir) ? readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name).slice(dir.length + 1)) : [];
   const stagingOf = (stack: ComposedStack, jobId: string) => join(stack.dataDir, "tmp", "content-packs", "imports", jobId);
+  /** Whether the job's staging is still there once given time to go: a job that ended on its own publishes its status before its staging is removed, so a poll can see both. */
+  const stagingLeft = (jobId: string) => until(async () => existsSync(stagingOf(B, jobId)), (left) => !left);
   const active = (device: Device) => ok<ContentPackActiveDto>(device, { method: "GET", url: "/api/content-packs/active" });
 
   it("media already here is skipped, a missing file is filled in, another quality is added", async () => {
@@ -1782,7 +1784,7 @@ describe("content pack: files and failures", () => {
     expect(await contentsOf(b)).toEqual([]);
     expect(filesUnder(dataPath(B, `assets/${b.id}`))).toEqual([]);
     expect(journalsIn(B.dataDir).filter((journal) => journal.jobId === job.jobId)).toEqual([]);
-    expect(existsSync(stagingOf(B, job.jobId))).toBe(false);
+    expect(await stagingLeft(job.jobId)).toBe(false);
     expect(await active(b)).toEqual({});
   }, TIMEOUT);
 
@@ -1800,7 +1802,7 @@ describe("content pack: files and failures", () => {
     /** The upload is taken, its preview fails, and nothing of the job is left. */
     const refusedPack = async (bytes: Buffer) => {
       const job = await failedPreview(b, bytes);
-      expect(existsSync(stagingOf(B, job.jobId))).toBe(false);
+      expect(await stagingLeft(job.jobId)).toBe(false);
       expect(await active(b)).toEqual({});
       return job.error;
     };
@@ -1821,7 +1823,7 @@ describe("content pack: files and failures", () => {
     expect(await commitPack(b, swappedJob)).toMatchObject({ status: "failed", error: { code: "backup_invalid.pack_entry", details: { reason: "digest" } } });
     expect(await contentsOf(b)).toEqual([]);
     expect(filesUnder(dataPath(B, `assets/${b.id}`))).toEqual([]);
-    expect(existsSync(stagingOf(B, swappedJob.jobId))).toBe(false);
+    expect(await stagingLeft(swappedJob.jobId)).toBe(false);
     expect(await refusedPack(raw((entries) => entries.splice(1, 0, { name: "../evil.json", bytes: Buffer.from("{}") })))).toMatchObject({ code: "backup_invalid.pack_entry", details: { reason: "traversal" } });
     expect(await refusedPack(raw((entries) => entries.splice(1, 0, { name: "/etc/passwd", bytes: Buffer.from("{}") })))).toMatchObject({ details: { reason: "traversal" } });
     for (const type of ["2", "1"]) {
@@ -1942,7 +1944,7 @@ describe("content pack: files and failures", () => {
         const job = await previewPack(b, await packOf(build, dir));
         const done = await commitPack(b, job);
         expect(done, label).toMatchObject({ status: "failed", error: { code: "backup_invalid.pack_image", details: { entry } } });
-        expect(existsSync(stagingOf(B, job.jobId)), label).toBe(false);
+        expect(await stagingLeft(job.jobId), label).toBe(false);
       }
       // A speaker photo goes through the same structural check.
       const { build } = sampleBuild(dir, { count: 1 });
