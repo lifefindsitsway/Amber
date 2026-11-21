@@ -211,7 +211,10 @@ test("transcription models: a typed-in model is added with a family, then tested
   await expect(added.getByTestId("asr-model-test-result")).toHaveText("可用 · 延迟 1234 ms");
   await expect(added.getByTestId("asr-model-tested")).toHaveText(/^实测于 /);
   // The new model can be picked as the default.
-  await expect(page.getByLabel("默认转录模型").locator("option", { hasText: "fun-asr-2026" })).toHaveCount(1);
+  await page.getByRole("combobox", { name: "默认转录模型" }).click();
+  await expect(page.getByRole("option", { name: "fun-asr-2026" })).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 });
 
 test("other models: profiles are added, reordered and folded, and nothing there can be tested", async ({ page }) => {

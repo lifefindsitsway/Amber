@@ -1,7 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ComparisonTranscribe } from "../../../../../../src/web/pages/content/speakers/compare/comparison-transcribe.tsx";
 import { mockApi, renderApp } from "../../../../../fixtures/web/render.tsx";
+import { chooseOption, selectOptionNames, stubSelectLayout } from "../../../../../fixtures/web/select.ts";
+
+beforeEach(stubSelectLayout);
 
 const profile = (id: string, provider: "dashscope" | "elevenlabs", modelIds: string[]) => ({
   id,
@@ -16,20 +19,26 @@ const profile = (id: string, provider: "dashscope" | "elevenlabs", modelIds: str
 
 const PROFILES = { body: { items: [profile("eleven", "elevenlabs", ["scribe_v2"]), profile("typed", "dashscope", ["fun-asr-2026"])] } };
 const URL = "/api/contents/c1/transcript/retranscribe";
-const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
 
 describe("ComparisonTranscribe", () => {
   it("offers only models that identify speakers and sends nothing before the explicit click", async () => {
     const { calls } = mockApi({ "GET /api/asr-profiles": PROFILES, [`POST ${URL}`]: { status: 202, body: { taskId: "t1" } } });
     renderApp(<ComparisonTranscribe contentId="c1" durationMs={600_000} />);
-    const select = (await screen.findByTestId("comparison-model")) as HTMLSelectElement;
-    expect(Array.from(select.options).map((option) => option.value)).toEqual(["", key("eleven", "scribe_v2")]);
+    const select = await screen.findByTestId("comparison-model");
+    // Nothing is chosen up front: the trigger reads as a prompt, and only the identifying model is listed.
+    expect(select.hasAttribute("data-placeholder")).toBe(true);
+    expect(select.textContent).toBe("选择支持识别发言人的模型");
+    expect(await selectOptionNames(select)).toEqual(["scribe_v2"]);
+    // Sized to its text, yet never wider than the row it sits in.
+    expect(select.className).toContain("max-w-full");
     const submit = screen.getByTestId("comparison-transcribe-submit") as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
     expect(submit.textContent).toBe("用另一家模型再识别一次");
     expect(screen.getByText("这是一次付费转录，结果只用于对比，不会替换当前字幕稿")).toBeTruthy();
 
-    fireEvent.change(select, { target: { value: key("eleven", "scribe_v2") } });
+    await chooseOption(select, "scribe_v2");
+    expect(select.textContent).toBe("eleven · scribe_v2");
+    expect([...select.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"))).toEqual(["elevenlabs"]);
     expect(calls.some((call) => call.method === "POST")).toBe(false);
     fireEvent.click(submit);
     await screen.findByTestId("comparison-transcribe-submitted");
@@ -49,7 +58,7 @@ describe("ComparisonTranscribe", () => {
       },
     });
     renderApp(<ComparisonTranscribe contentId="c1" />);
-    fireEvent.change(await screen.findByTestId("comparison-model"), { target: { value: key("eleven", "scribe_v2") } });
+    await chooseOption(await screen.findByTestId("comparison-model"), "scribe_v2");
     fireEvent.click(screen.getByTestId("comparison-transcribe-submit"));
     await waitFor(() => expect(screen.getByTestId("comparison-capacity").textContent).toBe("这个内容的发言人名额不足：剩余 3 个，对比识别需要 4 个。可先删除不再需要的对比稿"));
   });
@@ -63,7 +72,7 @@ describe("ComparisonTranscribe", () => {
       },
     });
     renderApp(<ComparisonTranscribe contentId="c1" />);
-    fireEvent.change(await screen.findByTestId("comparison-model"), { target: { value: key("eleven", "scribe_v2") } });
+    await chooseOption(await screen.findByTestId("comparison-model"), "scribe_v2");
     fireEvent.click(screen.getByTestId("comparison-transcribe-submit"));
     expect((await screen.findByRole("alert")).textContent).toContain("无法按要求识别发言人");
   });
@@ -71,7 +80,7 @@ describe("ComparisonTranscribe", () => {
   it("holds back a length the model recommends against", async () => {
     mockApi({ "GET /api/asr-profiles": { body: { items: [profile("fun", "dashscope", ["fun-asr"])] } } });
     renderApp(<ComparisonTranscribe contentId="c1" durationMs={10 * 3_600_000} />);
-    fireEvent.change(await screen.findByTestId("comparison-model"), { target: { value: key("fun", "fun-asr") } });
+    await chooseOption(await screen.findByTestId("comparison-model"), "fun-asr");
     expect((screen.getByTestId("comparison-transcribe-submit") as HTMLButtonElement).disabled).toBe(true);
   });
 

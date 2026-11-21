@@ -315,7 +315,8 @@ export function SubtitlesTab() {
               onChange={setAsrChoice}
               label={t("contentView.subtitles.retranscribeModel")}
               placeholder={t("contentView.subtitles.pickAsrModel")}
-              className="h-7 w-full min-w-0 rounded border border-line bg-surface px-1 text-xs"
+              size="sm"
+              width="fill"
               testId="retranscribe-model"
             />
           )}

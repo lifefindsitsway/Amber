@@ -17,8 +17,10 @@ import { CUSTOM_PRESET_ID, hasRegions, matchPresetAddress, normalizeBaseUrl, pre
 import { useApi } from "../../api/context.tsx";
 import { queryKeys, useCacheObservedModel, usePatchSettings, useProviders, useSetContextWindow, useSetModelPricing, useSettings } from "../../api/queries.ts";
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
+import { ModelSelect, type ModelSelectEntry } from "../../components/model-select.tsx";
 import { formatDateTime } from "../../format.ts";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
+import { LlmModelMark } from "../../models/model-mark.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { SuggestionInput } from "../../ui/suggestion-input.tsx";
@@ -80,15 +82,33 @@ function DefaultModelBlock({ profiles }: { profiles: readonly ProviderProfileDto
   const patch = usePatchSettings();
   const current = settings.data?.defaultModelRef;
   const value = current === undefined ? "" : modelKey(current.providerProfileId, current.modelId);
+  const entries: ModelSelectEntry[] = profiles.flatMap((profile) =>
+    profile.models.map((model) => ({ value: modelKey(profile.id, model.modelId), profileName: profile.name, profileKey: profile.id, modelId: model.modelId, service: profile.presetId })),
+  );
+  // A default whose model or profile has since gone stays shown as it is, never as another model.
+  const owner = current === undefined ? undefined : profiles.find((profile) => profile.id === current.providerProfileId);
+  const currentShown =
+    current === undefined
+      ? undefined
+      : {
+          label: owner === undefined ? t("settings.models.defaultModelDeleted", { model: current.modelId }) : `${owner.name} · ${current.modelId}`,
+          modelId: current.modelId,
+          service: owner?.presetId,
+        };
   return (
     <SettingsBlock title={t("settings.models.defaultModel")}>
-      <select
+      <ModelSelect
+        kind="llm"
         id="default-model"
-        aria-label={t("settings.models.defaultModel")}
-        className={INPUT_CLASS}
+        ariaLabel={t("settings.models.defaultModel")}
+        describedBy="default-model-hint"
+        entries={entries}
         value={value}
-        onChange={(event) => {
-          const next = event.target.value;
+        noneLabel={t("settings.common.none")}
+        current={currentShown}
+        size="lg"
+        width="fill"
+        onChange={(next) => {
           if (next === "") {
             patch.mutate({ defaultModelRef: null });
             return;
@@ -96,17 +116,8 @@ function DefaultModelBlock({ profiles }: { profiles: readonly ProviderProfileDto
           const [providerProfileId, modelId] = JSON.parse(next) as [string, string];
           patch.mutate({ defaultModelRef: { providerProfileId, modelId } });
         }}
-      >
-        <option value="">{t("settings.common.none")}</option>
-        {profiles.map((profile) =>
-          profile.models.map((model) => (
-            <option key={modelKey(profile.id, model.modelId)} value={modelKey(profile.id, model.modelId)}>
-              {`${profile.name} · ${model.modelId}`}
-            </option>
-          )),
-        )}
-      </select>
-      <p className="mt-2 text-xs text-muted" data-testid="default-model-hint">
+      />
+      <p id="default-model-hint" className="mt-2 text-xs text-muted" data-testid="default-model-hint">
         {t("settings.models.defaultModelHint")}
       </p>
       <RequestError error={patch.error} />
@@ -344,7 +355,10 @@ function ModelRow({ profile, model, regionHint }: { profile: ProviderProfileDto;
   return (
     <li className="py-3" data-model={model.modelId}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="min-w-0 truncate font-mono text-sm">{model.modelId}</p>
+        <p className="flex min-w-0 items-center gap-1.5 text-sm">
+          <LlmModelMark modelId={model.modelId} presetId={profile.presetId} size={14} />
+          <span className="min-w-0 truncate font-mono">{model.modelId}</span>
+        </p>
         <div className="flex gap-2">
           <Button size="sm" disabled={probe.isPending || !profile.hasCredential} title={t("settings.models.testHint")} onClick={() => probe.mutate()}>
             {probe.isPending ? t("settings.models.testing") : t("settings.models.testConnection")}

@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { AsrModelRefDto, ModelRefDto } from "../../shared/dto/model-ref.ts";
-import { taskAcceptedDtoSchema, taskDetailDtoSchema, type StageRunDto, type TaskDetailDto, type WorkUnitDto } from "../../shared/dto/task.ts";
+import { taskAcceptedDtoSchema, taskDetailDtoSchema, type StageEngineDto, type StageRunDto, type TaskDetailDto, type WorkUnitDto } from "../../shared/dto/task.ts";
 import { STAGE_IDS, type StageId, type StageStatus, type TaskKind } from "../../shared/enums.ts";
 import { workStepOf, type WorkStep } from "../../shared/work-steps.ts";
 import { ApiError } from "../api/client.ts";
@@ -12,10 +12,12 @@ import { useApi, useTask, useTaskHub } from "../api/context.tsx";
 import { useAsrProfiles, useProviders, useSettings } from "../api/queries.ts";
 import { formatDateTime, formatTime, sameLocalDay } from "../format.ts";
 import { AsrModelSelect, encodeAsrModel, initialAsrModelRef, useAsrModelLabel } from "./asr-model-select.tsx";
+import { ModelSelect, type ModelSelectEntry } from "./model-select.tsx";
 import { Button } from "../ui/button.tsx";
 import { Spinner } from "../ui/feedback.tsx";
 import { ErrorView, useEngineLabel } from "./error-view.tsx";
 import { ContextWindowNotice } from "../models/context-window-notice.tsx";
+import { AsrServiceMark, LlmModelMark } from "../models/model-mark.tsx";
 import { useFocusAfterSave } from "../models/use-focus-after-save.ts";
 import { CONTEXT_WINDOW_STAGES, useModelReadiness, type ModelNeeds } from "../models/use-model-readiness.ts";
 
@@ -140,16 +142,51 @@ function decodeModel(value: string): ModelRefDto | undefined {
   }
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-}
-
-/** Every model of the user's provider profiles, as `<select>` options keyed by `encodeModel`. */
-function useModelOptions(): ModelOption[] {
+/** Every model of the user's provider profiles, as picker entries keyed by `encodeModel`. */
+function useModelEntries(): ModelSelectEntry[] {
   const providers = useProviders();
   return (providers.data?.items ?? []).flatMap((profile) =>
-    profile.models.map((model) => ({ value: encodeModel({ providerProfileId: profile.id, modelId: model.modelId }), label: `${profile.name} · ${model.modelId}` })),
+    profile.models.map((model) => ({
+      value: encodeModel({ providerProfileId: profile.id, modelId: model.modelId }),
+      profileName: profile.name,
+      profileKey: profile.id,
+      modelId: model.modelId,
+      service: profile.presetId,
+    })),
+  );
+}
+
+/** Stands in for the engine inside the translated line, so the mark can go right before its name. */
+const ENGINE_SLOT = "\u0000";
+
+/**
+ * The "engine: …" line with the engine's mark before its name. The mark follows the same rules as the
+ * pickers: an LLM by its model name, else its profile's service; a transcription model by its
+ * profile's service, neutral once the profile is gone.
+ */
+function EngineLine(props: { engine: StageEngineDto; label: string }) {
+  const { t } = useTranslation();
+  const providers = useProviders();
+  const asrProfiles = useAsrProfiles(props.engine.kind === "asr");
+  const { engine } = props;
+  const mark =
+    engine.kind === "llm" ? (
+      <LlmModelMark modelId={engine.modelRef.modelId} presetId={providers.data?.items.find((item) => item.id === engine.modelRef.providerProfileId)?.presetId} size={14} />
+    ) : (
+      <AsrServiceMark provider={asrProfiles.data?.items.find((item) => item.id === engine.asrModelRef.asrProfileId)?.provider} size={14} />
+    );
+  const [before = "", after = ""] = t("shell.flow.engine", { engine: ENGINE_SLOT }).split(ENGINE_SLOT);
+  return (
+    <p className="mt-1 flex min-w-0 items-center text-xs text-muted" data-testid="stage-engine">
+      <span className="shrink-0 whitespace-pre">{before}</span>
+      <span className="flex min-w-0 items-center gap-1">
+        {mark}
+        <span className="min-w-0 truncate" title={props.label}>
+          {props.label}
+        </span>
+      </span>
+      {after === "" ? null : <span className="shrink-0 whitespace-pre">{after}</span>}
+    </p>
   );
 }
 
@@ -320,7 +357,7 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
           {t(props.step === "transcribe" ? "shell.flow.transcribeHint" : "shell.flow.awaitResultHint")}
         </p>
       ) : null}
-      {engineLabel === undefined || run.status === "failed" ? null : <p className="mt-1 text-xs text-muted">{t("shell.flow.engine", { engine: engineLabel })}</p>}
+      {engineLabel === undefined || run.engine === undefined || run.status === "failed" ? null : <EngineLine engine={run.engine} label={engineLabel} />}
       {run.status === "failed" && run.error !== undefined ? (
         <div className="mt-2">
           <ErrorView error={run.error} stage={run.stage} {...(run.engine === undefined ? {} : { engine: run.engine })}>
@@ -385,7 +422,8 @@ function WaitingAsrConfiguration(props: { run: StageRunDto; pending: boolean; on
           onChange={setPicked}
           label={t("shell.flow.pickAsrModel")}
           placeholder={t("shell.flow.pickAsrModel")}
-          className="h-7 rounded border border-line bg-surface px-1 text-xs"
+          size="sm"
+          width="content"
         />
       ) : null}
       <Button
@@ -403,7 +441,7 @@ function WaitingModelConfiguration(props: { run: StageRunDto; needs: ModelNeeds;
   const { t } = useTranslation();
   const isLlm = LLM_STAGES.has(props.run.stage);
   const needsModel = isLlm && props.run.engine === undefined;
-  const options = useModelOptions();
+  const options = useModelEntries();
   // Undefined until the user picks; the first listed model is offered meanwhile.
   const [picked, setPicked] = useState<string | undefined>(undefined);
   const chosen = picked ?? options[0]?.value;
@@ -420,13 +458,7 @@ function WaitingModelConfiguration(props: { run: StageRunDto; needs: ModelNeeds;
         {isLlm ? t("shell.flow.configureLlm") : t("shell.flow.configureAsr")}
       </Link>
       {needsModel && options.length > 0 ? (
-        <select aria-label={t("shell.flow.pickModel")} className="h-7 rounded border border-line bg-surface px-1 text-xs" value={chosen} onChange={(event) => setPicked(event.target.value)}>
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+        <ModelSelect kind="llm" entries={options} value={chosen ?? ""} onChange={setPicked} ariaLabel={t("shell.flow.pickModel")} size="sm" width="content" />
       ) : null}
       <Button
         id={continueId}
@@ -480,9 +512,11 @@ function RerunWithAsrModel(props: { current: AsrModelRefDto; provider: string | 
           profiles={options}
           value={selected}
           currentLabel={label(props.current, options, props.provider)}
+          bound={props.current}
           onChange={(ref) => setSelected(ref ?? props.current)}
           label={t("shell.flow.rerunAsrModel")}
-          className="h-7 rounded border border-line bg-surface px-1 text-xs"
+          size="sm"
+          width="content"
         />
       ) : null}
       <Button size="sm" disabled={props.pending} onClick={() => props.onRerun(changed ? { asrModelRef: selected } : {})}>
@@ -495,12 +529,17 @@ function RerunWithAsrModel(props: { current: AsrModelRefDto; provider: string | 
 
 function RerunWithModel(props: { current: ModelRefDto; needs: ModelNeeds; pending: boolean; onRerun: (modelRef?: ModelRefDto) => void }) {
   const { t } = useTranslation();
-  const listed = useModelOptions();
+  const listed = useModelEntries();
+  const providers = useProviders();
   const currentLabel = useEngineLabel({ kind: "llm", modelRef: props.current });
   const current = encodeModel(props.current);
+  const profile = providers.data?.items.find((item) => item.id === props.current.providerProfileId);
   // The current binding stays selectable even when its profile no longer lists it, so an
-  // unchanged selection always means "keep the model" and never sends a modelRef.
-  const options = listed.some((option) => option.value === current) ? listed : [{ value: current, label: currentLabel ?? props.current.modelId }, ...listed];
+  // unchanged selection always means "keep the model" and never sends a modelRef. While the
+  // profile exists the binding is listed first under it, so the user can switch back to it;
+  // once the profile is gone the picker keeps it as its own entry under its engine label.
+  const options =
+    profile === undefined || listed.some((option) => option.value === current) ? listed : withBinding(listed, props.current.providerProfileId, { value: current, profileName: profile.name, profileKey: profile.id, modelId: props.current.modelId, service: profile.presetId });
   const [selected, setSelected] = useState(current);
   const changed = selected !== current;
   // The kept model is checked too: a re-run with it would meet the same missing window.
@@ -510,13 +549,16 @@ function RerunWithModel(props: { current: ModelRefDto; needs: ModelNeeds; pendin
   const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(rerunId));
   return (
     <>
-      <select aria-label={t("shell.flow.rerunModel")} className="h-7 rounded border border-line bg-surface px-1 text-xs" value={selected} onChange={(event) => setSelected(event.target.value)}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      <ModelSelect
+        kind="llm"
+        entries={options}
+        value={selected}
+        onChange={setSelected}
+        current={{ label: currentLabel ?? props.current.modelId, modelId: props.current.modelId, service: profile?.presetId, value: current }}
+        ariaLabel={t("shell.flow.rerunModel")}
+        size="sm"
+        width="content"
+      />
       <Button id={rerunId} size="sm" disabled={props.pending || windowMissing} onClick={() => props.onRerun(changed ? selectedRef : undefined)}>
         {t("shell.flow.rerun")}
       </Button>
@@ -524,4 +566,10 @@ function RerunWithModel(props: { current: ModelRefDto; needs: ModelNeeds; pendin
       {windowMissing && selectedRef !== undefined ? <ContextWindowNotice modelRef={selectedRef} density="compact" variant="minimal" onSaved={windowSaved} className="order-last basis-full" testId="rerun-context-window" /> : null}
     </>
   );
+}
+
+/** `entries` with the bound model listed first among its profile's models (or first of all when the profile lists none). */
+function withBinding(entries: readonly ModelSelectEntry[], profileId: string, binding: ModelSelectEntry): ModelSelectEntry[] {
+  const at = entries.findIndex((entry) => decodeModel(entry.value)?.providerProfileId === profileId);
+  return at === -1 ? [binding, ...entries] : [...entries.slice(0, at), binding, ...entries.slice(at)];
 }

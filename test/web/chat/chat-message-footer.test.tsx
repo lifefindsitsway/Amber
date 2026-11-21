@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessageDto } from "../../../src/shared/dto/chat.ts";
 import { ChatMessageFooter } from "../../../src/web/chat/chat-message-footer.tsx";
+import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
+import { provider } from "../../fixtures/web/shell-data.ts";
 
 const ANSWER: ChatMessageDto = {
   id: "a1",
@@ -20,11 +22,15 @@ afterEach(() => {
   else process.env["TZ"] = original;
 });
 
+/** The answer's Profile p1 was created from the DeepSeek preset. */
 function renderFooter(answer: ChatMessageDto, extra: Partial<Parameters<typeof ChatMessageFooter>[0]> = {}) {
+  mockApi({ "GET /api/providers": { body: { items: [{ ...provider("p1", "Relay", ["m-chat"]), presetId: "deepseek" }] } } });
   const props = { answer, askedAt: Date.UTC(2026, 9, 26, 14, 59), copy: () => "复制的文字", copyable: true, onDelete: vi.fn(), busy: false, ...extra };
-  render(<ChatMessageFooter {...props} />);
+  renderApp(<ChatMessageFooter {...props} />);
   return props;
 }
+
+const footerMark = (): string | null | undefined => screen.getByTestId("chat-turn-footer").querySelector("svg[data-vendor-icon]")?.getAttribute("data-vendor-icon");
 
 describe("ChatMessageFooter", () => {
   it("shows the Profile, the model with its protocol on hover, and the finish time in Beijing time", () => {
@@ -38,6 +44,26 @@ describe("ChatMessageFooter", () => {
     expect(time.textContent).toBe("2026-10-27 00:05");
     // The footer shows minutes; the hover names the moment to the second.
     expect(time.getAttribute("title")).toBe("回答完成时间：2026-10-27 00:05:00");
+  });
+
+  it("marks the model by its name, at the small size", () => {
+    renderFooter({ ...ANSWER, modelRef: { ...ANSWER.modelRef!, modelId: "claude-opus-5-5" } });
+    expect(footerMark()).toBe("anthropic");
+    expect(screen.getByTestId("chat-turn-footer").querySelector("svg[data-vendor-icon]")?.getAttribute("width")).toBe("14");
+  });
+
+  it("falls back to the Profile's service for a model name that names no vendor, and to the neutral mark once the Profile is gone", async () => {
+    mockApi({ "GET /api/providers": { body: { items: [{ ...provider("p1", "Relay", ["m-chat"]), presetId: "deepseek" }] } } });
+    const footer = (answer: ChatMessageDto) => <ChatMessageFooter answer={answer} askedAt={undefined} copy={() => ""} copyable onDelete={vi.fn()} busy={false} />;
+    renderApp(
+      <>
+        {footer(ANSWER)}
+        {footer({ ...ANSWER, id: "a2", modelRef: { ...ANSWER.modelRef!, providerProfileId: "gone" } })}
+      </>,
+    );
+    const marks = () => screen.getAllByTestId("chat-turn-footer").map((row) => row.querySelector("svg[data-vendor-icon]")?.getAttribute("data-vendor-icon"));
+    // Once the list has arrived the first footer shows its Profile's service; the second has no Profile to go by.
+    await waitFor(() => expect(marks()).toEqual(["deepseek", "neutral"]));
   });
 
   it("falls back to the question's time, saying so on hover, for answers stored without a finish time", () => {

@@ -25,6 +25,7 @@ import { ApiError } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
 import { queryKeys, usePatchSettings, useProviders, useSettings, useWebSearchProfile } from "../api/queries.ts";
 import { ErrorView } from "../components/error-view.tsx";
+import { ModelSelect } from "../components/model-select.tsx";
 import { formatBeijingDateTime } from "../format.ts";
 import { ContextWindowNotice } from "../models/context-window-notice.tsx";
 import { useModelReadiness } from "../models/use-model-readiness.ts";
@@ -37,6 +38,7 @@ import { useChatComposer, useComposerState, type QuoteDraft } from "./chat-compo
 import {
   chatContextMarker,
   chatKeys,
+  chatModelEntries,
   chatModelOptions,
   defaultChatModel,
   groupTurns,
@@ -45,6 +47,7 @@ import {
   readStoredThread,
   storeThread,
   turnDisplay,
+  unlistedChatModel,
   useChat,
   useChatThreads,
   usePatchChatThread,
@@ -219,6 +222,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   const composed = useComposerState();
   const titleOf = useThreadTitle();
   const options = useMemo(() => chatModelOptions(providers.data?.items ?? []), [providers.data]);
+  const modelEntries = useMemo(() => chatModelEntries(options), [options]);
   const [picked, setPicked] = useState<ModelRefDto | undefined>(undefined);
   const modelRef = picked ?? defaultChatModel(options, settings.data);
   const ready = !providers.isPending && !settings.isPending;
@@ -762,23 +766,25 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         {collapsed ? null : (
           <div className="flex flex-wrap items-center gap-2 px-2 pb-2 text-xs text-muted">
             {options.length === 0 ? null : (
-              <select
-                aria-label={t("chat.model")}
-                title={t("chat.model")}
-                data-testid="chat-model"
-                className="h-7 max-w-64 min-w-0 truncate rounded-md border border-line bg-surface px-1.5 text-xs text-ink hover:border-accent"
-                value={modelRef === undefined ? "" : modelKey(modelRef)}
-                onChange={(event) => {
-                  patch(key, (current) => ({ ...current, error: undefined }));
-                  setPicked(options.find((option) => modelKey(option.modelRef) === event.target.value)?.modelRef);
-                }}
-              >
-                {options.map((option) => (
-                  <option key={modelKey(option.modelRef)} value={modelKey(option.modelRef)}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              // Sized to its text and capped at 16rem by the wrapper, so the web search toggle
+              // and the send button keep their room; the profile name gives way first when cut.
+              <div className="flex max-w-64 min-w-0">
+                <ModelSelect
+                  kind="llm"
+                  entries={modelEntries}
+                  value={modelRef === undefined ? "" : modelKey(modelRef)}
+                  onChange={(next) => {
+                    patch(key, (current) => ({ ...current, error: undefined }));
+                    setPicked(options.find((option) => modelKey(option.modelRef) === next)?.modelRef);
+                  }}
+                  current={modelRef === undefined ? undefined : unlistedChatModel(modelRef, providers.data?.items ?? [])}
+                  ariaLabel={t("chat.model")}
+                  testId="chat-model"
+                  size="sm"
+                  width="content"
+                  className="text-ink hover:border-accent"
+                />
+              </div>
             )}
             {webSearchProfile.isPending ? null : <WebSearchToggle mode={searchAvailable ? webMode : "off"} available={searchAvailable} onChange={changeWebMode} />}
             {context !== undefined && marker !== undefined && context.mode !== "unavailable" && marker.mode !== "unavailable" && !contextUnknown ? (

@@ -10,6 +10,7 @@ import { CITED_SEGMENT_ID, contentDetail, contentRoutes, revision, segment } fro
 import { fakeShell } from "../../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
+import { chooseOption, stubSelectLayout } from "../../../fixtures/web/select.ts";
 import { stubResizeObserver } from "../../../fixtures/web/speaker-fetch.ts";
 import { packagePreview, prefixPreview, target } from "../../../fixtures/web/subtitle-preview.ts";
 
@@ -353,7 +354,7 @@ describe("re-transcribing", () => {
     inUse: false,
     createdAt: 1,
   });
-  const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
+  beforeEach(stubSelectLayout);
 
   it("is unavailable without a transcription model and links to its settings", async () => {
     mockApi({ ...contentRoutes(), "GET /api/asr-profiles": { body: { items: [] } } });
@@ -371,9 +372,16 @@ describe("re-transcribing", () => {
       "POST /api/contents/c1/transcript/retranscribe": { status: 202, body: { taskId: "t9" } },
     });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
-    const select = (await screen.findByTestId("retranscribe-model")) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe(key("a2", "fun-asr")));
-    fireEvent.change(select, { target: { value: key("a1", "qwen-audio-3.1-asr-flash-filetrans") } });
+    const select = await screen.findByTestId("retranscribe-model");
+    expect(select).toBe(screen.getByRole("combobox", { name: "重新转录使用的转录模型" }));
+    await waitFor(() => expect(select.textContent).toBe("二号 · fun-asr"));
+    // Fills the toolbar column at the small height, with the service's small mark.
+    expect(select.className).toContain("w-full");
+    expect(select.className).toContain("h-7");
+    expect(select.querySelector("svg[data-vendor-icon]")?.getAttribute("data-vendor-icon")).toBe("dashscope");
+    expect(select.querySelector("svg[data-vendor-icon]")?.getAttribute("width")).toBe("14");
+    await chooseOption(select, "qwen-audio-3.1-asr-flash-filetrans", "一号");
+    expect(select.textContent).toBe("一号 · qwen-audio-3.1-asr-flash-filetrans");
     fireEvent.click(screen.getByTestId("retranscribe"));
     await waitFor(() =>
       expect(calls.find((call) => call.method === "POST" && call.path.endsWith("/retranscribe"))?.body).toEqual({
@@ -391,11 +399,11 @@ describe("re-transcribing", () => {
       "GET /api/settings": { body: { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 } },
     });
     renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
-    const select = (await screen.findByTestId("retranscribe-model")) as HTMLSelectElement;
-    expect(select.value).toBe("");
+    const select = await screen.findByTestId("retranscribe-model");
+    expect(select.hasAttribute("data-placeholder")).toBe(true);
     const button = screen.getByTestId("retranscribe") as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(true));
-    fireEvent.change(select, { target: { value: key("a1", "fun-asr") } });
+    await chooseOption(select, "fun-asr");
     expect(button.disabled).toBe(false);
   });
 });
@@ -647,7 +655,7 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
     createdAt: 1,
   });
   const profiles = [profile("bl", "dashscope", ["fun-asr", "custom-asr"]), profile("el", "elevenlabs", ["scribe_v2"])];
-  const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
+  beforeEach(stubSelectLayout);
   const settings = (extra: Record<string, unknown> = {}) => ({ body: { theme: "light", language: "zh-CN", shortcuts: {}, defaultAsrModelRef: { asrProfileId: "bl", modelId: "fun-asr" }, updatedAt: 1, ...extra } });
 
   function routes(extra: Record<string, unknown> = {}, duration = 600_000, settingsExtra: Record<string, unknown> = {}) {
@@ -664,8 +672,8 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
   async function opened(extra: Record<string, unknown> = {}, duration?: number, settingsExtra?: Record<string, unknown>) {
     const api = mockApi(routes(extra, duration, settingsExtra));
     renderApp(<ContentPage />, { route: "/contents/c1?tab=subtitles", path: "/contents/:id" });
-    const select = (await screen.findByTestId("retranscribe-model")) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe(key("bl", "fun-asr")));
+    const select = await screen.findByTestId("retranscribe-model");
+    await waitFor(() => expect(select.textContent).toBe("百炼 · fun-asr"));
     return { ...api, select, toggle: (await screen.findByTestId("diarization-switch")) as HTMLInputElement };
   }
 
@@ -685,7 +693,7 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
 
   it("words the count as an upper bound for an ElevenLabs model", async () => {
     const { select } = await opened();
-    fireEvent.change(select, { target: { value: key("el", "scribe_v2") } });
+    await chooseOption(select, "scribe_v2");
     const count = (await screen.findByLabelText("最多人数（1–32）")) as HTMLInputElement;
     expect(screen.getByText("最多")).toBeTruthy();
     expect(screen.getByText("人")).toBeTruthy();
@@ -705,7 +713,7 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
 
   it("disables the switch with the reason for a model that does not offer identification", async () => {
     const { select, calls } = await opened();
-    fireEvent.change(select, { target: { value: key("bl", "custom-asr") } });
+    await chooseOption(select, "custom-asr");
     await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
     const toggle = screen.getByTestId("diarization-switch") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
@@ -720,13 +728,13 @@ describe("SubtitlesTab re-transcribe speaker options", () => {
   it("sends off for a locked switch the user had turned off, or whose setting is off", async () => {
     const first = await opened();
     fireEvent.click(first.toggle);
-    fireEvent.change(first.select, { target: { value: key("bl", "custom-asr") } });
+    await chooseOption(first.select, "custom-asr");
     await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
     fireEvent.click(screen.getByTestId("retranscribe"));
     await waitFor(() => expect(posted(first.calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "custom-asr" }, diarization: { mode: "off" } }]));
     cleanup();
     const second = await opened({}, undefined, { asrDiarization: false });
-    fireEvent.change(second.select, { target: { value: key("bl", "custom-asr") } });
+    await chooseOption(second.select, "custom-asr");
     await waitFor(() => expect((screen.getByTestId("diarization-switch") as HTMLInputElement).disabled).toBe(true));
     fireEvent.click(screen.getByTestId("retranscribe"));
     await waitFor(() => expect(posted(second.calls)).toEqual([{ asrModelRef: { asrProfileId: "bl", modelId: "custom-asr" }, diarization: { mode: "off" } }]));

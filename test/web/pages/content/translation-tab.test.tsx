@@ -6,7 +6,8 @@ import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx"
 import { targetLanguageChoices, translateFailureDismissedKey } from "../../../../src/web/pages/content/translation-tab.tsx";
 import { contentRoutes, revision } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
-import { stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
+import { chooseOption, selectGroups, stubSelectLayout } from "../../../fixtures/web/select.ts";
+import { provider, stageRun, taskDetail } from "../../../fixtures/web/shell-data.ts";
 
 const EMPTY_CAPABILITY = { stream: "unknown", tools: "unknown", structuredOutput: "unknown", vision: "unknown", audioInput: "unknown", reasoning: "unknown" };
 const PROVIDERS = {
@@ -85,6 +86,34 @@ describe("TranslationTab", () => {
     await waitFor(() =>
       expect(calls.find((call) => call.method === "POST")?.body).toEqual({ targetLanguages: ["en", "vi"], modelRef: { providerProfileId: "p1", modelId: "m1" } }),
     );
+  });
+
+  it("picks the model from a menu grouped by profile, with marks, and translates with it", async () => {
+    stubSelectLayout();
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "GET /api/providers": { body: { items: [{ ...provider("p1", "P", ["m1"]), presetId: "qwen" }, provider("p2", "中转", ["gpt-6-sol"])] } },
+      "GET /api/contents/c1/translations": translations({ translations: [] }),
+      "POST /api/contents/c1/translations": { status: 202, body: { taskId: "t9" } },
+    });
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=translation", path: "/contents/:id" });
+    const model = await screen.findByRole("combobox", { name: "模型" });
+    expect(model).toBe(screen.getByTestId("translation-model"));
+    expect(model.textContent).toBe("P · m1");
+    const marks = () => [...model.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
+    expect(marks()).toEqual(["qwen"]);
+    // Capped at 16rem by its wrapper, so a long name gives way instead of pushing the row.
+    expect(model.parentElement?.className).toContain("max-w-64");
+    expect(await selectGroups(model)).toEqual([
+      { heading: "P", options: ["m1"] },
+      { heading: "中转", options: ["gpt-6-sol"] },
+    ]);
+    await chooseOption(model, "gpt-6-sol", "中转");
+    expect(model.textContent).toBe("中转 · gpt-6-sol");
+    expect(marks()).toEqual(["openai"]);
+    fireEvent.click(screen.getByTestId("translation-language-en"));
+    fireEvent.click(screen.getByTestId("translation-start"));
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toEqual({ targetLanguages: ["en"], modelRef: { providerProfileId: "p2", modelId: "gpt-6-sol" } }));
   });
 
   it("refuses an invalid or same-language custom tag", async () => {

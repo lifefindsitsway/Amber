@@ -1,7 +1,7 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../../src/web/api/client.ts";
 import { queryKeys } from "../../../src/web/api/queries.ts";
 import { NewPage, routeAfterImport } from "../../../src/web/pages/new-page.tsx";
@@ -11,6 +11,9 @@ import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
+import { chooseOption, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
+
+beforeEach(stubSelectLayout);
 
 vi.mock("../../../src/web/desktop/bridge.ts", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -54,7 +57,7 @@ describe("NewPage", () => {
     });
     renderApp(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
-    await waitFor(() => expect((screen.getByLabelText("AI 模型") as HTMLSelectElement).value).toBe(JSON.stringify(["p1", "m1"])));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "AI 模型" }).textContent).toBe("我的模型 · m1"));
     await waitFor(() => expect((screen.getByLabelText("输出语言") as HTMLSelectElement).value).toBe("en"));
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `  ${VIDEO}  \n` } });
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -419,11 +422,11 @@ describe("NewPage transcription model", () => {
     inUse: false,
     createdAt: 1,
   });
-  const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
+  const NONE = "暂不选择（需要转录时将等待配置）";
 
   async function submittedAsr(
     routes: Record<string, unknown>,
-    pick?: string,
+    pick?: { name: string; group?: string },
   ): Promise<{ shown: string | undefined; first: string | undefined; sent: unknown }> {
     const { calls } = mockApi({
       ...baseRoutes(),
@@ -435,14 +438,15 @@ describe("NewPage transcription model", () => {
     await waitFor(() => expect(calls.some((call) => call.path === "/api/asr-profiles")).toBe(true));
     // Give the list time to arrive before reading what the picker shows.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const select = screen.queryByLabelText("转录模型") as HTMLSelectElement | null;
-    const shown = select?.value;
-    if (pick !== undefined && select !== null) fireEvent.change(select, { target: { value: pick } });
+    const select = screen.queryByRole("combobox", { name: "转录模型" });
+    const shown = select?.textContent ?? undefined;
+    const first = select === null ? undefined : (await selectOptionNames(select))[0];
+    if (pick !== undefined && select !== null) await chooseOption(select, pick.name, pick.group);
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.path === "/api/contents/import")).toBe(true));
     const post = calls.find((call) => call.method === "POST" && call.path === "/api/contents/import");
-    return { shown, first: select?.options[0]?.textContent ?? undefined, sent: (post?.body as { settings: { asrModelRef?: unknown } }).settings.asrModelRef };
+    return { shown, first, sent: (post?.body as { settings: { asrModelRef?: unknown } }).settings.asrModelRef };
   }
 
   it("preselects the default model", async () => {
@@ -450,13 +454,13 @@ describe("NewPage transcription model", () => {
       "GET /api/asr-profiles": { body: { items: [asr("a1", "一号"), asr("a2", "二号")] } },
       "GET /api/settings": { body: { ...SETTINGS, defaultAsrModelRef: { asrProfileId: "a2", modelId: "fun-asr" } } },
     });
-    expect(result).toEqual({ shown: key("a2", "fun-asr"), first: "暂不选择（需要转录时将等待配置）", sent: { asrProfileId: "a2", modelId: "fun-asr" } });
+    expect(result).toEqual({ shown: "二号 · fun-asr", first: NONE, sent: { asrProfileId: "a2", modelId: "fun-asr" } });
   });
 
   it("chooses nothing when no default is set, and sends no model", async () => {
     expect(await submittedAsr({ "GET /api/asr-profiles": { body: { items: [asr("a1", "一号"), asr("a2", "二号")] } } })).toEqual({
-      shown: "",
-      first: "暂不选择（需要转录时将等待配置）",
+      shown: NONE,
+      first: NONE,
       sent: undefined,
     });
   });
@@ -466,7 +470,7 @@ describe("NewPage transcription model", () => {
       "GET /api/asr-profiles": { body: { items: [asr("a1", "一号")] } },
       "GET /api/settings": { body: { ...SETTINGS, defaultAsrModelRef: { asrProfileId: "gone", modelId: "fun-asr" } } },
     });
-    expect(result.shown).toBe("");
+    expect(result.shown).toBe(NONE);
     expect(result.sent).toBeUndefined();
   });
 
@@ -475,9 +479,9 @@ describe("NewPage transcription model", () => {
       "GET /api/asr-profiles": { body: { items: [asr("a1", "一号")] } },
       "GET /api/settings": { body: { ...SETTINGS, defaultAsrModelRef: { asrProfileId: "a1", modelId: "fun-asr" } } },
     };
-    expect((await submittedAsr(routes, key("a1", "qwen-audio-3.1-asr-flash-filetrans"))).sent).toEqual({ asrProfileId: "a1", modelId: "qwen-audio-3.1-asr-flash-filetrans" });
+    expect((await submittedAsr(routes, { name: "qwen-audio-3.1-asr-flash-filetrans" })).sent).toEqual({ asrProfileId: "a1", modelId: "qwen-audio-3.1-asr-flash-filetrans" });
     cleanup();
-    expect((await submittedAsr(routes, "")).sent).toBeUndefined();
+    expect((await submittedAsr(routes, { name: NONE })).sent).toBeUndefined();
   });
 
   it("hides the picker and sends no model without any profile", async () => {
@@ -662,8 +666,6 @@ describe("NewPage with a picked subtitle in the desktop client", () => {
 });
 
 describe("NewPage model readiness", () => {
-  const BARE = JSON.stringify(["p2", "bare"]);
-
   function readinessRoutes() {
     const windows = windowRoutes([provider("p1", "主力", ["m1"]), providerWithoutWindow("p2", "备用", ["bare"])]);
     const { calls } = mockApi({
@@ -705,14 +707,14 @@ describe("NewPage model readiness", () => {
     renderApp(page(), { route: "/new" });
     await screen.findByTestId("new-context-window");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
-    const model = screen.getByLabelText<HTMLSelectElement>("AI 模型");
-    await waitFor(() => expect(model.value).toBe(BARE));
-    fireEvent.change(model, { target: { value: "" } });
+    const model = screen.getByRole("combobox", { name: "AI 模型" });
+    await waitFor(() => expect(model.textContent).toBe("备用 · bare"));
+    await chooseOption(model, "暂不选择（AI 阶段将等待配置）");
     expect(screen.queryByTestId("new-context-window")).toBeNull();
     expect(screen.getByTestId<HTMLButtonElement>("new-submit").disabled).toBe(false);
-    fireEvent.change(model, { target: { value: JSON.stringify(["p1", "m1"]) } });
+    await chooseOption(model, "m1", "主力");
     expect(screen.queryByTestId("new-context-window")).toBeNull();
-    fireEvent.change(model, { target: { value: BARE } });
+    await chooseOption(model, "bare", "备用");
     expect(screen.getByTestId("new-context-window")).toBeTruthy();
   });
 });

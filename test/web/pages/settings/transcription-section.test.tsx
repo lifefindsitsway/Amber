@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TranscriptionSection } from "../../../../src/web/pages/settings/transcription-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { chooseOption, openSelect, selectGroups, selectOptionNames, stubSelectLayout } from "../../../fixtures/web/select.ts";
 
 const SETTINGS = { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 };
 const QWEN = "qwen-audio-3.1-asr-flash-filetrans";
@@ -32,9 +33,11 @@ const BAILIAN = profile({
   createdAt: 2,
 });
 
-const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
+const marks = (element: Element): Array<string | null> => [...element.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
 const suggestions = (dialog: HTMLElement) => [...within(dialog).getByTestId("asr-model-suggestions").querySelectorAll("option")].map((option) => option.value);
 const CONFLICT = { status: 409, body: { error: { class: "conflict", code: "conflict", retryDisposition: "never", userMessage: "" } } };
+
+beforeEach(stubSelectLayout);
 
 describe("TranscriptionSection", () => {
   // Folding is remembered per browser; every case starts unfolded.
@@ -54,13 +57,47 @@ describe("TranscriptionSection", () => {
       "PATCH /api/settings": { body: { ...SETTINGS, defaultAsrModelRef: { asrProfileId: "a2", modelId: "fun-asr" } } },
     });
     renderApp(<TranscriptionSection />);
-    const select = (await screen.findByLabelText("默认转录模型")) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe(""));
-    expect([...select.options].map((option) => option.textContent)).toEqual(["未设置", "ElevenLabs · scribe_v2", `阿里云百炼 · ${QWEN}`, "阿里云百炼 · fun-asr"]);
-    fireEvent.change(select, { target: { value: key("a2", "fun-asr") } });
+    const select = await screen.findByRole("combobox", { name: "默认转录模型" });
+    await waitFor(() => expect(select.textContent).toBe("未设置"));
+    expect(select.id).toBe("default-asr-model");
+    expect(await selectOptionNames(select)).toEqual(["未设置", "scribe_v2", QWEN, "fun-asr"]);
+    expect(await selectGroups(select)).toEqual([
+      { heading: "ElevenLabs", options: ["scribe_v2"] },
+      { heading: "阿里云百炼", options: [QWEN, "fun-asr"] },
+    ]);
+    const listbox = await openSelect(select);
+    expect(within(listbox).getAllByRole("option").map((option) => marks(option)[0] ?? null)).toEqual([null, "elevenlabs", "dashscope", "dashscope"]);
+    fireEvent.keyDown(listbox, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    await chooseOption(select, "fun-asr", "阿里云百炼");
     await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ defaultAsrModelRef: { asrProfileId: "a2", modelId: "fun-asr" } }));
-    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() => expect(select.textContent).toBe("阿里云百炼 · fun-asr"));
+    expect(marks(select)).toEqual(["dashscope"]);
+    await chooseOption(select, "未设置");
     await waitFor(() => expect(api.calls.filter((call) => call.method === "PATCH").at(-1)?.body).toEqual({ defaultAsrModelRef: null }));
+  });
+
+  it("reads a default its service no longer offers as unset", async () => {
+    mockApi({
+      "GET /api/asr-profiles": { body: { items: [profile({ models: [{ modelId: "scribe_v2", family: "scribe_v2", available: true }, { modelId: "scribe_v1", available: false }] })] } },
+      "GET /api/settings": { body: { ...SETTINGS, defaultAsrModelRef: { asrProfileId: "a1", modelId: "scribe_v1" } } },
+    });
+    renderApp(<TranscriptionSection />);
+    const select = await screen.findByRole("combobox", { name: "默认转录模型" });
+    await waitFor(() => expect(select.textContent).toBe("未设置"));
+    expect(await selectOptionNames(select)).toEqual(["未设置", "scribe_v2"]);
+  });
+
+  it("puts the service mark before each profile's name, like the AI model cards", async () => {
+    mockApi({ "GET /api/asr-profiles": { body: { items: [profile(), BAILIAN] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<TranscriptionSection />);
+    await waitFor(() => expect(screen.getAllByTestId("asr-profile-card")).toHaveLength(2));
+    const titles = screen.getAllByTestId("asr-profile-title");
+    expect(titles.map((title) => marks(title.parentElement as Element))).toEqual([["elevenlabs"], ["dashscope"]]);
+    const mark = titles[0]?.previousElementSibling as SVGElement;
+    expect(mark.getAttribute("data-vendor-icon")).toBe("elevenlabs");
+    expect(mark.getAttribute("width")).toBe("16");
+    expect(titles[0]?.className).toContain("truncate");
   });
 
   it("shows a profile's models in order with their family, and marks one its service no longer offers", async () => {
@@ -78,8 +115,7 @@ describe("TranscriptionSection", () => {
     // An unavailable model cannot be tested.
     expect((within(second).getByRole("button", { name: "测试连接 · scribe_v1" }) as HTMLButtonElement).disabled).toBe(true);
     // An unavailable model cannot become the default.
-    const select = screen.getByLabelText("默认转录模型") as HTMLSelectElement;
-    expect([...select.options].map((option) => option.textContent)).toEqual(["未设置", "ElevenLabs · scribe_v2"]);
+    expect(await selectOptionNames(screen.getByRole("combobox", { name: "默认转录模型" }))).toEqual(["未设置", "scribe_v2"]);
   });
 
   it("adds a Bailian profile with its recommended models and the Beijing region only, then stores the key", async () => {
@@ -93,15 +129,18 @@ describe("TranscriptionSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: "添加 Profile" })).toBeTruthy();
-    expect((within(dialog).getByLabelText("服务") as HTMLSelectElement).value).toBe("dashscope");
+    const service = within(dialog).getByRole("combobox", { name: "服务" });
+    expect(service.textContent).toBe("阿里云百炼");
+    expect(marks(service)).toEqual(["dashscope"]);
     const drafts = () => within(dialog).getAllByTestId("asr-model-draft").map((row) => row.querySelector(".font-mono")?.textContent);
     expect(drafts()).toEqual([QWEN, "fun-asr"]);
     // Known models bring their own family, shown as fixed text.
     expect(within(dialog).getAllByTestId("asr-model-draft-family").map((item) => item.textContent)).toEqual(["千问 ASR（发送热词）", "Fun-ASR（不发送热词）"]);
     // Every suggested model is already in: nothing left to suggest.
     expect(suggestions(dialog)).toEqual([]);
-    const region = within(dialog).getByLabelText("地域") as HTMLSelectElement;
-    expect([...region.options].map((option) => option.textContent)).toEqual(["华北 2（北京）"]);
+    const region = within(dialog).getByRole("combobox", { name: "地域" });
+    expect(region.textContent).toBe("华北 2（北京）");
+    expect(await selectOptionNames(region)).toEqual(["华北 2（北京）"]);
     fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "<placeholder-asr-key>" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.calls.some((call) => call.method === "PUT")).toBe(true));
@@ -125,7 +164,7 @@ describe("TranscriptionSection", () => {
     renderApp(<TranscriptionSection />);
     fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("服务"), { target: { value: "elevenlabs" } });
+    await chooseOption(within(dialog).getByRole("combobox", { name: "服务" }), "ElevenLabs");
     expect(suggestions(dialog)).toEqual(["scribe_v2_medical"]);
     const input = within(dialog).getByLabelText("添加模型") as HTMLInputElement;
     const add = within(dialog).getByRole("button", { name: "添加" });
@@ -163,6 +202,67 @@ describe("TranscriptionSection", () => {
         models: [{ modelId: "scribe_v2" }, { modelId: "scribe_v2_medical" }, { modelId: "scribe_v3", family: "scribe_v2" }],
       }),
     );
+  });
+
+  it("offers each service with its mark, and rebuilds the region menu when the service changes", async () => {
+    mockApi({ "GET /api/asr-profiles": { body: { items: [profile()] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<TranscriptionSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
+    const dialog = await screen.findByRole("dialog");
+    const service = within(dialog).getByRole("combobox", { name: "服务" });
+    expect(await selectOptionNames(service)).toEqual(["ElevenLabs", "阿里云百炼"]);
+    const listbox = await openSelect(service);
+    expect(within(listbox).getAllByRole("option").map((option) => marks(option))).toEqual([["elevenlabs"], ["dashscope"]]);
+    fireEvent.keyDown(listbox, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+
+    // ElevenLabs takes any address; Bailian only its regions, its first one chosen.
+    await chooseOption(service, "ElevenLabs");
+    expect(within(dialog).queryByRole("combobox", { name: "地域" })).toBeNull();
+    expect((within(dialog).getByLabelText("Base URL（可选）") as HTMLInputElement).value).toBe("");
+    expect(marks(service)).toEqual(["elevenlabs"]);
+    await chooseOption(service, "阿里云百炼");
+    const region = within(dialog).getByRole("combobox", { name: "地域" });
+    expect(region.textContent).toBe("华北 2（北京）");
+    expect(region.getAttribute("aria-describedby")).toBe("asr-region-hint");
+    expect(await selectOptionNames(region)).toEqual(["华北 2（北京）"]);
+    expect((within(dialog).getByLabelText("名称") as HTMLInputElement).value).toBe("阿里云百炼");
+  });
+
+  it("keeps a saved address outside the preset regions as its own region entry, and leaves it unchanged on save", async () => {
+    const legacy = { ...BAILIAN, baseURL: "https://dashscope-intl.aliyuncs.com" };
+    const api = mockApi({
+      "GET /api/asr-profiles": { body: { items: [legacy] } },
+      "GET /api/settings": { body: SETTINGS },
+      "PATCH /api/asr-profiles/a2": { body: legacy },
+    });
+    renderApp(<TranscriptionSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByRole("dialog");
+    expect((within(dialog).getByRole("combobox", { name: "服务" }) as HTMLButtonElement).disabled).toBe(true);
+    const region = within(dialog).getByRole("combobox", { name: "地域" });
+    expect(region.textContent).toBe("https://dashscope-intl.aliyuncs.com");
+    expect(await selectOptionNames(region)).toEqual(["华北 2（北京）", "https://dashscope-intl.aliyuncs.com"]);
+    fireEvent.change(within(dialog).getByLabelText("名称"), { target: { value: "百炼" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ name: "百炼" }));
+  });
+
+  it("moves a profile to a preset region when the user picks one", async () => {
+    const legacy = { ...BAILIAN, baseURL: "https://dashscope-intl.aliyuncs.com" };
+    const api = mockApi({
+      "GET /api/asr-profiles": { body: { items: [legacy] } },
+      "GET /api/settings": { body: SETTINGS },
+      "PATCH /api/asr-profiles/a2": { body: BAILIAN },
+    });
+    renderApp(<TranscriptionSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByRole("dialog");
+    const region = within(dialog).getByRole("combobox", { name: "地域" });
+    await chooseOption(region, "华北 2（北京）");
+    expect(region.textContent).toBe("华北 2（北京）");
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ baseURL: "https://dashscope.aliyuncs.com" }));
   });
 
   it("shows a saved model's family as fixed text in the edit dialog", async () => {
@@ -230,7 +330,7 @@ describe("TranscriptionSection", () => {
     expect((screen.getByRole("button", { name: "删除" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));
     const dialog = await screen.findByRole("dialog");
-    expect((within(dialog).getByLabelText("地域") as HTMLSelectElement).disabled).toBe(true);
+    expect((within(dialog).getByRole("combobox", { name: "地域" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(dialog).getByLabelText("名称") as HTMLInputElement).disabled).toBe(false);
   });
 

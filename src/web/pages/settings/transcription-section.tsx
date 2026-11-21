@@ -17,15 +17,17 @@ import { ASR_PROVIDERS, type AsrProviderId } from "../../../shared/enums.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { queryKeys, useAsrModelTest, useAsrProfileMutations, useAsrProfiles, usePatchSettings, useSetModelPricing, useSettings } from "../../api/queries.ts";
-import { asrModelOptions, decodeAsrModel, encodeAsrModel, isPickableAsrModel } from "../../components/asr-model-select.tsx";
+import { AsrModelSelect, isPickableAsrModel } from "../../components/asr-model-select.tsx";
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
 import { formatDateTime } from "../../format.ts";
+import { AsrServiceMark } from "../../models/model-mark.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Select, type SelectOption } from "../../ui/select.tsx";
 import { Switch } from "../../ui/switch.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
-import { ConfirmButton, CredentialInput, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
+import { ConfirmButton, CredentialInput, CredentialStatus, Field, fieldHintId, INPUT_CLASS, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
 
 /**
  * `/settings/transcription`: the user's ASR profiles, each one service account with its
@@ -74,23 +76,20 @@ function DefaultModelBlock({ profiles }: { profiles: readonly AsrProfileDto[] })
   const settings = useSettings();
   const patch = usePatchSettings();
   const current = settings.data?.defaultAsrModelRef;
-  const value = isPickableAsrModel(profiles, current) ? encodeAsrModel(current) : "";
+  // A default that can no longer be picked reads as unset: no transcription would use it.
+  const value = isPickableAsrModel(profiles, current) ? current : undefined;
   return (
     <SettingsBlock title={t("settings.transcription.defaultModel")}>
-      <select
+      <AsrModelSelect
         id="default-asr-model"
-        aria-label={t("settings.transcription.defaultModel")}
-        className={INPUT_CLASS}
+        label={t("settings.transcription.defaultModel")}
+        profiles={profiles}
         value={value}
-        onChange={(event) => patch.mutate({ defaultAsrModelRef: decodeAsrModel(event.target.value) ?? null })}
-      >
-        <option value="">{t("settings.common.none")}</option>
-        {asrModelOptions(profiles).map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        noneLabel={t("settings.common.none")}
+        size="lg"
+        width="fill"
+        onChange={(ref) => patch.mutate({ defaultAsrModelRef: ref ?? null })}
+      />
       <p className="mt-2 text-xs text-muted">{t("settings.transcription.defaultModelHint")}</p>
       <RequestError error={patch.error} />
     </SettingsBlock>
@@ -240,7 +239,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
   return (
     <SettingsBlock
       title={
-        <span className="flex items-center gap-1">
+        <span className="flex min-w-0 items-center gap-1">
           <button
             type="button"
             className="cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
@@ -259,8 +258,11 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           >
             <ChevronDown size={14} className={collapsed ? "-rotate-90" : ""} />
           </button>
-          <span data-testid="asr-profile-title">{profile.name}</span>
-          {collapsed ? <span className="text-xs font-normal text-muted">{t("settings.transcription.modelCount", { count: profile.models.length })}</span> : null}
+          <AsrServiceMark provider={profile.provider} className="mr-1" />
+          <span className="min-w-0 truncate" data-testid="asr-profile-title">
+            {profile.name}
+          </span>
+          {collapsed ? <span className="shrink-0 text-xs font-normal text-muted">{t("settings.transcription.modelCount", { count: profile.models.length })}</span> : null}
         </span>
       }
       actions={
@@ -512,6 +514,18 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
   const [saving, setSaving] = useState(false);
   const failure = mutations.create.error ?? mutations.patch.error ?? mutations.credential.error;
 
+  const serviceOptions: ReadonlyArray<SelectOption<AsrProviderId>> = ASR_PROVIDERS.map((item) => ({
+    value: item,
+    label: t(`settings.transcription.providers.${item}`),
+    icon: <AsrServiceMark provider={item} />,
+  }));
+  const regionOptions: Array<SelectOption<string>> = preset.endpoints.map((endpoint) => ({ value: endpoint.baseURL, label: regionName(endpoint.id) }));
+  // A saved address outside the preset's regions stays shown as it is: the menu must not
+  // quietly swap it for a region the user never chose.
+  if (baseURL !== "" && !regionOptions.some((option) => option.value === baseURL)) {
+    regionOptions.push({ value: baseURL, label: baseURL, valueTitle: baseURL });
+  }
+
   return (
     <Modal
       open
@@ -531,13 +545,14 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
         }}
       >
         <Field label={t("settings.transcription.provider")} htmlFor="asr-provider">
-          <select
+          <Select
             id="asr-provider"
-            className={INPUT_CLASS}
             value={provider}
+            options={serviceOptions}
+            placeholder={t("settings.transcription.provider")}
             disabled={profile !== undefined}
-            onChange={(event) => {
-              const next = event.target.value as AsrProviderId;
+            testId="asr-provider"
+            onChange={(next) => {
               const nextPreset = ASR_PRESETS[next];
               setProvider(next);
               setName(t(`settings.transcription.providers.${next}`));
@@ -546,13 +561,7 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
               setAddError(undefined);
               setBaseURL(nextPreset.baseUrlPolicy === "preset_only" ? (nextPreset.endpoints[0]?.baseURL ?? "") : "");
             }}
-          >
-            {ASR_PROVIDERS.map((item) => (
-              <option key={item} value={item}>
-                {t(`settings.transcription.providers.${item}`)}
-              </option>
-            ))}
-          </select>
+          />
         </Field>
         <Field label={t("settings.transcription.name")} htmlFor="asr-name">
           <input id="asr-name" className={INPUT_CLASS} value={name} onChange={(event) => setName(event.target.value)} />
@@ -560,13 +569,18 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
         </Field>
         {preset.baseUrlPolicy === "preset_only" ? (
           <Field label={t("settings.transcription.region")} htmlFor="asr-region" hint={t("settings.transcription.regionHint")}>
-            <select id="asr-region" className={INPUT_CLASS} value={baseURL} disabled={locked} onChange={(event) => setBaseURL(event.target.value)}>
-              {preset.endpoints.map((endpoint) => (
-                <option key={endpoint.id} value={endpoint.baseURL}>
-                  {regionName(endpoint.id)}
-                </option>
-              ))}
-            </select>
+            <Select
+              // Each service has its own regions: a new menu rather than one re-filled in place.
+              key={provider}
+              id="asr-region"
+              value={baseURL === "" ? undefined : baseURL}
+              options={regionOptions}
+              placeholder={t("settings.transcription.region")}
+              disabled={locked}
+              describedBy={fieldHintId("asr-region")}
+              testId="asr-region"
+              onChange={setBaseURL}
+            />
           </Field>
         ) : (
           <Field label={t("settings.transcription.baseURL")} htmlFor="asr-base-url">

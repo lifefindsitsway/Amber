@@ -18,6 +18,7 @@ import { queryKeys, useAsrProfiles, useCollections, useProviders, useSettings, u
 import { ErrorView } from "../components/error-view.tsx";
 import { diarizationNoteKey, diarizationOffer } from "../components/asr-diarization.ts";
 import { AsrModelSelect, initialAsrModelRef } from "../components/asr-model-select.tsx";
+import { ModelSelect, type ModelSelectEntry } from "../components/model-select.tsx";
 import { pickLocalFile, type PickedFile } from "../desktop/bridge.ts";
 import { buildSubtitleImportOptions, importBlockers, plainImportPossible } from "./content/subtitle-import-choice.ts";
 import { useSubtitlePreview, type SubtitlePreviewSource } from "./content/subtitle-import-data.ts";
@@ -170,8 +171,14 @@ export function NewPage() {
   // Items skipped because their Content is in the trash; the page stays so the user sees why.
   const [skipped, setSkipped] = useState<{ count: number; next?: { path: string; openTasks: boolean } } | undefined>(undefined);
 
-  const modelOptions = (providers.data?.items ?? []).flatMap((profile) =>
-    profile.models.map((model) => ({ value: encodeModel({ providerProfileId: profile.id, modelId: model.modelId }), label: `${profile.name} · ${model.modelId}` })),
+  const modelOptions: ModelSelectEntry[] = (providers.data?.items ?? []).flatMap((profile) =>
+    profile.models.map((model) => ({
+      value: encodeModel({ providerProfileId: profile.id, modelId: model.modelId }),
+      profileName: profile.name,
+      profileKey: profile.id,
+      modelId: model.modelId,
+      service: profile.presetId,
+    })),
   );
   const defaultModel = settings.data?.defaultModelRef === undefined ? undefined : encodeModel(settings.data.defaultModelRef);
   const model = modelChoice ?? (defaultModel !== undefined && modelOptions.some((option) => option.value === defaultModel) ? defaultModel : (modelOptions[0]?.value ?? ""));
@@ -632,31 +639,36 @@ export function NewPage() {
                   ))}
                 </select>
               </label>
-              <label className="flex flex-col gap-1 text-sm">
-                {t("shell.newPage.model")}
-                <select value={model} onChange={(event) => setModelChoice(event.target.value)} className={FIELD}>
-                  <option value="">{t("shell.newPage.noModel")}</option>
-                  {modelOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="flex min-w-0 flex-col gap-1 text-sm">
+                <label htmlFor={`${formId}-model`}>{t("shell.newPage.model")}</label>
+                <ModelSelect
+                  kind="llm"
+                  id={`${formId}-model`}
+                  entries={modelOptions}
+                  value={model}
+                  onChange={setModelChoice}
+                  noneLabel={t("shell.newPage.noModel")}
+                  testId="new-model"
+                  size="lg"
+                  width="fill"
+                />
+              </div>
               {asrOptions.length === 0 ? null : (
-                <div className="flex flex-col gap-1">
-                  <label className="flex flex-col gap-1 text-sm">
-                    {t("shell.newPage.asrModel")}
+                <div className="flex min-w-0 flex-col gap-1">
+                  <div className="flex min-w-0 flex-col gap-1 text-sm">
+                    <label htmlFor={`${formId}-asr-model`}>{t("shell.newPage.asrModel")}</label>
                     <AsrModelSelect
+                      id={`${formId}-asr-model`}
                       profiles={asrOptions}
                       value={asrModelRef}
                       onChange={(ref) => setAsrChoice(ref ?? null)}
-                      className={FIELD}
                       label={t("shell.newPage.asrModel")}
                       noneLabel={t("shell.newPage.noAsrModel")}
                       testId="new-asr-model"
+                      size="lg"
+                      width="fill"
                     />
-                  </label>
+                  </div>
                   {diarizationNote === undefined ? null : (
                     <p className="text-xs text-muted" data-testid="new-diarization-note">
                       {t(`speakerTools.note.${diarizationNote}`)}

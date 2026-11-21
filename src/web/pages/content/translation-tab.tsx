@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Languages, Pencil, Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { transcriptRevisionListItemDtoSchema } from "../../../shared/dto/content.ts";
@@ -11,9 +11,10 @@ import { languageNames } from "../../../shared/i18n/zh-CN/languages.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { useProviders, useSettings } from "../../api/queries.ts";
-import { chatModelOptions, defaultChatModel, modelKey } from "../../chat/chat-data.ts";
+import { chatModelEntries, chatModelOptions, defaultChatModel, modelKey } from "../../chat/chat-data.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { FailedTaskNotice } from "../../components/failed-task-notice.tsx";
+import { ModelSelect } from "../../components/model-select.tsx";
 import { TaskFlow } from "../../components/task-flow.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
@@ -56,6 +57,8 @@ export function TranslationTab() {
   const providers = useProviders();
   const settings = useSettings();
   const options = useMemo(() => chatModelOptions(providers.data?.items ?? []), [providers.data]);
+  const modelEntries = useMemo(() => chatModelEntries(options), [options]);
+  const modelPickerId = useId();
   const [pickedModel, setPickedModel] = useState<string | undefined>(undefined);
   const [chosen, setChosen] = useState<string[]>([]);
   const [custom, setCustom] = useState("");
@@ -157,21 +160,24 @@ export function TranslationTab() {
               </Link>
             </p>
           ) : (
-            <label className="flex items-center gap-2 text-sm">
-              <span className="text-muted">{t("contentView.translation.model")}</span>
-              <select
-                className="h-7 max-w-64 rounded border border-line bg-surface px-1 text-xs"
-                value={modelRef === undefined ? "" : modelKey(modelRef)}
-                onChange={(event) => setPickedModel(event.target.value)}
-                data-testid="translation-model"
-              >
-                {options.map((option) => (
-                  <option key={modelKey(option.modelRef)} value={modelKey(option.modelRef)}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="flex min-w-0 items-center gap-2 text-sm">
+              <label htmlFor={modelPickerId} className="shrink-0 text-muted">
+                {t("contentView.translation.model")}
+              </label>
+              {/* The wrapper caps the trigger at 16rem so a long name cannot push the row apart. */}
+              <div className="flex max-w-64 min-w-0">
+                <ModelSelect
+                  kind="llm"
+                  id={modelPickerId}
+                  entries={modelEntries}
+                  value={modelRef === undefined ? "" : modelKey(modelRef)}
+                  onChange={setPickedModel}
+                  testId="translation-model"
+                  size="sm"
+                  width="content"
+                />
+              </div>
+            </div>
           )}
           <p className="text-xs text-muted">
             {t("contentView.translation.termsHint")}{" "}

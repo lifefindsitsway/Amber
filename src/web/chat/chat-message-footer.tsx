@@ -2,15 +2,18 @@ import { Check, Copy, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatMessageDto } from "../../shared/dto/chat.ts";
+import { useProviders } from "../api/queries.ts";
 import { formatBeijingDateTime, formatBeijingDateTimeSeconds } from "../format.ts";
+import { LlmModelMark } from "../models/model-mark.tsx";
 import { copyText } from "../ui/clipboard.ts";
 import { useAutoDismiss } from "../use-auto-dismiss.ts";
 
 const ICON_BUTTON = "flex size-6 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40";
 
 /**
- * The row under an answer: copy · retry (last turn only) · delete the turn · Profile name ·
- * model id (hover: the protocol it was called through) · when it finished. Times are Beijing
+ * The row under an answer: copy · retry (last turn only) · delete the turn · the model's mark,
+ * Profile name · model id (hover: the protocol it was called through) · when it finished. The
+ * mark goes by the model name, else by the service of the Profile while it still exists. Times are Beijing
  * time; answers stored before finish times were kept show the question's time instead, and
  * say so on hover.
  */
@@ -29,6 +32,9 @@ export function ChatMessageFooter(props: {
   const [copied, setCopied] = useState<number | undefined>(undefined);
   useAutoDismiss(copied, () => setCopied(undefined));
   const model = props.answer.modelRef;
+  // The list the panel's model picker reads, shared through the query cache.
+  const providers = useProviders();
+  const presetId = model === undefined ? undefined : providers.data?.items.find((item) => item.id === model.providerProfileId)?.presetId;
   const finished = props.answer.finishedAt;
   const time = finished ?? props.askedAt;
   return (
@@ -57,12 +63,15 @@ export function ChatMessageFooter(props: {
         <Trash2 size={13} aria-hidden="true" />
       </button>
       {model === undefined ? null : (
-        <span
-          className="ml-1 min-w-0 truncate"
-          title={model.protocolSnapshot === undefined ? undefined : t(`chat.protocol.${model.protocolSnapshot}`)}
-          data-testid="chat-turn-model"
-        >
-          {model.providerNameSnapshot} · {model.modelId}
+        <span className="ml-1 flex min-w-0 items-center gap-1">
+          <LlmModelMark modelId={model.modelId} presetId={presetId} size={14} />
+          <span
+            className="min-w-0 truncate"
+            title={model.protocolSnapshot === undefined ? undefined : t(`chat.protocol.${model.protocolSnapshot}`)}
+            data-testid="chat-turn-model"
+          >
+            {model.providerNameSnapshot} · {model.modelId}
+          </span>
         </span>
       )}
       {time === undefined ? null : (

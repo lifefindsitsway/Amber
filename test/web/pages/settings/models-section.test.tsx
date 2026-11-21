@@ -1,8 +1,9 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { encodeModelKey } from "../../../../src/shared/dto/usage-analytics.ts";
 import { ModelsSection } from "../../../../src/web/pages/settings/models-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { chooseOption, openSelect, selectGroups, selectOptionNames, stubSelectLayout } from "../../../fixtures/web/select.ts";
 
 const FLAGS = { stream: "unknown", tools: "unknown", structuredOutput: "unknown", vision: "unknown", audioInput: "unknown", reasoning: "unknown" };
 
@@ -36,6 +37,10 @@ function profile(hasCredential: boolean) {
 }
 
 const SETTINGS = { theme: "light", language: "zh-CN", shortcuts: {}, updatedAt: 1 };
+
+const marks = (element: Element): Array<string | null> => [...element.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
+
+beforeEach(stubSelectLayout);
 
 describe("ModelsSection", () => {
   it("shows the first-run wizard when there is no profile", async () => {
@@ -261,11 +266,79 @@ describe("ModelsSection", () => {
       "PATCH /api/settings": { body: { ...SETTINGS, defaultModelRef: { providerProfileId: "p1", modelId: "model-a" } } },
     });
     renderApp(<ModelsSection />);
-    const select = (await screen.findByLabelText("默认模型")) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: JSON.stringify(["p1", "model-a"]) } });
+    const select = await screen.findByRole("combobox", { name: "默认模型" });
+    await chooseOption(select, "model-a");
     await waitFor(() =>
       expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ defaultModelRef: { providerProfileId: "p1", modelId: "model-a" } }),
     );
+  });
+
+  it("lists the default model's choices by profile, model names only, and shows the mark with 「profile · model」 once chosen", async () => {
+    const relay = { ...profile(true), presetId: "custom", models: [model("model-a"), model("gpt-6-sol")] };
+    const deepseek = { ...profile(true), id: "p2", name: "DeepSeek", presetId: "deepseek", models: [model("deepseek-chat")] };
+    let current: unknown = { ...SETTINGS, defaultModelRef: { providerProfileId: "p1", modelId: "gpt-6-sol" } };
+    const api = mockApi({
+      "GET /api/providers": { body: { items: [relay, deepseek] } },
+      "GET /api/settings": () => ({ body: current }),
+      "PATCH /api/settings": (call) => {
+        const ref = (call.body as { defaultModelRef: unknown }).defaultModelRef;
+        current = ref === null ? SETTINGS : { ...SETTINGS, defaultModelRef: ref };
+        return { body: current };
+      },
+    });
+    renderApp(<ModelsSection />);
+    const select = await screen.findByRole("combobox", { name: "默认模型" });
+    await waitFor(() => expect(select.textContent).toBe("Relay · gpt-6-sol"));
+    expect(select.getAttribute("title")).toBe("Relay · gpt-6-sol");
+    expect(marks(select)).toEqual(["openai"]);
+    expect(select.id).toBe("default-model");
+    expect(select.getAttribute("aria-describedby")).toBe("default-model-hint");
+    expect(await selectGroups(select)).toEqual([
+      { heading: "Relay", options: ["model-a", "gpt-6-sol"] },
+      { heading: "DeepSeek", options: ["deepseek-chat"] },
+    ]);
+    expect(await selectOptionNames(select)).toEqual(["未设置", "model-a", "gpt-6-sol", "deepseek-chat"]);
+    const listbox = await openSelect(select);
+    // The model's own vendor first, else the profile's service, else neutral.
+    expect(within(listbox).getAllByRole("option").map((option) => marks(option)[0] ?? null)).toEqual([null, "neutral", "openai", "deepseek"]);
+    fireEvent.keyDown(listbox, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+
+    // Unset, then back to the same model: the same reference as before.
+    await chooseOption(select, "未设置");
+    await waitFor(() => expect(api.calls.filter((call) => call.method === "PATCH").at(-1)?.body).toEqual({ defaultModelRef: null }));
+    await waitFor(() => expect(select.textContent).toBe("未设置"));
+    await chooseOption(select, "gpt-6-sol", "Relay");
+    await waitFor(() => expect(api.calls.filter((call) => call.method === "PATCH").at(-1)?.body).toEqual({ defaultModelRef: { providerProfileId: "p1", modelId: "gpt-6-sol" } }));
+    await waitFor(() => expect(select.textContent).toBe("Relay · gpt-6-sol"));
+  });
+
+  it.each([
+    ["a model its profile no longer lists", { providerProfileId: "p1", modelId: "model-old" }, "Relay · model-old"],
+    ["a deleted profile", { providerProfileId: "p9", modelId: "model-old" }, "model-old（配置已删除）"],
+  ])("keeps showing a default that points at %s instead of another model", async (_case, defaultModelRef, shown) => {
+    const api = mockApi({ "GET /api/providers": { body: { items: [profile(true)] } }, "GET /api/settings": { body: { ...SETTINGS, defaultModelRef } } });
+    renderApp(<ModelsSection />);
+    const select = await screen.findByRole("combobox", { name: "默认模型" });
+    await waitFor(() => expect(select.textContent).toBe(shown));
+    expect(await selectOptionNames(select)).toEqual(["未设置", shown, "model-a"]);
+    expect(api.calls.some((call) => call.method === "PATCH")).toBe(false);
+  });
+
+  it("puts a 14px mark before each model id: the model's vendor, else the profile's service", async () => {
+    const relay = { ...profile(true), presetId: "deepseek", models: [model("claude-opus-5-5"), model("model-a")] };
+    const plain = { ...profile(true), id: "p2", name: "Plain", models: [model("model-b")] };
+    mockApi({ "GET /api/providers": { body: { items: [relay, plain] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<ModelsSection />);
+    await waitFor(() => expect(screen.getAllByTestId("profile-card")).toHaveLength(2));
+    const row = (modelId: string) => document.querySelector(`li[data-model="${modelId}"]`) as HTMLElement;
+    expect(["claude-opus-5-5", "model-a", "model-b"].map((modelId) => marks(row(modelId).firstElementChild as Element))).toEqual([["anthropic"], ["deepseek"], ["neutral"]]);
+    const mark = row("model-a").querySelector("svg[data-vendor-icon]") as SVGElement;
+    expect(mark.getAttribute("width")).toBe("14");
+    // The mark sits beside the id, centred on its line, and the id alone is what gets cut short.
+    expect(mark.parentElement?.className).toContain("items-center");
+    expect(mark.nextElementSibling?.textContent).toBe("model-a");
+    expect(mark.nextElementSibling?.className).toContain("truncate");
   });
 
   it("explains the default model below its select, without a second label, and puts the add button right below", async () => {

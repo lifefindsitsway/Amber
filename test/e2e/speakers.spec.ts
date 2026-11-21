@@ -1,4 +1,4 @@
-import { expect, test, type Download, type Page } from "@playwright/test";
+import { expect, test, type Download, type Locator, type Page } from "@playwright/test";
 import { installMockBackend } from "./mock-backend.ts";
 import { SPEAKER_SEQUENCE, SPEAKER_TEACHER, SPEAKERS_CONTENT, SPEAKERS_REVISION, speakerSentence, speakersRequests } from "./mock-speakers.ts";
 
@@ -86,7 +86,20 @@ test("speakers: the subtitle list tags the first row of each turn without moving
   await expect(page.getByTestId("subtitles-version")).toHaveAttribute("title", "发言人识别：已识别发言人");
 });
 
+/** What the model picker shows once fun-asr of the one 百炼 profile is chosen. */
 const FUN_ASR = "阿里云百炼 · fun-asr";
+
+/**
+ * Picks a model in a menu-style model picker: its entries are named by the model alone (the
+ * profile is a group heading, left out with a single profile), and the closed picker then
+ * reads "profile · model".
+ */
+async function pickModel(page: Page, picker: Locator, modelId: string, shown: string): Promise<void> {
+  await picker.click();
+  await page.getByRole("listbox").getByRole("option", { name: modelId, exact: true }).click();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(picker).toHaveText(shown);
+}
 
 test("speakers: re-transcribing asks for identification, with the count, unless the model offers none", async ({ page }) => {
   const backend = await installMockBackend(page);
@@ -105,7 +118,7 @@ test("speakers: re-transcribing asks for identification, with the count, unless 
   const retranscribed = () => backend.mutations.filter((mutation) => mutation.path.endsWith("/transcript/retranscribe")).map((mutation) => mutation.body);
   const model = page.getByTestId("retranscribe-model");
   const toggle = page.getByTestId("diarization-switch");
-  await model.selectOption({ label: FUN_ASR });
+  await pickModel(page, model, "fun-asr", FUN_ASR);
   await expect(toggle).toBeEnabled();
   await expect(toggle).toBeChecked();
   await page.getByTestId("retranscribe").click();
@@ -117,7 +130,7 @@ test("speakers: re-transcribing asks for identification, with the count, unless 
   await expect.poll(retranscribed).toHaveLength(2);
   expect(retranscribed()[1]).toMatchObject({ diarization: { mode: "required", speakerCount: 3 } });
 
-  await model.selectOption({ label: "阿里云百炼 · custom-asr" });
+  await pickModel(page, model, "custom-asr", "阿里云百炼 · custom-asr");
   await expect(toggle).toBeDisabled();
   await expect(toggle).not.toBeChecked();
   await expect(page.getByTestId("diarization-reason")).toHaveText("此模型不识别发言人");
@@ -145,7 +158,7 @@ test("speakers: a refused identification is explained; the user continues withou
   const backend = await installMockBackend(page);
   await page.goto(`/contents/${SPEAKERS_CONTENT}?tab=subtitles`);
   const retranscribed = () => backend.mutations.filter((mutation) => mutation.path.endsWith("/transcript/retranscribe")).map((mutation) => mutation.body);
-  await page.getByTestId("retranscribe-model").selectOption({ label: FUN_ASR });
+  await pickModel(page, page.getByTestId("retranscribe-model"), "fun-asr", FUN_ASR);
   const notice = page.getByTestId("diarization-unavailable");
 
   // Cancel: the notice goes and nothing more is sent.

@@ -12,6 +12,7 @@ import {
 import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
 import type { ProviderProfileDto } from "../../shared/dto/provider.ts";
 import type { UserSettingsDto } from "../../shared/dto/settings.ts";
+import type { ModelSelectEntry } from "../components/model-select.tsx";
 import { queryString } from "../api/queries.ts";
 import { useApi } from "../api/context.tsx";
 
@@ -30,10 +31,14 @@ export const chatKeys = {
     ["chat", contentId, "thread", threadId ?? "", modelRef?.providerProfileId ?? "", modelRef?.modelId ?? ""] as const,
 };
 
-/** A model the dialogue can use, with the label of the model selector. */
+/** A model the dialogue can use, with what the model picker shows of it. */
 export interface ChatModelOption {
   modelRef: ModelRefDto;
+  /** "Profile · model", the full name. */
   label: string;
+  profileName: string;
+  /** The profile's service preset, for the mark when the model name points at no vendor. */
+  presetId?: string | undefined;
 }
 
 export function modelKey(modelRef: ModelRefDto): string {
@@ -45,8 +50,27 @@ export function chatModelOptions(profiles: readonly ProviderProfileDto[]): ChatM
   return profiles
     .filter((profile) => profile.hasCredential)
     .flatMap((profile) =>
-      profile.models.map((model) => ({ modelRef: { providerProfileId: profile.id, modelId: model.modelId }, label: `${profile.name} · ${model.modelId}` })),
+      profile.models.map((model) => ({
+        modelRef: { providerProfileId: profile.id, modelId: model.modelId },
+        label: `${profile.name} · ${model.modelId}`,
+        profileName: profile.name,
+        presetId: profile.presetId,
+      })),
     );
+}
+
+/** The options as model picker entries, valued by `modelKey`. */
+export function chatModelEntries(options: readonly ChatModelOption[]): ModelSelectEntry[] {
+  return options.map((option) => ({ value: modelKey(option.modelRef), profileName: option.profileName, profileKey: option.modelRef.providerProfileId, modelId: option.modelRef.modelId, service: option.presetId }));
+}
+
+/**
+ * How the picker shows a chosen model that is no longer listed (its profile lost its key or
+ * the model): "profile · model" while the profile exists, else the model alone.
+ */
+export function unlistedChatModel(modelRef: ModelRefDto, profiles: readonly ProviderProfileDto[]): { label: string; modelId: string; service: string | undefined } {
+  const profile = profiles.find((item) => item.id === modelRef.providerProfileId);
+  return { label: profile === undefined ? modelRef.modelId : `${profile.name} · ${modelRef.modelId}`, modelId: modelRef.modelId, service: profile?.presetId };
 }
 
 /** The selector's default: the last chat model, then the default model, then the first one listed. */

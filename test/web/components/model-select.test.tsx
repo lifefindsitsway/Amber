@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AsrProfileDto } from "../../../src/shared/dto/asr-profile.ts";
+import type { AsrModelRefDto } from "../../../src/shared/dto/model-ref.ts";
+import { AsrModelSelect } from "../../../src/web/components/asr-model-select.tsx";
 import { ModelSelect, type ModelSelectEntry } from "../../../src/web/components/model-select.tsx";
 import { chooseOption, openSelect, selectGroups, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
 
@@ -134,5 +137,69 @@ describe("ModelSelect", () => {
     render(<ModelSelect kind="llm" ariaLabel="模型" entries={ENTRIES} value={ENTRIES[0]?.value ?? ""} onChange={() => undefined} size="sm" />);
     expect(trigger().querySelector("svg")?.getAttribute("width")).toBe("14");
     expect(trigger().className).toContain("h-7");
+  });
+});
+
+describe("AsrModelSelect", () => {
+  const PROFILES = [
+    { id: "a1", name: "ElevenLabs", provider: "elevenlabs", models: [{ modelId: "scribe_v2", available: true }, { modelId: "scribe_v0", available: false }] },
+    { id: "a2", name: "百炼", provider: "dashscope", models: [{ modelId: "paraformer-v2", available: true }] },
+  ] as unknown as AsrProfileDto[];
+
+  function AsrPicker(props: { initial?: AsrModelRefDto; onChange?: (ref: AsrModelRefDto | undefined) => void; currentLabel?: string | undefined }) {
+    const [value, setValue] = useState(props.initial);
+    return (
+      <AsrModelSelect
+        profiles={PROFILES}
+        label="转录模型"
+        noneLabel="暂不选择"
+        value={value}
+        currentLabel={props.currentLabel}
+        onChange={(ref) => {
+          setValue(ref);
+          props.onChange?.(ref);
+        }}
+      />
+    );
+  }
+
+  const asrTrigger = (): HTMLElement => screen.getByRole("combobox", { name: "转录模型" });
+
+  it("lists the available models by service with their marks, after the none entry", async () => {
+    render(<AsrPicker />);
+    expect(asrTrigger().textContent).toBe("暂不选择");
+    expect(await selectOptionNames(asrTrigger())).toEqual(["暂不选择", "scribe_v2", "paraformer-v2"]);
+    const listbox = await openSelect(asrTrigger());
+    expect(marks(listbox)).toEqual(["elevenlabs", "dashscope"]);
+  });
+
+  it("reports the same reference the native select did, and none as undefined", async () => {
+    const onChange = vi.fn();
+    render(<AsrPicker onChange={onChange} />);
+    await chooseOption(asrTrigger(), "paraformer-v2");
+    expect(onChange).toHaveBeenLastCalledWith({ asrProfileId: "a2", modelId: "paraformer-v2" });
+    expect(asrTrigger().textContent).toBe("百炼 · paraformer-v2");
+    await chooseOption(asrTrigger(), "暂不选择");
+    expect(onChange).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("keeps a bound model listed after another is picked, so it can be chosen again", async () => {
+    const bound = { asrProfileId: "gone", modelId: "scribe_v1" };
+    function Rerun() {
+      const [value, setValue] = useState<AsrModelRefDto | undefined>(bound);
+      return <AsrModelSelect profiles={PROFILES} label="转录模型" value={value} bound={bound} currentLabel="ElevenLabs · scribe_v1（配置已删除）" currentProvider="elevenlabs" onChange={setValue} />;
+    }
+    render(<Rerun />);
+    expect(marks(asrTrigger())).toEqual(["elevenlabs"]);
+    await chooseOption(asrTrigger(), "paraformer-v2");
+    expect(asrTrigger().textContent).toBe("百炼 · paraformer-v2");
+    await chooseOption(asrTrigger(), "ElevenLabs · scribe_v1（配置已删除）");
+    expect(asrTrigger().textContent).toBe("ElevenLabs · scribe_v1（配置已删除）");
+  });
+
+  it("keeps an unavailable current model shown under its given label and service mark", () => {
+    render(<AsrPicker initial={{ asrProfileId: "a1", modelId: "scribe_v0" }} currentLabel="ElevenLabs · scribe_v0（已不可用）" />);
+    expect(asrTrigger().textContent).toBe("ElevenLabs · scribe_v0（已不可用）");
+    expect(marks(asrTrigger())).toEqual(["elevenlabs"]);
   });
 });

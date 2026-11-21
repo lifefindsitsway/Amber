@@ -226,6 +226,7 @@ export const settings = {
     },
     defaultModel: "默认模型",
     defaultModelHint: "用于生成总结、校对、AI 高光与合集归纳；新建页、AI 对话和翻译也默认选中它（对话和翻译会记住你上次的选择）。",
+    defaultModelDeleted: "{{model}}（配置已删除）",
     dragProfile: "拖动调整「{{name}}」的顺序",
     dragModel: "拖动调整模型顺序",
     collapseProfile: "收起「{{name}}」",

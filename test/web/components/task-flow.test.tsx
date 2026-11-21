@@ -1,9 +1,16 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContentTaskFlow, contentFlowRows, latestStageRuns, runningStep, stageModelNeeds, TaskFlow } from "../../../src/web/components/task-flow.tsx";
 import { baseRoutes, provider, stageRun, taskDetail } from "../../fixtures/web/shell-data.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
+import { chooseOption, selectGroups, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
+
+beforeEach(stubSelectLayout);
+
+const combobox = (name: string): HTMLElement => screen.getByRole("combobox", { name });
+const findCombobox = (name: string): Promise<HTMLElement> => screen.findByRole("combobox", { name });
+const marksIn = (element: Element): Array<string | null> => [...element.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
 
 const FAILURE = { class: "llm_failed", code: "llm_failed", retryDisposition: "policy", userMessage: "AI 模型调用失败", upstreamMessage: "upstream said 500" } as const;
 
@@ -91,8 +98,8 @@ describe("TaskFlow", () => {
     fireEvent.click(screen.getByRole("button", { name: "上游原文" }));
     expect(summary.textContent).toContain("upstream said 500");
 
-    const model = screen.getByLabelText<HTMLSelectElement>("重跑所用模型");
-    expect(model.value).toBe(JSON.stringify(["p1", "m1"]));
+    const model = combobox("重跑所用模型");
+    expect(model.textContent).toBe("我的模型 · m1");
     expect(summary.textContent).not.toContain("换模型将重新处理本阶段全部内容");
 
     expect(summary.textContent).toContain("重跑会采用当前的提示词设置");
@@ -116,11 +123,14 @@ describe("TaskFlow", () => {
     });
     renderApp(<TaskFlow taskId="t6" />);
     const proofread = await screen.findByTestId("stage-proofread");
-    const model = await screen.findByLabelText<HTMLSelectElement>("重跑所用模型");
-    await waitFor(() => expect(model.options).toHaveLength(3));
-    expect(model.value).toBe(JSON.stringify(["p1", "m1"]));
+    const model = await findCombobox("重跑所用模型");
+    await waitFor(() => expect(model.textContent).toBe("我的模型 · m1"));
+    expect(await selectGroups(model)).toEqual([
+      { heading: "我的模型", options: ["m1", "m2"] },
+      { heading: "备用", options: ["x1"] },
+    ]);
 
-    fireEvent.change(model, { target: { value: JSON.stringify(["p2", "x1"]) } });
+    await chooseOption(model, "x1", "备用");
     expect(proofread.textContent).toContain("换模型将重新处理本阶段全部内容");
     fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
     await waitFor(() =>
@@ -139,11 +149,41 @@ describe("TaskFlow", () => {
       "POST /api/tasks/t7/retry-stage": { status: 202, body: { taskId: "t7" } },
     });
     renderApp(<TaskFlow taskId="t7" />);
-    const model = await screen.findByLabelText<HTMLSelectElement>("重跑所用模型");
-    await waitFor(() => expect(model.options).toHaveLength(2));
-    expect(model.value).toBe(JSON.stringify(["gone", "old"]));
+    const model = await findCombobox("重跑所用模型");
+    await waitFor(() => expect(model.textContent).toBe("old"));
+    expect(await selectOptionNames(model)).toEqual(["old", "m1"]);
+    // The deleted profile's service is unknown and "old" names no vendor: the neutral mark.
+    expect(marksIn(model)).toEqual(["neutral"]);
     fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
     await waitFor(() => expect(calls.find((call) => call.path === "/api/tasks/t7/retry-stage")?.body).toEqual({ stage: "chapter" }));
+  });
+
+  it("lists a bound model its profile dropped first under that profile, so switching back keeps it", async () => {
+    const detail = taskDetail("t8", [
+      stageRun("t8", "summary", "failed", { error: FAILURE, engine: { kind: "llm", modelRef: { providerProfileId: "p1", modelId: "old" } } }),
+    ]);
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "GET /api/providers": { body: { items: [{ ...provider("p1", "我的模型", ["m1"]), presetId: "deepseek" }, provider("p2", "备用", ["x1"])] } },
+      "GET /api/tasks/t8": { body: detail },
+      "POST /api/tasks/t8/retry-stage": { status: 202, body: { taskId: "t8" } },
+    });
+    renderApp(<TaskFlow taskId="t8" />);
+    const stage = await screen.findByTestId("stage-summary");
+    const model = await findCombobox("重跑所用模型");
+    await waitFor(() => expect(model.textContent).toBe("我的模型 · old"));
+    expect(await selectGroups(model)).toEqual([
+      { heading: "我的模型", options: ["old", "m1"] },
+      { heading: "备用", options: ["x1"] },
+    ]);
+    await chooseOption(model, "x1", "备用");
+    expect(stage.textContent).toContain("换模型将重新处理本阶段全部内容");
+    await chooseOption(model, "old", "我的模型");
+    expect(model.textContent).toBe("我的模型 · old");
+    expect(marksIn(model)).toEqual(["deepseek"]);
+    expect(stage.textContent).not.toContain("换模型将重新处理本阶段全部内容");
+    fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
+    await waitFor(() => expect(calls.find((call) => call.path === "/api/tasks/t8/retry-stage")?.body).toEqual({ stage: "summary" }));
   });
 
   it("lets a waiting LLM stage continue with a chosen model", async () => {
@@ -155,8 +195,10 @@ describe("TaskFlow", () => {
       "POST /api/tasks/t2/retry-stage": { status: 202, body: { taskId: "t2" } },
     });
     renderApp(<TaskFlow taskId="t2" />);
-    const select = await screen.findByLabelText("选择用于这一步的模型");
-    fireEvent.change(select, { target: { value: JSON.stringify(["p1", "m2"]) } });
+    const select = await findCombobox("选择用于这一步的模型");
+    // The first listed model is offered until the user picks.
+    expect(select.textContent).toBe("我的模型 · m1");
+    await chooseOption(select, "m2");
     fireEvent.click(screen.getByRole("button", { name: "继续" }));
     await waitFor(() => expect(calls.find((call) => call.path === "/api/tasks/t2/retry-stage")?.body).toEqual({ stage: "proofread", modelRef: { providerProfileId: "p1", modelId: "m2" } }));
     expect(screen.getByRole("link", { name: "配置 AI 模型" }).getAttribute("href")).toBe("/settings/models");
@@ -228,7 +270,6 @@ describe("TaskFlow ASR stage", () => {
     inUse: false,
     createdAt: 1,
   });
-  const key = (asrProfileId: string, modelId: string) => JSON.stringify([asrProfileId, modelId]);
 
   it("names the step of a unit that waits between two queries of an ASR job", () => {
     const waiting = { id: "w2", stageRunId: "r1", key: "asr:await", status: "pending" as const, attempt: 2, retryCount: 0, retryNotBefore: 9_000 };
@@ -246,9 +287,10 @@ describe("TaskFlow ASR stage", () => {
       "POST /api/tasks/t3/retry-stage": { status: 202, body: { taskId: "t3" } },
     });
     renderApp(<TaskFlow taskId="t3" />);
-    const select = await screen.findByLabelText<HTMLSelectElement>("选择转录模型");
-    await waitFor(() => expect(select.value).toBe(key("a2", "fun-asr")));
-    fireEvent.change(select, { target: { value: key("a1", "qwen-audio-3.1-asr-flash-filetrans") } });
+    const select = await findCombobox("选择转录模型");
+    await waitFor(() => expect(select.textContent).toBe("二号 · fun-asr"));
+    expect(marksIn(select)).toEqual(["dashscope"]);
+    await chooseOption(select, "qwen-audio-3.1-asr-flash-filetrans", "一号");
     fireEvent.click(screen.getByRole("button", { name: "继续" }));
     await waitFor(() =>
       expect(calls.find((call) => call.path === "/api/tasks/t3/retry-stage")?.body).toEqual({
@@ -268,11 +310,12 @@ describe("TaskFlow ASR stage", () => {
       "GET /api/tasks/t6": { body: detail },
     });
     renderApp(<TaskFlow taskId="t6" />);
-    const select = await screen.findByLabelText<HTMLSelectElement>("选择转录模型");
-    expect(select.value).toBe("");
+    const select = await findCombobox("选择转录模型");
+    expect(select.textContent).toBe("选择转录模型");
+    expect(select.hasAttribute("data-placeholder")).toBe(true);
     const button = screen.getByRole("button", { name: "继续" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    fireEvent.change(select, { target: { value: key("a1", "fun-asr") } });
+    await chooseOption(select, "fun-asr");
     expect(button.disabled).toBe(false);
   });
 
@@ -289,9 +332,9 @@ describe("TaskFlow ASR stage", () => {
     renderApp(<TaskFlow taskId="t4" />);
     const stage = await screen.findByTestId("stage-asr");
     await waitFor(() => expect(stage.textContent).toContain("语音转写 · 一号 · fun-asr"));
-    const select = await screen.findByLabelText<HTMLSelectElement>("重跑所用转录模型");
-    expect(select.value).toBe(key("a1", "fun-asr"));
-    fireEvent.change(select, { target: { value: key("a1", "qwen-audio-3.1-asr-flash-filetrans") } });
+    const select = await findCombobox("重跑所用转录模型");
+    expect(select.textContent).toBe("一号 · fun-asr");
+    await chooseOption(select, "qwen-audio-3.1-asr-flash-filetrans");
     expect(stage.textContent).toContain("换用其它转录模型会重新提交音频");
     // Transcription sends no prompt, so its re-run says nothing about prompt settings.
     expect(stage.textContent).not.toContain("重跑会采用当前的提示词设置");
@@ -316,6 +359,54 @@ describe("TaskFlow ASR stage", () => {
     renderApp(<TaskFlow taskId="t5" />);
     const stage = await screen.findByTestId("stage-asr");
     await waitFor(() => expect(stage.textContent).toContain("阿里云百炼 · fun-asr（配置已删除）"));
+  });
+
+  it("keeps a deleted profile's bound model selected under its label, with the neutral mark, beside the pickable ones", async () => {
+    const detail = taskDetail("t9", [
+      stageRun("t9", "asr", "failed", { error: ASR_FAILURE, engine: { kind: "asr", asrModelRef: { asrProfileId: "gone", modelId: "fun-asr" }, provider: "dashscope" } }),
+    ]);
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "GET /api/asr-profiles": { body: { items: [asr("a1", "一号")] } },
+      "GET /api/tasks/t9": { body: detail },
+      "POST /api/tasks/t9/retry-stage": { status: 202, body: { taskId: "t9" } },
+    });
+    renderApp(<TaskFlow taskId="t9" />);
+    const select = await findCombobox("重跑所用转录模型");
+    expect(select.textContent).toBe("阿里云百炼 · fun-asr（配置已删除）");
+    expect(marksIn(select)).toEqual(["neutral"]);
+    expect(await selectOptionNames(select)).toEqual(["阿里云百炼 · fun-asr（配置已删除）", "qwen-audio-3.1-asr-flash-filetrans", "fun-asr"]);
+    fireEvent.click(screen.getByRole("button", { name: "从这步重跑" }));
+    await waitFor(() => expect(calls.find((call) => call.path === "/api/tasks/t9/retry-stage")?.body).toEqual({ stage: "asr" }));
+  });
+
+  it("puts the service mark before the transcription engine's name", async () => {
+    const detail = taskDetail("t10", [stageRun("t10", "asr", "succeeded", { engine: { kind: "asr", asrModelRef: { asrProfileId: "a1", modelId: "fun-asr" }, provider: "dashscope" } })]);
+    mockApi({ ...baseRoutes(), "GET /api/asr-profiles": { body: { items: [asr("a1", "一号")] } }, "GET /api/tasks/t10": { body: detail } });
+    renderApp(<TaskFlow taskId="t10" />);
+    const line = await screen.findByTestId("stage-engine");
+    expect(line.textContent).toBe("引擎：一号 · fun-asr");
+    expect(marksIn(line)).toEqual(["dashscope"]);
+    expect(line.querySelector("svg[data-vendor-icon]")?.getAttribute("width")).toBe("14");
+  });
+
+  it("marks an LLM engine by its model name, else by its profile's service", async () => {
+    const llm = (taskId: string, modelId: string) =>
+      taskDetail(taskId, [stageRun(taskId, "summary", "succeeded", { engine: { kind: "llm", modelRef: { providerProfileId: "p1", modelId } } })]);
+    mockApi({
+      ...baseRoutes(),
+      "GET /api/providers": { body: { items: [{ ...provider("p1", "中转", ["claude-opus-5-5", "relay-x"]), presetId: "deepseek" }] } },
+      "GET /api/tasks/t11": { body: llm("t11", "claude-opus-5-5") },
+      "GET /api/tasks/t12": { body: llm("t12", "relay-x") },
+    });
+    renderApp(
+      <>
+        <TaskFlow taskId="t11" />
+        <TaskFlow taskId="t12" />
+      </>,
+    );
+    await waitFor(() => expect(screen.getAllByTestId("stage-engine").map((line) => line.textContent)).toEqual(["引擎：中转 · claude-opus-5-5", "引擎：中转 · relay-x"]));
+    expect(screen.getAllByTestId("stage-engine").map((line) => marksIn(line)[0])).toEqual(["anthropic", "deepseek"]);
   });
 });
 
@@ -497,13 +588,14 @@ describe("TaskFlow model readiness", () => {
     const detail = taskDetail("t10", [stageRun("t10", "summary", "failed", { error: FAILURE, engine: { kind: "llm", modelRef: { providerProfileId: "p1", modelId: "m1" } } })]);
     mockApi({ ...baseRoutes(), ...windowRoutes([provider("p1", "主力", ["m1"]), providerWithoutWindow("p2", "备用", ["bare"])]).routes, "GET /api/tasks/t10": { body: detail } });
     renderApp(<TaskFlow taskId="t10" />);
-    const model = await screen.findByLabelText<HTMLSelectElement>("重跑所用模型");
-    await waitFor(() => expect(model.options).toHaveLength(2));
+    const model = await findCombobox("重跑所用模型");
+    await waitFor(() => expect(model.textContent).toBe("主力 · m1"));
+    expect(await selectOptionNames(model)).toEqual(["m1", "bare"]);
     expect(screen.queryByTestId("rerun-context-window")).toBeNull();
-    fireEvent.change(model, { target: { value: JSON.stringify(["p2", "bare"]) } });
+    await chooseOption(model, "bare");
     expect(await screen.findByTestId("rerun-context-window")).toBeTruthy();
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "从这步重跑" }).disabled).toBe(true);
-    fireEvent.change(model, { target: { value: JSON.stringify(["p1", "m1"]) } });
+    await chooseOption(model, "m1");
     expect(screen.queryByTestId("rerun-context-window")).toBeNull();
   });
 
@@ -533,7 +625,7 @@ describe("TaskFlow model readiness", () => {
     expect(notice.textContent).toContain("「备用 · bare」");
     const proceed = screen.getByRole<HTMLButtonElement>("button", { name: "继续" });
     expect(proceed.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("选择用于这一步的模型"), { target: { value: JSON.stringify(["p1", "m1"]) } });
+    await chooseOption(combobox("选择用于这一步的模型"), "m1", "主力");
     expect(screen.queryByTestId("flow-context-window")).toBeNull();
     expect(proceed.disabled).toBe(false);
   });

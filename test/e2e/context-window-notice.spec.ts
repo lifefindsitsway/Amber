@@ -59,11 +59,14 @@ test("model readiness on the new page: the import waits for the model's context 
 
   // Only transcribing needs no window: with no model chosen the notice goes away.
   await page.getByRole("button", { name: "本次设置" }).click();
-  const model = page.getByLabel("AI 模型");
-  await model.selectOption("");
+  const model = page.getByRole("combobox", { name: "AI 模型" });
+  await model.click();
+  await page.getByRole("option", { name: "暂不选择（AI 阶段将等待配置）" }).click();
   await expect(notice).toHaveCount(0);
   await expect(submit).toBeEnabled();
-  await model.selectOption({ label: "模拟模型 · mock-model" });
+  await model.click();
+  await page.getByRole("option", { name: "mock-model" }).click();
+  await expect(model).toHaveText("模拟模型 · mock-model");
   await expect(notice).toBeVisible();
 
   // A common size fills the field; Enter saves it without submitting the page's form.

@@ -83,7 +83,8 @@ export function ComparisonTranscribe(props: { contentId: string; durationMs?: nu
           }}
           label={t("speakerCompare.trigger.model")}
           placeholder={t("speakerCompare.trigger.pickModel")}
-          className="h-8 min-w-0 max-w-full rounded-md border border-line bg-surface px-2 text-sm"
+          size="md"
+          width="content"
           testId="comparison-model"
           disabled={submit.isPending}
         />

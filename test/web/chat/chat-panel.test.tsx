@@ -12,6 +12,7 @@ import { CITED_SEGMENT_ID, contentDetail, revision, SEGMENTS } from "../../fixtu
 import { mockApi, renderApp, type RecordedCall } from "../../fixtures/web/render.tsx";
 import { provider } from "../../fixtures/web/shell-data.ts";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
+import { chooseOption, selectGroups, stubSelectLayout } from "../../fixtures/web/select.ts";
 
 const MODEL = { providerProfileId: "p1", modelId: "m-chat" };
 const PROVIDERS = { items: [provider("p1", "Relay", ["m-default", "m-chat"])] };
@@ -99,6 +100,63 @@ function Page(props: { children: ReactNode; select?: ContentPageState["select"];
 
 const input = () => screen.getByTestId("chat-input") as HTMLTextAreaElement;
 
+const marksIn = (element: Element): Array<string | null> => [...element.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
+
+describe("ChatPanel model picker", () => {
+  const TWO_PROFILES = { items: [{ ...provider("p1", "Relay", ["m-default", "m-chat"]), presetId: "deepseek" }, provider("p2", "Other", ["claude-sonnet-5"])] };
+
+  it("lists the models by profile with their marks and asks with the one picked", async () => {
+    stubSelectLayout();
+    const calls = api({ providers: TWO_PROFILES });
+    renderApp(
+      <Page>
+        <ChatPanel fill={false} />
+      </Page>,
+    );
+    await screen.findByTestId("chat-mode");
+    const trigger = screen.getByRole("combobox", { name: "对话模型" });
+    expect(trigger).toBe(screen.getByTestId("chat-model"));
+    expect(trigger.textContent).toBe("Relay · m-chat");
+    expect(trigger.getAttribute("title")).toBe("Relay · m-chat");
+    // The small trigger carries the small mark: the profile's service, since the name names no vendor.
+    expect(marksIn(trigger)).toEqual(["deepseek"]);
+    expect(trigger.querySelector("svg[data-vendor-icon]")?.getAttribute("width")).toBe("14");
+    expect(await selectGroups(trigger)).toEqual([
+      { heading: "Relay", options: ["m-default", "m-chat"] },
+      { heading: "Other", options: ["claude-sonnet-5"] },
+    ]);
+
+    await chooseOption(trigger, "claude-sonnet-5", "Other");
+    expect(trigger.textContent).toBe("Other · claude-sonnet-5");
+    expect(marksIn(trigger)).toEqual(["anthropic"]);
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/c1/chat?providerProfileId=p2&modelId=claude-sonnet-5")).toBe(true));
+
+    fireEvent.change(input(), { target: { value: "讲了什么？" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toEqual({ text: "讲了什么？", modelRef: { providerProfileId: "p2", modelId: "claude-sonnet-5" } }));
+  });
+
+  it("caps its width beside the send button and keeps the choice across collapsing the composer", async () => {
+    stubSelectLayout();
+    api();
+    renderApp(
+      <Page>
+        <ChatPanel fill={false} />
+      </Page>,
+    );
+    const trigger = await screen.findByTestId("chat-model");
+    // Capped by its own wrapper, so a long name cannot take the room of the controls beside it.
+    expect(trigger.parentElement?.className).toContain("max-w-64");
+    expect(within(trigger.parentElement?.parentElement as HTMLElement).getByTestId("chat-send")).toBeTruthy();
+    await chooseOption(trigger, "m-default");
+
+    fireEvent.click(screen.getByTestId("chat-collapse"));
+    expect(screen.queryByTestId("chat-model")).toBeNull();
+    fireEvent.click(screen.getByTestId("chat-expand"));
+    expect(screen.getByTestId("chat-model").textContent).toBe("Relay · m-default");
+  });
+});
+
 describe("ChatPanel", () => {
   it("streams an answer with a clickable citation and suggestions, then reads the stored thread", async () => {
     let stored = false;
@@ -141,7 +199,7 @@ describe("ChatPanel", () => {
     const mode = await screen.findByTestId("chat-mode");
     expect(mode.getAttribute("data-mode")).toBe("full");
     expect(mode.getAttribute("title")).toContain("12,345");
-    expect((screen.getByTestId("chat-model") as HTMLSelectElement).value).toBe("p1\u0000m-chat");
+    expect(screen.getByTestId("chat-model").textContent).toBe("Relay · m-chat");
     expect(calls.some((call) => call.path === "/api/contents/c1/chat?providerProfileId=p1&modelId=m-chat")).toBe(true);
 
     fireEvent.change(input(), { target: { value: "讲了什么？" } });

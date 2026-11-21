@@ -1,8 +1,10 @@
 import { useTranslation } from "react-i18next";
 import type { AsrProfileDto } from "../../shared/dto/asr-profile.ts";
 import type { AsrModelRefDto } from "../../shared/dto/model-ref.ts";
+import type { SelectSize } from "../ui/select.tsx";
+import { ModelSelect, type ModelSelectEntry } from "./model-select.tsx";
 
-/** The value an ASR model takes in a `<select>`; "" stands for none chosen. */
+/** The value an ASR model takes in a picker; "" stands for none chosen. */
 export function encodeAsrModel(ref: AsrModelRefDto): string {
   return JSON.stringify([ref.asrProfileId, ref.modelId]);
 }
@@ -59,47 +61,66 @@ export function useAsrModelLabel(): (ref: AsrModelRefDto, profiles: readonly Asr
 }
 
 /**
- * A select over the user's pickable ASR models. With `noneLabel` its first option chooses
- * none; without it, an unset value shows `placeholder` until the user picks.
+ * A menu over the user's pickable ASR models, grouped by profile and marked with each service's
+ * icon. With `noneLabel` its first entry chooses none; without it, an unset value shows
+ * `placeholder` until the user picks.
  */
 export function AsrModelSelect(props: {
   profiles: readonly AsrProfileDto[];
   value: AsrModelRefDto | undefined;
   onChange: (ref: AsrModelRefDto | undefined) => void;
   label: string;
-  noneLabel?: string;
-  placeholder?: string;
+  noneLabel?: string | undefined;
+  placeholder?: string | undefined;
   /** Shown for a current value that is not (or no longer) pickable, so it stays selected. */
-  currentLabel?: string;
-  className?: string;
-  testId?: string;
-  disabled?: boolean;
+  currentLabel?: string | undefined;
+  /** The service of that current value, for its mark; unknown or deleted shows the neutral one. */
+  currentProvider?: string | undefined;
+  /** A binding that stays listed (under `currentLabel`) even after another model is picked, so it can be chosen again. */
+  bound?: AsrModelRefDto | undefined;
+  id?: string | undefined;
+  size?: SelectSize | undefined;
+  width?: "fill" | "content" | undefined;
+  /** Extra classes on the trigger, e.g. a maximum width. */
+  className?: string | undefined;
+  testId?: string | undefined;
+  disabled?: boolean | undefined;
 }) {
-  const options = asrModelOptions(props.profiles);
+  const entries: ModelSelectEntry[] = props.profiles.flatMap((profile) =>
+    profile.models
+      .filter((model) => model.available)
+      .map((model) => ({
+        value: encodeAsrModel({ asrProfileId: profile.id, modelId: model.modelId }),
+        profileName: profile.name,
+        profileKey: profile.id,
+        modelId: model.modelId,
+        service: profile.provider,
+      })),
+  );
   const value = props.value === undefined ? "" : encodeAsrModel(props.value);
-  const listed = value === "" || options.some((option) => option.value === value);
+  const shown = props.bound ?? props.value;
+  const ownProvider = shown === undefined ? undefined : props.profiles.find((profile) => profile.id === shown.asrProfileId)?.provider;
   return (
-    <select
-      aria-label={props.label}
-      className={props.className ?? "h-8 rounded-md border border-line bg-surface px-2 text-sm"}
+    <ModelSelect
+      kind="asr"
+      entries={entries}
       value={value}
+      onChange={(next) => props.onChange(decodeAsrModel(next))}
+      noneLabel={props.noneLabel}
+      placeholder={props.placeholder}
+      current={{
+        label: props.currentLabel ?? props.bound?.modelId ?? props.value?.modelId ?? "",
+        modelId: (props.bound ?? props.value)?.modelId,
+        service: props.currentProvider ?? ownProvider,
+        value: props.bound === undefined ? undefined : encodeAsrModel(props.bound),
+      }}
+      id={props.id}
+      ariaLabel={props.label}
+      testId={props.testId}
       disabled={props.disabled}
-      data-testid={props.testId}
-      onChange={(event) => props.onChange(decodeAsrModel(event.target.value))}
-    >
-      {props.noneLabel !== undefined ? (
-        <option value="">{props.noneLabel}</option>
-      ) : value === "" ? (
-        <option value="" disabled>
-          {props.placeholder ?? ""}
-        </option>
-      ) : null}
-      {listed ? null : <option value={value}>{props.currentLabel ?? props.value?.modelId}</option>}
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      size={props.size}
+      width={props.width}
+      className={props.className}
+    />
   );
 }
