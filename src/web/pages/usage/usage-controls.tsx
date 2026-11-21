@@ -36,7 +36,8 @@ export function MenuLabel(props: { children: ReactNode }) {
  */
 const RADIO_ENTRY_CLASS = `${MENU_ITEM_CLASS} data-[state=checked]:bg-accent-soft data-[state=checked]:font-medium data-[state=checked]:data-[highlighted]:bg-accent-soft data-[state=checked]:data-[highlighted]:ring-1 data-[state=checked]:data-[highlighted]:ring-inset data-[state=checked]:data-[highlighted]:ring-accent/50`;
 
-export function RadioEntry(props: { value: string; children: ReactNode; indent?: boolean; testId?: string }) {
+/** `icon` sits between the selection slot and the label; it is decorative, the label names the entry. */
+export function RadioEntry(props: { value: string; children: ReactNode; indent?: boolean; icon?: ReactNode; testId?: string }) {
   return (
     <DropdownMenu.RadioItem
       value={props.value}
@@ -44,6 +45,7 @@ export function RadioEntry(props: { value: string; children: ReactNode; indent?:
       {...(props.testId === undefined ? {} : { "data-testid": props.testId })}
     >
       <RadioMark />
+      {props.icon}
       <span className="min-w-0 flex-1 truncate" title={typeof props.children === "string" ? props.children : undefined}>
         {props.children}
       </span>

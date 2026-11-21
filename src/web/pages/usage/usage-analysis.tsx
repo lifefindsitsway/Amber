@@ -6,7 +6,7 @@ import { USAGE_GRANULARITIES, USAGE_METRICS, type UsageGranularity, type UsageMe
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
 import { RadioMenu, SegmentedControl } from "./usage-controls.tsx";
 import { MODEL_SORTS, UsageModelsView, type ModelSort } from "./usage-models-view.tsx";
-import { credentialVersionLabel } from "./usage-present.ts";
+import type { CredentialVersionLabels } from "./usage-present.ts";
 import type { UsagePatch, UsageView } from "./usage-state.ts";
 import { UsageTrend, type UsageDrill } from "./usage-trend.tsx";
 
@@ -26,6 +26,7 @@ export function UsageAnalysisPanel(props: {
   metric: UsageMetric;
   currency: PriceCurrency;
   modelKey: string | undefined;
+  versionLabels: CredentialVersionLabels;
   stale: boolean;
   onPatch: (patch: UsagePatch) => void;
   onDrill: (drill: UsageDrill) => void;
@@ -35,10 +36,6 @@ export function UsageAnalysisPanel(props: {
   const [table, setTable] = useState(false);
   const [sort, setSort] = useState<ModelSort>("cost");
   const { response } = props;
-  const versionLabel = (profileKey: string, credentialVersion: string): string => {
-    const version = response.options.profiles.find((profile) => profile.profileKey === profileKey)?.versions.find((item) => item.credentialVersion === credentialVersion);
-    return credentialVersionLabel(version ?? { credentialVersion, setAt: null }, t);
-  };
   const setModelFilter = (modelKey: string): void => props.onPatch({ modelKey });
 
   return (
@@ -116,7 +113,7 @@ export function UsageAnalysisPanel(props: {
           selectedModelKey={props.modelKey}
           onSelect={setModelFilter}
           onCurrency={props.onCurrency}
-          versionLabel={versionLabel}
+          versionLabels={props.versionLabels}
         />
       </Tabs.Content>
     </Tabs.Root>

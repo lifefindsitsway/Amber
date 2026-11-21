@@ -2,7 +2,7 @@ import { Info } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useTranslation } from "react-i18next";
 
-const BASIS_ITEMS = ["estimate", "time", "cache", "assumptions", "inputMissing", "currency", "search"] as const;
+const BASIS_ITEMS = ["estimate", "time", "cache", "breakdown", "assumptions", "inputMissing", "currency", "search"] as const;
 
 /** The page header's 「统计口径」 button and the light popover it opens. */
 export function UsageBasisButton() {

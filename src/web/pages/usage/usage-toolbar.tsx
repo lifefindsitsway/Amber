@@ -7,7 +7,8 @@ import { MENU_CONTENT_CLASS } from "../../ui/context-menu.tsx";
 import { currencySymbol } from "../../format.ts";
 import { MENU_SCROLL_CLASS, MenuLabel, MenuTrigger, RadioEntry, SegmentedControl } from "./usage-controls.tsx";
 import { useNarrowLayout } from "./usage-layout.tsx";
-import { credentialVersionLabel, profileName } from "./usage-present.ts";
+import { UsageModelMark } from "./usage-marks.tsx";
+import { credentialVersionLabelOf, profileName, type CredentialVersionLabels } from "./usage-present.ts";
 import { hasUsageFilter, type UsagePatch, type UsageState } from "./usage-state.ts";
 
 type Options = UsageSummaryResponse["options"];
@@ -42,6 +43,9 @@ export function UsageToolbar(props: {
   state: UsageState;
   currency: PriceCurrency;
   options: Options | undefined;
+  /** Names of the credential versions, shared with the rows so a version reads the same everywhere. */
+  versionLabels: CredentialVersionLabels;
+  now: number;
   onPatch: (patch: UsagePatch) => void;
   onCurrency: (currency: PriceCurrency) => void;
 }) {
@@ -61,7 +65,15 @@ export function UsageToolbar(props: {
   );
   const left = (
     <div className="flex min-w-0 items-center gap-2" data-testid="usage-filters">
-      <CredentialMenu state={state} options={props.options} onPatch={props.onPatch} className={triggerWidth(narrow, state.profileKey !== undefined, "max-w-[220px]")} compact={narrow} />
+      <CredentialMenu
+        state={state}
+        options={props.options}
+        versionLabels={props.versionLabels}
+        now={props.now}
+        onPatch={props.onPatch}
+        className={triggerWidth(narrow, state.profileKey !== undefined, "max-w-[220px]")}
+        compact={narrow}
+      />
       <ModelMenu state={state} options={props.options} onPatch={props.onPatch} className={triggerWidth(narrow, state.modelKey !== undefined, "max-w-[260px]")} compact={narrow} />
       <CurrencyMenu currency={props.currency} onChange={props.onCurrency} compact={narrow} />
       {filtered && !narrow ? clear : null}
@@ -91,20 +103,26 @@ function profileTitle(profile: OptionProfile, t: TFunction): string {
   return profileName(profile.profileName, profile.deleted, undefined, t);
 }
 
-function CredentialMenu(props: { state: UsageState; options: Options | undefined; onPatch: (patch: UsagePatch) => void; className: string; compact: boolean }) {
+function CredentialMenu(props: {
+  state: UsageState;
+  options: Options | undefined;
+  versionLabels: CredentialVersionLabels;
+  now: number;
+  onPatch: (patch: UsagePatch) => void;
+  className: string;
+  compact: boolean;
+}) {
   const { t } = useTranslation();
   const { state } = props;
   const profiles = props.options?.profiles ?? [];
   const selected = profiles.find((profile) => profile.profileKey === state.profileKey);
-  const version = selected?.versions.find((item) => item.credentialVersion === state.credentialVersion);
+  const versionText = (profileKey: string, credentialVersion: string): string =>
+    credentialVersionLabelOf(props.versionLabels, profileKey, credentialVersion, null, t, props.now).text;
   let value: string = t("usage.toolbar.all");
   if (state.profileKey !== undefined) {
     value = selected === undefined ? t("usage.names.selectedProfile") : profileTitle(selected, t);
     if (state.credentialVersion !== undefined) {
-      value = t("usage.names.profileVersion", {
-        profile: value,
-        version: credentialVersionLabel(version ?? { credentialVersion: state.credentialVersion, setAt: null }, t),
-      });
+      value = t("usage.names.profileVersion", { profile: value, version: versionText(state.profileKey, state.credentialVersion) });
     }
   }
   const label = t("usage.toolbar.credentialLabel", { value });
@@ -146,7 +164,7 @@ function CredentialMenu(props: { state: UsageState; options: Options | undefined
                       {profile.versions.length > 1
                         ? profile.versions.map((item) => (
                             <RadioEntry key={item.credentialVersion} indent value={`${profile.profileKey}${VERSION_SEPARATOR}${item.credentialVersion}`}>
-                              {credentialVersionLabel(item, t)}
+                              {versionText(profile.profileKey, item.credentialVersion)}
                             </RadioEntry>
                           ))
                         : null}
@@ -205,7 +223,7 @@ function ModelMenu(props: { state: UsageState; options: Options | undefined; onP
                 {listed
                   .filter((model) => model.profileKey === profileKey)
                   .map((model) => (
-                    <RadioEntry key={model.modelKey} value={model.modelKey}>
+                    <RadioEntry key={model.modelKey} value={model.modelKey} icon={<UsageModelMark modelKey={model.modelKey} modelId={model.modelId} size={16} />}>
                       {model.modelId}
                     </RadioEntry>
                   ))}

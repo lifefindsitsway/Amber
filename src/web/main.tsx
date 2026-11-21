@@ -6,6 +6,7 @@ import { App } from "./app.tsx";
 import { markDesktopShell } from "./desktop/bridge.ts";
 import { initI18n } from "./i18n.ts";
 import { applyTheme } from "./shell/theme.ts";
+import { TooltipProvider } from "./ui/tooltip.tsx";
 import "./styles.css";
 
 async function start(): Promise<void> {
@@ -20,7 +21,9 @@ async function start(): Promise<void> {
   createRoot(root).render(
     <StrictMode>
       <ApiProvider client={client} queryClient={createQueryClient()}>
-        <App />
+        <TooltipProvider>
+          <App />
+        </TooltipProvider>
       </ApiProvider>
     </StrictMode>,
   );

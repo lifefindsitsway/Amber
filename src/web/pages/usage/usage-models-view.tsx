@@ -2,8 +2,9 @@ import { useTranslation } from "react-i18next";
 import type { UsageSummaryResponse } from "../../../shared/dto/usage-analytics.ts";
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
 import { formatCount } from "../../format.ts";
-import { CostCell, UsageCell } from "./usage-cells.tsx";
-import { costView, modelLabel } from "./usage-present.ts";
+import { CostCell, UsageBreakdownTooltip, UsageCell, useBreakdownOpen, VersionTag } from "./usage-cells.tsx";
+import { UsageModelMark } from "./usage-marks.tsx";
+import { breakdownDescription, costView, modelLabel, rowVersionLabels, usageBreakdown, type CredentialVersionLabels } from "./usage-present.ts";
 import { seriesColor } from "./usage-trend.tsx";
 
 type Model = UsageSummaryResponse["models"][number];
@@ -44,7 +45,7 @@ export function UsageModelsView(props: {
   selectedModelKey: string | undefined;
   onSelect: (modelKey: string) => void;
   onCurrency: (currency: PriceCurrency) => void;
-  versionLabel: (profileKey: string, credentialVersion: string) => string;
+  versionLabels: CredentialVersionLabels;
 }) {
   const { t } = useTranslation();
   const rows = rankModels(props.models, props.sort);
@@ -68,55 +69,98 @@ export function UsageModelsView(props: {
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ model, share }) => {
-            const selected = model.modelKey === props.selectedModelKey;
-            const label = modelLabel(model, t, model.profileDeleted);
-            const versions = model.credentialVersions.map((version) => props.versionLabel(model.profileKey, version));
-            return (
-              <tr
-                key={model.modelKey}
-                className={`h-14 cursor-pointer border-t border-line hover:bg-sunken ${selected ? "bg-accent-soft" : ""}`}
-                onClick={() => props.onSelect(model.modelKey)}
-                data-testid="usage-model-row"
-              >
-                <td className="min-w-0 px-4">
-                  <button
-                    type="button"
-                    className="block max-w-full truncate rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                    aria-pressed={selected}
-                    title={label}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      props.onSelect(model.modelKey);
-                    }}
-                  >
-                    {label}
-                  </button>
-                  {versions.length === 0 ? null : <p className="truncate text-xs text-muted" title={versions.join(" · ")}>
-                      {versions.join(" · ")}
-                    </p>}
-                </td>
-                <td className="px-3 text-right tabular-nums">{formatCount(model.requests)}</td>
-                <td className="px-3 text-right">
-                  <UsageCell usage={model.usage} />
-                </td>
-                <td className="px-3 text-right">
-                  <CostCell view={costView(model.cost, props.currency)} currency={props.currency} onCurrency={props.onCurrency} />
-                </td>
-                <td className="px-4">
-                  <div
-                    className="h-1.5 w-full overflow-hidden rounded-full bg-sunken"
-                    role="img"
-                    aria-label={t("usage.models.shareLabel", { percent: Math.round(share * 100) })}
-                  >
-                    <div className="h-full rounded-full" style={{ width: `${share * 100}%`, background: seriesColor(model.colorKey) }} />
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map(({ model, share }) => (
+            <ModelRow
+              key={model.modelKey}
+              model={model}
+              share={share}
+              selected={model.modelKey === props.selectedModelKey}
+              currency={props.currency}
+              onSelect={props.onSelect}
+              onCurrency={props.onCurrency}
+              versionLabels={props.versionLabels}
+            />
+          ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * One model. The usage breakdown shows on hovering its usage, or while the model button has
+ * keyboard focus (the row's one control, so no extra stop); the button carries it as its description.
+ */
+function ModelRow(props: {
+  model: Model;
+  share: number;
+  selected: boolean;
+  currency: PriceCurrency;
+  onSelect: (modelKey: string) => void;
+  onCurrency: (currency: PriceCurrency) => void;
+  versionLabels: CredentialVersionLabels;
+}) {
+  const { t } = useTranslation();
+  const { model, share, selected } = props;
+  const hint = useBreakdownOpen();
+  const label = modelLabel(model, t, model.profileDeleted);
+  const versions = rowVersionLabels(props.versionLabels, model.profileKey, model.credentialVersions);
+  const breakdown = usageBreakdown(model.usage, t);
+  const descriptionId = `usage-model-usage-${model.modelKey}`;
+  return (
+    <tr
+      className={`h-14 cursor-pointer border-t border-line hover:bg-sunken ${selected ? "bg-accent-soft" : ""}`}
+      onClick={() => props.onSelect(model.modelKey)}
+      data-testid="usage-model-row"
+    >
+      <td className="min-w-0 px-4">
+        <button
+          type="button"
+          className="flex max-w-full items-center gap-1.5 rounded text-left outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          aria-pressed={selected}
+          title={label}
+          {...(breakdown.length === 0 ? {} : { "aria-describedby": descriptionId })}
+          onFocus={hint.onFocus}
+          onBlur={hint.onBlur}
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onSelect(model.modelKey);
+          }}
+        >
+          <UsageModelMark modelKey={model.modelKey} modelId={model.modelId} size={16} />
+          <span className="min-w-0 truncate">{label}</span>
+        </button>
+        {breakdown.length === 0 ? null : (
+          <span id={descriptionId} hidden>
+            {breakdownDescription(breakdown, t)}
+          </span>
+        )}
+        {versions.length === 0 ? null : (
+          <p className="flex min-w-0 pl-[22px] text-xs text-muted">
+            <VersionTag labels={versions} />
+          </p>
+        )}
+      </td>
+      <td className="px-3 text-right tabular-nums">{formatCount(model.requests)}</td>
+      <td className="px-3 text-right">
+        <UsageBreakdownTooltip
+          usage={model.usage}
+          open={hint.open}
+          onOpenChange={hint.onOpenChange}
+        >
+          <div data-testid="usage-model-usage">
+            <UsageCell usage={model.usage} />
+          </div>
+        </UsageBreakdownTooltip>
+      </td>
+      <td className="px-3 text-right">
+        <CostCell view={costView(model.cost, props.currency)} currency={props.currency} onCurrency={props.onCurrency} />
+      </td>
+      <td className="px-4">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-sunken" role="img" aria-label={t("usage.models.shareLabel", { percent: Math.round(share * 100) })}>
+          <div className="h-full rounded-full" style={{ width: `${share * 100}%`, background: seriesColor(model.colorKey) }} />
+        </div>
+      </td>
+    </tr>
   );
 }

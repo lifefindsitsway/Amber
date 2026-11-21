@@ -1,27 +1,150 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { encodeModelKey } from "../../../../src/shared/dto/usage-analytics.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeModelKey, encodeProfileKey } from "../../../../src/shared/dto/usage-analytics.ts";
 import { UsagePage } from "../../../../src/web/pages/usage/usage-page.tsx";
 import { USAGE_CURRENCY_STORAGE_KEY } from "../../../../src/web/pages/usage/usage-state.ts";
 import { usageReply } from "../../../fixtures/usage/handler.ts";
-import { beijing, group, llmCall, model, profile, SCENARIO_NOW } from "../../../fixtures/usage/builders.ts";
+import { asrCall, beijing, group, llmCall, model, profile, SCENARIO_NOW } from "../../../fixtures/usage/builders.ts";
 import { SCENARIOS } from "../../../fixtures/usage/scenarios.ts";
-import type { FixtureScenario } from "../../../fixtures/usage/types.ts";
+import type { FixtureCall, FixturePrice, FixtureScenario } from "../../../fixtures/usage/types.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+
+const PRICE: FixturePrice = { currency: "CNY", inputPerMillion: 2, outputPerMillion: 8, cacheReadPerMillion: 1 };
+const SAVED_OLD = beijing(2026, 11, 2, 10);
+const SAVED_NEW = beijing(2026, 11, 4, 9, 30);
+
+/**
+ * One relay profile that switched keys: GPT ran only on the old key, Claude only on the new one;
+ * a second profile kept a single key, and its one call came back without an input count.
+ */
+function twoKeys(): FixtureScenario {
+  const relay = profile("relay", "llm", "Auth2API", [
+    ["relay-old", SAVED_OLD],
+    ["relay-new", SAVED_NEW],
+  ]);
+  const single = profile("deepseek", "llm", "DeepSeek", [["deepseek-v1", beijing(2026, 10, 20)]]);
+  const gpt = model(relay, "gpt-5.6-sol", PRICE);
+  const claude = model(relay, "claude-sonnet-4-5", PRICE);
+  const chat = model(single, "deepseek-v4-chat", PRICE);
+  const gptGroup = group("g-gpt", "task", "GPT 任务", "content-gpt");
+  const cached = llmCall(gptGroup, gpt, "proofread", beijing(2026, 11, 5, 10), { input: 1348, output: 139, cacheRead: 207, reasoning: 64, version: "relay-old" });
+  const calls: FixtureCall[] = [
+    { ...cached, llm: { ...(cached.llm as NonNullable<FixtureCall["llm"]>), cacheWrite: 120 } },
+    llmCall(gptGroup, gpt, "summary", beijing(2026, 11, 5, 10, 0, 10), { input: 500, output: 50, version: "relay-old" }),
+    llmCall(group("g-claude", "task", "Claude 任务", "content-claude"), claude, "summary", beijing(2026, 11, 5, 12), { input: 2000, output: 100, version: "relay-new" }),
+    llmCall(group("g-deepseek", "chat", "DeepSeek 对话", "content-deepseek"), chat, "chat", beijing(2026, 11, 5, 13), { input: 0, output: 30 }),
+  ];
+  return { id: "two-keys", now: SCENARIO_NOW, calls, cacheObserved: [] };
+}
+
+/** A model whose name points at no vendor, on a profile whose service does, and a transcription. */
+function unnamed(): FixtureScenario {
+  const relay = profile("relay", "llm", "Auth2API", [["relay-v1", beijing(2026, 10, 1)]]);
+  const bailian = profile("bailian", "asr", "阿里云百炼", [["bailian-v1", beijing(2026, 10, 1)]]);
+  const house = model(relay, "house-model", PRICE);
+  const funAsr = model(bailian, "fun-asr", { currency: "CNY", audioPerSecond: 0.0002 });
+  return {
+    id: "unnamed",
+    now: SCENARIO_NOW,
+    calls: [
+      llmCall(group("g-house", "task", "自有模型", "content-house"), house, "summary", beijing(2026, 11, 5, 10), { input: 100, output: 10 }),
+      asrCall(group("g-asr", "task", "转写", "content-asr"), funAsr, beijing(2026, 11, 5, 9), { audioMs: 750_000 }),
+    ],
+    cacheObserved: [],
+  };
+}
+
+const PROVIDERS = {
+  items: [
+    {
+      id: "relay",
+      name: "Auth2API",
+      protocol: "openai_compatible",
+      baseURL: "https://relay.invalid/v1",
+      presetId: "kimi",
+      models: [],
+      createdAt: 0,
+      credentialStatus: "configured",
+      hasCredential: true,
+    },
+  ],
+};
+const ASR_PROFILES = {
+  items: [
+    {
+      id: "bailian",
+      name: "阿里云百炼",
+      provider: "dashscope",
+      models: [{ modelId: "fun-asr", available: true }],
+      credentialStatus: "configured",
+      hasCredential: true,
+      inUse: false,
+      createdAt: 0,
+    },
+  ],
+};
+
+const marksIn = (element: Element): string[] => [...element.querySelectorAll("[data-vendor-icon]")].map((mark) => mark.getAttribute("data-vendor-icon") ?? "");
+
+async function recordRow(title: string): Promise<HTMLElement> {
+  const rows = await screen.findAllByTestId("usage-record-row");
+  const row = rows.find((item) => item.textContent?.includes(title));
+  if (row === undefined) throw new Error(`no record row for ${title}`);
+  return row;
+}
+
+async function modelRow(modelId: string): Promise<HTMLElement> {
+  const rows = await screen.findAllByTestId("usage-model-row");
+  const row = rows.find((item) => within(item).queryByRole("button", { name: new RegExp(`· ${modelId}$`) }) !== null);
+  if (row === undefined) throw new Error(`no model row for ${modelId}`);
+  return row;
+}
+
+async function expand(title: string): Promise<HTMLElement[]> {
+  fireEvent.click(within(await recordRow(title)).getByTestId("usage-record-toggle"));
+  return screen.findAllByTestId("usage-call-row");
+}
+
+/** Lines of the open breakdown tooltip, as `label value unit` text. */
+function breakdownLines(): string[] {
+  const breakdown = within(screen.getByTestId("usage-breakdown-tooltip")).getByTestId("usage-breakdown");
+  const cells = [...(breakdown.lastElementChild?.children ?? [])].map((cell) => cell.textContent ?? "");
+  const lines: string[] = [];
+  for (let index = 0; index < cells.length; index += 3) lines.push(cells.slice(index, index + 3).filter((cell) => cell !== "").join(" "));
+  return lines;
+}
+
+/** Moves focus as the Tab key would, so the browser treats it as keyboard focus. */
+function tabTo(element: HTMLElement): void {
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" });
+  act(() => element.focus());
+  fireEvent.keyUp(element, { key: "Tab" });
+}
+
+/** Elements of `root` that the Tab key stops at. */
+function tabStops(root: Element): Element[] {
+  return [...root.querySelectorAll("a[href], button, input, select, textarea, [tabindex]")].filter((element) => element.getAttribute("tabindex") !== "-1");
+}
 
 function Probe() {
   const location = useLocation();
   return <p data-testid="probe">{location.search}</p>;
 }
 
-function mount(scenario: FixtureScenario, route = "/usage") {
+/** Whether the page's profile lists answer, fail, or are not there at all; they only feed the model marks. */
+type ProfileLists = "listed" | "failing" | "absent";
+
+function mount(scenario: FixtureScenario, route = "/usage", lists: ProfileLists = "listed") {
   const reply = (call: { path: string }) => usageReply(scenario, call.path) ?? { status: 404, body: {} };
+  const failing = { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } };
   const api = mockApi({
     "GET /api/usage/summary": reply,
     "GET /api/usage/activities": reply,
     "GET /api/usage/calls": reply,
     "GET /api/usage/cache-observed": reply,
+    ...(lists === "listed" ? { "GET /api/providers": { body: PROVIDERS }, "GET /api/asr-profiles": { body: ASR_PROFILES } } : {}),
+    ...(lists === "failing" ? { "GET /api/providers": failing, "GET /api/asr-profiles": failing } : {}),
   });
   renderApp(
     <>
@@ -40,6 +163,11 @@ const cell = (column: string, row: string): HTMLElement => screen.getByTestId(`u
 function containerWidth(width: number): void {
   vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(width);
 }
+
+beforeEach(() => {
+  // Saved dates show their year only outside the current one; the scenarios are set in the year of their own "now".
+  vi.spyOn(Date, "now").mockReturnValue(SCENARIO_NOW);
+});
 
 afterEach(() => {
   localStorage.clear();
@@ -420,7 +548,8 @@ describe("the records", () => {
     expect(calls.map((call) => (call.querySelectorAll("td")[4] as HTMLElement).textContent)).toEqual(["¥0.01", "¥0.70", "¥0.36"]);
     expect((calls[0]?.querySelectorAll("td")[0] as HTMLElement).textContent).toBe("09:52:00");
     expect(within(calls[0] as HTMLElement).getByTestId("usage-call-result").textContent).toBe("成功");
-    expect((calls[0]?.querySelectorAll("td")[1] as HTMLElement).textContent).toBe("Auth2API · gpt-5.6-sol · 11-03 起");
+    // The profile had two keys in the range, so the call names the one it used.
+    expect(within(calls[0] as HTMLElement).getByTestId("usage-call-model").textContent).toBe("Auth2API · gpt-5.6-sol密钥 · 11-03 起");
     fireEvent.click(toggle);
     await waitFor(() => expect(screen.queryAllByTestId("usage-call-row")).toHaveLength(0));
   });
@@ -519,7 +648,7 @@ describe("the basis popover", () => {
     const button = screen.getByRole("button", { name: /统计口径/ });
     fireEvent.click(button);
     const popover = await screen.findByTestId("usage-basis");
-    expect(within(popover).getAllByRole("listitem")).toHaveLength(7);
+    expect(within(popover).getAllByRole("listitem")).toHaveLength(8);
     expect(popover.textContent).toContain("不是账单，也不是余额");
     expect(popover.textContent).toContain("币种只影响费用的显示，不换汇");
     expect(popover.textContent).toContain("联网搜索的费用不计入");
@@ -531,5 +660,284 @@ describe("the basis popover", () => {
     mount(SCENARIOS.main());
     await screen.findByTestId("usage-summary-grid");
     expect(document.title).toBe("AI 使用量 - Amber");
+  });
+});
+
+describe("the usage breakdown of a record", () => {
+  it("shows on hovering the usage: what input and output include, indented, with zero parts left out", async () => {
+    mount(twoKeys());
+    const row = await recordRow("GPT 任务");
+    fireEvent.pointerMove(within(row).getByTestId("usage-record-usage"));
+    const tooltip = await screen.findByTestId("usage-breakdown-tooltip");
+    expect(within(tooltip).getByText("已记录的用量")).toBeTruthy();
+    expect(breakdownLines()).toEqual(["输入 1,848 tokens", "其中缓存读取 207", "其中缓存写入 120", "输出 189 tokens", "其中推理 64"]);
+    expect(tooltip.textContent).not.toContain("1 小时");
+    expect(within(tooltip).getByTestId("usage-breakdown-cacheRead").className).toContain("pl-3");
+    expect(within(tooltip).getByTestId("usage-breakdown-input").className).not.toContain("pl-");
+  });
+
+  it("shows while the row's expand button has keyboard focus, without adding a stop to the Tab order", async () => {
+    mount(twoKeys());
+    const row = await recordRow("GPT 任务");
+    const toggle = within(row).getByTestId("usage-record-toggle");
+    const before = tabStops(row);
+    expect(before).toContain(toggle);
+    tabTo(toggle);
+    expect(await screen.findByTestId("usage-breakdown-tooltip")).toBeTruthy();
+    expect(tabStops(row)).toEqual(before);
+    expect(tabStops(screen.getByTestId("usage-breakdown-tooltip"))).toEqual([]);
+    expect(within(row).getByTestId("usage-record-usage").hasAttribute("tabindex")).toBe(false);
+    // A screen reader hears the same as the tooltip says, as the button's description.
+    const description = document.getElementById(toggle.getAttribute("aria-describedby") ?? "");
+    expect(description?.textContent).toBe("已记录的用量：输入 1,848 tokens，其中缓存读取 207，其中缓存写入 120，输出 189 tokens，其中推理 64");
+    act(() => toggle.blur());
+    await waitFor(() => expect(screen.queryByTestId("usage-breakdown-tooltip")).toBeNull());
+  });
+
+  it("closes on Escape", async () => {
+    mount(twoKeys());
+    const toggle = within(await recordRow("GPT 任务")).getByTestId("usage-record-toggle");
+    tabTo(toggle);
+    await screen.findByTestId("usage-breakdown-tooltip");
+    fireEvent.keyDown(toggle, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("usage-breakdown-tooltip")).toBeNull());
+  });
+
+  it("is not a way into the row: a click on the tooltip neither expands the record nor filters", async () => {
+    mount(twoKeys());
+    const row = await recordRow("GPT 任务");
+    const toggle = within(row).getByTestId("usage-record-toggle");
+    tabTo(toggle);
+    const tooltip = await screen.findByTestId("usage-breakdown-tooltip");
+    fireEvent.pointerDown(within(tooltip).getByText("已记录的用量"));
+    fireEvent.click(within(tooltip).getByText("已记录的用量"));
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByTestId("usage-call-row")).toHaveLength(0);
+  });
+
+  it("says a transcription's audio is what Amber measured, and lists billed tokens when the service reported them", async () => {
+    mount(SCENARIOS["asr-only"]());
+    const row = await recordRow("第 2 讲：线性代数回顾");
+    fireEvent.pointerMove(within(row).getByTestId("usage-record-usage"));
+    await screen.findByTestId("usage-breakdown-tooltip");
+    const lines = breakdownLines();
+    expect(lines[0]).toBe("处理音频 1:37:00 （Amber 测得的音频时长）");
+    expect(lines.slice(1).map((line) => line.split(" ")[0])).toEqual(["计费输入", "计费输出"]);
+    const plain = await recordRow("第 1 讲：课程导论");
+    fireEvent.pointerLeave(within(row).getByTestId("usage-record-usage"));
+    fireEvent.pointerMove(within(plain).getByTestId("usage-record-usage"));
+    await waitFor(() => expect(breakdownLines()).toEqual(["处理音频 41:00 （Amber 测得的音频时长）"]));
+  });
+});
+
+describe("the parts of a single call", () => {
+  it("are written on the call's own row with no interaction, and a call without parts takes no extra line", async () => {
+    mount(twoKeys());
+    const calls = await expand("GPT 任务");
+    expect(calls).toHaveLength(2);
+    expect(within(calls[0] as HTMLElement).getByTestId("usage-call-detail").textContent).toBe("缓存读取 207 · 缓存写入 120 · 推理 64");
+    expect(within(calls[1] as HTMLElement).queryByTestId("usage-call-detail")).toBeNull();
+    // The wide row keeps its height: the second line fits in it.
+    expect((calls[0] as HTMLElement).className).toContain("h-12");
+    // A screen reader reads the exact numbers in the usage cell, not the compact ones.
+    const usage = within(calls[0] as HTMLElement).getByTestId("usage-call-usage");
+    expect(usage.querySelector(".sr-only")?.textContent).toBe("输入 1,348 tokens，其中缓存读取 207，其中缓存写入 120，输出 139 tokens，其中推理 64");
+  });
+
+  it("says when the upstream sent no input count", async () => {
+    mount(twoKeys());
+    const [call] = await expand("DeepSeek 对话");
+    expect(within(call as HTMLElement).getByTestId("usage-call-detail").textContent).toBe("上游未返回输入用量");
+  });
+
+  it("gives the exact numbers on hovering the call's usage", async () => {
+    mount(twoKeys());
+    const [call] = await expand("GPT 任务");
+    fireEvent.pointerMove(within(call as HTMLElement).getByTestId("usage-call-usage"));
+    await screen.findByTestId("usage-breakdown-tooltip");
+    expect(breakdownLines()).toEqual(["输入 1,348 tokens", "其中缓存读取 207", "其中缓存写入 120", "输出 139 tokens", "其中推理 64"]);
+  });
+
+  it("puts the parts on the last line of a narrow row", async () => {
+    containerWidth(600);
+    mount(twoKeys());
+    const [call] = await expand("GPT 任务");
+    const content = (call as HTMLElement).querySelectorAll("td")[1] as HTMLElement;
+    expect(content.lastElementChild?.getAttribute("data-testid")).toBe("usage-call-detail");
+    expect(content.querySelector(".sr-only")?.textContent).toContain("输入 1,348 tokens");
+  });
+});
+
+describe("the span under a record's time", () => {
+  it("reads 「跨度」 in a wide row, with what it means for the pointer and for screen readers", async () => {
+    mount(twoKeys());
+    const span = within(await recordRow("GPT 任务")).getByTestId("usage-record-span");
+    expect(span.textContent).toBe("跨度 10 秒调用跨度：本组第一次与最后一次调用相隔的时间，不是任务的总耗时");
+    expect(span.querySelector(".sr-only")?.textContent).toBe("调用跨度：本组第一次与最后一次调用相隔的时间，不是任务的总耗时");
+    // It may wrap within the time column rather than run into the content column.
+    expect(span.className).not.toContain("whitespace-nowrap");
+    fireEvent.pointerMove(span);
+    expect((await screen.findByTestId("usage-span-tooltip")).textContent).toBe("调用跨度：本组第一次与最后一次调用相隔的时间，不是任务的总耗时");
+  });
+
+  it("keeps the bare value in the narrow time column", async () => {
+    containerWidth(600);
+    mount(twoKeys());
+    const span = within(await recordRow("GPT 任务")).getByTestId("usage-record-span");
+    expect(span.firstChild?.textContent).toBe("10 秒");
+  });
+
+  it("is not shown for a single call", async () => {
+    mount(twoKeys());
+    expect(within(await recordRow("Claude 任务")).queryByTestId("usage-record-span")).toBeNull();
+  });
+});
+
+describe("credential versions in the records", () => {
+  it("names the early records apart, without the key prefix, and keeps the record's version count", async () => {
+    mount(SCENARIOS.main(), "/usage?range=30d&pageSize=50");
+    const calls = await expand("提示词工程：结构化输出与约束");
+    expect(within(calls[0] as HTMLElement).getByTestId("usage-version-tag").textContent).toBe("早期记录（未区分密钥）");
+    expect((await recordRow("Scaling Laws")).textContent).toContain("2 个密钥版本");
+  });
+});
+
+describe("model marks in the records", () => {
+  it("marks a record of one model, the calls and the model menu, but not a record of several models nor the legend", async () => {
+    mount(SCENARIOS.main(), "/usage?range=30d");
+    const rows = await screen.findAllByTestId("usage-record-row");
+    expect(marksIn(rows[0] as HTMLElement)).toEqual(["openai"]);
+    expect(rows[1]?.textContent).toContain("等 3 个");
+    expect(marksIn(rows[1] as HTMLElement)).toEqual([]);
+    expect(marksIn(await screen.findByTestId("usage-legend"))).toEqual([]);
+    const calls = await expand("第 3 讲：注意力机制与 Transformer");
+    for (const call of calls) expect(marksIn(call)).toHaveLength(1);
+    fireEvent.keyDown(screen.getByTestId("usage-model"), { key: "Enter" });
+    const items = await screen.findAllByRole("menuitemradio");
+    const models = items.filter((item) => item.textContent !== "全部");
+    expect(models.length).toBeGreaterThan(0);
+    for (const item of models) expect(marksIn(item)).toHaveLength(1);
+    expect(marksIn(items.find((item) => item.textContent === "全部") as HTMLElement)).toEqual([]);
+    // The mark is decorative: the entry is still named by the model alone.
+    expect(screen.getByRole("menuitemradio", { name: "claude-sonnet-4-5" })).toBeTruthy();
+  });
+});
+
+describe("the usage breakdown of a model", () => {
+  it("shows on hovering the usage and while the model button has keyboard focus, described to screen readers", async () => {
+    mount(twoKeys(), "/usage?view=models");
+    const row = await modelRow("gpt-5.6-sol");
+    const button = within(row).getByRole("button", { name: /gpt-5\.6-sol$/ });
+    const before = tabStops(row);
+    tabTo(button);
+    await screen.findByTestId("usage-breakdown-tooltip");
+    expect(breakdownLines()[0]).toBe("输入 1,848 tokens");
+    expect(tabStops(row)).toEqual(before);
+    expect(document.getElementById(button.getAttribute("aria-describedby") ?? "")?.textContent).toContain("已记录的用量：输入 1,848 tokens");
+    act(() => button.blur());
+    await waitFor(() => expect(screen.queryByTestId("usage-breakdown-tooltip")).toBeNull());
+    fireEvent.pointerMove(within(row).getByTestId("usage-model-usage"));
+    expect(await screen.findByTestId("usage-breakdown-tooltip")).toBeTruthy();
+  });
+
+  it("does not set the model filter when the tooltip is clicked", async () => {
+    mount(twoKeys(), "/usage?view=models");
+    const row = await modelRow("gpt-5.6-sol");
+    tabTo(within(row).getByRole("button", { name: /gpt-5\.6-sol$/ }));
+    const tooltip = await screen.findByTestId("usage-breakdown-tooltip");
+    fireEvent.click(within(tooltip).getByText("已记录的用量"));
+    expect(search().get("model")).toBeNull();
+  });
+});
+
+describe("credential versions", () => {
+  const relayKey = encodeProfileKey(["llm", "relay"]);
+  it("tags each row of a profile with two keys with only the key it used, and leaves a single-key profile untagged", async () => {
+    mount(twoKeys(), "/usage?view=models");
+    expect(within(await modelRow("gpt-5.6-sol")).getByTestId("usage-version-tag").textContent).toBe("密钥 · 11-02 起");
+    expect(within(await modelRow("claude-sonnet-4-5")).getByTestId("usage-version-tag").textContent).toBe("密钥 · 11-04 起");
+    expect(within(await modelRow("deepseek-v4-chat")).queryByTestId("usage-version-tag")).toBeNull();
+  });
+
+  it("keeps the tag, unchanged, when filtering by that key", async () => {
+    mount(twoKeys(), `/usage?view=models&profile=${relayKey}&credential=relay-old`);
+    const rows = await screen.findAllByTestId("usage-model-row");
+    await waitFor(() => expect(screen.getAllByTestId("usage-model-row")).toHaveLength(1));
+    expect(rows[0]?.textContent).toContain("gpt-5.6-sol");
+    expect(within(await modelRow("gpt-5.6-sol")).getByTestId("usage-version-tag").textContent).toBe("密钥 · 11-02 起");
+    expect(screen.getByTestId("usage-credential").textContent).toBe("凭据：Auth2API · 11-02 起");
+  });
+
+  it("keeps the tag when filtering by the model", async () => {
+    mount(twoKeys(), `/usage?view=models&model=${encodeModelKey(["llm", "relay", "claude-sonnet-4-5"])}`);
+    await waitFor(() => expect(screen.getAllByTestId("usage-model-row")).toHaveLength(1));
+    expect(within(await modelRow("claude-sonnet-4-5")).getByTestId("usage-version-tag").textContent).toBe("密钥 · 11-04 起");
+  });
+
+  it("names a version the same in the credential menu, the by-model rows and the call rows", async () => {
+    mount(twoKeys(), "/usage?view=models");
+    const rowTag = within(await modelRow("gpt-5.6-sol")).getByTestId("usage-version-tag").textContent;
+    const [call] = await expand("GPT 任务");
+    const callTag = within(call as HTMLElement).getByTestId("usage-version-tag").textContent;
+    fireEvent.keyDown(screen.getByTestId("usage-credential"), { key: "Enter" });
+    const items = (await screen.findAllByRole("menuitemradio")).map((item) => item.textContent);
+    expect([...items].sort()).toEqual(["11-02 起", "11-04 起", "Auth2API", "DeepSeek", "全部"].sort());
+    expect(rowTag).toBe("密钥 · 11-02 起");
+    expect(callTag).toBe(rowTag);
+  });
+
+  it("explains on hover when the key was saved, and shows nothing of the key", async () => {
+    mount(twoKeys(), "/usage?view=models");
+    const tag = within(await modelRow("gpt-5.6-sol")).getByTestId("usage-version-tag");
+    fireEvent.pointerMove(tag);
+    expect((await screen.findByTestId("usage-version-hint")).textContent).toBe("这把 API Key 保存于 2026 年 11 月 2 日 10:00；这里统计的是使用它的调用");
+    expect(tag.textContent).not.toContain("relay-old");
+  });
+
+  it("shows the year of a key saved in another year", async () => {
+    const scenario = twoKeys();
+    const lastYear = { ...scenario, calls: scenario.calls.map((call) => (call.version === "relay-old" ? { ...call, model: { ...call.model, profile: { ...call.model.profile, versions: [{ id: "relay-old", setAt: beijing(2025, 12, 30) }, { id: "relay-new", setAt: SAVED_NEW }] } } } : call)) };
+    mount(lastYear, "/usage?view=models");
+    expect(within(await modelRow("gpt-5.6-sol")).getByTestId("usage-version-tag").textContent).toBe("密钥 · 2025-12-30 起");
+  });
+});
+
+describe("model marks in the by-model view", () => {
+  it("marks the by-model rows by model name, and transcription by its service", async () => {
+    mount(SCENARIOS.main(), "/usage?view=models");
+    await waitFor(() => expect(marksIn(screen.getByTestId("usage-models"))).toHaveLength(5));
+    expect(marksIn(await modelRow("claude-sonnet-4-5"))).toEqual(["anthropic"]);
+    expect(marksIn(await modelRow("gpt-5.6-sol"))).toEqual(["openai"]);
+    expect(marksIn(await modelRow("deepseek-v4-chat"))).toEqual(["deepseek"]);
+    await waitFor(async () => expect(marksIn(await modelRow("fun-asr"))).toEqual(["dashscope"]));
+  });
+});
+
+describe("model marks", () => {
+  it("falls back to the profile's service for a name it does not know", async () => {
+    mount(unnamed(), "/usage?view=models");
+    await waitFor(async () => expect(marksIn(await modelRow("house-model"))).toEqual(["kimi"]));
+    expect(marksIn(await modelRow("fun-asr"))).toEqual(["dashscope"]);
+  });
+
+  it("uses the neutral mark when the profile lists fail, and the numbers stay", async () => {
+    mount(unnamed(), "/usage?view=models", "failing");
+    const row = await modelRow("house-model");
+    expect(marksIn(row)).toEqual(["neutral"]);
+    expect(marksIn(await modelRow("fun-asr"))).toEqual(["neutral"]);
+    expect(within(row).getByTestId("usage-model-usage").textContent).toContain("100 / 10");
+    expect(within(row).getByTestId("usage-cost-cell").textContent).toBe("< ¥0.01");
+  });
+
+  it("still marks a deleted profile's model by its name, an unidentifiable transcription neutrally, and shows their numbers", async () => {
+    mount(SCENARIOS.deleted(), "/usage?view=models&range=30d", "absent");
+    const gone = await modelRow("gpt-5-mini");
+    expect(gone.textContent).toContain("旧中转站（已删除）");
+    expect(marksIn(gone)).toEqual(["openai"]);
+    expect(within(gone).getByTestId("usage-model-usage").textContent).not.toBe("—");
+    const rows = await screen.findAllByTestId("usage-model-row");
+    const historic = rows.find((row) => row.textContent?.includes("历史档案不可区分")) as HTMLElement;
+    expect(marksIn(historic)).toEqual(["neutral"]);
+    expect(within(historic).getByTestId("usage-model-usage").textContent).toContain("55:00");
   });
 });

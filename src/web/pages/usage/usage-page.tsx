@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useUsageActivities, useUsageSummary } from "../../api/queries.ts";
 import { PageHeader } from "../../ui/feedback.tsx";
@@ -9,6 +9,8 @@ import { UsageBasisButton } from "./usage-basis.tsx";
 import { UsageBreadcrumb } from "./usage-breadcrumb.tsx";
 import { UsageLoadError } from "./usage-error.tsx";
 import { UsageLayoutProvider, USAGE_NARROW_CONTAINER_PX } from "./usage-layout.tsx";
+import { UsageMarksProvider } from "./usage-marks.tsx";
+import { buildCredentialVersionLabels } from "./usage-present.ts";
 import { UsageRecords } from "./usage-records.tsx";
 import { AnalysisSkeleton } from "./usage-skeleton.tsx";
 import { activitiesQueryOf, defaultUsageCurrency, summaryQueryOf, useUsageState } from "./usage-state.ts";
@@ -35,6 +37,8 @@ export function UsagePage() {
   const [containerRef, container] = useElementSize<HTMLDivElement>(UNMEASURED_SIZE);
   const [scrolled, setScrolled] = useState(false);
   const narrow = container.width < USAGE_NARROW_CONTAINER_PX;
+  // Read once: whether a saved date shows its year compares it with the year the page was opened in.
+  const [now] = useState(() => Date.now());
 
   const summary = useUsageSummary(summaryQueryOf(state, currency));
   const position = useListPosition("usage");
@@ -56,6 +60,9 @@ export function UsagePage() {
   const stale = summary.isPlaceholderData;
   const empty = data !== undefined && data.summary.requests === 0;
   const drilled = state.range === "custom" && state.from !== undefined && state.to !== undefined;
+  // From the range's options only, so a filter never changes how a version is named or whether it is.
+  const profiles = data?.options.profiles;
+  const versionLabels = useMemo(() => buildCredentialVersionLabels(profiles ?? [], t, now), [profiles, t, now]);
 
   return (
     <div className="flex h-full flex-col">
@@ -63,71 +70,84 @@ export function UsagePage() {
       <div className="min-h-0 flex-1 overflow-auto" onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)} data-testid="usage-scroll">
         <div className="mx-auto w-full max-w-7xl px-6 pb-8">
           <div ref={containerRef} className="@container">
-            <UsageLayoutProvider narrow={narrow}>
-              <div className={`sticky top-0 z-10 -mx-6 border-b bg-surface px-6 ${scrolled ? "border-line" : "border-transparent"}`} data-testid="usage-sticky">
-                <UsageToolbar state={state} currency={currency} options={data?.options} onPatch={handle.patch} onCurrency={(next) => handle.chooseCurrency(next)} />
-              </div>
-              <div className="flex flex-col gap-6 pt-3">
-                {drilled && state.from !== undefined && state.to !== undefined ? (
-                  <UsageBreadcrumb from={state.from} to={state.to} onNavigate={(patch) => handle.patch(patch)} />
-                ) : null}
-                {summary.isPending ? (
-                  <>
-                    <SummarySkeleton />
-                    <AnalysisSkeleton />
-                    <UsageRecords
-                      items={undefined}
-                      total={undefined}
-                      error={false}
-                      onRetry={() => undefined}
-                      state={state}
-                      currency={currency}
-                      onCurrency={handle.chooseCurrency}
-                      deletedModels={NO_MODELS}
-                    />
-                  </>
-                ) : summary.isError && data === undefined ? (
-                  <UsageLoadError error={summary.error} onRetry={() => void summary.refetch()} />
-                ) : data === undefined ? null : (
-                  <>
-                    <div className={`transition-opacity ${stale ? "opacity-60" : ""}`}>
-                      <UsageSummaryPanel
-                        response={data}
+            <UsageMarksProvider>
+              <UsageLayoutProvider narrow={narrow}>
+                <div className={`sticky top-0 z-10 -mx-6 border-b bg-surface px-6 ${scrolled ? "border-line" : "border-transparent"}`} data-testid="usage-sticky">
+                  <UsageToolbar
+                    state={state}
+                    currency={currency}
+                    options={data?.options}
+                    versionLabels={versionLabels}
+                    now={now}
+                    onPatch={handle.patch}
+                    onCurrency={(next) => handle.chooseCurrency(next)}
+                  />
+                </div>
+                <div className="flex flex-col gap-6 pt-3">
+                  {drilled && state.from !== undefined && state.to !== undefined ? (
+                    <UsageBreadcrumb from={state.from} to={state.to} onNavigate={(patch) => handle.patch(patch)} />
+                  ) : null}
+                  {summary.isPending ? (
+                    <>
+                      <SummarySkeleton />
+                      <AnalysisSkeleton />
+                      <UsageRecords
+                        items={undefined}
+                        total={undefined}
+                        error={false}
+                        onRetry={() => undefined}
+                        state={state}
                         currency={currency}
-                        simulate={state.simulate}
-                        onSimulate={(on) => handle.patch({ simulate: on ? true : null })}
                         onCurrency={handle.chooseCurrency}
+                        deletedModels={NO_MODELS}
+                        versionLabels={versionLabels}
                       />
-                    </div>
-                    {empty ? null : (
-                      <>
-                        <UsageAnalysisPanel
+                    </>
+                  ) : summary.isError && data === undefined ? (
+                    <UsageLoadError error={summary.error} onRetry={() => void summary.refetch()} />
+                  ) : data === undefined ? null : (
+                    <>
+                      <div className={`transition-opacity ${stale ? "opacity-60" : ""}`}>
+                        <UsageSummaryPanel
                           response={data}
-                          view={state.view}
-                          metric={state.metric}
                           currency={currency}
-                          modelKey={state.modelKey}
-                          stale={stale}
-                          onPatch={handle.patch}
-                          onDrill={(drill) => handle.patch({ range: "custom", from: drill.from, to: drill.to, granularity: drill.granularity })}
+                          simulate={state.simulate}
+                          onSimulate={(on) => handle.patch({ simulate: on ? true : null })}
                           onCurrency={handle.chooseCurrency}
                         />
-                        <UsageRecords
-                          items={activities.data?.items}
-                          total={activities.data?.total}
-                          error={activities.isError && activities.data === undefined}
-                          onRetry={() => void activities.refetch()}
-                              state={state}
-                          currency={currency}
-                          onCurrency={handle.chooseCurrency}
-                          deletedModels={new Set(data.models.filter((model) => model.profileDeleted).map((model) => model.modelKey))}
-                        />
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-            </UsageLayoutProvider>
+                      </div>
+                      {empty ? null : (
+                        <>
+                          <UsageAnalysisPanel
+                            response={data}
+                            view={state.view}
+                            metric={state.metric}
+                            currency={currency}
+                            modelKey={state.modelKey}
+                            versionLabels={versionLabels}
+                            stale={stale}
+                            onPatch={handle.patch}
+                            onDrill={(drill) => handle.patch({ range: "custom", from: drill.from, to: drill.to, granularity: drill.granularity })}
+                            onCurrency={handle.chooseCurrency}
+                          />
+                          <UsageRecords
+                            items={activities.data?.items}
+                            total={activities.data?.total}
+                            error={activities.isError && activities.data === undefined}
+                            onRetry={() => void activities.refetch()}
+                            state={state}
+                            currency={currency}
+                            onCurrency={handle.chooseCurrency}
+                            deletedModels={new Set(data.models.filter((model) => model.profileDeleted).map((model) => model.modelKey))}
+                            versionLabels={versionLabels}
+                          />
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </UsageLayoutProvider>
+            </UsageMarksProvider>
           </div>
         </div>
       </div>

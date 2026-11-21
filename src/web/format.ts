@@ -169,3 +169,22 @@ export function formatBeijingMonth(epochMs: number): string {
   const { year, month } = beijingFields(epochMs);
   return `${year}-${month}`;
 }
+
+/** Calendar fields of a moment in Beijing time, as numbers, for sentences that spell a date out. */
+export function beijingDateParts(epochMs: number): { year: number; month: number; day: number; time: string } {
+  const { year, month, day } = beijingFields(epochMs);
+  return { year: Number(year), month: Number(month), day: Number(day), time: formatBeijingTime(epochMs) };
+}
+
+/**
+ * `MM-DD` of a moment in Beijing time, or `YYYY-MM-DD` when it falls in another year than `now`:
+ * a bare month and day from last year would read as this year's.
+ */
+export function formatBeijingShortDate(epochMs: number, now: number): string {
+  return beijingFields(epochMs).year === beijingFields(now).year ? formatBeijingMonthDay(epochMs) : formatBeijingDate(epochMs);
+}
+
+/** `formatBeijingShortDate` followed by `HH:mm`. */
+export function formatBeijingShortDateTime(epochMs: number, now: number): string {
+  return `${formatBeijingShortDate(epochMs, now)} ${formatBeijingTime(epochMs)}`;
+}

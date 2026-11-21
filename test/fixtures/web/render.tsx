@@ -6,6 +6,7 @@ import type { RunMode } from "../../../src/shared/enums.ts";
 import { ApiClient, type ApiEndpoint } from "../../../src/web/api/client.ts";
 import { ApiProvider, createQueryClient } from "../../../src/web/api/context.tsx";
 import { ShortcutProvider } from "../../../src/web/shortcut-registry.tsx";
+import { TooltipProvider } from "../../../src/web/ui/tooltip.tsx";
 
 export interface RecordedCall {
   method: string;
@@ -77,11 +78,13 @@ export function renderApp(
   const result = render(
     <ApiProvider client={client} queryClient={createQueryClient()}>
       <ShortcutProvider overrides={{}}>
-        <MemoryRouter initialEntries={[options.route ?? "/"]}>
-          <Routes>
-            <Route path={options.path ?? "*"} element={ui} />
-          </Routes>
-        </MemoryRouter>
+        <TooltipProvider>
+          <MemoryRouter initialEntries={[options.route ?? "/"]}>
+            <Routes>
+              <Route path={options.path ?? "*"} element={ui} />
+            </Routes>
+          </MemoryRouter>
+        </TooltipProvider>
       </ShortcutProvider>
     </ApiProvider>,
   );

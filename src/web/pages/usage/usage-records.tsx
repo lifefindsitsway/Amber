@@ -1,16 +1,33 @@
 import type { TFunction } from "i18next";
 import { ChevronRight } from "lucide-react";
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useState, type FocusEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { UsageActivity, UsageCall } from "../../../shared/dto/usage-analytics.ts";
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
 import { useUsageCalls } from "../../api/queries.ts";
 import { formatBeijingMonthDay, formatBeijingTime, formatBeijingTimeSeconds, formatCount } from "../../format.ts";
-import { CostCell, UsageCell } from "./usage-cells.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
+import { CostCell, UsageBreakdownTooltip, UsageCell, useBreakdownOpen, VersionTag } from "./usage-cells.tsx";
 import { UsageError } from "./usage-error.tsx";
 import { useNarrowLayout } from "./usage-layout.tsx";
-import { callCostView, costView, credentialVersionLabel, formatDurationRange, modelLabel, resultBadgeClass, resultLabel, usageInline } from "./usage-present.ts";
+import { UsageModelMark } from "./usage-marks.tsx";
+import {
+  breakdownDescription,
+  breakdownSentence,
+  callCostView,
+  callDetailText,
+  costView,
+  formatDurationRange,
+  modelLabel,
+  profileKeyOfModel,
+  resultBadgeClass,
+  resultLabel,
+  rowVersionLabels,
+  usageBreakdown,
+  usageInline,
+  type CredentialVersionLabels,
+} from "./usage-present.ts";
 import { callsQueryOf, type UsageState } from "./usage-state.ts";
 
 /** Fixed column widths of the record table; the content column takes what is left. */
@@ -24,6 +41,8 @@ const FEATURES_NAMED = 2;
 const CHILD_INDENT_CLASS = "pl-[26px]";
 const ACCENT_BAR = "shadow-[inset_2px_0_0_0_var(--color-accent)]";
 const CELL = "px-2 align-middle";
+/** A mark inside a line of small text: inline, nudged onto the text's centre line. */
+const INLINE_MARK_CLASS = "mr-1 inline-block align-[-2px]";
 
 function featureText(activity: UsageActivity, t: TFunction): string {
   const names = activity.features.map((feature) => t(`usage.feature.${feature}`));
@@ -115,7 +134,15 @@ function Badges(props: { badges: readonly Badge[]; className?: string }) {
   );
 }
 
-function Chevron(props: { expanded: boolean; panelId: string; title: string; onToggle: () => void }) {
+function Chevron(props: {
+  expanded: boolean;
+  panelId: string;
+  title: string;
+  onToggle: () => void;
+  describedBy: string | undefined;
+  onFocus: (event: FocusEvent<HTMLElement>) => void;
+  onBlur: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <button
@@ -124,6 +151,9 @@ function Chevron(props: { expanded: boolean; panelId: string; title: string; onT
       aria-expanded={props.expanded}
       aria-controls={props.panelId}
       aria-label={t(props.expanded ? "usage.records.collapse" : "usage.records.expand", { title: props.title })}
+      {...(props.describedBy === undefined ? {} : { "aria-describedby": props.describedBy })}
+      onFocus={props.onFocus}
+      onBlur={props.onBlur}
       data-testid="usage-record-toggle"
       onClick={(event) => {
         event.stopPropagation();
@@ -150,18 +180,25 @@ function ActivityRow(props: {
   const title = titleOf(activity, t);
   const daily = activity.kind === "content_day" || activity.kind === "deleted_day";
   const muted = activity.kind === "deleted_day";
-  const details = [
-    daily ? t("usage.records.dailySummary") : undefined,
-    activity.kind === "test" ? undefined : featureText(activity, t),
-    activity.kind === "test" ? profileModelText(activity, t, props.deletedModels) : modelsText(activity, t),
-    activity.credentialVersions.length > 1 ? t("usage.records.manyVersions", { n: activity.credentialVersions.length }) : undefined,
-  ]
-    .filter((part): part is string => part !== undefined && part !== "")
-    .join(" · ");
+  const present = (part: string | undefined): part is string => part !== undefined && part !== "";
+  const leading = [daily ? t("usage.records.dailySummary") : undefined, activity.kind === "test" ? undefined : featureText(activity, t)].filter(present);
+  const modelPart = activity.kind === "test" ? profileModelText(activity, t, props.deletedModels) : modelsText(activity, t);
+  const trailing = [activity.credentialVersions.length > 1 ? t("usage.records.manyVersions", { n: activity.credentialVersions.length }) : undefined].filter(present);
+  const details = [...leading, modelPart, ...trailing].filter(present).join(" · ");
+  // A row of several models names the first and a count; a mark there would claim one vendor for all of them.
+  const [onlyModel] = activity.models.length === 1 ? activity.models : [];
   const span = activity.endedAt - activity.startedAt;
   const duration = activity.requests > 1 && span > 0 ? formatDurationRange(span, t) : undefined;
   const badges = badgesOf(activity.results, t);
   const requests = t("usage.summary.callsMain", { n: formatCount(activity.requests) });
+  const breakdown = usageBreakdown(activity.usage, t);
+  const descriptionId = breakdown.length === 0 ? undefined : `${props.panelId}-usage`;
+  const hint = useBreakdownOpen();
+  const usageTooltip = (child: ReactNode) => (
+    <UsageBreakdownTooltip usage={activity.usage} open={hint.open} onOpenChange={hint.onOpenChange}>
+      <div data-testid="usage-record-usage">{child}</div>
+    </UsageBreakdownTooltip>
+  );
   return (
     <tr
       className={`cursor-pointer border-t border-line hover:bg-panel ${narrow ? "h-[84px]" : "h-14"}`}
@@ -171,7 +208,20 @@ function ActivityRow(props: {
     >
       <td className="py-1 pr-2 pl-2 align-middle">
         <div className="flex items-start gap-1">
-          <Chevron expanded={props.expanded} panelId={props.panelId} title={title} onToggle={props.onToggle} />
+          <Chevron
+            expanded={props.expanded}
+            panelId={props.panelId}
+            title={title}
+            onToggle={props.onToggle}
+            describedBy={descriptionId}
+            onFocus={hint.onFocus}
+            onBlur={hint.onBlur}
+          />
+          {descriptionId === undefined ? null : (
+            <span id={descriptionId} hidden>
+              {breakdownDescription(breakdown, t)}
+            </span>
+          )}
           <div className="min-w-0 text-[13px] leading-tight tabular-nums">
             {narrow ? (
               <>
@@ -181,7 +231,7 @@ function ActivityRow(props: {
             ) : (
               <p className="whitespace-nowrap">{`${formatBeijingMonthDay(activity.startedAt)} ${formatBeijingTime(activity.startedAt)}`}</p>
             )}
-            {duration === undefined ? null : <p className="text-xs whitespace-nowrap text-muted">{duration}</p>}
+            {duration === undefined ? null : <SpanLine duration={duration} narrow={narrow} />}
           </div>
         </div>
       </td>
@@ -201,7 +251,15 @@ function ActivityRow(props: {
           </p>
         )}
         <p className="truncate text-xs text-muted" title={details}>
-          {details}
+          {leading.join(" · ")}
+          {modelPart === "" ? null : (
+            <>
+              {leading.length === 0 ? "" : " · "}
+              {onlyModel === undefined ? null : <UsageModelMark modelKey={onlyModel.modelKey} modelId={onlyModel.modelId} size={14} className={INLINE_MARK_CLASS} />}
+              {modelPart}
+            </>
+          )}
+          {trailing.length === 0 ? "" : ` · ${trailing.join(" · ")}`}
         </p>
         {narrow ? (
           <>
@@ -209,9 +267,7 @@ function ActivityRow(props: {
               <span className="tabular-nums">{requests}</span>
               <Badges badges={badges} />
             </p>
-            <p className="truncate text-xs text-muted tabular-nums" title={usageInline(activity.usage, t)}>
-              {usageInline(activity.usage, t)}
-            </p>
+            {usageTooltip(<p className="truncate text-xs text-muted tabular-nums">{usageInline(activity.usage, t)}</p>)}
           </>
         ) : null}
       </td>
@@ -221,15 +277,30 @@ function ActivityRow(props: {
             <p className="leading-tight tabular-nums">{requests}</p>
             <Badges badges={badges} className="justify-end" />
           </td>
-          <td className={`${CELL} text-right`}>
-            <UsageCell usage={activity.usage} />
-          </td>
+          <td className={`${CELL} text-right`}>{usageTooltip(<UsageCell usage={activity.usage} />)}</td>
         </>
       )}
       <td className={`${CELL} pr-3 text-right`}>
         <CostCell view={costView(activity.cost, props.currency)} currency={props.currency} onCurrency={props.onCurrency} />
       </td>
     </tr>
+  );
+}
+
+/**
+ * How far apart the first and the last call of the row are. Wide rows name it a span so it is not
+ * read as the task's duration and may wrap within the time column; the narrow column keeps the bare value.
+ */
+function SpanLine(props: { duration: string; narrow: boolean }) {
+  const { t } = useTranslation();
+  const hint = t("usage.records.spanHint");
+  return (
+    <Tooltip content={<p className="max-w-60">{hint}</p>} side="bottom" align="start" testId="usage-span-tooltip">
+      <p className={`relative text-xs text-muted ${props.narrow ? "whitespace-nowrap" : "break-words"}`} data-testid="usage-record-span">
+        {props.narrow ? props.duration : t("usage.records.span", { duration: props.duration })}
+        <span className="sr-only">{hint}</span>
+      </p>
+    </Tooltip>
   );
 }
 
@@ -252,6 +323,7 @@ function CallRows(props: {
   panelId: string;
   narrow: boolean;
   deletedModels: ReadonlySet<string>;
+  versionLabels: CredentialVersionLabels;
 }) {
   const { t } = useTranslation();
   const calls = useUsageCalls(callsQueryOf(props.state, props.currency, props.activity.group));
@@ -274,44 +346,84 @@ function CallRows(props: {
   return (
     <Fragment>
       {calls.data.items.map((call, index) => (
-        <CallRow key={call.id} call={call} currency={props.currency} onCurrency={props.onCurrency} panelId={index === 0 ? props.panelId : undefined} narrow={props.narrow} deleted={props.deletedModels.has(call.modelKey)} />
+        <CallRow
+          key={call.id}
+          call={call}
+          currency={props.currency}
+          onCurrency={props.onCurrency}
+          panelId={index === 0 ? props.panelId : undefined}
+          narrow={props.narrow}
+          deleted={props.deletedModels.has(call.modelKey)}
+          versionLabels={props.versionLabels}
+        />
       ))}
     </Fragment>
   );
 }
 
-function CallRow(props: { call: UsageCall; currency: PriceCurrency; onCurrency: (currency: PriceCurrency) => void; panelId: string | undefined; narrow: boolean; deleted: boolean }) {
+/**
+ * One call. Its usage parts (cache, reasoning) are written out on a second small line rather than
+ * left to a tooltip, so they read without a pointer: on touch, from the keyboard, to a screen reader.
+ */
+function CallRow(props: {
+  call: UsageCall;
+  currency: PriceCurrency;
+  onCurrency: (currency: PriceCurrency) => void;
+  panelId: string | undefined;
+  narrow: boolean;
+  deleted: boolean;
+  versionLabels: CredentialVersionLabels;
+}) {
   const { t } = useTranslation();
   const { call, narrow } = props;
   const model = modelLabel({ modelKey: call.modelKey, profileName: call.profileName, modelId: call.modelId }, t, props.deleted);
-  const version = credentialVersionLabel({ credentialVersion: call.credentialVersion, setAt: call.credentialSetAt }, t);
-  const label = `${model} · ${version}`;
+  const versions = rowVersionLabels(props.versionLabels, profileKeyOfModel(call.modelKey), [call.credentialVersion]);
+  const detail = callDetailText(call, t);
   const badge = (
     <span className={`inline-block rounded px-1.5 text-xs whitespace-nowrap ${resultBadgeClass(call.result)}`} data-testid="usage-call-result">
       {resultLabel(call.result, call.accepted, t)}
     </span>
   );
+  const exact = breakdownSentence(usageBreakdown(call.usage, t), t);
   return (
     <tr id={props.panelId} className={`border-t border-line/60 bg-sunken ${narrow ? "h-[60px]" : "h-12"}`} data-testid="usage-call-row" data-result={call.result}>
       <td className={`py-1 pr-2 ${CHILD_INDENT_CLASS} align-middle text-[13px] tabular-nums ${ACCENT_BAR}`}>{formatBeijingTimeSeconds(call.occurredAt)}</td>
-      <td className={`${CELL} min-w-0 text-muted`}>
-        <p className="truncate" title={label}>
-          {label}
+      <td className={`${CELL} min-w-0 py-1 text-muted`}>
+        <p className="flex min-w-0 items-center gap-1.5" data-testid="usage-call-model">
+          <UsageModelMark modelKey={call.modelKey} modelId={call.modelId} size={16} />
+          <span className="min-w-0 truncate" title={model}>
+            {model}
+          </span>
+          <VersionTag labels={versions} className="max-w-[50%] shrink-0 text-xs" />
         </p>
         {narrow ? (
           <p className="flex min-w-0 items-center gap-1.5 text-xs">
             {badge}
-            <span className="min-w-0 truncate tabular-nums" title={usageInline(call.usage, t)}>
-              {usageInline(call.usage, t)}
-            </span>
+            {call.usage.llm === null && call.usage.asr === null ? null : (
+              <UsageBreakdownTooltip usage={call.usage}>
+                <span className="relative min-w-0 truncate tabular-nums">
+                  <span aria-hidden="true">{usageInline(call.usage, t)}</span>
+                  <span className="sr-only">{exact}</span>
+                </span>
+              </UsageBreakdownTooltip>
+            )}
           </p>
         ) : null}
+        {detail === "" ? null : (
+          <p className="truncate text-xs leading-4 text-muted tabular-nums" title={detail} data-testid="usage-call-detail">
+            {detail}
+          </p>
+        )}
       </td>
       {narrow ? null : (
         <>
           <td className={`${CELL} text-right`}>{badge}</td>
           <td className={`${CELL} text-right`}>
-            <UsageCell usage={call.usage} />
+            <UsageBreakdownTooltip usage={call.usage}>
+              <div data-testid="usage-call-usage">
+                <UsageCell usage={call.usage} exact />
+              </div>
+            </UsageBreakdownTooltip>
           </td>
         </>
       )}
@@ -353,6 +465,7 @@ export function UsageRecords(props: {
   onCurrency: (currency: PriceCurrency) => void;
   /** Keys of the models whose profile is deleted; activities and calls carry no such flag of their own. */
   deletedModels: ReadonlySet<string>;
+  versionLabels: CredentialVersionLabels;
 }) {
   const { t } = useTranslation();
   const narrow = useNarrowLayout();
@@ -416,6 +529,7 @@ export function UsageRecords(props: {
                         panelId={panelId}
                         narrow={narrow}
                         deletedModels={props.deletedModels}
+                        versionLabels={props.versionLabels}
                       />
                     ) : null}
                   </Fragment>

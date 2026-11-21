@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  beijingDateParts,
   formatBeijingDate,
   formatBeijingDateTime,
   formatBeijingDateTimeSeconds,
   formatBeijingMonth,
   formatBeijingMonthDay,
   formatBeijingMonthDayTime,
+  formatBeijingShortDate,
+  formatBeijingShortDateTime,
   formatBeijingTime,
   formatBeijingTimeSeconds,
   formatCompactCount,
@@ -100,5 +103,27 @@ describe("Beijing clock helpers of the usage page", () => {
     expect(formatBeijingMonthDay(moment)).toBe("11-05");
     expect(formatBeijingMonthDayTime(moment)).toBe("11-05 10:00");
     expect(formatBeijingMonth(moment)).toBe("2026-11");
+  });
+});
+
+describe("short Beijing dates", () => {
+  const now = Date.UTC(2026, 10, 20, 4); // 2026-11-20 12:00 in Beijing
+
+  it("leaves the year out within the current year and writes it for any other", () => {
+    expect(formatBeijingShortDate(Date.UTC(2026, 0, 2, 3), now)).toBe("01-02");
+    expect(formatBeijingShortDate(Date.UTC(2025, 10, 20, 3), now)).toBe("2025-11-20");
+    expect(formatBeijingShortDateTime(Date.UTC(2026, 10, 20, 6, 5), now)).toBe("11-20 14:05");
+    expect(formatBeijingShortDateTime(Date.UTC(2025, 10, 20, 6, 5), now)).toBe("2025-11-20 14:05");
+  });
+
+  it("decides the year in Beijing time: a new year's moment that is still the old year in UTC", () => {
+    const newYear = Date.UTC(2026, 11, 31, 16, 30); // 2027-01-01 00:30 in Beijing
+    expect(formatBeijingShortDate(newYear, now)).toBe("2027-01-01");
+    expect(formatBeijingShortDate(newYear, newYear)).toBe("01-01");
+  });
+
+  it("spells out the parts of a moment as numbers, with the time of day padded", () => {
+    expect(beijingDateParts(Date.UTC(2026, 10, 20, 6, 5))).toEqual({ year: 2026, month: 11, day: 20, time: "14:05" });
+    expect(beijingDateParts(Date.UTC(2026, 0, 2, 16, 0))).toEqual({ year: 2026, month: 1, day: 3, time: "00:00" });
   });
 });

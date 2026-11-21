@@ -133,6 +133,37 @@ test("a record expands into its calls on the parent's columns, with the accent b
   await expect(calls).toHaveCount(0);
 });
 
+for (const layout of [{ name: "wide", width: 1280, sidebar: undefined }, { name: "narrow", width: 768, sidebar: 400 }] as const) {
+  test(`${layout.name}: the span stays in the time column, and a call's usage parts fit its own row`, async ({ page }) => {
+    await open(page, "/usage", "main", { width: layout.width, ...(layout.sidebar === undefined ? {} : { sidebar: layout.sidebar }) });
+    const record = page.getByTestId("usage-record-row").nth(1);
+    await expect(record).toBeVisible();
+    const span = await box(record.getByTestId("usage-record-span"));
+    const timeCell = await box(record.locator("td").first());
+    expect(span.x + span.width).toBeLessThan(timeCell.x + timeCell.width + TOLERANCE_PX);
+    await record.getByTestId("usage-record-toggle").click();
+    const calls = page.getByTestId("usage-call-row");
+    await expect(page.getByTestId("usage-call-detail").first()).toBeVisible();
+    const boxes = await Promise.all((await calls.all()).map((call) => box(call)));
+    // Rows follow one another without overlapping, and a wide row keeps its height with the second line.
+    for (const [index, current] of boxes.entries()) {
+      const next = boxes[index + 1];
+      if (next !== undefined) expect(current.y + current.height).toBeLessThan(next.y + TOLERANCE_PX);
+      if (layout.name === "wide") expect(current.height).toBeLessThan(48 + TOLERANCE_PX);
+    }
+    for (const call of await calls.all()) {
+      const detail = call.getByTestId("usage-call-detail");
+      if ((await detail.count()) === 0) continue;
+      const row = await box(call);
+      const line = await box(detail);
+      expect(line.y + line.height).toBeLessThan(row.y + row.height + TOLERANCE_PX);
+    }
+    // Text kept for screen readers stays inside the table: the page itself never grows a scrollbar.
+    const extent = await page.evaluate(() => ({ height: document.scrollingElement?.scrollHeight ?? 0, viewport: window.innerHeight }));
+    expect(extent.height).toBeLessThanOrEqual(extent.viewport);
+  });
+}
+
 test("every state in the address is restored on load", async ({ page }) => {
   const model = encodeModelKey(["llm", "relay", "claude-sonnet-4-5"]);
   await open(page, `/usage?range=30d&currency=USD&view=models&granularity=day&model=${model}`);
