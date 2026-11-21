@@ -18,6 +18,7 @@ import { queryKeys, useAsrProfiles, useCollections, useProviders, useSettings, u
 import { ErrorView } from "../components/error-view.tsx";
 import { diarizationNoteKey, diarizationOffer } from "../components/asr-diarization.ts";
 import { AsrModelSelect, initialAsrModelRef } from "../components/asr-model-select.tsx";
+import { LinkScopeHint } from "../components/link-scope-hint.tsx";
 import { ModelSelect, type ModelSelectEntry } from "../components/model-select.tsx";
 import { pickLocalFile, type PickedFile } from "../desktop/bridge.ts";
 import { buildSubtitleImportOptions, importBlockers, plainImportPossible } from "./content/subtitle-import-choice.ts";
@@ -28,8 +29,8 @@ import { useDesktop } from "../desktop/use-desktop.ts";
 import { ContextWindowNotice } from "../models/context-window-notice.tsx";
 import { useFocusAfterSave } from "../models/use-focus-after-save.ts";
 import { useModelReadiness } from "../models/use-model-readiness.ts";
-import { linesOf, recognizeLink } from "../links.ts";
-import type { NewPagePrefill } from "../shell/paste-guard.ts";
+import { linesOf, parseLinkText, recognizeLink } from "../links.ts";
+import { useLinkPasteField, type NewPagePrefill } from "../shell/paste-guard.ts";
 import { requestOpenTasks } from "../shell/task-panel.tsx";
 import { Button } from "../ui/button.tsx";
 import { FilePicker } from "../ui/file-picker.tsx";
@@ -97,7 +98,8 @@ function expired(file: PickedFile): boolean {
 export async function routeAfterImport(input: {
   api: ApiClient;
   response: ImportResponse;
-  lines: readonly string[];
+  /** The links sent, as sent. */
+  urls: readonly string[];
   collection: { id: string } | { name: string } | undefined;
 }): Promise<{ path: string; openTasks: boolean }> {
   const { response, collection } = input;
@@ -109,7 +111,7 @@ export async function routeAfterImport(input: {
   if (collection !== undefined && "id" in collection) {
     return { path: `/collections/${collection.id}`, openTasks: false };
   }
-  const platformList = input.lines.length === 1 && recognizeLink(input.lines[0] ?? "")?.kind === "collection";
+  const platformList = input.urls.length === 1 && recognizeLink(input.urls[0] ?? "")?.kind === "collection";
   if (firstId === undefined || (collection === undefined && !platformList)) {
     return scattered;
   }
@@ -144,8 +146,11 @@ export function NewPage() {
   const desktop = useDesktop();
 
   const [tab, setTab] = useState<Tab>("link");
-  const [text, setText] = useState(() => (location.state as NewPagePrefill | null)?.prefill ?? "");
+  const [prefill] = useState(() => location.state as NewPagePrefill | null);
+  const [text, setText] = useState(prefill?.prefill ?? "");
   const [subtitleUrl, setSubtitleUrl] = useState("");
+  const linkField = useLinkPasteField<HTMLTextAreaElement>({ value: text, onValue: setText, multiline: true, initialNote: prefill?.pasteNote });
+  const subtitleField = useLinkPasteField<HTMLInputElement>({ value: subtitleUrl, onValue: setSubtitleUrl, multiline: false });
   const [subtitle, setSubtitle] = useState<File | undefined>(undefined);
   const [subtitleLanguage, setSubtitleLanguage] = useState("");
   const [uploadFile, setUploadFile] = useState<File | undefined>(undefined);
@@ -202,7 +207,22 @@ export function NewPage() {
   const languageLabel = (tag: string): string => (i18n.exists(`languageNames.${tag}`) ? t(`languageNames.${tag}`) : tag);
   const templateLabel = (template: SummaryTemplateDto): string => (template.builtin && i18n.exists(template.name) ? String(t(template.name as never)) : template.name);
 
-  const lines = tab === "subtitle" ? linesOf(subtitleUrl).slice(0, 1) : linesOf(text);
+  // Both link fields are read for their links from what they hold now; nothing of a past paste
+  // decides what is sent.
+  const parsed = useMemo(() => parseLinkText(text), [text]);
+  const subtitleParsed = useMemo(() => parseLinkText(subtitleUrl), [subtitleUrl]);
+  // With a supported link the link tab sends its supported links alone; without one, every line
+  // goes as written and the server says what it cannot take.
+  const linkUrls = parsed.links.length > 0 ? parsed.links.map((link) => link.url) : linesOf(text);
+  // A subtitle belongs to one video: a single supported link is sent as extracted, anything else
+  // as written (more than one link is refused before sending).
+  const subtitleTarget = subtitleParsed.all.length === 1 && subtitleParsed.links[0] !== undefined ? subtitleParsed.links[0].url : subtitleUrl.trim();
+  const urls = tab === "subtitle" ? (subtitleTarget === "" ? [] : [subtitleTarget]) : linkUrls;
+  // Something besides the supported links is in the box: say what will be processed.
+  const scopeShown = tab === "link" && parsed.links.length > 0 && (parsed.unsupported.length > 0 || parsed.ignoredLines > 0 || parsed.otherText);
+  const scopeId = `${formId}-scope`;
+  // A choice of parts belongs to the link it was made for; an edited link asks again.
+  const shownPartPrompts = partPrompts.filter((prompt) => urls.includes(prompt.url));
 
   // The subtitle of the open tab is previewed under its file; only that one is imported.
   const uploadSource = useMemo<SubtitlePreviewSource | undefined>(() => (uploadSubtitle === undefined ? undefined : { kind: "text", file: uploadSubtitle }), [uploadSubtitle]);
@@ -235,7 +255,6 @@ export function NewPage() {
   /** The options of a previewed subtitle; a failed preview imports it as a plain subtitle. */
   const subtitleOptions = (): SubtitleImportOptions | undefined =>
     preview === undefined || subtitleChoice === undefined ? undefined : buildSubtitleImportOptions(preview, subtitleChoice);
-  const recognized = lines.map((line) => recognizeLink(line));
   const noLlm = providers.data !== undefined && providers.data.items.length === 0;
 
   /** Leaves for the import's result, unless some items were skipped for being in the trash. */
@@ -274,7 +293,7 @@ export function NewPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
       void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-      finishImport(response, await routeAfterImport({ api, response, lines: [], collection: undefined }));
+      finishImport(response, await routeAfterImport({ api, response, urls: [], collection: undefined }));
     },
     onError: (caught) => setError(caught instanceof ApiError ? caught.error : undefined),
   });
@@ -310,7 +329,7 @@ export function NewPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
       void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-      finishImport(response, await routeAfterImport({ api, response, lines: [], collection: undefined }));
+      finishImport(response, await routeAfterImport({ api, response, urls: [], collection: undefined }));
     },
     onError: (caught) => {
       if (caught instanceof ApiError && caught.error.code === "unauthenticated.file_grant") {
@@ -334,7 +353,7 @@ export function NewPage() {
         const options = subtitleOptions();
         items = [
           {
-            url: lines[0] ?? "",
+            url: urls[0] ?? "",
             initialSubtitle: {
               text: subtitleText,
               language: effectiveSubtitleLanguage,
@@ -344,7 +363,7 @@ export function NewPage() {
           },
         ];
       } else {
-        items = lines.map((url) => ({ url, ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }) }));
+        items = urls.map((url) => ({ url, ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }) }));
       }
       const body: ImportRequest = {
         items,
@@ -359,7 +378,7 @@ export function NewPage() {
         void queryClient.invalidateQueries({ queryKey: queryKeys.collectionDetails });
         void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
         void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-        finishImport(response, await routeAfterImport({ api, response, lines, collection }));
+        finishImport(response, await routeAfterImport({ api, response, urls, collection }));
       } catch (caught) {
         if (caught instanceof ApiError && caught.error.code === "invalid_request.multipart_choice_required") {
           const prompts = await inspectParts(api, items.filter((item) => item.parts === undefined).map((item) => item.url));
@@ -401,7 +420,8 @@ export function NewPage() {
       localImport.mutate({ allowDuplicate: false });
       return;
     }
-    if (lines.length === 0) return setProblem(t("shell.newPage.needUrl"));
+    if (tab === "subtitle" && subtitleParsed.all.length > 1) return setProblem(t("shell.newPage.subtitleOneLink"));
+    if (urls.length === 0) return setProblem(t("shell.newPage.needUrl"));
     if (tab === "subtitle" && (subtitle === undefined || effectiveSubtitleLanguage === "")) return setProblem(t("shell.newPage.needSubtitle"));
     if (tab === "subtitle") {
       const blocked = subtitleProblem();
@@ -477,16 +497,23 @@ export function NewPage() {
             <textarea
               data-testid="new-url-input"
               aria-label={t("shell.newPage.tabLink")}
+              ref={linkField.ref}
               value={text}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => linkField.onChange(event.target.value)}
+              onPaste={linkField.onPaste}
               placeholder={t("shell.newPage.urlPlaceholder")}
               rows={6}
               className="w-full rounded-md border border-line bg-surface p-3 font-mono text-sm"
             />
-            {recognized.some((link) => link?.kind === "collection") ? (
+            {linkField.note === undefined ? null : (
+              <p className="text-xs text-muted" role="status" data-testid="new-paste-note">
+                {t("shell.newPage.pasteNote", { count: linkField.note })}
+              </p>
+            )}
+            {parsed.links.some((link) => link.kind === "collection") ? (
               <p className="text-xs text-muted">{t("shell.newPage.collectionDetected")}</p>
-            ) : lines.length > 1 ? (
-              <p className="text-xs text-muted">{t("shell.newPage.batchDetected", { count: lines.length })}</p>
+            ) : parsed.links.length > 1 ? (
+              <p className="text-xs text-muted">{t("shell.newPage.batchDetected", { count: parsed.links.length })}</p>
             ) : null}
           </Tabs.Content>
           {server ? (
@@ -576,7 +603,20 @@ export function NewPage() {
             <label htmlFor={`${formId}-subtitle-url`} className={FORM_LABEL}>
               {t("shell.newPage.subtitleUrl")}
             </label>
-            <input id={`${formId}-subtitle-url`} value={subtitleUrl} onChange={(event) => setSubtitleUrl(event.target.value)} placeholder={t("shell.newPage.subtitleUrlPlaceholder")} className={FIELD} />
+            <input
+              id={`${formId}-subtitle-url`}
+              ref={subtitleField.ref}
+              value={subtitleUrl}
+              onChange={(event) => subtitleField.onChange(event.target.value)}
+              onPaste={subtitleField.onPaste}
+              placeholder={t("shell.newPage.subtitleUrlPlaceholder")}
+              className={FIELD}
+            />
+            {subtitleField.note === undefined ? null : (
+              <span className={FORM_HINT} role="status" data-testid="subtitle-paste-note">
+                {t("shell.newPage.pasteNote", { count: subtitleField.note })}
+              </span>
+            )}
             <span id={`${formId}-subtitle-file`} className={FORM_LABEL}>
               {t("shell.newPage.subtitleFile")}
             </span>
@@ -602,10 +642,10 @@ export function NewPage() {
           </Tabs.Content>
         </Tabs.Root>
 
-        {partPrompts.length === 0 ? null : (
+        {shownPartPrompts.length === 0 ? null : (
           <div data-testid="parts-choice" className="rounded-md border border-line p-3 text-sm">
             <p className="font-medium">{t("shell.newPage.partsTitle")}</p>
-            {partPrompts.map((prompt) => (
+            {shownPartPrompts.map((prompt) => (
               <fieldset key={prompt.url} className="mt-2">
                 <legend className="truncate text-xs text-muted">{prompt.title ?? prompt.url}</legend>
                 <label className="mr-4 inline-flex items-center gap-1">
@@ -779,8 +819,18 @@ export function NewPage() {
           </ErrorView>
         )}
         {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} onSaved={windowSaved} testId="new-context-window" /> : null}
-        <div className="flex justify-end">
-          <Button id={submitId} type="submit" variant="primary" data-testid="new-submit" disabled={submit.isPending || upload.isPending || localImport.isPending || windowMissing}>
+        {/* The scope sits beside the button; when both do not fit (a narrow window, a large zoom) it
+            wraps above it, so the button stays in view. */}
+        <div className="flex flex-wrap items-start justify-end gap-x-4 gap-y-2">
+          {scopeShown ? <LinkScopeHint parsed={parsed} id={scopeId} className="min-w-0 flex-1 basis-80" /> : null}
+          <Button
+            id={submitId}
+            type="submit"
+            variant="primary"
+            data-testid="new-submit"
+            aria-describedby={scopeShown ? scopeId : undefined}
+            disabled={submit.isPending || upload.isPending || localImport.isPending || windowMissing}
+          >
             {upload.isPending ? t("shell.newPage.uploading") : submit.isPending || localImport.isPending ? t("shell.newPage.submitting") : t("shell.newPage.submit")}
           </Button>
         </div>
@@ -788,6 +838,7 @@ export function NewPage() {
     </div>
   );
 }
+
 
 function TabTrigger(props: { value: Tab; label: string; disabled?: boolean }) {
   return (

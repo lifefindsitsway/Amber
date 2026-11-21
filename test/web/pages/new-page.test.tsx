@@ -6,12 +6,14 @@ import { ApiClient } from "../../../src/web/api/client.ts";
 import { queryKeys } from "../../../src/web/api/queries.ts";
 import { NewPage, routeAfterImport } from "../../../src/web/pages/new-page.tsx";
 import { useOpenTasksRequest } from "../../../src/web/shell/task-panel.tsx";
+import { usePasteGuard } from "../../../src/web/shell/paste-guard.ts";
 import { baseRoutes, content, provider, SETTINGS } from "../../fixtures/web/shell-data.ts";
 import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 import { chooseOption, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
+import { APP_SHARE, LONG_SHARE, SHORT, UNSUPPORTED, VIDEO_2, WEB_SHARE, WEB_SHARE_LINK, YT_LIST, YT_VIDEO } from "../../fixtures/platform/share-text.ts";
 
 beforeEach(stubSelectLayout);
 
@@ -45,7 +47,7 @@ function page(onOpenTasks?: () => void, onClient?: (client: QueryClient) => void
 }
 
 const TRASH_LIST = [...queryKeys.trash, "list"];
-const PLAYLIST = "https://www.youtube.com/playlist?list=PL1";
+const PLAYLIST = "https://www.youtube.com/playlist?list=PL1234567890";
 
 describe("NewPage", () => {
   it("imports one link with this run's settings and opens its detail page", async () => {
@@ -387,23 +389,23 @@ describe("routeAfterImport", () => {
 
   it("routes a platform list to the collection the import created", async () => {
     mockApi({ "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } } });
-    await expect(routeAfterImport({ api, response: batch, lines: ["https://www.youtube.com/playlist?list=PL1"], collection: undefined })).resolves.toEqual({ path: "/collections/k7", openTasks: false });
+    await expect(routeAfterImport({ api, response: batch, urls: ["https://www.youtube.com/playlist?list=PL1234567890"], collection: undefined })).resolves.toEqual({ path: "/collections/k7", openTasks: false });
   });
 
   it("routes into a chosen existing collection without asking the server", async () => {
     const { calls } = mockApi({});
-    await expect(routeAfterImport({ api, response: batch, lines: [VIDEO, VIDEO], collection: { id: "k1" } })).resolves.toEqual({ path: "/collections/k1", openTasks: false });
+    await expect(routeAfterImport({ api, response: batch, urls: [VIDEO, VIDEO], collection: { id: "k1" } })).resolves.toEqual({ path: "/collections/k1", openTasks: false });
     expect(calls).toHaveLength(0);
   });
 
   it("finds a newly named collection by name", async () => {
     mockApi({ "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "old", name: "旧", itemId: "kio" }, { id: "k8", name: "新课", itemId: "ki8" }] }), media: [] } } });
-    await expect(routeAfterImport({ api, response: batch, lines: [VIDEO, VIDEO], collection: { name: "新课" } })).resolves.toEqual({ path: "/collections/k8", openTasks: false });
+    await expect(routeAfterImport({ api, response: batch, urls: [VIDEO, VIDEO], collection: { name: "新课" } })).resolves.toEqual({ path: "/collections/k8", openTasks: false });
   });
 
   it("sends loose items to the library filtered by batch, with the task panel open", async () => {
     mockApi({});
-    await expect(routeAfterImport({ api, response: batch, lines: [VIDEO, VIDEO], collection: undefined })).resolves.toEqual({ path: "/library?importBatchId=b", openTasks: true });
+    await expect(routeAfterImport({ api, response: batch, urls: [VIDEO, VIDEO], collection: undefined })).resolves.toEqual({ path: "/library?importBatchId=b", openTasks: true });
   });
 });
 
@@ -716,5 +718,258 @@ describe("NewPage model readiness", () => {
     expect(screen.queryByTestId("new-context-window")).toBeNull();
     await chooseOption(model, "bare", "备用");
     expect(screen.getByTestId("new-context-window")).toBeTruthy();
+  });
+});
+
+describe("NewPage link box with share texts", () => {
+  const importReply = { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } };
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const pasteInto = (field: HTMLElement, text: string): void => {
+    fireEvent.paste(field, { clipboardData: { getData: () => text } });
+  };
+  const posted = (calls: Array<{ path: string; body?: unknown }>): string[] =>
+    (calls.find((call) => call.path === "/api/contents/import")?.body as { items: Array<{ url: string }> }).items.map((item) => item.url);
+
+  async function submitted(text: string): Promise<{ urls: string[] | undefined; scope: string | null }> {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/import": importReply });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: text } });
+    const scope = screen.queryByTestId("link-scope")?.textContent ?? null;
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/import") || screen.queryByText("请先粘贴至少一条链接") !== null).toBe(true));
+    const sent = calls.some((call) => call.path === "/api/contents/import") ? posted(calls) : undefined;
+    cleanup();
+    return { urls: sent, scope };
+  }
+
+  it("leaves only the links of a pasted share text, unsupported ones too, with a note the next edit clears", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    pasteInto(box(), LONG_SHARE);
+    expect(box().value).toBe([WEB_SHARE_LINK, `${VIDEO_2}?p=3`, YT_VIDEO, UNSUPPORTED, YT_LIST].join("\n"));
+    expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 5 条链接");
+    fireEvent.change(box(), { target: { value: `${box().value} ` } });
+    expect(screen.queryByTestId("new-paste-note")).toBeNull();
+  });
+
+  it("pastes a plain list of links as it is, with no note", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: () => `${VIDEO}\n${YT_VIDEO}` } });
+    box().dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.queryByTestId("new-paste-note")).toBeNull();
+  });
+
+  it("leaves a paste without a supported link to the browser", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: () => `看这个 ${UNSUPPORTED}` } });
+    box().dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("inserts at the caret, over a selection, breaking lines so nothing runs on", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: `${VIDEO_2}\n${YT_VIDEO}` } });
+    // Caret at the end of the first line: the links go on lines of their own.
+    box().setSelectionRange(VIDEO_2.length, VIDEO_2.length);
+    pasteInto(box(), APP_SHARE);
+    expect(box().value).toBe(`${VIDEO_2}\n${SHORT}\n${YT_VIDEO}`);
+    await waitFor(() => expect(box().selectionStart).toBe(`${VIDEO_2}\n${SHORT}`.length));
+    // A selection is replaced.
+    const start = box().value.indexOf(SHORT);
+    box().setSelectionRange(start, start + SHORT.length);
+    pasteInto(box(), WEB_SHARE);
+    expect(box().value).toBe(`${VIDEO_2}\n${WEB_SHARE_LINK}\n${YT_VIDEO}`);
+  });
+
+  it("inserts through the browser's own insert when it has one, so undo covers the paste", async () => {
+    mockApi(baseRoutes());
+    const execCommand = vi.fn((command: string, _ui: boolean, value: string) => {
+      const field = document.activeElement as HTMLTextAreaElement;
+      field.setRangeText(value, field.selectionStart, field.selectionEnd, "end");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      return command === "insertText";
+    });
+    Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
+    try {
+      renderApp(page(), { route: "/new" });
+      fireEvent.change(box(), { target: { value: VIDEO } });
+      box().setSelectionRange(VIDEO.length, VIDEO.length);
+      pasteInto(box(), WEB_SHARE);
+      expect(execCommand).toHaveBeenCalledWith("insertText", false, `\n${WEB_SHARE_LINK}`);
+      expect(box().value).toBe(`${VIDEO}\n${WEB_SHARE_LINK}`);
+      // The insert's own change event does not take the note away.
+      expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 1 条链接");
+    } finally {
+      Reflect.deleteProperty(document, "execCommand");
+    }
+  });
+
+  it("sends supported links alone as they are, with nothing beside the button", async () => {
+    expect(await submitted(` ${VIDEO_2}\n\n${YT_VIDEO} ${SHORT} `)).toEqual({ urls: [VIDEO_2, YT_VIDEO, SHORT], scope: null });
+  });
+
+  it("sends only the supported links when unsupported links or words are around them, and says so", async () => {
+    expect(await submitted(`${WEB_SHARE}\n${UNSUPPORTED}\n另一行文字`)).toEqual({ urls: [WEB_SHARE_LINK], scope: "将处理 1 条链接，另有 1 条未加入·查看" });
+    expect(await submitted(`${YT_VIDEO}\n另一行文字`)).toEqual({ urls: [YT_VIDEO], scope: "将处理 1 条链接，另有 1 行文字未加入" });
+    expect(await submitted(`${YT_VIDEO}。`)).toEqual({ urls: [YT_VIDEO], scope: "将处理 1 条链接，链接以外的文字不会提交" });
+  });
+
+  it("sends every line as written when no link is supported, as before, with no scope", async () => {
+    expect(await submitted(` ${UNSUPPORTED} \n看这个`)).toEqual({ urls: [UNSUPPORTED, "看这个"], scope: null });
+  });
+
+  it("asks for a link when the box is empty", async () => {
+    expect(await submitted("  \n ")).toEqual({ urls: undefined, scope: null });
+  });
+
+  it("lists the links left out on request, at most twenty, with the count of the rest and of lines without links", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    const others = Array.from({ length: 25 }, (_, index) => `${UNSUPPORTED}/${index}`);
+    fireEvent.change(box(), { target: { value: [YT_VIDEO, ...others, "一行字", "又一行"].join("\n") } });
+    const scope = screen.getByTestId("link-scope");
+    expect(scope.textContent).toBe("将处理 1 条链接，另有 25 条未加入·查看");
+    // The button is described by the sentence and stays usable.
+    const submit = screen.getByTestId<HTMLButtonElement>("new-submit");
+    expect(document.getElementById(submit.getAttribute("aria-describedby") ?? "")?.textContent).toBe("将处理 1 条链接，另有 25 条未加入");
+    expect(submit.disabled).toBe(false);
+    const toggle = within(scope).getByRole("button", { name: "查看" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const details = screen.getByTestId("link-scope-details");
+    expect(within(details).getAllByRole("listitem").map((item) => item.textContent)).toEqual(others.slice(0, 20));
+    expect(details.textContent).toContain("还有 5 条未列出");
+    expect(details.textContent).toContain("另有 2 行文字不含链接，也不会提交");
+    fireEvent.click(within(scope).getByRole("button", { name: "收起" }));
+    expect(screen.queryByTestId("link-scope-details")).toBeNull();
+  });
+
+  it("counts supported links for the batch hint and spots a platform list among words", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: `${WEB_SHARE}\n${UNSUPPORTED}\n${YT_VIDEO}` } });
+    expect(screen.getByText("识别到 2 条链接，将作为一批导入")).toBeTruthy();
+    fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
+    expect(screen.getByText("识别到平台合集或播放列表，将整批导入")).toBeTruthy();
+  });
+
+  it("routes a platform list taken from a share text to its collection", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"] } },
+      "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k7"));
+    expect(posted(calls)).toEqual([YT_LIST]);
+  });
+
+  it("asks about parts for the extracted link, and drops the choice once the link changes", async () => {
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/import": () => {
+        attempts += 1;
+        return attempts === 1
+          ? { status: 400, body: { error: { class: "invalid_request", code: "invalid_request.multipart_choice_required", retryDisposition: "never", userMessage: "该稿件有多个分 P" } } }
+          : importReply;
+      },
+      "POST /api/contents/inspect": {
+        body: { kind: "multipart", canonicalUrl: MULTI_P, title: "多 P 稿件", parts: [1, 2].map((index) => ({ platformPartId: `p${index}`, index, title: `P${index}`, durationMs: 1000 })) },
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: WEB_SHARE } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    expect(await screen.findByTestId("parts-choice")).toBeTruthy();
+    expect(calls.find((call) => call.path === "/api/contents/inspect")?.body).toEqual({ url: WEB_SHARE_LINK });
+    fireEvent.click(screen.getByLabelText("导入全部 2 个分 P"));
+    // Another link in the box: the choice made for the old one neither shows nor is sent.
+    fireEvent.change(box(), { target: { value: `【另一个】 ${VIDEO_2}` } });
+    expect(screen.queryByTestId("parts-choice")).toBeNull();
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(calls.filter((call) => call.path === "/api/contents/import")).toHaveLength(2));
+    expect(calls.filter((call) => call.path === "/api/contents/import").at(-1)?.body).toMatchObject({ items: [{ url: VIDEO_2 }] });
+  });
+});
+
+describe("NewPage subtitle tab link", () => {
+  async function openSubtitleTab() {
+    const tab = await screen.findByRole("tab", { name: "导入字幕" });
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+    return screen.getByLabelText<HTMLInputElement>("音视频链接");
+  }
+
+  it.each([
+    ["two links", `${VIDEO_2} ${YT_VIDEO}`],
+    ["two links glued together", `${VIDEO_2}${YT_VIDEO}`],
+    ["a supported and an unsupported link", `${VIDEO_2} ${UNSUPPORTED}`],
+  ])("refuses %s without sending anything", async (_name, value) => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/subtitles/inspect": { body: packagePreview() } });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(await openSubtitleTab(), { target: { value } });
+    fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
+    await screen.findByTestId("subtitle-preview-package");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    expect(await screen.findByText("这里只能填一条视频链接")).toBeTruthy();
+    expect(calls.some((call) => call.path === "/api/contents/import")).toBe(false);
+  });
+
+  it("sends the link of one share text", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/subtitles/inspect": { body: packagePreview() },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(await openSubtitleTab(), { target: { value: WEB_SHARE } });
+    fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
+    await screen.findByTestId("subtitle-preview-package");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    expect((calls.find((call) => call.path === "/api/contents/import")?.body as { items: Array<{ url: string }> }).items.map((item) => item.url)).toEqual([WEB_SHARE_LINK]);
+  });
+
+  it("takes the links out of a multi-line paste, separated by spaces, so the second one is still seen", async () => {
+    const { calls } = mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    const field = await openSubtitleTab();
+    fireEvent.paste(field, { clipboardData: { getData: () => `${WEB_SHARE}\n${APP_SHARE}` } });
+    expect(field.value).toBe(`${WEB_SHARE_LINK} ${SHORT}`);
+    expect(screen.getByTestId("subtitle-paste-note").textContent).toBe("已提取分享内容里的 2 条链接");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    expect(await screen.findByText("这里只能填一条视频链接")).toBeTruthy();
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+  });
+});
+
+describe("NewPage after a paste elsewhere", () => {
+  function Shell() {
+    usePasteGuard();
+    const location = useLocation();
+    return location.pathname === "/new" ? <NewPage /> : <p data-testid="elsewhere">{location.pathname}</p>;
+  }
+
+  it("arrives with every link of the paste, the paste note, and the links left out beside the button", async () => {
+    mockApi(baseRoutes());
+    renderApp(<Shell />, { route: "/library" });
+    await screen.findByTestId("elsewhere");
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: () => `${WEB_SHARE}\n讲义 ${UNSUPPORTED}` } });
+    document.dispatchEvent(event);
+    const field = await screen.findByTestId<HTMLTextAreaElement>("new-url-input");
+    expect(field.value).toBe(`${WEB_SHARE_LINK}\n${UNSUPPORTED}`);
+    expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 2 条链接");
+    expect(screen.getByTestId("link-scope").textContent).toBe("将处理 1 条链接，另有 1 条未加入·查看");
   });
 });
