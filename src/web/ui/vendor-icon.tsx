@@ -1,13 +1,13 @@
 import { Server } from "lucide-react";
 import type { ComponentType } from "react";
 import type { LlmPresetId } from "../../shared/llm-presets.ts";
-import { AnthropicMark, ChatGlmMark, DeepSeekMark, GeminiMark, GrokMark, KimiMark, OpenAiMark, QwenMark, type MarkProps } from "./vendor-icons/marks.tsx";
+import { AnthropicMark, DeepSeekMark, GeminiMark, GrokMark, KimiMark, OpenAiMark, QwenMark, ZaiMark, type MarkProps } from "./vendor-icons/marks.tsx";
 
 const MARKS: Readonly<Partial<Record<LlmPresetId, ComponentType<MarkProps>>>> = {
   deepseek: DeepSeekMark,
   qwen: QwenMark,
   kimi: KimiMark,
-  glm: ChatGlmMark,
+  glm: ZaiMark,
   openai: OpenAiMark,
   anthropic: AnthropicMark,
   gemini: GeminiMark,

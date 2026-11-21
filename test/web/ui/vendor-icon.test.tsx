@@ -42,7 +42,7 @@ describe("VendorIcon", () => {
   it("follows the text colour with the single-colour marks", () => {
     const { container } = render(
       <div>
-        {(["kimi", "openai", "anthropic", "grok"] as const).map((id) => (
+        {(["kimi", "glm", "openai", "anthropic", "grok"] as const).map((id) => (
           <VendorIcon key={id} presetId={id} />
         ))}
       </div>,
@@ -55,20 +55,18 @@ describe("VendorIcon", () => {
   it("gives each copy of a gradient mark its own gradient ids, all resolvable", () => {
     const { container } = render(
       <div>
-        <VendorIcon presetId="glm" />
-        <VendorIcon presetId="glm" />
         <VendorIcon presetId="gemini" />
         <VendorIcon presetId="gemini" />
       </div>,
     );
     const ids = [...container.querySelectorAll("[id]")].map((element) => element.id);
-    expect(ids).toHaveLength(2 + 6);
+    expect(ids).toHaveLength(6);
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) {
       expect(id).toMatch(/^[A-Za-z0-9_-]+$/u);
     }
     const references = [...container.querySelectorAll("path")].flatMap((element) => /^url\(#(.+)\)$/u.exec(element.getAttribute("fill") ?? "")?.[1] ?? []);
-    expect(references).toHaveLength(2 + 6);
+    expect(references).toHaveLength(6);
     for (const reference of references) {
       expect(ids).toContain(reference);
     }
