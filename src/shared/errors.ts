@@ -198,6 +198,11 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "not_found.chat_answer_deleted": {},
   // Restoring a Content whose trash retention has run out.
   "conflict.trash_expired": {},
+  // Deleting a collection with its contents found other contents to move than the user confirmed;
+  // Tasks cancelled before the check stay cancelled and are counted.
+  "conflict.collection_members_changed": { detailsKeys: ["cancelledTaskCount"] },
+  // A collection preview expired or no longer lists an entry the import chose; list it again.
+  "conflict.collection_preview_stale": {},
   // Another backup export is running, or the cache gate is held by one.
   "conflict.backup_in_progress": {},
   // A restore target that is not a fresh installation; `nonEmpty` names what it already holds.
@@ -291,6 +296,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   // A multi-part submission that did not choose parts.
   "invalid_request.multipart_choice_required": { detailsKeys: ["parts"] },
   "invalid_request.batch_too_large": { detailsKeys: ["itemCount", "limit"] },
+  // An import that asked to confirm collections named one without choosing its entries.
+  "invalid_request.collection_choice_required": { detailsKeys: ["urls"] },
   "invalid_request.collection_summary_missing": { detailsKeys: ["missingContentIds"] },
   "invalid_request.cookie_format": {},
   "invalid_request.allowlist_entry": {},

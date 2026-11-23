@@ -72,6 +72,7 @@ import { registerTranslationRoutes } from "./api/routes/translations.ts";
 import { registerChatRoutes } from "./api/routes/chat.ts";
 import { registerClientMediaRoutes } from "./api/routes/client-media.ts";
 import { registerCollectionRoutes } from "./api/routes/collections.ts";
+import { registerContentTrashRoutes } from "./api/routes/content-trash.ts";
 import { registerContentRoutes, registerLocalFileRoute, registerUploadRoute } from "./api/routes/contents.ts";
 import { registerSubtitleRoutes } from "./api/routes/subtitles.ts";
 import { registerInstanceSettingsRoutes } from "./api/routes/instance-settings.ts";
@@ -339,6 +340,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
   if (deps.trash !== undefined) {
     registerTrashRoutes(app, { trash: deps.trash });
+    registerContentTrashRoutes(app, { trash: deps.trash });
   }
   if (deps.exports !== undefined) {
     registerExportRoutes(app, { exports: deps.exports });
@@ -356,7 +358,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     registerSummaryRoutes(app, { summaries: deps.summaries });
   }
   if (deps.collections !== undefined) {
-    registerCollectionRoutes(app, { collections: deps.collections });
+    registerCollectionRoutes(app, { collections: deps.collections, ...(deps.trash === undefined ? {} : { trash: deps.trash }) });
   }
   if (deps.search !== undefined) {
     registerSearchRoutes(app, { search: deps.search });

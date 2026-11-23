@@ -1,15 +1,19 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TaskService } from "../../../src/server/application/tasks.ts";
 import { TrashService } from "../../../src/server/application/trash.ts";
+import { canonicalJson } from "../../../src/server/domain/canonical-json.ts";
 import { TRASH_RETENTION_MS } from "../../../src/server/domain/content.ts";
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import type { LlmStreamEvent } from "../../../src/server/domain/llm.ts";
 import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
+import { transact } from "../../../src/server/pipeline/publish.ts";
 import { MAX_TIMER_MS } from "../../../src/server/pipeline/scheduler.ts";
+import { createTask } from "../../../src/server/pipeline/task-state.ts";
 import type { Logger } from "../../../src/server/ports/logger.ts";
 import type { Repository } from "../../../src/server/ports/repository.ts";
-import { TRASH_RETRY_BASE_MS, TRASH_SWEEP_BATCH } from "../../../src/shared/defaults.ts";
+import { CONTENT_TRASH_BATCH_MAX, TRASH_RETRY_BASE_MS, TRASH_SWEEP_BATCH } from "../../../src/shared/defaults.ts";
 import { FakeLlmProvider } from "../../fixtures/llm/fake-llm.ts";
 import { configureChatModel, seedChatContent } from "../../fixtures/pipeline/chat-data.ts";
 import { BOB, createHarness, createLocalContent, createTaskOfKind, LOCAL, silentLogger, type Harness } from "../../fixtures/pipeline/harness.ts";
@@ -493,5 +497,527 @@ describe("files in the trash", () => {
     await h.fileDeleter.whenIdle();
     expect(existsSync(path)).toBe(true);
     expect(countRows(h.db, "pending_file_delete")).toBe(0);
+  });
+});
+
+/**
+ * A trash service with the task service and the scheduler's execution view behind test
+ * seams: Tasks are cancelled for real but nothing is scheduled, `executing` stands for the
+ * executions still running, and `settle` runs while the delete waits for them.
+ */
+function rig(options: { drainTimeoutMs?: number } = {}) {
+  const { h, at } = clocked();
+  const executing = new Set<string>();
+  const order: string[] = [];
+  const hooks: { settle: (taskIds: readonly string[]) => Promise<void> | void; beforeCancel: (taskId: string) => void } = {
+    settle: () => undefined,
+    beforeCancel: () => undefined,
+  };
+  const tasks = new TaskService({
+    repository: h.repository,
+    bus: h.bus,
+    control: { kick: () => undefined, abortTask: (taskId) => order.push(`abort:${taskId}`) },
+    secrets: h.secrets,
+  });
+  const chatAborts: string[] = [];
+  const trash = new TrashService({
+    repository: h.repository,
+    deleteContent: h.deleteContent,
+    fileDeleter: h.fileDeleter,
+    chat: { abortContent: (_owner, contentId) => void chatAborts.push(contentId) },
+    logger: silentLogger,
+    tasks: {
+      cancel: (principal, taskId) => {
+        hooks.beforeCancel(taskId);
+        const detail = tasks.cancel(principal, taskId);
+        order.push(`cancelled:${taskId}`);
+        return detail;
+      },
+    },
+    execution: {
+      isExecuting: (taskId) => executing.has(taskId),
+      settleTasks: async (taskIds) => {
+        order.push(`settle:${[...taskIds].sort().join(",")}`);
+        await hooks.settle(taskIds);
+      },
+    },
+    drainTimeoutMs: options.drainTimeoutMs ?? 1000,
+  });
+  const refresh = vi.spyOn(trash, "refresh");
+  return { h, at, trash, executing, order, hooks, chatAborts, refresh };
+}
+
+function unfinishedTask(h: Harness, contentId: string): string {
+  return createTaskOfKind(h, "process_content", { autoProofread: false }, { contentId });
+}
+
+function projectionOf(h: Harness, taskId: string): string | undefined {
+  return h.repository.withTransaction((scope) => scope.tasks.get(LOCAL.userId, taskId)?.statusProjection);
+}
+
+function trashedAtOf(h: Harness, contentId: string, userId = LOCAL.userId): number | undefined {
+  return h.repository.withTransaction((scope) => scope.contents.getIncludingTrashed(userId, contentId)?.trashedAt);
+}
+
+/** A queued summary of `collectionId` that froze `contentIds` as its input, created the way the collection service does. */
+function summaryTask(h: Harness, collectionId: string, contentIds: readonly string[]): string {
+  return transact(h.repository, h.bus, (scope, outbox) =>
+    createTask(scope, outbox, {
+      task: {
+        id: h.newId(),
+        userId: LOCAL.userId,
+        collectionId,
+        kind: "summarize_collection",
+        requestJson: canonicalJson({
+          requestSchemaVersion: 1,
+          kind: "summarize_collection",
+          outputLanguage: "zh-CN",
+          inputItems: contentIds.map((contentId, position) => ({ collectionItemId: `item-${position}`, contentId, summaryRevisionId: "s", transcriptRevisionId: "t", position })),
+        }),
+        createdAt: Date.now(),
+      },
+      sourceKind: undefined,
+      newId: h.newId,
+    }).id,
+  );
+}
+
+async function collectionWith(h: Harness, name: string, contentIds: readonly string[]): Promise<string> {
+  const collection = h.collections.create(LOCAL, { name });
+  for (const contentId of contentIds) {
+    await h.collections.addItem(LOCAL, collection.id, { contentId });
+  }
+  return collection.id;
+}
+
+async function errorOf(work: () => unknown): Promise<{ code: string; details?: unknown }> {
+  try {
+    await work();
+  } catch (error) {
+    if (isAmberError(error)) return { code: error.appError.code, ...(error.appError.details === undefined ? {} : { details: error.appError.details }) };
+    throw error;
+  }
+  throw new Error("expected an error");
+}
+
+describe("what blocks a move to the trash", () => {
+  it("is the summary's frozen input: a member taken out of the collection while its summary runs still cannot go", async () => {
+    const { h, trash } = rig();
+    const used = finishedContent(h);
+    const course = await collectionWith(h, "Course", [used]);
+    const summary = summaryTask(h, course, [used]);
+    h.collections.removeItems(LOCAL, course, [used]);
+    expect(h.repository.withTransaction((scope) => scope.collections.membershipsOf(LOCAL.userId, [used]).get(used))).toEqual([]);
+
+    expect(await codeOf(() => trash.trash(LOCAL, used))).toBe("conflict.tasks_unfinished");
+    expect(trash.plan(LOCAL, [used]).items).toEqual([{ contentId: used, state: "blocked", blockingCollections: [{ id: course, name: "Course" }] }]);
+    expect(await trash.trashMany(LOCAL, { contentIds: [used], cancelTasks: true })).toEqual({
+      trashedIds: [], alreadyTrashedIds: [], failed: [{ contentId: used, reason: "summarizing" }], cancelledTaskCount: 0,
+    });
+    // That summary is never cancelled on the Content's behalf.
+    expect(projectionOf(h, summary)).toBe("queued");
+    h.repository.withTransaction((scope) => scope.tasks.setProjection(LOCAL.userId, summary, "succeeded", T0 + 1));
+    trash.trash(LOCAL, used);
+    expect(trashedAtOf(h, used)).toBe(T0);
+  });
+
+  it("includes a cancelled Task whose execution has not stopped yet", async () => {
+    const { h, trash, executing } = rig();
+    const contentId = finishedContent(h);
+    const [taskId] = h.repository.withTransaction((scope) => scope.tasks.listByContent(LOCAL.userId, contentId).map((task) => task.id));
+    executing.add(taskId as string);
+    expect(await codeOf(() => trash.trash(LOCAL, contentId))).toBe("conflict.tasks_unfinished");
+    expect(trash.plan(LOCAL, [contentId]).items).toEqual([{ contentId, state: "tasks", unfinishedTaskCount: 1 }]);
+    executing.clear();
+    trash.trash(LOCAL, contentId);
+  });
+});
+
+describe("planning a move to the trash", () => {
+  it("tells the five states apart in request order, blocked before tasks, and changes nothing", async () => {
+    const { h, trash } = rig();
+    const ready = seedContent(h, { title: "第一讲", lines: ["a"] }).contentId;
+    const busy = finishedContent(h);
+    unfinishedTask(h, busy);
+    unfinishedTask(h, busy);
+    const frozen = finishedContent(h);
+    unfinishedTask(h, frozen);
+    const course = await collectionWith(h, "Course", [frozen]);
+    summaryTask(h, course, [frozen]);
+    const trashed = finishedContent(h);
+    trash.trash(LOCAL, trashed);
+    const bobs = createLocalContent(h, BOB.userId);
+    const before = countRows(h.db, "task", "status_projection = 'queued'");
+
+    expect(trash.plan(LOCAL, [bobs, ready, busy, frozen, trashed, "01UNKNOWNCONTENT000000000"]).items).toEqual([
+      { contentId: bobs, state: "missing" },
+      { contentId: ready, title: "第一讲", state: "ready" },
+      { contentId: busy, state: "tasks", unfinishedTaskCount: 2 },
+      { contentId: frozen, state: "blocked", blockingCollections: [{ id: course, name: "Course" }] },
+      { contentId: trashed, state: "trashed" },
+      { contentId: "01UNKNOWNCONTENT000000000", state: "missing" },
+    ]);
+    expect(countRows(h.db, "task", "status_projection = 'queued'")).toBe(before);
+    expect(await errorOf(() => trash.plan(LOCAL, Array.from({ length: CONTENT_TRASH_BATCH_MAX + 1 }, (_, index) => `c${index}`)))).toEqual({
+      code: "invalid_request.batch_too_large",
+      details: { itemCount: CONTENT_TRASH_BATCH_MAX + 1, limit: CONTENT_TRASH_BATCH_MAX },
+    });
+  });
+});
+
+describe("moving several Contents to the trash", () => {
+  it("cancels, waits for the executions to stop, then moves each; counts every outcome and re-arms the timer once", async () => {
+    const { h, at, trash, order, hooks, chatAborts, refresh } = rig();
+    const plain = finishedContent(h);
+    const busy = finishedContent(h);
+    const first = unfinishedTask(h, busy);
+    const second = unfinishedTask(h, busy);
+    const frozen = finishedContent(h);
+    const frozenOwn = unfinishedTask(h, frozen);
+    const other = await collectionWith(h, "Other", [frozen]);
+    const otherSummary = summaryTask(h, other, [frozen]);
+    const earlier = finishedContent(h);
+    trash.trash(LOCAL, earlier);
+    refresh.mockClear();
+    hooks.settle = () => {
+      // Cancelled before the wait, moved only after it.
+      expect([projectionOf(h, first), projectionOf(h, second), trashedAtOf(h, busy)]).toEqual(["cancelled", "cancelled", undefined]);
+      order.push("settled");
+    };
+    at(T0 + 7);
+    const result = await trash.trashMany(LOCAL, { contentIds: [plain, earlier, busy, frozen, "01UNKNOWNCONTENT000000000"], cancelTasks: true });
+
+    expect(result).toEqual({
+      trashedIds: [plain, busy],
+      alreadyTrashedIds: [earlier],
+      failed: [{ contentId: frozen, reason: "summarizing" }, { contentId: "01UNKNOWNCONTENT000000000", reason: "missing" }],
+      cancelledTaskCount: 2,
+    });
+    expect(order).toEqual([`abort:${first}`, `cancelled:${first}`, `abort:${second}`, `cancelled:${second}`, `settle:${[first, second].sort().join(",")}`, "settled"]);
+    // The frozen Content's own Task and the other collection's summary are left alone.
+    expect([projectionOf(h, frozenOwn), projectionOf(h, otherSummary)]).toEqual(["queued", "queued"]);
+    // Already in the trash: its trash time is kept.
+    expect([trashedAtOf(h, plain), trashedAtOf(h, busy), trashedAtOf(h, earlier)]).toEqual([T0 + 7, T0 + 7, T0]);
+    expect(chatAborts).toEqual([earlier, plain, busy]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(h.contents.list(LOCAL, { limit: 10 }).items.map((item) => item.id)).toEqual([frozen]);
+
+    // Repeating the request is safe: nothing new is cancelled or moved.
+    refresh.mockClear();
+    expect(await trash.trashMany(LOCAL, { contentIds: [plain, busy], cancelTasks: true })).toEqual({
+      trashedIds: [], alreadyTrashedIds: [plain, busy], failed: [], cancelledTaskCount: 0,
+    });
+    expect(trashedAtOf(h, plain)).toBe(T0 + 7);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("without cancelTasks leaves unfinished Tasks running and reports their Contents", async () => {
+    const { h, trash, order } = rig();
+    const busy = finishedContent(h);
+    const taskId = unfinishedTask(h, busy);
+    const plain = finishedContent(h);
+    expect(await trash.trashMany(LOCAL, { contentIds: [busy, plain], cancelTasks: false })).toEqual({
+      trashedIds: [plain], alreadyTrashedIds: [], failed: [{ contentId: busy, reason: "tasks" }], cancelledTaskCount: 0,
+    });
+    expect(projectionOf(h, taskId)).toBe("queued");
+    expect(order).toEqual([]);
+  });
+
+  it("goes on when a Task finished on its own just before it was cancelled", async () => {
+    const { h, trash, hooks } = rig();
+    const a = finishedContent(h);
+    const ending = unfinishedTask(h, a);
+    const b = finishedContent(h);
+    const running = unfinishedTask(h, b);
+    hooks.beforeCancel = (taskId) => {
+      if (taskId === ending) h.repository.withTransaction((scope) => scope.tasks.setProjection(LOCAL.userId, ending, "succeeded", T0));
+    };
+    expect(await trash.trashMany(LOCAL, { contentIds: [a, b], cancelTasks: true })).toEqual({
+      trashedIds: [a, b], alreadyTrashedIds: [], failed: [], cancelledTaskCount: 1,
+    });
+    expect([projectionOf(h, ending), projectionOf(h, running)]).toEqual(["succeeded", "cancelled"]);
+  });
+
+  it("refuses a Content that got a new Task while the delete waited, and moves the rest", async () => {
+    const { h, trash, hooks } = rig();
+    const a = finishedContent(h);
+    unfinishedTask(h, a);
+    const b = finishedContent(h);
+    unfinishedTask(h, b);
+    hooks.settle = () => void unfinishedTask(h, a);
+    expect(await trash.trashMany(LOCAL, { contentIds: [a, b], cancelTasks: true })).toEqual({
+      trashedIds: [b], alreadyTrashedIds: [], failed: [{ contentId: a, reason: "tasks" }], cancelledTaskCount: 2,
+    });
+    expect(trashedAtOf(h, a)).toBeUndefined();
+  });
+
+  it("does not move a Content whose cancelled execution is still running when the wait times out", async () => {
+    const { h, trash, executing, hooks } = rig({ drainTimeoutMs: 20 });
+    const stuck = finishedContent(h);
+    const taskId = unfinishedTask(h, stuck);
+    const plain = finishedContent(h);
+    executing.add(taskId);
+    hooks.settle = () => new Promise<void>(() => undefined);
+    expect(await trash.trashMany(LOCAL, { contentIds: [stuck, plain], cancelTasks: true })).toEqual({
+      trashedIds: [plain], alreadyTrashedIds: [], failed: [{ contentId: stuck, reason: "stopping" }], cancelledTaskCount: 1,
+    });
+    expect(projectionOf(h, taskId)).toBe("cancelled");
+    // Once it has stopped, the same request finishes the job.
+    executing.clear();
+    hooks.settle = () => undefined;
+    expect(await trash.trashMany(LOCAL, { contentIds: [stuck, plain], cancelTasks: true })).toEqual({
+      trashedIds: [stuck], alreadyTrashedIds: [plain], failed: [], cancelledTaskCount: 0,
+    });
+  });
+
+  it("sees another user's Content as missing and never cancels their Tasks; too many ids are refused", async () => {
+    const { h, trash } = rig();
+    const bobs = createLocalContent(h, BOB.userId);
+    const bobTask = createTaskOfKind(h, "process_content", { autoProofread: false }, { contentId: bobs, userId: BOB.userId });
+    expect(await trash.trashMany(LOCAL, { contentIds: [bobs], cancelTasks: true })).toEqual({
+      trashedIds: [], alreadyTrashedIds: [], failed: [{ contentId: bobs, reason: "missing" }], cancelledTaskCount: 0,
+    });
+    expect(h.repository.withTransaction((scope) => scope.tasks.get(BOB.userId, bobTask)?.statusProjection)).toBe("queued");
+    expect(trashedAtOf(h, bobs, BOB.userId)).toBeUndefined();
+    const ids = Array.from({ length: CONTENT_TRASH_BATCH_MAX + 1 }, () => finishedContent(h));
+    expect((await errorOf(() => trash.trashMany(LOCAL, { contentIds: ids, cancelTasks: false }))).code).toBe("invalid_request.batch_too_large");
+    expect(h.contents.list(LOCAL, { limit: 1 }).items).toHaveLength(1);
+  });
+});
+
+describe("restoring several Contents", () => {
+  it("reports restored, already active, expired and missing apart, with everything a single restore does", async () => {
+    const { h, at, trash } = rig();
+    const back = seedContent(h, { title: "梯度下降", lines: ["今天讲梯度下降"] }).contentId;
+    const course = await collectionWith(h, "Course", [back]);
+    const active = finishedContent(h);
+    const old = finishedContent(h);
+    const purged = finishedContent(h);
+    const bobs = createLocalContent(h, BOB.userId);
+    trash.trash(LOCAL, old);
+    at(T0 + 10);
+    trash.trash(LOCAL, back);
+    trash.trash(LOCAL, purged);
+    await trash.purge(LOCAL, purged);
+    at(T0 + TRASH_RETENTION_MS);
+
+    expect(trash.restoreMany(LOCAL, [back, active, old, purged, bobs])).toEqual({
+      restoredIds: [back],
+      alreadyActiveIds: [active],
+      failed: [{ contentId: old, reason: "expired" }, { contentId: purged, reason: "missing" }, { contentId: bobs, reason: "missing" }],
+    });
+    expect(h.search.search(LOCAL, { q: "梯度", scope: "global" }).contents.map((hit) => hit.contentId)).toEqual([back]);
+    expect(h.collections.get(LOCAL, course)).toMatchObject({ itemCount: 1, updatedAt: T0 + TRASH_RETENTION_MS });
+    expect(trashedAtOf(h, old)).toBe(T0);
+    expect((await errorOf(() => trash.restoreMany(LOCAL, Array.from({ length: CONTENT_TRASH_BATCH_MAX + 1 }, (_, index) => `c${index}`)))).code).toBe(
+      "invalid_request.batch_too_large",
+    );
+  });
+});
+
+describe("deleting a collection with its contents", () => {
+  /** Two exclusive members, one shared with "Elsewhere" and one in the trash since T0. */
+  async function course(r: ReturnType<typeof rig>) {
+    const { h } = r;
+    const exclusive = [finishedContent(h), finishedContent(h)];
+    const shared = finishedContent(h);
+    const binned = finishedContent(h);
+    const id = await collectionWith(h, "Course", [...exclusive, shared, binned]);
+    const elsewhere = await collectionWith(h, "Elsewhere", [shared]);
+    r.trash.trash(LOCAL, binned);
+    r.chatAborts.length = 0;
+    r.refresh.mockClear();
+    return { id, exclusive, shared, binned, elsewhere };
+  }
+
+  it("plans exclusive members in collection order, shared and trashed ones, Tasks and blockers", async () => {
+    const r = rig();
+    const { h, trash } = r;
+    const c = await course(r);
+    unfinishedTask(h, c.exclusive[1] as string);
+    summaryTask(h, c.id, c.exclusive);
+    expect(trash.collectionDeletePlan(LOCAL, c.id)).toEqual({
+      memberCount: 3,
+      exclusiveContentIds: c.exclusive,
+      sharedCount: 1,
+      trashedMemberCount: 1,
+      exclusiveWithTasksCount: 1,
+      collectionTaskCount: 1,
+      blocked: [],
+    });
+    // Another collection's summary froze an exclusive member, though it is no member there any more.
+    const third = await collectionWith(h, "Third", [c.exclusive[0] as string]);
+    summaryTask(h, third, [c.exclusive[0] as string]);
+    h.collections.removeItems(LOCAL, third, [c.exclusive[0] as string]);
+    expect(trash.collectionDeletePlan(LOCAL, c.id).blocked).toEqual([{ contentId: c.exclusive[0], collections: [{ id: third, name: "Third" }] }]);
+    expect(await codeOf(() => trash.collectionDeletePlan(BOB, c.id))).toBe("not_found");
+  });
+
+  it("moves the exclusive members, keeps shared ones and trashed members' time, and the members can be restored", async () => {
+    const r = rig();
+    const { h, at, trash, order, chatAborts, refresh } = r;
+    const c = await course(r);
+    const memberTask = unfinishedTask(h, c.exclusive[0] as string);
+    const ownSummary = summaryTask(h, c.id, [...c.exclusive, c.shared]);
+    at(T0 + 5);
+    const result = await trash.deleteCollection(LOCAL, c.id, { contents: "exclusive", cancelTasks: true, expectedContentIds: [...c.exclusive].reverse() });
+
+    expect(result).toEqual({ trashedIds: c.exclusive, cancelledTaskCount: 2 });
+    expect(order.filter((entry) => entry.startsWith("cancelled:")).sort()).toEqual([`cancelled:${memberTask}`, `cancelled:${ownSummary}`].sort());
+    expect(h.collections.list(LOCAL).items.map((item) => item.name)).toEqual(["Elsewhere"]);
+    expect(countRows(h.db, "collection_item", "collection_id = ?", c.id)).toBe(0);
+    expect(c.exclusive.map((id) => trashedAtOf(h, id))).toEqual([T0 + 5, T0 + 5]);
+    expect([trashedAtOf(h, c.binned), trashedAtOf(h, c.shared)]).toEqual([T0, undefined]);
+    expect(h.collections.get(LOCAL, c.elsewhere).items.map((item) => item.contentId)).toEqual([c.shared]);
+    expect(chatAborts).toEqual(c.exclusive);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    const restored = trash.restoreMany(LOCAL, [...c.exclusive, c.binned]);
+    expect(restored.restoredIds).toEqual([...c.exclusive, c.binned]);
+    expect(h.contents.get(LOCAL, c.exclusive[0] as string).collections).toEqual([]);
+  });
+
+  it("refuses before cancelling anything when the exclusive members are no longer what was confirmed", async () => {
+    const r = rig();
+    const { h, trash, order } = r;
+    const c = await course(r);
+    const taskId = unfinishedTask(h, c.exclusive[0] as string);
+    const plan = trash.collectionDeletePlan(LOCAL, c.id);
+    // Added to another collection between the plan and the confirmation.
+    await h.collections.addItem(LOCAL, c.elsewhere, { contentId: c.exclusive[1] as string });
+    expect(await errorOf(() => trash.deleteCollection(LOCAL, c.id, { contents: "exclusive", cancelTasks: true, expectedContentIds: plan.exclusiveContentIds }))).toEqual({
+      code: "conflict.collection_members_changed",
+      details: { cancelledTaskCount: 0 },
+    });
+    expect(order).toEqual([]);
+    expect(projectionOf(h, taskId)).toBe("queued");
+    expect(h.collections.get(LOCAL, c.id).itemCount).toBe(3);
+    expect(c.exclusive.map((id) => trashedAtOf(h, id))).toEqual([undefined, undefined]);
+  });
+
+  it("refuses before cancelling anything while another collection's summary froze a member", async () => {
+    const r = rig();
+    const { h, trash, order } = r;
+    const c = await course(r);
+    const ownSummary = summaryTask(h, c.id, c.exclusive);
+    const third = await collectionWith(h, "Third", [c.exclusive[0] as string]);
+    const otherSummary = summaryTask(h, third, [c.exclusive[0] as string]);
+    h.collections.removeItems(LOCAL, third, [c.exclusive[0] as string]);
+    expect((await errorOf(() => trash.deleteCollection(LOCAL, c.id, { contents: "exclusive", cancelTasks: true, expectedContentIds: c.exclusive }))).code).toBe(
+      "conflict.tasks_unfinished",
+    );
+    expect(order).toEqual([]);
+    expect([projectionOf(h, ownSummary), projectionOf(h, otherSummary)]).toEqual(["queued", "queued"]);
+  });
+
+  it("rolls back when the members change after the Tasks were cancelled, reporting them and doing nothing after the commit", async () => {
+    const r = rig();
+    const { h, trash, hooks, chatAborts, refresh } = r;
+    const c = await course(r);
+    const memberTask = unfinishedTask(h, c.exclusive[0] as string);
+    const ownSummary = summaryTask(h, c.id, c.exclusive);
+    hooks.settle = async () => {
+      await h.collections.addItem(LOCAL, c.elsewhere, { contentId: c.exclusive[1] as string });
+    };
+    expect(await errorOf(() => trash.deleteCollection(LOCAL, c.id, { contents: "exclusive", cancelTasks: true, expectedContentIds: c.exclusive }))).toEqual({
+      code: "conflict.collection_members_changed",
+      details: { cancelledTaskCount: 2 },
+    });
+    // Cancelling cannot be undone; everything else is as it was.
+    expect([projectionOf(h, memberTask), projectionOf(h, ownSummary)]).toEqual(["cancelled", "cancelled"]);
+    expect(h.collections.get(LOCAL, c.id).itemCount).toBe(3);
+    expect(c.exclusive.map((id) => trashedAtOf(h, id))).toEqual([undefined, undefined]);
+    expect(chatAborts).toEqual([]);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(countRows(h.db, "idempotency_record")).toBe(0);
+  });
+
+  it("rolls back when the collection's own summary is still stopping after the wait", async () => {
+    const r = rig({ drainTimeoutMs: 20 });
+    const { h, trash, executing, hooks } = r;
+    const c = await course(r);
+    const ownSummary = summaryTask(h, c.id, c.exclusive);
+    executing.add(ownSummary);
+    hooks.settle = () => new Promise<void>(() => undefined);
+    expect(await errorOf(() => trash.deleteCollection(LOCAL, c.id, { contents: "exclusive", cancelTasks: true, expectedContentIds: c.exclusive }))).toEqual({
+      code: "conflict.collection_members_changed",
+      details: { cancelledTaskCount: 1 },
+    });
+    expect(h.collections.get(LOCAL, c.id).itemCount).toBe(3);
+  });
+
+  it("with only shared members still asks before cancelling the running summary, then deletes just the collection", async () => {
+    const { h, trash } = rig();
+    const shared = finishedContent(h);
+    const id = await collectionWith(h, "Course", [shared]);
+    await collectionWith(h, "Elsewhere", [shared]);
+    const ownSummary = summaryTask(h, id, [shared]);
+    expect(trash.collectionDeletePlan(LOCAL, id)).toMatchObject({ exclusiveContentIds: [], sharedCount: 1, collectionTaskCount: 1 });
+    expect((await errorOf(() => trash.deleteCollection(LOCAL, id, { contents: "exclusive", cancelTasks: false, expectedContentIds: [] }))).code).toBe("conflict.tasks_unfinished");
+    expect(projectionOf(h, ownSummary)).toBe("queued");
+    expect(await trash.deleteCollection(LOCAL, id, { contents: "exclusive", cancelTasks: true, expectedContentIds: [] })).toEqual({ trashedIds: [], cancelledTaskCount: 1 });
+    expect(h.collections.list(LOCAL).items.map((item) => item.name)).toEqual(["Elsewhere"]);
+    expect(trashedAtOf(h, shared)).toBeUndefined();
+  });
+
+  it("with contents kept only deletes the collection, cancelling its summary when asked", async () => {
+    const r = rig();
+    const { h, trash } = r;
+    const c = await course(r);
+    const memberTask = unfinishedTask(h, c.exclusive[0] as string);
+    const ownSummary = summaryTask(h, c.id, c.exclusive);
+    expect((await errorOf(() => trash.deleteCollection(LOCAL, c.id, { contents: "keep", cancelTasks: false }))).code).toBe("conflict.tasks_unfinished");
+    expect(await trash.deleteCollection(LOCAL, c.id, { contents: "keep", cancelTasks: true })).toEqual({ trashedIds: [], cancelledTaskCount: 1 });
+    expect([projectionOf(h, memberTask), projectionOf(h, ownSummary)]).toEqual(["queued", undefined]);
+    expect(h.contents.list(LOCAL, { limit: 10 }).items).toHaveLength(3);
+  });
+
+  it("with contents kept answers tasks_unfinished when its summary is still stopping or a new one started after the wait", async () => {
+    const stopping = rig({ drainTimeoutMs: 20 });
+    const c = await course(stopping);
+    const ownSummary = summaryTask(stopping.h, c.id, c.exclusive);
+    stopping.executing.add(ownSummary);
+    stopping.hooks.settle = () => new Promise<void>(() => undefined);
+    expect(await errorOf(() => stopping.trash.deleteCollection(LOCAL, c.id, { contents: "keep", cancelTasks: true }))).toEqual({ code: "conflict.tasks_unfinished" });
+    expect(projectionOf(stopping.h, ownSummary)).toBe("cancelled");
+    expect(stopping.h.collections.get(LOCAL, c.id).itemCount).toBe(3);
+
+    const started = rig();
+    const d = await course(started);
+    summaryTask(started.h, d.id, d.exclusive);
+    started.hooks.settle = () => void summaryTask(started.h, d.id, d.exclusive);
+    expect(await errorOf(() => started.trash.deleteCollection(LOCAL, d.id, { contents: "keep", cancelTasks: true }, "key-1"))).toEqual({ code: "conflict.tasks_unfinished" });
+    expect(started.h.collections.get(LOCAL, d.id).itemCount).toBe(3);
+    expect(countRows(started.h.db, "idempotency_record")).toBe(0);
+  });
+
+  it("gives two concurrent requests with the same key one delete and the same answer", async () => {
+    const r = rig();
+    const { h, trash, chatAborts, refresh } = r;
+    const c = await course(r);
+    const memberTask = unfinishedTask(h, c.exclusive[0] as string);
+    const body = { contents: "exclusive" as const, cancelTasks: true, expectedContentIds: c.exclusive };
+    const [first, second] = await Promise.all([trash.deleteCollection(LOCAL, c.id, body, "key-1"), trash.deleteCollection(LOCAL, c.id, body, "key-1")]);
+    // Whichever commits first answers both; the other one's transaction replays it.
+    expect(first.trashedIds).toEqual(c.exclusive);
+    expect(second).toEqual(first);
+    expect(projectionOf(h, memberTask)).toBe("cancelled");
+    expect(chatAborts).toEqual(c.exclusive);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(countRows(h.db, "idempotency_record")).toBe(1);
+  });
+
+  it("answers a retry with the same key with the first result, not not_found", async () => {
+    const r = rig();
+    const { h, trash, chatAborts } = r;
+    const c = await course(r);
+    const body = { contents: "exclusive" as const, cancelTasks: true, expectedContentIds: c.exclusive };
+    const first = await trash.deleteCollection(LOCAL, c.id, body, "key-1");
+    expect(first).toEqual({ trashedIds: c.exclusive, cancelledTaskCount: 0 });
+    expect(await trash.deleteCollection(LOCAL, c.id, body, "key-1")).toEqual(first);
+    expect(chatAborts).toEqual(c.exclusive);
+    expect(await codeOf(() => trash.deleteCollection(LOCAL, c.id, { ...body, cancelTasks: false }, "key-1"))).toBe("idempotency_conflict");
+    expect(await codeOf(() => trash.deleteCollection(LOCAL, c.id, body, "key-2"))).toBe("not_found");
+    expect(await codeOf(() => trash.deleteCollection(BOB, c.id, body, "key-1"))).toBe("not_found");
   });
 });

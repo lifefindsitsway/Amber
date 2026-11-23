@@ -2,9 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   collectionCreateRequestSchema,
+  collectionDeletePlanDtoSchema,
+  collectionDeleteRequestSchema,
+  collectionDeleteResultDtoSchema,
   collectionDetailDtoSchema,
   collectionItemAddRequestSchema,
   collectionItemDtoSchema,
+  collectionItemsRemoveRequestSchema,
   collectionListDtoSchema,
   collectionOrderRequestSchema,
   collectionPatchRequestSchema,
@@ -14,15 +18,16 @@ import {
 import { importResponseSchema } from "../../../shared/dto/import.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import type { CollectionService } from "../../application/collections.ts";
+import type { TrashService } from "../../application/trash.ts";
 import { principalOf } from "../auth.ts";
 import { idempotencyKeyOf, parseInput, sendValidated } from "../validation.ts";
 
 const idParamsSchema = z.object({ id: z.string().min(1) });
 const itemParamsSchema = z.object({ id: z.string().min(1), iid: z.string().min(1) });
 
-/** `/api/collections*`. */
-export function registerCollectionRoutes(app: FastifyInstance, deps: { collections: CollectionService }): void {
-  const { collections } = deps;
+/** `/api/collections*`; deleting a collection together with its contents needs the trash. */
+export function registerCollectionRoutes(app: FastifyInstance, deps: { collections: CollectionService; trash?: TrashService }): void {
+  const { collections, trash } = deps;
 
   app.get("/api/collections", async (request, reply) => {
     return sendValidated(reply, 200, collectionListDtoSchema, collections.list(principalOf(request)));
@@ -70,6 +75,26 @@ export function registerCollectionRoutes(app: FastifyInstance, deps: { collectio
     collections.removeItem(principalOf(request), id, iid);
     return reply.code(204).send();
   });
+
+  app.post("/api/collections/:id/items/remove", async (request, reply) => {
+    const { id } = parseInput(idParamsSchema, request.params, "params");
+    const { contentIds } = parseInput(collectionItemsRemoveRequestSchema, request.body, "body");
+    return sendValidated(reply, 200, collectionDetailDtoSchema, collections.removeItems(principalOf(request), id, contentIds));
+  });
+
+  if (trash !== undefined) {
+    app.get("/api/collections/:id/delete-plan", async (request, reply) => {
+      const { id } = parseInput(idParamsSchema, request.params, "params");
+      return sendValidated(reply, 200, collectionDeletePlanDtoSchema, trash.collectionDeletePlan(principalOf(request), id));
+    });
+
+    app.post("/api/collections/:id/delete", async (request, reply) => {
+      const { id } = parseInput(idParamsSchema, request.params, "params");
+      const body = parseInput(collectionDeleteRequestSchema, request.body, "body");
+      const result = await trash.deleteCollection(principalOf(request), id, body, idempotencyKeyOf(request));
+      return sendValidated(reply, 200, collectionDeleteResultDtoSchema, result);
+    });
+  }
 
   app.post("/api/collections/:id/summary", async (request, reply) => {
     const { id } = parseInput(idParamsSchema, request.params, "params");

@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { TrashService } from "../../../../src/server/application/trash.ts";
+import { canonicalJson } from "../../../../src/server/domain/canonical-json.ts";
 import { BUILTIN_SUMMARY_TEMPLATES } from "../../../../src/server/domain/prompts.ts";
 import { attributionDigest, speakerLabels } from "../../../../src/server/domain/speaker-context.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../../../../src/server/domain/transcript.ts";
+import { transact } from "../../../../src/server/pipeline/publish.ts";
+import { createTask } from "../../../../src/server/pipeline/task-state.ts";
+import { collectionDeletePlanDtoSchema, collectionDeleteResultDtoSchema, collectionDetailDtoSchema } from "../../../../src/shared/dto/collection.ts";
 import type { SegmentId } from "../../../../src/shared/ids.ts";
-import { BOB, BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { BOB, BOB_TOKEN, createHarness, createLocalContent, LOCAL, LOCAL_TOKEN, silentLogger, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { insertCollectionSummary, insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
 
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
@@ -280,5 +285,127 @@ describe("GET /api/collections/:id/summary: members whose speakers changed", () 
     const after = await read(app, changing.id, auth);
     expect(after.json()).toEqual({ stale: false });
     expect(after.body).not.toContain("speakerContextChangedMembers");
+  });
+});
+
+describe("removing members and deleting a collection with its contents", () => {
+  async function withTrash() {
+    const h = createHarness();
+    open.push(h);
+    const trash = new TrashService({
+      repository: h.repository,
+      deleteContent: h.deleteContent,
+      fileDeleter: h.fileDeleter,
+      chat: h.chat,
+      logger: silentLogger,
+      tasks: h.tasks,
+      execution: h.scheduler,
+    });
+    const { app } = await h.app({ trash });
+    return { h, app };
+  }
+
+  async function seeded(h: Harness) {
+    const exclusive = [createLocalContent(h), createLocalContent(h)];
+    const shared = createLocalContent(h);
+    const course = h.collections.create(LOCAL, { name: "Course" });
+    const other = h.collections.create(LOCAL, { name: "Other" });
+    for (const contentId of [...exclusive, shared]) await h.collections.addItem(LOCAL, course.id, { contentId });
+    await h.collections.addItem(LOCAL, other.id, { contentId: shared });
+    return { course: course.id, other: other.id, exclusive, shared };
+  }
+
+  /** An unfinished summary of the collection, created the way the collection service does. */
+  function summaryTask(h: Harness, collectionId: string, contentIds: readonly string[]): string {
+    return transact(h.repository, h.bus, (scope, outbox) =>
+      createTask(scope, outbox, {
+        task: {
+          id: h.newId(),
+          userId: LOCAL.userId,
+          collectionId,
+          kind: "summarize_collection",
+          requestJson: canonicalJson({
+            requestSchemaVersion: 1,
+            kind: "summarize_collection",
+            outputLanguage: "zh-CN",
+            inputItems: contentIds.map((contentId, position) => ({ collectionItemId: `i${position}`, contentId, summaryRevisionId: "s", transcriptRevisionId: "t", position })),
+          }),
+          createdAt: Date.now(),
+        },
+        sourceKind: undefined,
+        newId: h.newId,
+      }).id,
+    );
+  }
+
+  it("removes several members in one request and answers the detail; a non-member refuses the whole request", async () => {
+    const { h, app } = await withTrash();
+    const s = await seeded(h);
+    const refused = await app.inject({ method: "POST", url: `/api/collections/${s.course}/items/remove`, headers: auth, payload: { contentIds: [s.exclusive[0], "01UNKNOWNCONTENT000000000"] } });
+    expect([refused.statusCode, refused.json().error.class]).toEqual([404, "not_found"]);
+    expect((await app.inject({ method: "POST", url: `/api/collections/${s.course}/items/remove`, headers: bob, payload: { contentIds: [s.shared] } })).statusCode).toBe(404);
+    const removed = await app.inject({ method: "POST", url: `/api/collections/${s.course}/items/remove`, headers: auth, payload: { contentIds: [s.shared, s.exclusive[0]] } });
+    expect(removed.statusCode).toBe(200);
+    expect(collectionDetailDtoSchema.parse(removed.json())).toMatchObject({ itemCount: 1, items: [{ contentId: s.exclusive[1] }] });
+    expect(h.collections.get(LOCAL, s.other).items.map((item) => item.contentId)).toEqual([s.shared]);
+    expect((await app.inject({ method: "POST", url: `/api/collections/${s.course}/items/remove`, headers: auth, payload: { contentIds: [] } })).statusCode).toBe(400);
+  });
+
+  it("plans and deletes with the contents; a retry with the same key gets the first answer", async () => {
+    const { h, app } = await withTrash();
+    const s = await seeded(h);
+    const summary = summaryTask(h, s.course, s.exclusive);
+    const plan = await app.inject({ method: "GET", url: `/api/collections/${s.course}/delete-plan`, headers: auth });
+    expect(plan.statusCode).toBe(200);
+    expect(collectionDeletePlanDtoSchema.parse(plan.json())).toEqual({
+      memberCount: 3, exclusiveContentIds: s.exclusive, sharedCount: 1, trashedMemberCount: 0, exclusiveWithTasksCount: 0, collectionTaskCount: 1, blocked: [],
+    });
+    expect((await app.inject({ method: "GET", url: `/api/collections/${s.course}/delete-plan`, headers: bob })).statusCode).toBe(404);
+
+    const url = `/api/collections/${s.course}/delete`;
+    const payload = { contents: "exclusive", cancelTasks: true, expectedContentIds: s.exclusive };
+    expect((await app.inject({ method: "POST", url, headers: auth, payload: { contents: "exclusive", cancelTasks: true } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url, headers: bob, payload })).statusCode).toBe(404);
+    const changed = await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, expectedContentIds: [s.exclusive[0]] } });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().error).toMatchObject({ code: "conflict.collection_members_changed", details: { cancelledTaskCount: 0 } });
+    expect(taskOf(h, summary).statusProjection).toBe("queued");
+
+    const keyed = { ...auth, "idempotency-key": "delete-1" };
+    const deleted = await app.inject({ method: "POST", url, headers: keyed, payload });
+    expect(deleted.statusCode).toBe(200);
+    expect(collectionDeleteResultDtoSchema.parse(deleted.json())).toEqual({ trashedIds: s.exclusive, cancelledTaskCount: 1 });
+    const retried = await app.inject({ method: "POST", url, headers: keyed, payload });
+    expect([retried.statusCode, retried.json()]).toEqual([200, deleted.json()]);
+    expect((await app.inject({ method: "POST", url, headers: auth, payload })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/contents/${s.shared}`, headers: auth })).statusCode).toBe(200);
+    const restored = await app.inject({ method: "POST", url: "/api/trash/restore", headers: auth, payload: { contentIds: s.exclusive } });
+    expect(restored.json()).toMatchObject({ restoredIds: s.exclusive });
+  });
+
+  it("leaves DELETE /api/collections/:id as it was: 409 while a Task is unfinished, else 204 keeping the members", async () => {
+    const { h, app } = await withTrash();
+    const s = await seeded(h);
+    const summary = summaryTask(h, s.course, s.exclusive);
+    const refused = await app.inject({ method: "DELETE", url: `/api/collections/${s.course}`, headers: auth });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error).toMatchObject({ class: "conflict", code: "conflict" });
+    expect(taskOf(h, summary).statusProjection).toBe("queued");
+    h.tasks.cancel(LOCAL, summary);
+    const deleted = await app.inject({ method: "DELETE", url: `/api/collections/${s.course}`, headers: auth });
+    expect([deleted.statusCode, deleted.body]).toEqual([204, ""]);
+    for (const contentId of [...s.exclusive, s.shared]) {
+      expect((await app.inject({ method: "GET", url: `/api/contents/${contentId}`, headers: auth })).statusCode).toBe(200);
+    }
+    expect((await app.inject({ method: "GET", url: "/api/trash", headers: auth })).json()).toMatchObject({ total: 0 });
+  });
+
+  it("with contents kept deletes only the collection, like DELETE", async () => {
+    const { h, app } = await withTrash();
+    const s = await seeded(h);
+    const response = await app.inject({ method: "POST", url: `/api/collections/${s.course}/delete`, headers: auth, payload: { contents: "keep", cancelTasks: false } });
+    expect([response.statusCode, response.json()]).toEqual([200, { trashedIds: [], cancelledTaskCount: 0 }]);
+    expect(h.collections.list(LOCAL).items.map((item) => item.id)).toEqual([s.other]);
+    expect(h.contents.list(LOCAL, { limit: 10 }).items).toHaveLength(3);
   });
 });

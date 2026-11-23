@@ -322,7 +322,18 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   let lateTrash: TrashService | undefined;
   const fileDeleter = new PendingFileDeleter({ repository, media, dataDir: dir, gate, afterDrain: () => lateTrash?.refresh(), logger, newId });
   const deleteContent = new DeleteContentService({ repository, gate, fileDeleter, chat });
-  const trashService = new TrashService({ repository, deleteContent, fileDeleter, chat, logger });
+  const trashService = new TrashService({
+    repository,
+    deleteContent,
+    fileDeleter,
+    chat,
+    tasks,
+    execution: {
+      settleTasks: (taskIds) => scheduler?.settleTasks(taskIds) ?? Promise.resolve(),
+      isExecuting: (taskId) => scheduler?.isExecuting(taskId) ?? false,
+    },
+    logger,
+  });
   lateTrash = trashService;
 
   const auth: AuthAdapter = {

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { API_PAGE_SIZE_DEFAULT, API_PAGE_SIZE_MAX } from "../../../shared/defaults.ts";
 import { contentDtoSchema } from "../../../shared/dto/content.ts";
-import { trashListDtoSchema, trashPurgeAllDtoSchema } from "../../../shared/dto/trash.ts";
+import { trashListDtoSchema, trashPurgeAllDtoSchema, trashRestoreRequestSchema, trashRestoreResultDtoSchema } from "../../../shared/dto/trash.ts";
 import type { TrashService } from "../../application/trash.ts";
 import { principalOf } from "../auth.ts";
 import { parseInput, sendValidated } from "../validation.ts";
@@ -28,6 +28,12 @@ export function registerTrashRoutes(app: FastifyInstance, deps: { trash: TrashSe
   app.get("/api/trash", async (request, reply) => {
     const query = parseInput(listQuerySchema, request.query, "query");
     return sendValidated(reply, 200, trashListDtoSchema, trash.list(principalOf(request), query));
+  });
+
+  // Each Content on its own; the answer tells restored, already active and failed apart.
+  app.post("/api/trash/restore", async (request, reply) => {
+    const { contentIds } = parseInput(trashRestoreRequestSchema, request.body, "body");
+    return sendValidated(reply, 200, trashRestoreResultDtoSchema, trash.restoreMany(principalOf(request), contentIds));
   });
 
   app.post("/api/trash/:id/restore", async (request, reply) => {

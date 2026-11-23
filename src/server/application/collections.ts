@@ -189,6 +189,29 @@ export class CollectionService {
   }
 
   /**
+   * `POST /api/collections/:id/items/remove`: the Contents leave this collection only, all in
+   * one transaction. Any id that is not a visible member (unknown, another user's, in the
+   * trash, or not in this collection) is `not_found` and nothing changes. The Contents and
+   * their other memberships stay.
+   */
+  removeItems(principal: RequestPrincipal, collectionId: string, contentIds: readonly string[]): CollectionDetailDto {
+    const owner = principal.userId;
+    return this.options.repository.withTransaction((scope) => {
+      ownedCollection(scope, owner, collectionId);
+      const visible = new Map(scope.collections.listVisibleItems(owner, collectionId).map((item) => [item.contentId, item.id]));
+      const itemIds = contentIds.map((contentId) => visible.get(contentId));
+      if (itemIds.some((itemId) => itemId === undefined)) {
+        throw amberError("not_found", "collection item not found");
+      }
+      for (const itemId of itemIds as string[]) {
+        scope.collections.removeItem(owner, collectionId, itemId);
+      }
+      scope.collections.touch(owner, collectionId, this.now());
+      return detail(scope, owner, ownedCollection(scope, owner, collectionId));
+    });
+  }
+
+  /**
    * `itemIds` must be the complete new order of the visible items: each exactly once. They
    * are reordered within the positions they hold, so members in the trash keep theirs.
    */

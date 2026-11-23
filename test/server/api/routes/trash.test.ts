@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TRASH_RETENTION_MS } from "../../../../src/server/domain/content.ts";
-import { API_PAGE_SIZE_MAX } from "../../../../src/shared/defaults.ts";
+import { API_PAGE_SIZE_MAX, CONTENT_TRASH_BATCH_MAX } from "../../../../src/shared/defaults.ts";
 import { contentDtoSchema } from "../../../../src/shared/dto/content.ts";
-import { trashListDtoSchema, trashPurgeAllDtoSchema } from "../../../../src/shared/dto/trash.ts";
+import { trashListDtoSchema, trashPurgeAllDtoSchema, trashRestoreResultDtoSchema } from "../../../../src/shared/dto/trash.ts";
 import { BOB_TOKEN, createHarness, createLocalContent, createTaskOfKind, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
 import { countRows } from "../../../tools/sqlite.ts";
@@ -169,5 +169,38 @@ describe("a Content in the trash, over HTTP", () => {
     // Nothing was changed by any of them.
     expect(countRows(h.db, "note", "id = ?", note.id)).toBe(1);
     expect(countRows(h.db, "collection_item", "id = ?", item.id)).toBe(1);
+  });
+});
+
+describe("POST /api/trash/restore", () => {
+  it("restores each Content on its own and tells the outcomes apart", async () => {
+    const { h, app } = await setup();
+    const back = finishedContent(h);
+    const old = finishedContent(h);
+    const active = finishedContent(h);
+    h.trash.trash(LOCAL, old);
+    vi.setSystemTime(T0 + 10);
+    h.trash.trash(LOCAL, back);
+    vi.setSystemTime(T0 + TRASH_RETENTION_MS);
+    const response = await app.inject({ method: "POST", url: "/api/trash/restore", headers: auth, payload: { contentIds: [back, active, old, "01UNKNOWNCONTENT000000000"] } });
+    expect(response.statusCode).toBe(200);
+    expect(trashRestoreResultDtoSchema.parse(response.json())).toEqual({
+      restoredIds: [back],
+      alreadyActiveIds: [active],
+      failed: [{ contentId: old, reason: "expired" }, { contentId: "01UNKNOWNCONTENT000000000", reason: "missing" }],
+    });
+    expect((await app.inject({ method: "GET", url: `/api/contents/${back}`, headers: auth })).statusCode).toBe(200);
+    // Another user's ids are missing for the caller and stay where they are.
+    vi.setSystemTime(T0 + TRASH_RETENTION_MS + 1);
+    h.trash.trash(LOCAL, back);
+    expect((await app.inject({ method: "POST", url: "/api/trash/restore", headers: bob, payload: { contentIds: [back] } })).json()).toEqual({
+      restoredIds: [], alreadyActiveIds: [], failed: [{ contentId: back, reason: "missing" }],
+    });
+    expect((await app.inject({ method: "GET", url: `/api/contents/${back}`, headers: auth })).statusCode).toBe(404);
+    const tooMany = await app.inject({
+      method: "POST", url: "/api/trash/restore", headers: auth, payload: { contentIds: Array.from({ length: CONTENT_TRASH_BATCH_MAX + 1 }, (_, index) => `c${index}`) },
+    });
+    expect([tooMany.statusCode, tooMany.json().error.code]).toEqual([400, "invalid_request.batch_too_large"]);
+    expect((await app.inject({ method: "POST", url: "/api/trash/restore", headers: auth, payload: { contentIds: [] } })).statusCode).toBe(400);
   });
 });

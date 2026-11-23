@@ -239,6 +239,16 @@ const MATRIX: Record<string, Entry> = {
     { method: "POST", url: `/api/collections/${ids.bobCollectionId}/items`, payload: { contentId: ids.contentId } },
   ]),
   "PUT /api/collections/:id/items/order": owned((ids) => [{ method: "PUT", url: `/api/collections/${ids.collectionId}/items/order`, payload: { itemIds: [ids.collectionItemId] } }]),
+  "POST /api/collections/:id/items/remove": owned((ids) => [
+    { method: "POST", url: `/api/collections/${ids.collectionId}/items/remove`, payload: { contentIds: [ids.contentId] } },
+    // B's own collection never holds A's Content.
+    { method: "POST", url: `/api/collections/${ids.bobCollectionId}/items/remove`, payload: { contentIds: [ids.contentId] } },
+  ]),
+  "GET /api/collections/:id/delete-plan": owned((ids) => [get(`/api/collections/${ids.collectionId}/delete-plan`)]),
+  "POST /api/collections/:id/delete": owned((ids) => [
+    { method: "POST", url: `/api/collections/${ids.collectionId}/delete`, payload: { contents: "exclusive", cancelTasks: true, expectedContentIds: [ids.contentId] } },
+    { method: "POST", url: `/api/collections/${ids.collectionId}/delete`, payload: { contents: "keep", cancelTasks: true } },
+  ]),
   "DELETE /api/collections/:id/items/:iid": owned((ids) => [
     { method: "DELETE", url: `/api/collections/${ids.collectionId}/items/${ids.collectionItemId}` },
     { method: "DELETE", url: `/api/collections/${ids.bobCollectionId}/items/${ids.collectionItemId}` },
@@ -346,8 +356,11 @@ const MATRIX: Record<string, Entry> = {
   "POST /api/content-packs/imports/:id/cancel": { kind: "self", reason: "import jobs are the caller's own", requests: () => [{ method: "POST", url: `/api/content-packs/imports/${newId()}/cancel` }] },
   "POST /api/content-packs/imports/:id/retry-collections": { kind: "self", reason: "import jobs are the caller's own", requests: () => [{ method: "POST", url: `/api/content-packs/imports/${newId()}/retry-collections` }] },
   "DELETE /api/content-packs/imports/:id": { kind: "self", reason: "import jobs are the caller's own", requests: () => [{ method: "DELETE", url: `/api/content-packs/imports/${newId()}` }] },
+  "POST /api/contents/trash-plan": { kind: "self", reason: "plans only the caller's Contents; A's ids are reported missing (see the batch test below)" },
+  "POST /api/contents/trash": { kind: "self", reason: "moves only the caller's Contents; A's ids are reported missing (see the batch test below)" },
   "GET /api/trash": { kind: "self", reason: "lists the caller's own trash", requests: () => [get("/api/trash")] },
   "DELETE /api/trash": { kind: "self", reason: "empties the caller's own trash", requests: () => [{ method: "DELETE", url: "/api/trash" }] },
+  "POST /api/trash/restore": { kind: "self", reason: "restores only the caller's Contents; A's ids are reported missing (see the batch test below)" },
   "POST /api/trash/:id/restore": owned((ids) => [{ method: "POST", url: `/api/trash/${ids.contentId}/restore` }]),
   "DELETE /api/trash/:id": owned((ids) => [{ method: "DELETE", url: `/api/trash/${ids.contentId}` }]),
   "GET /api/asr-profiles": { kind: "self", reason: "lists the caller's ASR profiles", requests: () => [get("/api/asr-profiles")] },
@@ -774,6 +787,27 @@ describe("user B against every server route holding user A's ids", () => {
     expect(deviations).toEqual([]);
     expect(databaseDump()).toBe(before);
     expect(readFileSync(ids.assetFile).equals(mediaBefore)).toBe(true);
+  });
+
+  it("batch routes report A's Content as missing to B, cancel none of her Tasks and change nothing of hers", async () => {
+    const before = databaseDump();
+    const contentIds = [ids.contentId];
+    const requests: Array<[StackRequest, unknown]> = [
+      [{ method: "POST", url: "/api/contents/trash-plan", payload: { contentIds } }, { items: [{ contentId: ids.contentId, state: "missing" }] }],
+      [
+        { method: "POST", url: "/api/contents/trash", payload: { contentIds, cancelTasks: true } },
+        { trashedIds: [], alreadyTrashedIds: [], failed: [{ contentId: ids.contentId, reason: "missing" }], cancelledTaskCount: 0 },
+      ],
+      [{ method: "POST", url: "/api/trash/restore", payload: { contentIds } }, { restoredIds: [], alreadyActiveIds: [], failed: [{ contentId: ids.contentId, reason: "missing" }] }],
+    ];
+    for (const [request, expected] of requests) {
+      const response = await stack.send(request, bobCookie);
+      expect([request.url, response.statusCode, response.json()]).toEqual([request.url, 200, expected]);
+      // The id B sent is echoed back; nothing else of A's is.
+      const leaked = aliceValues().filter((value) => value !== ids.contentId && response.body.includes(value));
+      expect(leaked, request.url).toEqual([]);
+    }
+    expect(databaseDump()).toBe(before);
   });
 
   it("A still reaches every resource B was refused", async () => {

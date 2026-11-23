@@ -28,6 +28,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   // contents
   { method: "POST", path: "/contents/inspect", modes: BOTH },
   { method: "POST", path: "/contents/import", modes: BOTH },
+  { method: "POST", path: "/contents/trash-plan", modes: BOTH },
+  { method: "POST", path: "/contents/trash", modes: BOTH },
   { method: "POST", path: "/contents/upload", modes: ["server"] },
   { method: "POST", path: "/contents/local-file", modes: ["local"] },
   { method: "POST", path: "/contents/:id/subtitle-import", modes: BOTH },
@@ -99,12 +101,16 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/collections/:id/items", modes: BOTH },
   { method: "PUT", path: "/collections/:id/items/order", modes: BOTH },
   { method: "DELETE", path: "/collections/:id/items/:iid", modes: BOTH },
+  { method: "POST", path: "/collections/:id/items/remove", modes: BOTH },
+  { method: "GET", path: "/collections/:id/delete-plan", modes: BOTH },
+  { method: "POST", path: "/collections/:id/delete", modes: BOTH },
   { method: "POST", path: "/collections/:id/summary", modes: BOTH },
   { method: "GET", path: "/collections/:id/summary", modes: BOTH },
   { method: "DELETE", path: "/collections/:id/summary", modes: BOTH },
   // trash
   { method: "GET", path: "/trash", modes: BOTH },
   { method: "POST", path: "/trash/:id/restore", modes: BOTH },
+  { method: "POST", path: "/trash/restore", modes: BOTH },
   { method: "DELETE", path: "/trash/:id", modes: BOTH },
   { method: "DELETE", path: "/trash", modes: BOTH },
   // search

@@ -521,3 +521,44 @@ describe("collections and the trash", () => {
     expect(await markdown()).toContain("这门课在讲什么");
   });
 });
+
+describe("removing several members at once", () => {
+  const T0 = 1_790_000_000_000;
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("takes them out of this collection only, in one change, and answers the detail", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T0);
+    const h = harness();
+    const ids = [createLocalContent(h), createLocalContent(h), createLocalContent(h)];
+    const course = h.collections.create(LOCAL, { name: "Course" });
+    const other = h.collections.create(LOCAL, { name: "Other" });
+    for (const contentId of ids) await h.collections.addItem(LOCAL, course.id, { contentId });
+    await h.collections.addItem(LOCAL, other.id, { contentId: ids[0] as string });
+    const otherBefore = h.collections.get(LOCAL, other.id);
+    vi.setSystemTime(T0 + 5);
+
+    const detail = h.collections.removeItems(LOCAL, course.id, [ids[2] as string, ids[0] as string]);
+    expect(detail).toMatchObject({ id: course.id, itemCount: 1, updatedAt: T0 + 5, items: [{ contentId: ids[1] }] });
+    expect(h.collections.get(LOCAL, other.id)).toEqual(otherBefore);
+    expect(h.repository.withTransaction((scope) => ids.map((id) => scope.contents.get(LOCAL.userId, id) !== undefined))).toEqual([true, true, true]);
+  });
+
+  it("changes nothing when any id is not a visible member", async () => {
+    const h = harness();
+    const ids = [createLocalContent(h), createLocalContent(h), createLocalContent(h)];
+    const course = h.collections.create(LOCAL, { name: "Course" });
+    for (const contentId of ids.slice(0, 2)) await h.collections.addItem(LOCAL, course.id, { contentId });
+    h.trash.trash(LOCAL, ids[1] as string);
+    const before = h.collections.get(LOCAL, course.id);
+    const bobs = createLocalContent(h, BOB.userId);
+    for (const extra of [ids[1], ids[2], bobs, "01UNKNOWNCONTENT000000000"]) {
+      expect(await codeOf(() => h.collections.removeItems(LOCAL, course.id, [ids[0] as string, extra as string]))).toBe("not_found");
+    }
+    expect(await codeOf(() => h.collections.removeItems(BOB, course.id, [ids[0] as string]))).toBe("not_found");
+    expect(h.collections.get(LOCAL, course.id)).toEqual(before);
+    expect(countRows(h.db, "collection_item", "collection_id = ?", course.id)).toBe(2);
+  });
+});

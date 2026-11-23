@@ -557,3 +557,24 @@ export const CONTENT_PACK_POLL_MS = 1000;
 export const CONTENT_PACK_EXPORT_TTL_MS = 3600000;
 /** How long a previewed import waits for the user's decisions before its staging is discarded. */
 export const CONTENT_PACK_PREVIEW_TTL_MS = 3600000;
+
+/** Contents one bulk move to the trash accepts. */
+export const CONTENT_TRASH_BATCH_MAX = 200;
+/** How long a delete waits for the cancelled tasks of its contents to stop running. */
+export const CONTENT_TRASH_DRAIN_TIMEOUT_MS = 10000;
+/** How long a listed platform collection stays cached for its preview pages and the import that follows. */
+export const COLLECTION_PREVIEW_TTL_MS = 600000;
+/** Collection previews cached at once across all users. */
+export const COLLECTION_PREVIEW_CACHE_MAX = 32;
+/** Collection previews cached at once for one user. */
+export const COLLECTION_PREVIEW_PER_USER_MAX = 4;
+/** Entries of a platform collection a preview lists; later ones are reported but not listed. */
+export const COLLECTION_PREVIEW_ITEMS_MAX = 1000;
+/** Entries of a preview whose details are resolved per page. */
+export const COLLECTION_PREVIEW_PAGE_SIZE = 50;
+/** Shown preview entries above which the preview offers a title filter. */
+export const COLLECTION_PREVIEW_FILTER_MIN = 20;
+/** Collection entries whose platform parts are resolved at once. */
+export const PLATFORM_COLLECTION_RESOLVE_CONCURRENCY = 3;
+/** How long a transient "done" notice stays before it dismisses itself. */
+export const TOAST_DISMISS_MS = 6000;

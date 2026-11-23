@@ -132,3 +132,62 @@ export const collectionSummaryDtoSchema = z.object({
   speakerContextChangedMembers: z.number().int().positive().exactOptional(),
 });
 export type CollectionSummaryDto = z.infer<typeof collectionSummaryDtoSchema>;
+
+const uniqueIdListSchema = z
+  .array(idSchema)
+  .min(1)
+  .refine((ids) => new Set(ids).size === ids.length, { message: "duplicate id" });
+
+/**
+ * `POST /api/collections/:id/items/remove`: the Contents leave this collection only, all in
+ * one transaction; any id that is not a visible member rejects the whole request with
+ * `not_found`. Answers the collection's detail.
+ */
+export const collectionItemsRemoveRequestSchema = z.object({ contentIds: uniqueIdListSchema }).strict();
+export type CollectionItemsRemoveRequest = z.infer<typeof collectionItemsRemoveRequestSchema>;
+
+/**
+ * `GET /api/collections/:id/delete-plan`: what deleting the collection would do. A member is
+ * exclusive when it is outside the trash and belongs to no other collection; only exclusive
+ * members are moved to the trash, shared ones stay.
+ */
+export const collectionDeletePlanDtoSchema = z.object({
+  /** Members outside the trash. */
+  memberCount: z.number().int().nonnegative(),
+  /** In collection order; the `expectedContentIds` the delete request must repeat. */
+  exclusiveContentIds: z.array(idSchema),
+  /** Members outside the trash that also belong to another collection. */
+  sharedCount: z.number().int().nonnegative(),
+  /** Members already in the trash; their membership ends, their trash time is kept. */
+  trashedMemberCount: z.number().int().nonnegative(),
+  /** Exclusive members with unfinished Tasks of their own. */
+  exclusiveWithTasksCount: z.number().int().nonnegative(),
+  /** Unfinished Tasks of the collection itself (its summary). */
+  collectionTaskCount: z.number().int().nonnegative(),
+  /** Exclusive members frozen by another collection's unfinished summary: deleting with contents is refused while any is listed. */
+  blocked: z.array(z.object({ contentId: idSchema, title: z.string().exactOptional(), collections: z.array(z.object({ id: idSchema, name: z.string().exactOptional() })) })),
+});
+export type CollectionDeletePlanDto = z.infer<typeof collectionDeletePlanDtoSchema>;
+
+/**
+ * `POST /api/collections/:id/delete` (accepts `Idempotency-Key`). `contents: "keep"` behaves
+ * like `DELETE /api/collections/:id` except that `cancelTasks` may first cancel the
+ * collection's own unfinished Tasks. `exclusive` also moves the exclusive members to the
+ * trash; the server recomputes them and answers `conflict.collection_members_changed` when
+ * they differ from `expectedContentIds`. The database part is all or nothing.
+ */
+export const collectionDeleteRequestSchema = z
+  .object({
+    contents: z.enum(["exclusive", "keep"]),
+    cancelTasks: z.boolean(),
+    expectedContentIds: z.array(idSchema).exactOptional(),
+  })
+  .strict()
+  .refine((body) => body.contents === "keep" || body.expectedContentIds !== undefined, { message: "expectedContentIds is required with contents: exclusive" });
+export type CollectionDeleteRequest = z.infer<typeof collectionDeleteRequestSchema>;
+
+export const collectionDeleteResultDtoSchema = z.object({
+  trashedIds: z.array(idSchema),
+  cancelledTaskCount: z.number().int().nonnegative(),
+});
+export type CollectionDeleteResultDto = z.infer<typeof collectionDeleteResultDtoSchema>;

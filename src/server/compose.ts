@@ -96,6 +96,7 @@ import { TaskService, type TaskControl } from "./application/tasks.ts";
 import { TerminologyService } from "./application/terminology.ts";
 import { TranscriptService } from "./application/transcripts.ts";
 import { TrashService } from "./application/trash.ts";
+import type { TaskExecution } from "./application/trash-guard.ts";
 import { UsageAnalyticsService } from "./application/usage-analytics.ts";
 import { UsageService } from "./application/usage.ts";
 import { WebSearchService } from "./application/web-search.ts";
@@ -248,6 +249,11 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const control: TaskControl = {
     kick: () => scheduler?.kick(),
     abortTask: (taskId) => scheduler?.abortTask(taskId),
+  };
+  // Deletes wait for cancelled executions to stop through it; late-bound the same way.
+  const taskExecution: TaskExecution = {
+    settleTasks: (taskIds) => scheduler?.settleTasks(taskIds) ?? Promise.resolve(),
+    isExecuting: (taskId) => scheduler?.isExecuting(taskId) ?? false,
   };
   // A changed task count applies at the next scheduling pass, which also drains the heavy-job governor.
   const instanceSettings = new InstanceSettingsService({ repository, overrides, onChange: () => control.kick() });
@@ -461,7 +467,15 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   // Before any request can start a new answer.
   chat.recoverInterrupted();
   const deleteContent = new DeleteContentService({ repository, gate, fileDeleter, chat });
-  const trash = new TrashService({ repository, deleteContent, fileDeleter, chat, logger: lateLogger(() => appLogger?.child({ component: "trash" })) });
+  const trash = new TrashService({
+    repository,
+    deleteContent,
+    fileDeleter,
+    chat,
+    tasks,
+    execution: taskExecution,
+    logger: lateLogger(() => appLogger?.child({ component: "trash" })),
+  });
   lateTrash = trash;
   // Local mode only: interrupted cache replacements waiting for the user.
   const cacheHolds =
@@ -592,11 +606,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   // Revocations are shared by the AuthAdapter, SSE streams and the administration.
   const revocations = new SessionRevocations();
   const hasher = new Argon2PasswordHasher();
-  const adminControl: AdminTaskControl = {
-    ...control,
-    settleTasks: (taskIds) => scheduler?.settleTasks(taskIds) ?? Promise.resolve(),
-    isExecuting: (taskId) => scheduler?.isExecuting(taskId) ?? false,
-  };
+  const adminControl: AdminTaskControl = { ...control, ...taskExecution };
   let auth: AuthAdapter;
   let serverAuth: ServerAuthDeps | undefined;
   let setupToken: SetupToken | undefined;
