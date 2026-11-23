@@ -4,7 +4,11 @@ import { useTranslation } from "react-i18next";
 import { DRAFT_BATCH_UNDO_DEPTH } from "../../../shared/defaults.ts";
 import { removeSentencesWithParagraphs } from "../../../shared/paragraph-marks.ts";
 import { blockedComboOf } from "../../shortcut-registry.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
+import { Banner, TextAction } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
 import type { InitialScroll, InitialScrollOutcome } from "./edit-position.ts";
 import { startInitialScroll } from "./editor-initial-scroll.ts";
@@ -426,7 +430,8 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
           </Button>
           <Button
             size="sm"
-            variant="danger"
+            // The second press is the final, unrecoverable step: it takes the filled destructive look.
+            variant={confirmDiscard ? "danger-solid" : "danger"}
             disabled={busy}
             onClick={() => (confirmDiscard ? props.onDiscard() : setConfirmDiscard(true))}
             onBlur={() => setConfirmDiscard(false)}
@@ -445,22 +450,28 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
         </div>
       </div>
       {props.sync.conflict === undefined ? null : (
-        <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-2 text-xs" role="alert" data-testid="draft-changed">
-          <span className="font-medium">{t("editor.conflict.message")}</span>
-          <div className="ml-auto flex flex-wrap gap-2">
-            <Button size="sm" onClick={props.onLoadLatest} data-testid="draft-load-latest">
-              {t("editor.conflict.loadLatest")}
-            </Button>
-            <Button size="sm" onClick={props.onKeepMine} data-testid="draft-keep-mine">
-              {t("editor.conflict.keepMine")}
-            </Button>
-          </div>
-        </div>
+        // Appears when a save finds the draft changed elsewhere, and must be resolved before going on.
+        <Banner
+          tone="warn"
+          announce="alert"
+          title={t("editor.conflict.message")}
+          testId="draft-changed"
+          actions={
+            <>
+              <Button size="sm" onClick={props.onLoadLatest} data-testid="draft-load-latest">
+                {t("editor.conflict.loadLatest")}
+              </Button>
+              <Button size="sm" onClick={props.onKeepMine} data-testid="draft-keep-mine">
+                {t("editor.conflict.keepMine")}
+              </Button>
+            </>
+          }
+        />
       )}
       {panel.open ? (
         <section className="flex flex-col gap-2 border-b border-line bg-sunken/40 px-4 py-2 text-xs" aria-label={t("editor.find.panel")} data-testid="find-panel">
           {visible === undefined ? null : (
-            <p className="text-muted" role="status" data-testid="find-scope-note">
+            <p className="text-note text-muted" role="status" data-testid="find-scope-note">
               {t("editor.find.filteredScope", { count: visible.size })}
             </p>
           )}
@@ -560,6 +571,7 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
         title={t("editor.exitConfirm.title")}
         message={t("editor.exitConfirm.message")}
         confirmLabel={t("editor.exitConfirm.confirm")}
+        danger
         onCancel={() => setConfirmExit(false)}
         onConfirm={() => {
           setConfirmExit(false);
@@ -578,9 +590,9 @@ function SaveStatus(props: { sync: DraftSyncSnapshot; onRetry: () => void }) {
       <span className="flex items-center gap-1 text-xs text-danger" role="status" data-testid="draft-save-status">
         {t("editor.status.failed")}
         {" · "}
-        <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={props.onRetry} data-testid="draft-retry">
+        <TextAction className="font-medium" onClick={props.onRetry} data-testid="draft-retry">
           {t("editor.status.retry")}
-        </button>
+        </TextAction>
       </span>
     );
   }
@@ -596,18 +608,19 @@ function SaveStatus(props: { sync: DraftSyncSnapshot; onRetry: () => void }) {
 
 function IconButton(props: { label: string; onClick: () => void; children: ReactNode; className?: string; disabled?: boolean; pressed?: boolean; testId?: string }) {
   return (
-    <button
-      type="button"
-      aria-label={props.label}
-      title={props.label}
-      disabled={props.disabled}
-      {...(props.pressed === undefined ? {} : { "aria-pressed": props.pressed })}
-      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40 ${props.pressed === true ? "bg-accent-soft text-accent" : "text-muted"} ${props.className ?? ""}`}
-      onClick={props.onClick}
-      data-testid={props.testId}
-    >
-      {props.children}
-    </button>
+    <Tooltip content={props.label}>
+      <button
+        type="button"
+        aria-label={props.label}
+        disabled={props.disabled}
+        {...(props.pressed === undefined ? {} : { "aria-pressed": props.pressed })}
+        className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition duration-150 motion-reduce:transition-none hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING} ${props.pressed === true ? "bg-accent-soft text-accent" : "text-muted"} ${props.className ?? ""}`}
+        onClick={props.onClick}
+        data-testid={props.testId}
+      >
+        {props.children}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -656,14 +669,14 @@ function FindSection(props: {
   useEffect(() => setUnchecked(new Set()), [matches]);
   const chosen = matches.filter((match) => !unchecked.has(matchKey(match)));
   const currentMatch = props.current === undefined ? undefined : matches[props.current];
-  const field = "h-7 min-w-0 flex-1 rounded border border-line bg-surface px-2 text-xs focus-visible:outline-2 focus-visible:outline-accent";
   return (
     <>
       <div className="flex flex-wrap items-center gap-1.5">
-        <input
+        <TextInput
           ref={props.findInput}
           type="search"
-          className={`${field} max-w-72`}
+          size="sm"
+          className="max-w-72 flex-1"
           placeholder={t("editor.find.query")}
           aria-label={t("editor.find.query")}
           value={props.query}
@@ -694,8 +707,9 @@ function FindSection(props: {
       </div>
       {props.replaceOpen ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            className={`${field} max-w-72`}
+          <TextInput
+            size="sm"
+            className="max-w-72 flex-1"
             placeholder={t("editor.find.replacement")}
             aria-label={t("editor.find.replacement")}
             value={props.replacement}
@@ -720,9 +734,9 @@ function FindSection(props: {
                 <HitContext text={props.texts[currentMatch.index] ?? ""} match={currentMatch} />
               </button>
             )}
-            <button type="button" className="ml-auto text-accent hover:underline" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} data-testid="find-expand">
+            <TextAction className="ml-auto" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} data-testid="find-expand">
               {expanded ? t("editor.find.collapse") : t("editor.find.expand")}
-            </button>
+            </TextAction>
           </div>
           {expanded ? (
             <>
@@ -731,8 +745,7 @@ function FindSection(props: {
                   const key = matchKey(match);
                   return (
                     <li key={key} className={`flex items-center gap-2 px-2 py-1 ${at === props.current ? "bg-accent-soft" : ""}`}>
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         aria-label={t("editor.find.sentence", { ordinal: match.index + 1 })}
                         checked={!unchecked.has(key)}
                         onChange={(event) => {
@@ -841,8 +854,8 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
   const nothing = state.checkedHits.length === 0 && sentences === 0;
   return (
     <div className="flex flex-col gap-2" data-testid="filler-section">
-      <p className="text-muted">{t("editor.filler.hint")}</p>
-      {counts.length === 0 && state.whole.length === 0 ? <p className="text-muted">{t("editor.filler.none")}</p> : null}
+      <p className="max-w-[70ch] text-note text-muted">{t("editor.filler.hint")}</p>
+      {counts.length === 0 && state.whole.length === 0 ? <p className="text-note text-muted">{t("editor.filler.none")}</p> : null}
       <div className="flex flex-wrap gap-1.5" role="group" aria-label={t("editor.filler.words")}>
         {counts.map((entry) => {
           const picked = state.words.includes(entry.word);
@@ -867,8 +880,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
         <ul className="flex max-h-56 flex-col overflow-auto rounded border border-line bg-surface" data-testid="filler-hits">
           {state.visibleHits.map((hit) => (
             <li key={hitKey(hit)} className="flex items-center gap-2 px-2 py-1" data-confidence={hit.confidence}>
-              <input
-                type="checkbox"
+              <Checkbox
                 aria-label={t("editor.find.sentence", { ordinal: hit.index + 1 })}
                 checked={state.checked.has(hitKey(hit))}
                 onChange={() => {
@@ -880,7 +892,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
                 <span className="w-14 shrink-0 text-muted">{t("editor.find.sentence", { ordinal: hit.index + 1 })}</span>
                 <HitContext text={props.texts[hit.index] ?? ""} match={hit} />
               </button>
-              <span className={`shrink-0 rounded px-1.5 text-[11px] ${hit.confidence === "high" ? "text-muted" : "bg-sunken text-ink"}`}>
+              <span className={`shrink-0 rounded px-1.5 text-xs ${hit.confidence === "high" ? "text-muted" : "bg-sunken text-ink"}`}>
                 {hit.confidence === "high" ? t("editor.filler.high") : t("editor.filler.maybe")}
               </span>
             </li>
@@ -889,8 +901,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
       ) : null}
       {state.whole.length === 0 ? null : props.deleteWholeSentences ? (
         <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
+          <Checkbox
             checked={state.deleteWhole}
             onChange={(event) => {
               setReviewing(false);
@@ -901,7 +912,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
           {t("editor.filler.whole", { count: state.whole.length })}
         </label>
       ) : (
-        <p className="text-muted" data-testid="filler-whole-skipped">
+        <p className="max-w-[70ch] text-note text-muted" data-testid="filler-whole-skipped">
           {t("editor.filler.wholeSkipped", { count: state.whole.length })}
         </p>
       )}

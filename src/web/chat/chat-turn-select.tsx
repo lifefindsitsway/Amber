@@ -1,13 +1,13 @@
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button.tsx";
+import { Checkbox } from "../ui/checkbox.tsx";
 
 /** The check box a turn shows while turns are being picked for deletion. */
 export function TurnCheckbox(props: { checked: boolean; disabled: boolean; onChange: (checked: boolean) => void }) {
   const { t } = useTranslation();
   return (
-    <input
-      type="checkbox"
-      className="mt-2.5 size-4 shrink-0 accent-accent"
+    <Checkbox
+      className="mt-2.5"
       checked={props.checked}
       disabled={props.disabled}
       aria-label={t("chat.select.turn")}

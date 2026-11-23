@@ -1,6 +1,6 @@
 import { Command } from "cmdk";
 import { Dialog, VisuallyHidden } from "radix-ui";
-import { FileText, FolderOpen, ImageIcon, Link2, PlayCircle, Quote, TerminalSquare } from "lucide-react";
+import { FileText, FolderOpen, ImageIcon, Link2, PlayCircle, Quote, SearchX, TerminalSquare } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { API_PAGE_SIZE_MAX, SEARCH_GROUP_LIMIT } from "../../shared/defaults.ts";
@@ -13,10 +13,17 @@ import { Highlighted } from "../search/highlighted.tsx";
 import { BasisChangedMark, HitSpeaker, speakerHitSubject } from "../search/hit-speaker.tsx";
 import { hitLink, speakerHitLink, summaryBasisChanged, useSearch } from "../search/search.ts";
 import { useShortcutRegistry } from "../shortcut-registry.tsx";
+import { SkeletonRows } from "../ui/feedback.tsx";
+import { Callout } from "../ui/notice.tsx";
 import { parseOmniboxQuery, recentItems } from "./omnibox-search.ts";
 
 const ITEM = "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm data-[selected=true]:bg-sunken";
 const GROUP = "px-1 py-1 text-xs text-muted [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1";
+
+/** Placeholder rows while the palette's first list loads, about the height of its items. */
+function ListSkeleton() {
+  return <SkeletonRows count={4} rowHeight={20} gap={12} className="px-2 py-3" testId="omnibox-loading" />;
+}
 
 /** Search-first command palette: typed text searches everything (`scope=global`), `>` runs commands. */
 export function Omnibox(props: { open: boolean; onOpenChange: (open: boolean) => void; context: CommandContext }) {
@@ -59,7 +66,9 @@ function OmniboxBody(props: { context: CommandContext; close: () => void }) {
       <Command.List className="max-h-[50vh] overflow-auto p-2">
         {query.mode === "command" ? (
           commands.length === 0 ? (
-            <p className="px-2 py-6 text-center text-sm text-muted">{t("shell.omnibox.empty")}</p>
+            <p className="px-2 py-6 text-center text-sm text-muted" data-testid="omnibox-no-command">
+              {t("shell.omnibox.empty")}
+            </p>
           ) : (
             <Command.Group heading={t("shell.omnibox.commands")} className={GROUP}>
               {commands.map((command) => (
@@ -93,7 +102,7 @@ function RecentGroups(props: GroupProps) {
   const collections = useCollections();
   const recent = recentItems(contents.data?.items ?? [], collections.data?.items ?? [], SEARCH_GROUP_LIMIT);
   if (recent.contents.length === 0 && recent.collections.length === 0) {
-    return contents.isPending || collections.isPending ? null : <EmptySearch {...props} />;
+    return contents.isPending || collections.isPending ? <ListSkeleton /> : <EmptySearch {...props} />;
   }
   return (
     <>
@@ -134,12 +143,18 @@ function SearchGroups(props: GroupProps & { text: string }) {
   const result = search.data;
   const go = (path: string): void => props.run(() => props.context.navigate(path));
   if (result === undefined) {
-    return <p className="px-2 py-6 text-center text-sm text-muted">{search.isError ? t("search.failed") : t("search.searching")}</p>;
+    return search.isError ? (
+      <Callout tone="error" density="compact" announce="alert" className="m-1" testId="omnibox-failed">
+        {t("search.failed")}
+      </Callout>
+    ) : (
+      <ListSkeleton />
+    );
   }
   const speakers = result.speakers ?? [];
   const total = result.contents.length + result.segments.length + result.summaries.length + result.figures.length + result.collections.length + speakers.length;
   if (total === 0) {
-    return search.isFetching ? <p className="px-2 py-6 text-center text-sm text-muted">{t("search.searching")}</p> : <EmptySearch {...props} />;
+    return search.isFetching ? <ListSkeleton /> : <EmptySearch {...props} />;
   }
   const q = search.query;
   return (
@@ -246,8 +261,11 @@ function EmptySearch(props: GroupProps) {
   const { t } = useTranslation();
   return (
     <>
-      <p className="px-2 pt-6 pb-1 text-center text-sm text-muted">{t("search.empty")}</p>
-      <p className="px-2 pb-3 text-center text-xs text-muted">{t("search.emptyHint")}</p>
+      <div className="flex flex-col items-center gap-1 px-2 pt-6 pb-3 text-center" data-testid="omnibox-empty">
+        <SearchX size={20} className="mb-1 text-muted" aria-hidden="true" />
+        <p className="text-sm font-medium">{t("search.empty")}</p>
+        <p className="max-w-[70ch] text-note text-muted">{t("search.emptyHint")}</p>
+      </div>
       <Command.Item value="new" className={ITEM} onSelect={() => props.run(() => props.context.navigate("/new"))}>
         <Link2 size={14} className="text-muted" aria-hidden="true" />
         <span className="text-ink">{t("search.emptyAction")}</span>

@@ -7,12 +7,10 @@ import { normalizeSpeakerName } from "../../../../shared/speakers.ts";
 import { appErrorOf } from "../../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../../components/error-view.tsx";
 import { Button } from "../../../ui/button.tsx";
-import { Spinner } from "../../../ui/feedback.tsx";
+import { FieldError, FieldHint } from "../../../ui/notice.tsx";
+import { TextInput } from "../../../ui/text-field.tsx";
 import { speakerCreateRequest, useCreateSpeaker, usePatchSpeaker } from "./speaker-data.ts";
 import { SPEAKER_POPOVER_CLASS } from "./speaker-edit-popover.tsx";
-
-/** The text field of the speaker forms: the same look as the edit form's name field. */
-const NAME_INPUT_CLASS = "h-8 w-full min-w-0 rounded-md border bg-surface px-2.5 text-sm outline-none placeholder:text-muted/70 focus-visible:ring-2 focus-visible:ring-accent";
 
 /**
  * Enter that finishes what was typed, not the Enter that commits an input method's
@@ -50,19 +48,19 @@ export function NewSpeakerForm(props: { contentId: string; nextOrdinal: number; 
         {t("speakerEditor.panel.nameLabel")}
       </label>
       <div className="flex items-center gap-1.5">
-        <input
+        <TextInput
           ref={input}
           id={`${inputId}-input`}
-          type="text"
+          size="md"
           value={draft}
           // Read-only rather than disabled while sending: a disabled field would drop the focus.
           readOnly={create.isPending}
           placeholder={t("speakerEditor.panel.namePlaceholder")}
-          aria-invalid={tooLong}
+          invalid={tooLong}
           aria-describedby={hintId}
           autoComplete="off"
           spellCheck={false}
-          className={`${NAME_INPUT_CLASS} flex-1 ${tooLong ? "border-danger" : "border-line"}`}
+          className="w-full flex-1"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (isCommitEnter(event)) {
@@ -72,17 +70,20 @@ export function NewSpeakerForm(props: { contentId: string; nextOrdinal: number; 
           }}
           data-testid="speaker-panel-add-input"
         />
-        <Button size="sm" variant="primary" disabled={create.isPending || tooLong} onClick={submit} data-testid="speaker-panel-add-confirm">
-          {create.isPending ? <Spinner size={12} /> : null}
+        <Button size="sm" variant="primary" loading={create.isPending} disabled={tooLong} onClick={submit} data-testid="speaker-panel-add-confirm">
           {create.isPending ? t("speakerEditor.panel.creating") : t("speakerEditor.panel.create")}
         </Button>
         <Button size="sm" variant="ghost" disabled={create.isPending} onClick={props.onCancel} data-testid="speaker-panel-add-cancel">
           {t("speakerEditor.panel.cancel")}
         </Button>
       </div>
-      <p id={hintId} className={`text-xs ${tooLong ? "text-danger" : "text-muted"}`} role={tooLong ? "alert" : undefined}>
-        {tooLong ? t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES }) : t("speakerEditor.panel.nameHint", { ordinal: props.nextOrdinal })}
-      </p>
+      {tooLong ? (
+        <FieldError id={hintId} testId="speaker-panel-add-problem">
+          {t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES })}
+        </FieldError>
+      ) : (
+        <FieldHint id={hintId}>{t("speakerEditor.panel.nameHint", { ordinal: props.nextOrdinal })}</FieldHint>
+      )}
       {create.error === null ? null : (
         <div data-testid="speaker-panel-add-error">
           <ErrorView error={appErrorOf(create.error)} />
@@ -207,17 +208,17 @@ function NamingPopover(props: { contentId: string; store: NamingStore; request: 
           <label id={inputId} htmlFor={`${inputId}-input`} className="text-xs font-medium text-muted">
             {t("speakerEditor.naming.label")}
           </label>
-          <input
+          <TextInput
             id={`${inputId}-input`}
-            type="text"
+            size="md"
             value={draft}
             readOnly={patch.isPending}
             placeholder={t("speakerEditor.naming.placeholder", { ordinal: request.ordinal })}
-            aria-invalid={tooLong}
+            invalid={tooLong}
             aria-describedby={hintId}
             autoComplete="off"
             spellCheck={false}
-            className={`${NAME_INPUT_CLASS} ${tooLong ? "border-danger" : "border-line"}`}
+            className="w-full"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (isCommitEnter(event)) {
@@ -227,16 +228,19 @@ function NamingPopover(props: { contentId: string; store: NamingStore; request: 
             }}
             data-testid="speaker-naming-input"
           />
-          <p id={hintId} className={`text-xs ${tooLong ? "text-danger" : "text-muted"}`} role={tooLong ? "alert" : undefined}>
-            {tooLong ? t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES }) : t("speakerEditor.naming.hint", { ordinal: request.ordinal })}
-          </p>
+          {tooLong ? (
+            <FieldError id={hintId} testId="speaker-naming-problem">
+              {t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES })}
+            </FieldError>
+          ) : (
+            <FieldHint id={hintId}>{t("speakerEditor.naming.hint", { ordinal: request.ordinal })}</FieldHint>
+          )}
           {patch.error === null ? null : <ErrorView error={appErrorOf(patch.error)} />}
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" disabled={patch.isPending} onClick={close} data-testid="speaker-naming-skip">
               {t("speakerEditor.naming.skip")}
             </Button>
-            <Button size="sm" variant="primary" disabled={patch.isPending || tooLong} onClick={save} data-testid="speaker-naming-save">
-              {patch.isPending ? <Spinner size={12} /> : null}
+            <Button size="sm" variant="primary" loading={patch.isPending} disabled={tooLong} onClick={save} data-testid="speaker-naming-save">
               {t("speakerEditor.naming.save")}
             </Button>
           </div>

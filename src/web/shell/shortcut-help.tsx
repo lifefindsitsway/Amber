@@ -29,7 +29,7 @@ export function ShortcutHelp(props: { open: boolean; onOpenChange: (open: boolea
           ))}
         </tbody>
       </table>
-      <p className="mt-3 text-xs text-muted">{t("common.shortcut.playerScope")}</p>
+      <p className="mt-3 text-note text-muted">{t("common.shortcut.playerScope")}</p>
     </Modal>
   );
 }

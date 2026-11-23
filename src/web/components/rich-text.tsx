@@ -111,7 +111,7 @@ function Unresolved() {
 export function RichText(props: RichTextProps) {
   const { t } = useTranslation();
   const components: Components = {
-    a: ({ node: _node, ...rest }) => <a {...rest} target="_blank" rel="noopener noreferrer" className="text-accent underline" />,
+    a: ({ node: _node, ...rest }) => <a {...rest} target="_blank" rel="noopener noreferrer" className="text-link underline underline-offset-2" />,
     cite: ({ node: _node, ...rest }) => {
       const attributes = rest as Record<string, unknown>;
       const segmentId = attributes["data-segment"];
@@ -128,7 +128,7 @@ export function RichText(props: RichTextProps) {
               target="_blank"
               rel="noopener noreferrer"
               title={source.title}
-              className="text-xs text-accent hover:underline"
+              className="text-xs text-link underline-offset-2 hover:underline"
               data-web-citation={webId}
             >
               [{source.index}]

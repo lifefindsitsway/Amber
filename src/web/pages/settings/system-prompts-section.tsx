@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PROMPT_CUSTOM_MAX_CHARS } from "../../../shared/defaults.ts";
 import { promptDtoSchema, promptListDtoSchema, promptVersionListDtoSchema, type PromptDto } from "../../../shared/dto/prompt.ts";
@@ -10,7 +10,9 @@ import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { ConfirmButton, Field, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { Callout, FieldError, FieldHint, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TextArea } from "../../ui/text-field.tsx";
+import { ConfirmButton, describedBy, Field, fieldErrorId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 export const PROMPTS_KEY = ["prompts"] as const;
 const PROMPT_VERSIONS_KEY = "prompt-versions";
@@ -62,7 +64,11 @@ export function SystemPromptsSection() {
   return (
     <SettingsBlock title={t("settings.systemPrompts.blocks.systemPrompts")} intro={t("settings.systemPrompts.intro")}>
       {prompts.isPending ? <Loading /> : null}
-      {prompts.isError ? <p className="text-sm text-danger">{t("settings.systemPrompts.loadFailed")}</p> : null}
+      {prompts.isError ? (
+        <Callout tone="error" density="compact" className="mb-2">
+          {t("settings.systemPrompts.loadFailed")}
+        </Callout>
+      ) : null}
       <ul className="divide-y divide-line">
         {items.map((prompt) => (
           <PromptRow key={prompt.id} prompt={prompt} onEdit={() => setEditingId(prompt.id)} />
@@ -86,7 +92,7 @@ function PromptRow({ prompt, onEdit }: { prompt: PromptDto; onEdit: () => void }
             {prompt.customized ? t("settings.systemPrompts.status.customized") : t("settings.systemPrompts.status.builtin")}
           </span>
         </div>
-        <p className="mt-0.5 text-xs text-muted">{copy(prompt.descriptionKey)}</p>
+        <p className={`mt-0.5 ${NOTE_TEXT_CLASS}`}>{copy(prompt.descriptionKey)}</p>
       </div>
       <Button size="sm" onClick={onEdit}>
         {t("common.action.edit")}
@@ -132,10 +138,39 @@ function PromptEditor({ prompt, onClose }: { prompt: PromptDto; onClose: () => v
   const problems = server ?? promptProblems(prompt, text);
   const missing = new Set(problems.missing);
   const required = [...prompt.slots, ...prompt.protocol];
+  const formId = useId();
+  const textProblems = [...(tooLong ? [t("settings.systemPrompts.tooLong", { max: PROMPT_CUSTOM_MAX_CHARS })] : []), ...(empty ? [t("settings.systemPrompts.empty")] : [])];
+  const textError = textProblems.length === 0 ? undefined : textProblems.join(" ");
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : onClose())} title={t("settings.systemPrompts.editTitle", { name })} wide>
-      <p className="mb-3 text-xs text-muted">{copy(prompt.descriptionKey)}</p>
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : onClose())}
+      title={t("settings.systemPrompts.editTitle", { name })}
+      wide
+      footer={
+        <>
+          <span className="mr-auto">
+            <ConfirmButton
+              label={t("settings.systemPrompts.restore")}
+              confirmLabel={t("settings.systemPrompts.restore")}
+              variant="danger"
+              size="md"
+              disabled={!prompt.customized}
+              pending={restore.isPending}
+              message={t("settings.systemPrompts.restoreConfirm", { name })}
+              onConfirm={() => restore.mutate()}
+            />
+          </span>
+          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={formId} variant="primary" loading={save.isPending} disabled={tooLong || empty || unchanged}>
+            {t("common.action.save")}
+          </Button>
+        </>
+      }
+    >
+      <InlineNote className="mb-3">{copy(prompt.descriptionKey)}</InlineNote>
       <form
+        id={formId}
         onSubmit={(event) => {
           event.preventDefault();
           if (!tooLong && !empty && !unchanged && !save.isPending) {
@@ -146,28 +181,32 @@ function PromptEditor({ prompt, onClose }: { prompt: PromptDto; onClose: () => v
         <Field
           label={t("settings.systemPrompts.text")}
           htmlFor="system-prompt-text"
+          error={textError}
           aside={
             <span className={`text-xs ${tooLong ? "text-danger" : "text-muted"}`} data-testid="prompt-count">
               {t("settings.systemPrompts.count", { count: text.length, max: PROMPT_CUSTOM_MAX_CHARS })}
             </span>
           }
         >
-          <textarea
+          <TextArea
             id="system-prompt-text"
-            className={`min-h-64 w-full rounded-md border bg-surface p-2 font-mono text-xs outline-none focus:border-accent ${tooLong ? "border-danger" : "border-line"}`}
+            size="sm"
+            className="min-h-64 w-full font-mono"
+            invalid={textError !== undefined}
+            aria-describedby={describedBy(textError !== undefined && fieldErrorId("system-prompt-text"), "system-prompt-required-hint", problems.unknown.length > 0 && "system-prompt-unknown-hint")}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
-          {tooLong ? <p className="text-xs text-danger">{t("settings.systemPrompts.tooLong", { max: PROMPT_CUSTOM_MAX_CHARS })}</p> : null}
-          {empty ? <p className="text-xs text-danger">{t("settings.systemPrompts.empty")}</p> : null}
         </Field>
         <div className="mb-3" data-testid="prompt-required">
           <p className="mb-1 text-xs font-medium text-muted">{t("settings.systemPrompts.required")}</p>
           {required.length === 0 ? (
-            <p className="text-xs text-muted">{t("settings.systemPrompts.noRequired")}</p>
+            <FieldHint id="system-prompt-required-hint">{t("settings.systemPrompts.noRequired")}</FieldHint>
           ) : (
             <>
-              <p className="mb-1 text-xs text-muted">{t("settings.systemPrompts.requiredHint")}</p>
+              <FieldHint id="system-prompt-required-hint" className="mb-1.5">
+                {t("settings.systemPrompts.requiredHint")}
+              </FieldHint>
               <ul className="flex flex-wrap gap-1.5">
                 {required.map((item) => (
                   <li
@@ -192,30 +231,18 @@ function PromptEditor({ prompt, onClose }: { prompt: PromptDto; onClose: () => v
                   </li>
                 ))}
               </ul>
-              <p className="mt-1 text-xs text-danger">{t("settings.systemPrompts.unknownHint")}</p>
+              <FieldError id="system-prompt-unknown-hint" className="mt-1.5">
+                {t("settings.systemPrompts.unknownHint")}
+              </FieldError>
             </div>
           )}
         </div>
-        <p className="mb-3 rounded bg-panel p-2 text-xs text-muted" data-testid="prompt-scope">
+        {/* Read before saving: a broken prompt still runs, fails and is billed. */}
+        <Callout tone="warn" density="compact" className="mb-3" testId="prompt-scope">
           {t("settings.systemPrompts.scope")}
-        </p>
+        </Callout>
         <PromptVersions promptId={prompt.id} />
         <RequestError error={save.error ?? restore.error} />
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <ConfirmButton
-            label={t("settings.systemPrompts.restore")}
-            variant="danger"
-            disabled={!prompt.customized || restore.isPending}
-            message={t("settings.systemPrompts.restoreConfirm", { name })}
-            onConfirm={() => restore.mutate()}
-          />
-          <div className="flex gap-2">
-            <Button onClick={onClose}>{t("common.action.cancel")}</Button>
-            <Button type="submit" variant="primary" disabled={save.isPending || tooLong || empty || unchanged}>
-              {t("common.action.save")}
-            </Button>
-          </div>
-        </div>
       </form>
     </Modal>
   );
@@ -238,7 +265,9 @@ function PromptVersions({ promptId }: { promptId: string }) {
       {!open ? null : versions.isPending ? (
         <Loading />
       ) : versions.isError ? (
-        <p className="mt-2 text-danger">{t("settings.systemPrompts.versionsLoadFailed")}</p>
+        <Callout tone="error" density="compact" className="mt-2">
+          {t("settings.systemPrompts.versionsLoadFailed")}
+        </Callout>
       ) : items.length === 0 ? (
         <p className="mt-2 text-muted">{t("settings.systemPrompts.noVersions")}</p>
       ) : (

@@ -276,7 +276,8 @@ test.describe("screenshots", () => {
     await settle(page, "main", { chart: false });
     await shoot(page, "main-models-1280-light");
     await page.getByTestId("usage-cost-detail-button").click();
-    await page.getByTestId("usage-simulate").click();
+    // The switch is a visually hidden check box under its drawn track, which takes the pointer.
+    await page.getByTestId("usage-simulate").click({ force: true });
     await expect(page.getByTestId("usage-simulated")).toBeVisible();
     await shoot(page, "main-cost-detail-1280-light");
   });

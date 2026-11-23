@@ -13,8 +13,11 @@ import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TextArea } from "../../ui/text-field.tsx";
 import { QrLoginButton } from "./qr-login-dialog.tsx";
-import { ConfirmButton, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { ConfirmButton, CredentialStatus, describedBy, Field, fieldHintId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 /**
  * `/settings/platform-accounts`: per platform the login state, an explicit
@@ -35,7 +38,7 @@ export function PlatformAccountsSection() {
   const server = version.data?.mode === "server";
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("settings.platformAccounts.intro")}</p>
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.platformAccounts.intro")}</p>
       {accounts.data.accounts.map((account) => (
         <AccountBlock key={account.platform} account={account} server={server} desktop={desktop} />
       ))}
@@ -133,18 +136,20 @@ function AccountBlock(props: { account: PlatformAccountDto; server: boolean; des
             />
           ) : null}
           {props.desktop && platform === "bilibili" ? (
-            <Button size="sm" variant="primary" disabled={login.isPending} onClick={() => login.mutate()} data-testid="bilibili-login">
+            <Button size="sm" variant="primary" loading={login.isPending} onClick={() => login.mutate()} data-testid="bilibili-login">
               {t("settings.platformAccounts.desktopLogin.open")}
             </Button>
           ) : null}
           {account.hasCredential ? (
             <>
-              <Button size="sm" disabled={check.isPending} onClick={() => check.mutate()}>
+              <Button size="sm" loading={check.isPending} onClick={() => check.mutate()}>
                 {t("settings.platformAccounts.check")}
               </Button>
               <ConfirmButton
                 label={t("settings.platformAccounts.remove")}
+                confirmLabel={t("settings.platformAccounts.remove")}
                 variant="danger"
+                pending={remove.isPending}
                 message={t("settings.platformAccounts.removeConfirm", { platform: label })}
                 onConfirm={() => remove.mutate()}
               />
@@ -166,12 +171,12 @@ function AccountBlock(props: { account: PlatformAccountDto; server: boolean; des
         )}
       </div>
       {checked === undefined ? null : (
-        <p className={`mb-3 text-xs ${checked.status === "valid" ? "text-ok" : checked.status === "expired" ? "text-danger" : "text-muted"}`} role="status">
+        <p className={`mb-3 text-note ${checked.status === "valid" ? "text-ok" : checked.status === "expired" ? "text-danger" : "text-muted"}`} role="status">
           {t(`settings.platformAccounts.checkResult.${checked.status}`)}
         </p>
       )}
       {notice === undefined ? null : (
-        <p className="mb-3 text-xs text-ok" role="status">
+        <p className="mb-3 text-note text-ok" role="status">
           {notice}
         </p>
       )}
@@ -221,13 +226,15 @@ function BrowserImport(props: { onImported: () => void }) {
   });
   return (
     <Field label={t("settings.platformAccounts.browserImport.label")} hint={t("settings.platformAccounts.browserImport.hint")} htmlFor="cookie-browser">
-      <p className="mb-2 rounded-md bg-sunken px-2 py-1.5 text-xs" data-testid="browser-import-notice">
+      {/* Read before reading a browser: it exports every site's cookies for a moment. */}
+      <Callout tone="info" density="compact" className="mb-2" id="cookie-browser-notice" testId="browser-import-notice">
         {t("settings.platformAccounts.browserImport.notice")}
-      </p>
+      </Callout>
       <div className="flex flex-wrap items-center gap-2">
-        <select
+        <NativeSelect
           id="cookie-browser"
-          className={`${INPUT_CLASS} w-40`}
+          className="w-40"
+          aria-describedby={describedBy("cookie-browser-notice", fieldHintId("cookie-browser"))}
           value={browser}
           onChange={(event) => {
             const next = event.target.value as CookieBrowser;
@@ -240,8 +247,8 @@ function BrowserImport(props: { onImported: () => void }) {
               {t(`settings.platformAccounts.browserImport.browser.${item}`)}
             </option>
           ))}
-        </select>
-        <Button size="sm" variant="primary" disabled={read.isPending} onClick={() => read.mutate()} data-testid="browser-import">
+        </NativeSelect>
+        <Button size="sm" variant="primary" loading={read.isPending} onClick={() => read.mutate()} data-testid="browser-import">
           {read.isPending ? t("settings.platformAccounts.browserImport.reading") : t("settings.platformAccounts.browserImport.read")}
         </Button>
       </div>
@@ -272,9 +279,10 @@ function CookiesImport(props: { platform: Platform; server: boolean; onImported:
   return (
     <Field label={t("settings.platformAccounts.importLabel")} hint={t("settings.platformAccounts.importHint")} htmlFor={id}>
       {props.server ? (
-        <p className="mb-2 rounded-md bg-sunken px-2 py-1.5 text-xs" data-testid="cookies-trust-hint">
+        // Must be read before pasting: the login is kept on this server, under its administrator.
+        <Callout tone="info" density="compact" className="mb-2" id={`${id}-trust`} testId="cookies-trust-hint">
           {t("settings.platformAccounts.serverTrust")}
-        </p>
+        </Callout>
       ) : null}
       <form
         onSubmit={(event) => {
@@ -284,12 +292,14 @@ function CookiesImport(props: { platform: Platform; server: boolean; onImported:
           }
         }}
       >
-        <textarea
+        <TextArea
           id={id}
           rows={4}
+          size="sm"
           autoComplete="off"
           spellCheck={false}
-          className="w-full rounded-md border border-line bg-surface p-2 font-mono text-xs outline-none focus:border-accent"
+          className="w-full font-mono"
+          aria-describedby={describedBy(props.server && `${id}-trust`, fieldHintId(id))}
           value={value}
           onChange={(event) => setValue(event.target.value)}
         />
@@ -309,7 +319,7 @@ function CookiesImport(props: { platform: Platform; server: boolean; onImported:
               }}
             />
           </label>
-          <Button type="submit" variant="primary" size="sm" disabled={put.isPending || value.trim() === ""}>
+          <Button type="submit" variant="primary" size="sm" loading={put.isPending} disabled={value.trim() === ""}>
             {t("settings.platformAccounts.importSubmit")}
           </Button>
         </div>

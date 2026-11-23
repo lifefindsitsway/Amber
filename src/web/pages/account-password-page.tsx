@@ -4,6 +4,7 @@ import { Navigate } from "react-router";
 import { useMe } from "../api/queries.ts";
 import { ChangePasswordForm } from "../auth/change-password-form.tsx";
 import { Loading, PageHeader } from "../ui/feedback.tsx";
+import { Callout } from "../ui/notice.tsx";
 
 /**
  * `/account/password` (server mode): the signed-in user changes their own
@@ -24,15 +25,15 @@ export function AccountPasswordPage() {
       <PageHeader title={t("auth.passwordPage.title")} />
       <div className="min-w-0 flex-1 overflow-auto p-6">
         <div className="mx-auto max-w-sm">
-          <p className="mb-4 flex gap-2 text-sm" data-testid="password-page-account">
+          <p className="mb-8 flex gap-2 text-sm" data-testid="password-page-account">
             <span className="text-muted">{t("auth.passwordPage.account")}</span>
             <span className="font-medium">{me.data.username ?? me.data.userId}</span>
             <span className="text-muted">{t(`auth.passwordPage.roleValue.${me.data.role}`)}</span>
           </p>
           {changed ? (
-            <p className="mb-3 text-sm text-ok" role="status">
+            <Callout tone="success" density="compact" announce="status" className="mb-5">
               {t("auth.passwordPage.changed")}
-            </p>
+            </Callout>
           ) : null}
           <ChangePasswordForm submitLabel={t("auth.passwordPage.submit")} onDone={() => setChanged(true)} />
         </div>

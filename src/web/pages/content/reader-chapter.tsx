@@ -2,6 +2,8 @@ import { Play } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { formatDuration } from "../../format.ts";
+import { FOCUS_RING } from "../../ui/button.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 
 /** One title line, in the title's own em. */
@@ -52,19 +54,20 @@ export function ChapterHeading(props: { title: string; first: boolean; seek?: { 
         // after the title, never makes the row taller (a 24px button fits the smallest 18px × 1.35
         // line), and leaves the heading's accessible name to the title alone.
         <span className="flex shrink-0 items-center" style={{ ...TITLE_TYPE, height: `${TITLE_LINE}em` }}>
-          <button
-            type="button"
-            aria-label={label}
-            title={label}
-            data-testid="chapter-play"
-            data-reader-meta=""
-            // Revealed like the row menus: on hovering the heading row or on keyboard focus, always on
-            // touch screens. Opacity keeps it focusable while it is not shown.
-            className="flex size-6 items-center justify-center rounded text-muted opacity-0 group-hover:opacity-100 hover:bg-sunken hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none pointer-coarse:opacity-100"
-            onClick={() => seek.onSeek()}
-          >
-            <Play size={14} aria-hidden="true" />
-          </button>
+          <Tooltip content={label}>
+            <button
+              type="button"
+              aria-label={label}
+              data-testid="chapter-play"
+              data-reader-meta=""
+              // Revealed like the row menus: on hovering the heading row or on keyboard focus, always on
+              // touch screens. Opacity keeps it focusable while it is not shown.
+              className={`flex size-6 items-center justify-center rounded text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 hover:bg-sunken hover:text-ink focus-visible:opacity-100 motion-reduce:transition-none pointer-coarse:opacity-100 ${FOCUS_RING}`}
+              onClick={() => seek.onSeek()}
+            >
+              <Play size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </span>
       )}
     </div>

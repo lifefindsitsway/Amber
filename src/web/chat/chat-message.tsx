@@ -12,6 +12,7 @@ import { CitationCard, useCitedSentences } from "../pages/content/citation-card.
 import { useContentPage } from "../pages/content/content-context.tsx";
 import { useSegments } from "../pages/content/content-data.ts";
 import { useSentencePlayback } from "../pages/content/sentence-playback.ts";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
 import { copyText } from "../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
 import { Spinner } from "../ui/feedback.tsx";
@@ -131,18 +132,27 @@ export function AssistantMessage(props: {
         />
       )}
       {props.speakerContext === undefined ? null : (
-        <p role="note" className="mt-1 text-xs text-muted" data-testid="chat-speaker-mismatch" data-state={props.speakerContext.state}>
+        <p role="note" className="mt-1 max-w-[70ch] text-note text-muted" data-testid="chat-speaker-mismatch" data-state={props.speakerContext.state}>
           {t("chat.speakerMismatch", { names: props.speakerContext.speakers.map((speaker) => speaker.label).join(t("chat.speakerSeparator")) })}
         </p>
       )}
       {props.status === "interrupted" || props.status === "failed" ? (
-        <p className="mt-1 text-xs text-danger" data-testid="chat-message-status">
+        <p className="mt-1 text-note text-danger" data-testid="chat-message-status">
           {t(`chat.status.${props.status}`)}
         </p>
       ) : null}
-      {props.error === undefined ? null : <ErrorView error={props.error} />}
+      {props.error === undefined ? null : (
+        // The way out of a failed answer is another attempt, offered right with the reason.
+        <ErrorView error={props.error}>
+          {props.footer?.onRetry === undefined ? undefined : (
+            <Button size="sm" disabled={props.footer.busy} onClick={props.footer.onRetry} data-testid="chat-error-retry">
+              {t("chat.turn.retry")}
+            </Button>
+          )}
+        </ErrorView>
+      )}
       {props.failedAttempt === undefined ? null : (
-        <p className="mt-1 text-xs text-danger" data-testid="chat-retry-failed">
+        <p className="mt-1 text-note text-danger" data-testid="chat-retry-failed">
           {t("chat.turn.retryFailed", props.failedAttempt)}
         </p>
       )}
@@ -153,7 +163,7 @@ export function AssistantMessage(props: {
             <button
               key={suggestion}
               type="button"
-              className="rounded-full border border-line px-2 py-0.5 text-xs hover:border-accent hover:text-accent"
+              className={`rounded-full border border-line px-2 py-0.5 text-xs transition-colors duration-150 motion-reduce:transition-none hover:border-accent hover:text-accent ${FOCUS_RING}`}
               data-testid="chat-suggestion"
               onClick={() => props.onSuggestion(suggestion)}
             >

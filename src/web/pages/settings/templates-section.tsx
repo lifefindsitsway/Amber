@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { DISPLAY_NAME_MAX_CHARS, UI_LANGUAGE_DEFAULT } from "../../../shared/defaults.ts";
@@ -16,7 +16,10 @@ import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { ConfirmButton, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { InlineNote } from "../../ui/notice.tsx";
+import { TextArea, TextInput } from "../../ui/text-field.tsx";
+import { ConfirmButton, describedBy, Field, fieldErrorId, fieldHintId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 import { SystemPromptsSection } from "./system-prompts-section.tsx";
 
 export const TEMPLATES_KEY = ["summary-templates"] as const;
@@ -48,9 +51,10 @@ export function TemplatesSection() {
     <div>
       <SettingsBlock title={t("settings.systemPrompts.blocks.defaults")}>
         <Field label={t("settings.templates.defaultTemplate")} hint={t("settings.templates.defaultTemplateHint")} htmlFor="default-template">
-          <select
+          <NativeSelect
             id="default-template"
-            className={INPUT_CLASS}
+            className="w-full"
+            aria-describedby={fieldHintId("default-template")}
             value={settings.data?.defaultSummaryTemplateId ?? ""}
             onChange={(event) => patchSettings.mutate({ defaultSummaryTemplateId: event.target.value === "" ? null : event.target.value })}
           >
@@ -60,12 +64,13 @@ export function TemplatesSection() {
                 {nameOf(template)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         <Field label={t("settings.templates.outputLanguage")} hint={t("settings.templates.outputLanguageHint")} htmlFor="output-language">
-          <select
+          <NativeSelect
             id="output-language"
-            className={INPUT_CLASS}
+            className="w-full"
+            aria-describedby={fieldHintId("output-language")}
             value={settings.data?.defaultOutputLanguage ?? ""}
             onChange={(event) => patchSettings.mutate({ defaultOutputLanguage: event.target.value === "" ? null : event.target.value })}
           >
@@ -75,7 +80,7 @@ export function TemplatesSection() {
                 {name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         <RequestError error={patchSettings.error} />
       </SettingsBlock>
@@ -129,7 +134,9 @@ function TemplateRow({ template, onEdit }: { template: SummaryTemplateDto; onEdi
         {template.builtin ? null : (
           <ConfirmButton
             label={t("common.action.delete")}
+            confirmLabel={t("common.action.delete")}
             variant="danger"
+            pending={remove.isPending}
             message={t("settings.templates.deleteConfirm", { name: template.name })}
             onConfirm={() => remove.mutate()}
           />
@@ -174,10 +181,27 @@ function TemplateEditor({ template, onClose }: { template: SummaryTemplateDto | 
     },
   });
   const unchanged = template !== undefined && name === undefined && prompt === undefined;
+  const formId = useId();
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : onClose())} title={template === undefined ? t("settings.templates.create") : shownName} wide>
-      {readOnly ? <p className="mb-3 text-xs text-muted">{t("settings.templates.readOnly")}</p> : null}
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : onClose())}
+      title={template === undefined ? t("settings.templates.create") : shownName}
+      wide
+      footer={
+        <>
+          <Button onClick={onClose}>{readOnly ? t("common.action.close") : t("common.action.cancel")}</Button>
+          {readOnly ? null : (
+            <Button type="submit" form={formId} variant="primary" loading={save.isPending} disabled={tooLong || unchanged}>
+              {t("common.action.save")}
+            </Button>
+          )}
+        </>
+      }
+    >
+      {readOnly ? <InlineNote className="mb-3">{t("settings.templates.readOnly")}</InlineNote> : null}
       <form
+        id={formId}
         onSubmit={(event) => {
           event.preventDefault();
           if (!readOnly && !tooLong && !unchanged && shownName.trim() !== "" && shownPrompt.trim() !== "") {
@@ -185,14 +209,22 @@ function TemplateEditor({ template, onClose }: { template: SummaryTemplateDto | 
           }
         }}
       >
-        <Field label={t("settings.templates.name")} htmlFor="template-name">
-          <input id="template-name" className={INPUT_CLASS} value={shownName} readOnly={readOnly} onChange={(event) => setName(event.target.value)} />
-          {tooLong ? <p className="text-xs text-danger">{t("settings.templates.nameTooLong", { max: DISPLAY_NAME_MAX_CHARS })}</p> : null}
+        <Field label={t("settings.templates.name")} htmlFor="template-name" error={tooLong ? t("settings.templates.nameTooLong", { max: DISPLAY_NAME_MAX_CHARS }) : undefined}>
+          <TextInput
+            id="template-name"
+            className="w-full"
+            value={shownName}
+            readOnly={readOnly}
+            invalid={tooLong}
+            aria-describedby={describedBy(tooLong && fieldErrorId("template-name"))}
+            onChange={(event) => setName(event.target.value)}
+          />
         </Field>
         <Field label={t("settings.templates.prompt")} htmlFor="template-prompt">
-          <textarea
+          <TextArea
             id="template-prompt"
-            className="min-h-48 w-full rounded-md border border-line bg-surface p-2 font-mono text-xs outline-none focus:border-accent"
+            size="sm"
+            className="min-h-48 w-full font-mono"
             value={shownPrompt}
             readOnly={readOnly}
             onChange={(event) => setPrompt(event.target.value)}
@@ -214,14 +246,6 @@ function TemplateEditor({ template, onClose }: { template: SummaryTemplateDto | 
           </details>
         )}
         <RequestError error={save.error} />
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>{readOnly ? t("common.action.close") : t("common.action.cancel")}</Button>
-          {readOnly ? null : (
-            <Button type="submit" variant="primary" disabled={save.isPending || tooLong || unchanged}>
-              {t("common.action.save")}
-            </Button>
-          )}
-        </div>
       </form>
     </Modal>
   );

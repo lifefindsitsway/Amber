@@ -10,7 +10,7 @@ import { SUBTITLE_DISPLAY_MODES, type SubtitleDisplayMode } from "./subtitle-pre
 const TRIGGER_CLASS = "player-button data-[state=open]:bg-white/15 data-[active=true]:text-accent";
 const LABEL_CLASS = "px-4 pt-1.5 pb-1 text-xs text-white/60";
 const SEPARATOR_CLASS = "my-1 h-px bg-white/15";
-const NOTE_CLASS = "max-w-56 px-4 py-1 text-xs text-white/60";
+const NOTE_CLASS = "max-w-56 px-4 py-1 text-note text-white/60";
 
 /**
  * The 「字幕」 menu of the local player's control bar: display mode, original

@@ -3,7 +3,8 @@ import { Dialog } from "radix-ui";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { SpeakerReviewResolution } from "../../../shared/speakers.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 
 /**
  * Asked when 「完成」 is pressed while sentences still wait for their speaker to be
@@ -37,31 +38,31 @@ export function CommitReviewDialog(props: {
         >
           <div className="mb-3 flex items-start justify-between gap-4">
             <Dialog.Title className="text-base font-semibold">{t("speakerEditor.commit.title")}</Dialog.Title>
-            <Dialog.Close className="rounded p-1 text-muted hover:bg-sunken" aria-label={t("common.action.close")}>
-              <X size={16} />
+            <Dialog.Close className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`} aria-label={t("common.action.close")}>
+              <X size={16} aria-hidden="true" />
             </Dialog.Close>
           </div>
           <Dialog.Description className="mb-4 text-sm" data-testid="commit-review-remaining">
             {t("speakerEditor.commit.message", { count: props.remaining })}
           </Dialog.Description>
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
               <Button data-initial-focus="" variant="primary" className="self-start" onClick={props.onContinue} data-testid="commit-review-continue">
                 {t("speakerEditor.commit.continue")}
               </Button>
-              <p className="text-xs text-muted">{t("speakerEditor.commit.continueHint")}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("speakerEditor.commit.continueHint")}</p>
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Button className="self-start" disabled={props.busy} onClick={() => props.onCommit("unassign")} data-testid="commit-review-unassign">
                 {t("speakerEditor.commit.unassign")}
               </Button>
-              <p className="text-xs text-muted">{t("speakerEditor.commit.unassignHint", { count: props.remaining })}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("speakerEditor.commit.unassignHint", { count: props.remaining })}</p>
             </div>
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-1.5">
               <Button className="self-start" disabled={props.busy} onClick={() => props.onCommit("accept_suggestions")} data-testid="commit-review-accept">
                 {t("speakerEditor.commit.accept")}
               </Button>
-              <p className="text-xs text-muted">{t("speakerEditor.commit.acceptHint", { count: props.suggested })}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("speakerEditor.commit.acceptHint", { count: props.suggested })}</p>
             </div>
           </div>
         </Dialog.Content>

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { BrushCleaning, ChevronDown, ChevronUp, Dock, GripHorizontal, ListChecks, Maximize2, MessageSquare, Minimize2, PictureInPicture2, Plus, Quote, Send, Square, X } from "lucide-react";
+import { BrushCleaning, ChevronDown, ChevronUp, Dock, GripHorizontal, Info, ListChecks, Maximize2, MessageSquare, Minimize2, PictureInPicture2, Plus, Quote, Send, Square, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type UIEvent } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -32,7 +32,9 @@ import { useModelReadiness } from "../models/use-model-readiness.ts";
 import { useContentPage } from "../pages/content/content-context.tsx";
 import { ConfirmDialog } from "../pages/content/confirm-dialog.tsx";
 import { usePlayerController } from "../player/player-controller.tsx";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Callout, InlineNote, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { RESIZE_EDGES, useFloatingBox, type BoxRect, type ResizeEdge } from "../ui/use-floating-box.ts";
 import { useChatComposer, useComposerState, type QuoteDraft } from "./chat-composer.tsx";
 import {
@@ -598,28 +600,30 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   const inputSize = collapsed ? "h-9 resize-none" : `field-sizing-content resize-none min-h-14 ${fill ? "max-h-[45cqh]" : "max-h-60"}`;
 
   const sendOrStop = state.running ? (
-    <button
-      type="button"
-      className="flex size-8 shrink-0 items-center justify-center rounded-md bg-ink text-surface hover:opacity-80"
-      onClick={() => controllers.current.get(key)?.abort()}
-      title={t("chat.stop")}
-      aria-label={t("chat.stop")}
-      data-testid="chat-stop"
-    >
-      <Square size={12} fill="currentColor" aria-hidden="true" />
-    </button>
+    <Tooltip content={t("chat.stop")}>
+      <button
+        type="button"
+        className={`flex size-8 shrink-0 items-center justify-center rounded-md bg-ink text-surface transition-opacity duration-150 motion-reduce:transition-none hover:opacity-80 ${FOCUS_RING}`}
+        onClick={() => controllers.current.get(key)?.abort()}
+        aria-label={t("chat.stop")}
+        data-testid="chat-stop"
+      >
+        <Square size={12} fill="currentColor" aria-hidden="true" />
+      </button>
+    </Tooltip>
   ) : (
-    <button
-      type="button"
-      className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-glow text-accent-ink hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
-      disabled={blocked || threadBusy || input.trim() === ""}
-      onClick={() => void send()}
-      title={t("chat.send")}
-      aria-label={t("chat.send")}
-      data-testid="chat-send"
-    >
-      <Send size={14} aria-hidden="true" />
-    </button>
+    <Tooltip content={t("chat.send")}>
+      <button
+        type="button"
+        className={`flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-glow text-accent-ink transition duration-150 motion-reduce:transition-none hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`}
+        disabled={blocked || threadBusy || input.trim() === ""}
+        onClick={() => void send()}
+        aria-label={t("chat.send")}
+        data-testid="chat-send"
+      >
+        <Send size={14} aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
 
   const onSuggestion = (text: string): void => {
@@ -743,9 +747,11 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
           <div className="mx-2 mt-2 flex items-start gap-2 rounded-md bg-sunken px-2 py-1 text-xs" data-testid="chat-quote">
             <Quote size={12} className="mt-0.5 shrink-0 text-muted" aria-hidden="true" />
             <span className="line-clamp-2 flex-1">{composed.quote.text}</span>
-            <button type="button" aria-label={t("chat.quote.remove")} className="text-muted hover:text-ink" onClick={() => composer.clearQuote()}>
-              <X size={12} />
-            </button>
+            <Tooltip content={t("chat.quote.remove")}>
+              <button type="button" aria-label={t("chat.quote.remove")} className={`rounded-sm text-muted hover:text-ink ${FOCUS_RING}`} onClick={() => composer.clearQuote()}>
+                <X size={12} aria-hidden="true" />
+              </button>
+            </Tooltip>
           </div>
         )}
         <div className="flex items-end gap-2">
@@ -799,7 +805,7 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
               </span>
             ) : null}
             {marker?.summaryOmitted === true ? (
-              <span className="text-xs text-muted" data-testid="chat-summary-omitted">
+              <span className="text-note text-muted" data-testid="chat-summary-omitted">
                 {t("chat.summaryOmitted.speakers_changed")}
               </span>
             ) : null}
@@ -808,9 +814,11 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         )}
       </div>
       {collapsed ? (
-        <Button size="sm" variant="ghost" aria-label={t("chat.expand")} title={t("chat.expand")} onClick={() => setSize("normal")} data-testid="chat-expand">
-          <ChevronUp size={14} />
-        </Button>
+        <Tooltip content={t("chat.expand")}>
+          <Button size="sm" variant="ghost" aria-label={t("chat.expand")} onClick={() => setSize("normal")} data-testid="chat-expand">
+            <ChevronUp size={14} aria-hidden="true" />
+          </Button>
+        </Tooltip>
       ) : null}
     </div>
   );
@@ -848,25 +856,30 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
           {t("chat.clear")}
         </Button>
         {props.fill ? null : (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setSize(size === "full" ? "normal" : "full")}
-            title={size === "full" ? t("chat.restore") : t("chat.full")}
-            aria-label={size === "full" ? t("chat.restore") : t("chat.full")}
-            data-testid="chat-full"
-          >
-            {size === "full" ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-          </Button>
+          <Tooltip content={size === "full" ? t("chat.restore") : t("chat.full")}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSize(size === "full" ? "normal" : "full")}
+              aria-label={size === "full" ? t("chat.restore") : t("chat.full")}
+              data-testid="chat-full"
+            >
+              {size === "full" ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+            </Button>
+          </Tooltip>
         )}
         {placement?.canFloat === true ? (
-          <Button size="sm" variant="ghost" onClick={() => placement.onFloatingChange(true)} title={t("chat.float")} aria-label={t("chat.float")} data-testid="chat-float">
-            <PictureInPicture2 size={14} />
-          </Button>
+          <Tooltip content={t("chat.float")}>
+            <Button size="sm" variant="ghost" onClick={() => placement.onFloatingChange(true)} aria-label={t("chat.float")} data-testid="chat-float">
+              <PictureInPicture2 size={14} aria-hidden="true" />
+            </Button>
+          </Tooltip>
         ) : null}
-        <Button size="sm" variant="ghost" onClick={() => setSize("collapsed")} title={t("chat.collapse")} aria-label={t("chat.collapse")} data-testid="chat-collapse">
-          <ChevronDown size={14} />
-        </Button>
+        <Tooltip content={t("chat.collapse")}>
+          <Button size="sm" variant="ghost" onClick={() => setSize("collapsed")} aria-label={t("chat.collapse")} data-testid="chat-collapse">
+            <ChevronDown size={14} aria-hidden="true" />
+          </Button>
+        </Tooltip>
       </div>
     </header>
   );
@@ -874,55 +887,40 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
   // A narrow window has room for icons only; the whole row, controls aside, moves the window.
   const floatingHeader = (
     <header className="flex cursor-move touch-none select-none items-center gap-1" {...floatBox.moveHandle}>
-      <span
-        role="button"
-        tabIndex={0}
-        aria-label={t("chat.move")}
-        title={t("chat.move")}
-        className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted outline-none hover:bg-sunken hover:text-ink focus-visible:bg-sunken focus-visible:ring-2 focus-visible:ring-accent"
-        onKeyDown={floatBox.onKeyDown}
-        data-testid="chat-drag-handle"
-      >
-        <GripHorizontal size={14} aria-hidden="true" />
-      </span>
+      <Tooltip content={t("chat.move")}>
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={t("chat.move")}
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted outline-none hover:bg-sunken hover:text-ink focus-visible:bg-sunken focus-visible:ring-2 focus-visible:ring-accent"
+          onKeyDown={floatBox.onKeyDown}
+          data-testid="chat-drag-handle"
+        >
+          <GripHorizontal size={14} aria-hidden="true" />
+        </span>
+      </Tooltip>
       <div className="flex min-w-0 flex-1">{threadMenu}</div>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={busy}
-        onClick={() => void newThread()}
-        title={t("chat.threads.newThread")}
-        aria-label={t("chat.threads.newThread")}
-        data-testid="chat-new-thread"
-      >
-        <Plus size={14} aria-hidden="true" />
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={selectDisabled}
-        onClick={() => setSelecting(true)}
-        title={t("chat.select.start")}
-        aria-label={t("chat.select.start")}
-        data-testid="chat-select"
-      >
-        <ListChecks size={14} aria-hidden="true" />
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        disabled={clearDisabled}
-        onClick={() => setConfirmClear(true)}
-        title={t("chat.clearAll")}
-        aria-label={t("chat.clearAll")}
-        data-testid="chat-clear"
-      >
-        {/* A broom, not a bin: this clears every thread, unlike a thread's own delete. */}
-        <BrushCleaning size={14} aria-hidden="true" />
-      </Button>
-      <Button size="sm" variant="ghost" onClick={() => placement?.onFloatingChange(false)} title={t("chat.dock")} aria-label={t("chat.dock")} data-testid="chat-dock">
-        <Dock size={14} aria-hidden="true" />
-      </Button>
+      <Tooltip content={t("chat.threads.newThread")}>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void newThread()} aria-label={t("chat.threads.newThread")} data-testid="chat-new-thread">
+          <Plus size={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
+      <Tooltip content={t("chat.select.start")}>
+        <Button size="sm" variant="ghost" disabled={selectDisabled} onClick={() => setSelecting(true)} aria-label={t("chat.select.start")} data-testid="chat-select">
+          <ListChecks size={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
+      <Tooltip content={t("chat.clearAll")}>
+        <Button size="sm" variant="ghost" disabled={clearDisabled} onClick={() => setConfirmClear(true)} aria-label={t("chat.clearAll")} data-testid="chat-clear">
+          {/* A broom, not a bin: this clears every thread, unlike a thread's own delete. */}
+          <BrushCleaning size={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
+      <Tooltip content={t("chat.dock")}>
+        <Button size="sm" variant="ghost" onClick={() => placement?.onFloatingChange(false)} aria-label={t("chat.dock")} data-testid="chat-dock">
+          <Dock size={14} aria-hidden="true" />
+        </Button>
+      </Tooltip>
     </header>
   );
 
@@ -941,7 +939,11 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
       {collapsed ? null : floating ? floatingHeader : dockedHeader}
       {collapsed ? null : (
         <div ref={listRef} className="min-h-0 flex-1 overflow-auto" onScroll={onListScroll} data-testid="chat-messages" data-thread={threadId ?? ""}>
-          {empty ? <p className="py-6 text-center text-xs text-muted">{t("chat.empty")}</p> : null}
+          {empty ? (
+            <InlineNote className="mx-auto justify-center py-6 text-center" testId="chat-empty">
+              {t("chat.empty")}
+            </InlineNote>
+          ) : null}
           {turns.map(renderTurn)}
           {live === undefined || !showPendingSend ? null : (
             <div data-testid="chat-turn" data-turn="pending">
@@ -976,14 +978,14 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
       ) : null}
       {unavailableReason === undefined ? null : <Unavailable reason={unavailableReason} modelRef={windowModel} onSaved={windowSaved} />}
       {unavailableReason === undefined && context?.mode === "metadata" ? (
-        <p className="rounded-md bg-sunken px-2 py-1.5 text-xs text-muted" data-testid="chat-metadata-hint">
+        <InlineNote icon={<Info size={14} aria-hidden="true" />} testId="chat-metadata-hint">
           {t("chat.metadataHint")}
-        </p>
+        </InlineNote>
       ) : null}
       {refusal === undefined ? null : (
         <ErrorView error={refusal}>
           {refusal.action === "configure_web_search" ? (
-            <Link to="/settings/web-search" className="text-xs text-accent hover:underline" data-testid="chat-web-search-configure">
+            <Link to="/settings/web-search" className={TEXT_ACTION_CLASS} data-testid="chat-web-search-configure">
               {t("chat.webSearch.configure")}
             </Link>
           ) : undefined}
@@ -1018,8 +1020,9 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         open={confirmClear}
         title={t("chat.clearTitle")}
         message={t("chat.clearConfirm")}
-        confirmLabel={t("chat.clear")}
+        confirmLabel={t("chat.clearAll")}
         busy={busy}
+        danger
         onConfirm={() => void clear()}
         onCancel={() => setConfirmClear(false)}
       />
@@ -1027,8 +1030,9 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         open={confirmTurns !== undefined}
         title={confirmTurns !== undefined && confirmTurns.length > 1 ? t("chat.select.confirmTitle") : t("chat.turn.delete")}
         message={confirmTurns !== undefined && confirmTurns.length > 1 ? t("chat.select.confirm", { count: confirmTurns.length }) : t("chat.turn.deleteConfirm")}
-        confirmLabel={t("common.action.delete")}
+        confirmLabel={confirmTurns !== undefined && confirmTurns.length > 1 ? t("chat.select.confirmAction", { count: confirmTurns.length }) : t("chat.turn.delete")}
         busy={busy}
+        danger
         onConfirm={() => void (confirmTurns === undefined ? undefined : deleteTurns(confirmTurns))}
         onCancel={() => setConfirmTurns(undefined)}
       />
@@ -1036,8 +1040,9 @@ export function ChatPanel(props: { fill: boolean; placement?: ChatPlacement }) {
         open={confirmThread !== undefined}
         title={t("chat.threads.delete")}
         message={t("chat.threads.deleteConfirm", { title: titleOf(confirmThread) })}
-        confirmLabel={t("common.action.delete")}
+        confirmLabel={t("chat.threads.delete")}
         busy={busy}
+        danger
         onConfirm={() => void (confirmThread === undefined ? undefined : deleteThread(confirmThread))}
         onCancel={() => setConfirmThread(undefined)}
       />
@@ -1068,12 +1073,20 @@ function Unavailable(props: { reason: "no_model" | "context_window_unknown"; mod
       </div>
     );
   }
+  // Nothing can be asked until a model is set up: a notice with the way there.
   return (
-    <p className="flex flex-wrap items-center gap-2 rounded-md bg-sunken px-2 py-1.5 text-xs text-muted" data-testid="chat-unavailable" data-reason={props.reason}>
+    <Callout
+      tone="info"
+      density="compact"
+      testId="chat-unavailable"
+      data-reason={props.reason}
+      actions={
+        <Link to="/settings/models" className={`font-medium ${TEXT_ACTION_CLASS}`} data-testid="chat-configure">
+          {t("chat.configure")}
+        </Link>
+      }
+    >
       {t(`chat.unavailable.${props.reason}`)}
-      <Link to="/settings/models" className="text-accent-ink underline-offset-2 hover:underline dark:text-accent" data-testid="chat-configure">
-        {t("chat.configure")}
-      </Link>
-    </p>
+    </Callout>
   );
 }

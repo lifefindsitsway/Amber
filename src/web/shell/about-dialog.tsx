@@ -8,8 +8,10 @@ import { UpdateProgressLine } from "../desktop/desktop-integration.tsx";
 import { AUTO_CHECK_KEY, autoCheckEnabled, useBackupBusy, useUpdater, type UpdateState } from "../desktop/updater.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
 import { Button } from "../ui/button.tsx";
+import { Checkbox } from "../ui/checkbox.tsx";
 import { Loading } from "../ui/feedback.tsx";
 import { Modal } from "../ui/modal.tsx";
+import { Callout, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
 
 const LICENSE = "AGPL-3.0";
 
@@ -42,7 +44,7 @@ export function AboutDialog(props: { open: boolean; onOpenChange: (open: boolean
             <dd>{LICENSE}</dd>
             <dt className="text-muted">{t("shell.about.source")}</dt>
             <dd>
-              <a href={PUBLIC_REPOSITORY_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" data-testid="about-source">
+              <a href={PUBLIC_REPOSITORY_URL} target="_blank" rel="noopener noreferrer" className={TEXT_ACTION_CLASS} data-testid="about-source">
                 {t("shell.about.sourceLink")}
               </a>
             </dd>
@@ -96,12 +98,20 @@ function UpdateArea() {
   };
   const line = useStatusLine(update);
   return (
-    <section className="mt-4 border-t border-line pt-4" data-testid="about-update">
-      <h3 className="mb-2 text-sm font-semibold">{t("shell.about.update.title")}</h3>
+    <section className="mt-6 border-t border-line pt-6" data-testid="about-update">
+      <h3 className="mb-3 text-sm font-semibold">{t("shell.about.update.title")}</h3>
       {line === undefined ? null : (
-        <p className={`mb-2 text-sm ${update.status === "failed" ? "text-danger" : ""}`} data-testid="about-update-status">
-          {line}
-        </p>
+        // One element across states, so the line reads as one status that changes.
+        <div className="mb-3" data-testid="about-update-status">
+          {update.status === "failed" ? (
+            // A failed check, download or install is something to deal with: retry, or the manual download below.
+            <Callout tone="error" density="compact">
+              {line}
+            </Callout>
+          ) : (
+            <p className="text-sm">{line}</p>
+          )}
+        </div>
       )}
       <UpdateProgressLine />
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -124,12 +134,13 @@ function UpdateArea() {
           </Button>
         ) : null}
       </div>
-      <label className="mb-3 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={autoCheck} onChange={(event) => toggle(event.target.checked)} data-testid="about-update-auto" />
-        {t("shell.about.update.autoCheck")}
-      </label>
-      <p className="text-xs text-muted">
-        <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" data-testid="about-update-manual">
+      <div className="mb-3">
+        <Checkbox checked={autoCheck} onChange={(event) => toggle(event.target.checked)} data-testid="about-update-auto">
+          {t("shell.about.update.autoCheck")}
+        </Checkbox>
+      </div>
+      <p className={NOTE_TEXT_CLASS}>
+        <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className={TEXT_ACTION_CLASS} data-testid="about-update-manual">
           {t("shell.about.update.manualDownload")}
         </a>
         {" · "}

@@ -13,6 +13,7 @@ import { relockTranslation } from "../../player/subtitle-prefs.ts";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, fetchAllSegments, useRevisions, useSegments, useTranslations } from "./content-data.ts";
 import { languageLabel } from "./labels.ts";
@@ -187,7 +188,7 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
         <p>{t("editor.translation.baseUnavailable")}</p>
         {discard.error instanceof ApiError ? <ErrorView error={discard.error.error} /> : null}
         <div className="flex gap-2">
-          <Button variant="danger" size="sm" disabled={discard.isPending} onClick={() => discard.mutate(false)} data-testid="draft-discard">
+          <Button variant="danger" size="sm" loading={discard.isPending} onClick={() => discard.mutate(false)} data-testid="draft-discard">
             {t("editor.toolbar.discard")}
           </Button>
           <Button size="sm" onClick={exit}>
@@ -243,15 +244,22 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
           <>
             <p className="px-4 pt-2 text-xs font-medium text-muted">{languageLabel(props.language, t, i18n)}</p>
             {outdated ? (
-              <div className="mx-4 mt-2 flex flex-wrap items-center gap-2 rounded-md bg-accent-soft px-3 py-2 text-xs" data-testid="translation-draft-outdated">
-                <span>{t("editor.translation.outdated")}</span>
-                <Button size="sm" className="ml-auto" disabled={discard.isPending} onClick={() => discard.mutate(true)} data-testid="translation-draft-restart">
-                  {t("editor.translation.outdatedDiscard")}
-                </Button>
-              </div>
+              <Callout
+                tone="warn"
+                density="compact"
+                className="mx-4 mt-2"
+                testId="translation-draft-outdated"
+                actions={
+                  <Button size="sm" variant="danger" loading={discard.isPending} onClick={() => discard.mutate(true)} data-testid="translation-draft-restart">
+                    {t("editor.translation.outdatedDiscard")}
+                  </Button>
+                }
+              >
+                {t("editor.translation.outdated")}
+              </Callout>
             ) : null}
             {staleBase ? (
-              <p className="px-4 pt-2 text-xs text-muted" data-testid="translation-draft-stale">
+              <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="translation-draft-stale">
                 {t("editor.translation.stale")}
               </p>
             ) : null}
@@ -263,36 +271,42 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
           </>
         }
       />
-      <Modal open={changed !== undefined} onOpenChange={(open) => (open ? undefined : setChanged(undefined))} title={t("editor.translation.conflictTitle")}>
-        <p className="text-sm" data-testid="translation-draft-conflict">
+      <Modal
+        open={changed !== undefined}
+        onOpenChange={(open) => (open ? undefined : setChanged(undefined))}
+        title={t("editor.translation.conflictTitle")}
+        footer={
+          <>
+            <Button
+              onClick={() => {
+                setChanged(undefined);
+                void sync.close();
+                props.onRestart();
+              }}
+              data-testid="translation-draft-reload"
+            >
+              {t("editor.translation.reload")}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={changed === ""}
+              onClick={() => {
+                const next = changed;
+                setChanged(undefined);
+                if (next === undefined || next === "") return;
+                setExpectedCurrent(next);
+                commit.mutate({ expectedRevisionId: next, allowOutdatedBase: true });
+              }}
+              data-testid="translation-draft-commit-anyway"
+            >
+              {t("editor.translation.commitAnyway")}
+            </Button>
+          </>
+        }
+      >
+        <p className="max-w-[70ch] text-sm" data-testid="translation-draft-conflict">
           {t("editor.translation.conflictMessage")}
         </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button
-            onClick={() => {
-              setChanged(undefined);
-              void sync.close();
-              props.onRestart();
-            }}
-            data-testid="translation-draft-reload"
-          >
-            {t("editor.translation.reload")}
-          </Button>
-          <Button
-            variant="primary"
-            disabled={changed === ""}
-            onClick={() => {
-              const next = changed;
-              setChanged(undefined);
-              if (next === undefined || next === "") return;
-              setExpectedCurrent(next);
-              commit.mutate({ expectedRevisionId: next, allowOutdatedBase: true });
-            }}
-            data-testid="translation-draft-commit-anyway"
-          >
-            {t("editor.translation.commitAnyway")}
-          </Button>
-        </div>
       </Modal>
     </>
   );

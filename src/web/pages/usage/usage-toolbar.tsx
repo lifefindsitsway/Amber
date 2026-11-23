@@ -5,6 +5,7 @@ import { decodeModelKey, type UsageRange, type UsageSummaryResponse } from "../.
 import { PRICE_CURRENCIES, type PriceCurrency } from "../../../shared/model-pricing.ts";
 import { MENU_CONTENT_CLASS } from "../../ui/context-menu.tsx";
 import { currencySymbol } from "../../format.ts";
+import { TextAction } from "../../ui/notice.tsx";
 import { MENU_SCROLL_CLASS, MenuLabel, MenuTrigger, RadioEntry, SegmentedControl } from "./usage-controls.tsx";
 import { useNarrowLayout } from "./usage-layout.tsx";
 import { UsageModelMark } from "./usage-marks.tsx";
@@ -54,14 +55,9 @@ export function UsageToolbar(props: {
   const { state } = props;
   const filtered = hasUsageFilter(state);
   const clear = (
-    <button
-      type="button"
-      className="shrink-0 rounded px-1.5 text-sm text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
-      data-testid="usage-clear-filters"
-      onClick={() => props.onPatch({ profileKey: null, credentialVersion: null, modelKey: null })}
-    >
+    <TextAction className="shrink-0 px-1.5 text-sm" data-testid="usage-clear-filters" onClick={() => props.onPatch({ profileKey: null, credentialVersion: null, modelKey: null })}>
       {t("usage.toolbar.clear")}
-    </button>
+    </TextAction>
   );
   const left = (
     <div className="flex min-w-0 items-center gap-2" data-testid="usage-filters">

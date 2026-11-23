@@ -8,6 +8,8 @@ import { useApi } from "../../api/context.tsx";
 import { taskKindLabel } from "../../components/task-kind-label.ts";
 import { requestOpenTasks } from "../../shell/task-panel.tsx";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox, Radio } from "../../ui/checkbox.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
 import { languageLabel } from "../content/labels.ts";
 import {
   applyTemplate,
@@ -26,10 +28,10 @@ import {
 import { bytesLabel, planRevisionLabel, sourceLine, titleOf } from "./pack-labels.ts";
 
 const TRANSCRIPT_MODES: readonly TranscriptMode[] = ["none", "current", "pick", "all"];
-export const HINT_CLASS = "rounded-md bg-accent-soft px-2.5 py-1.5 text-xs";
-export const DANGER_HINT_CLASS = "rounded-md border border-danger/40 bg-danger/5 px-2.5 py-1.5 text-xs";
 const LEGEND_CLASS = "mb-1.5 text-xs font-medium text-muted";
-const CHECK_ROW = "flex items-start gap-2 text-sm";
+/** A check box beside a label that may wrap: the box stays on the first line. */
+export const CHECK_LABEL = "items-start! text-sm";
+export const CHECK_BOX = "mt-0.5";
 
 /** 「字幕 1 版 · 译文 1 种 · 插图 4 张 · 视频 1.2 GB」 for a collapsed card. */
 export function useSummaryLine(): (summary: ChoiceSummary, content: ExportPlanContent) => string {
@@ -90,8 +92,8 @@ export function BlockedCard(props: { content: ExportPlanContent }) {
         {title}
       </h3>
       <p className="text-xs text-muted">{sourceLine(content.sourceKind, content.durationMs, t)}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="pack-export-blocked">
-        <span>
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-note" data-testid="pack-export-blocked">
+        <span className="max-w-[70ch]">
           {content.blocked === "busy"
             ? task === undefined
               ? t("contentPack.export.blocked.busyUnknown")
@@ -99,9 +101,7 @@ export function BlockedCard(props: { content: ExportPlanContent }) {
             : t("contentPack.export.blocked.nothing_to_carry")}
         </span>
         {content.blocked === "busy" ? (
-          <button type="button" className="text-accent underline" onClick={requestOpenTasks}>
-            {t("contentPack.export.blocked.openTasks")}
-          </button>
+          <TextAction onClick={requestOpenTasks}>{t("contentPack.export.blocked.openTasks")}</TextAction>
         ) : null}
       </div>
     </section>
@@ -176,7 +176,7 @@ export function ExportCard(props: {
       </h3>
       {props.expanded ? (
         <div id={bodyId} className="flex flex-col gap-4 border-t border-line px-3 py-3" data-testid="pack-export-card-body">
-          <p className="text-xs text-muted">
+          <p className={NOTE_TEXT_CLASS}>
             {t(content.sourceKind === "local" ? "contentPack.export.basics.local" : content.platformChapters ? "contentPack.export.basics.platformChapters" : "contentPack.export.basics.platform")}
             {content.speakers > 0 ? t("contentPack.export.basics.speakers") : ""}
           </p>
@@ -184,32 +184,32 @@ export function ExportCard(props: {
           <fieldset className="min-w-0">
             <legend className={LEGEND_CLASS}>{t("contentPack.export.group.transcripts")}</legend>
             {transcripts.length === 0 ? (
-              <p className="text-sm text-muted">{t("contentPack.export.noTranscriptHere")}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("contentPack.export.noTranscriptHere")}</p>
             ) : (
               <div role="radiogroup" aria-label={t("contentPack.export.transcriptMode.label")} className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                 <span className="text-sm" aria-hidden="true">
                   {t("contentPack.export.transcriptMode.label")}
                 </span>
                 {TRANSCRIPT_MODES.map((mode) => (
-                  <label key={mode} className="inline-flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      name={`${bodyId}-transcripts`}
+                  <Radio
+                    key={mode}
+                    labelClassName="gap-1.5"
+                    name={`${bodyId}-transcripts`}
                       value={mode}
                       checked={choice.transcripts === mode}
                       disabled={mode === "current" && current === undefined}
-                      onChange={() =>
-                        change({
-                          ...choice,
-                          transcripts: mode,
-                          // Picking starts from what was carried, so switching modes never drops a version silently.
-                          picked: mode === "pick" ? (choice.transcripts === "pick" ? choice.picked : seedPick(content, choice)) : [],
-                        })
-                      }
-                      data-testid={`pack-transcripts-${mode}`}
-                    />
+                    onChange={() =>
+                      change({
+                        ...choice,
+                        transcripts: mode,
+                        // Picking starts from what was carried, so switching modes never drops a version silently.
+                        picked: mode === "pick" ? (choice.transcripts === "pick" ? choice.picked : seedPick(content, choice)) : [],
+                      })
+                    }
+                    data-testid={`pack-transcripts-${mode}`}
+                  >
                     {t(`contentPack.export.transcriptMode.${mode}`)}
-                  </label>
+                  </Radio>
                 ))}
               </div>
             )}
@@ -218,15 +218,14 @@ export function ExportCard(props: {
                 {label(current.id)}
               </p>
             ) : null}
-            {choice.transcripts === "all" && archivedTranscripts > 0 ? <p className="mt-1 text-xs text-muted">{t("contentPack.export.allIncludesArchived", { count: archivedTranscripts })}</p> : null}
+            {choice.transcripts === "all" && archivedTranscripts > 0 ? <p className={`mt-1 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.allIncludesArchived", { count: archivedTranscripts })}</p> : null}
             {choice.transcripts === "pick" ? (
               <ul className="mt-2 flex flex-col gap-1 pl-1" data-testid="pack-transcripts-picked">
                 {transcripts.map((revision) => (
                   <li key={revision.id}>
-                    <label className={CHECK_ROW}>
-                      <input type="checkbox" className="mt-1" checked={choice.picked.includes(revision.id)} onChange={(event) => change({ ...choice, picked: toggleIn(choice.picked, revision.id, event.target.checked) })} />
-                      <span className="min-w-0 break-words">{label(revision.id)}</span>
-                    </label>
+                    <Checkbox labelClassName={CHECK_LABEL} className={CHECK_BOX} checked={choice.picked.includes(revision.id)} onChange={(event) => change({ ...choice, picked: toggleIn(choice.picked, revision.id, event.target.checked) })}>
+                      <span className="break-words">{label(revision.id)}</span>
+                    </Checkbox>
                   </li>
                 ))}
               </ul>
@@ -234,7 +233,7 @@ export function ExportCard(props: {
             <div className="mt-3">
               <p className="mb-1 text-sm">{t("contentPack.export.translations")}</p>
               {translationGroups.length === 0 ? (
-                <p className="text-xs text-muted">{t("contentPack.export.noTranslations")}</p>
+                <p className={NOTE_TEXT_CLASS}>{t("contentPack.export.noTranslations")}</p>
               ) : (
                 <div className="flex flex-col gap-2 pl-1">
                   {translationGroups.map((group) => (
@@ -245,19 +244,18 @@ export function ExportCard(props: {
                       <ul className="flex flex-col gap-1">
                         {group.revisions.map((revision) => (
                           <li key={revision.id}>
-                            <label className={CHECK_ROW}>
-                              <input
-                                type="checkbox"
-                                className="mt-1"
-                                checked={choice.translations.includes(revision.id)}
-                                onChange={(event) => change({ ...choice, translations: toggleIn(choice.translations, revision.id, event.target.checked) })}
-                                data-testid="pack-translation"
-                              />
-                              <span className="min-w-0 break-words">
+                            <Checkbox
+                              labelClassName={CHECK_LABEL}
+                              className={CHECK_BOX}
+                              checked={choice.translations.includes(revision.id)}
+                              onChange={(event) => change({ ...choice, translations: toggleIn(choice.translations, revision.id, event.target.checked) })}
+                              data-testid="pack-translation"
+                            >
+                              <span className="break-words">
                                 {label(revision.id)}
                                 {revision.currentTranslation ? <span className="ml-1.5 rounded bg-sunken px-1 py-0.5 text-xs text-muted">{t("contentPack.export.currentTag")}</span> : null}
                               </span>
-                            </label>
+                            </Checkbox>
                           </li>
                         ))}
                       </ul>
@@ -269,29 +267,41 @@ export function ExportCard(props: {
             <RevisionHints hint={hintFor("translationParents")} label={label} />
             <RevisionHints hint={hintFor("standalone")} label={label} />
             {hintFor("noTranscript") === undefined ? null : (
-              <p className={`mt-2 ${HINT_CLASS}`} data-testid="pack-hint-no-transcript">
+              <InlineNote className="mt-2" testId="pack-hint-no-transcript">
                 {t("contentPack.export.hint.noTranscript")}
-              </p>
+              </InlineNote>
             )}
             {invalid ? (
-              <p className={`mt-2 ${DANGER_HINT_CLASS}`} role="alert" data-testid="pack-hint-nothing">
+              <Callout tone="error" density="compact" announce="alert" className="mt-2" testId="pack-hint-nothing">
                 {t("contentPack.export.hint.nothingToCarry")}
-              </p>
+              </Callout>
             ) : null}
           </fieldset>
 
           <fieldset className="min-w-0">
             <legend className={LEGEND_CLASS}>{t("contentPack.export.group.personal")}</legend>
             <div className="flex flex-col gap-1.5">
-              <label className={CHECK_ROW}>
-                <input type="checkbox" className="mt-1" checked={choice.figures && content.figures > 0} disabled={content.figures === 0} onChange={(event) => change({ ...choice, figures: event.target.checked })} data-testid="pack-figures" />
-                <span className={content.figures === 0 ? "text-muted" : ""}>{content.figures === 0 ? t("contentPack.export.noFigures") : t("contentPack.export.figuresCount", { count: content.figures })}</span>
-              </label>
+              <Checkbox
+                labelClassName={CHECK_LABEL}
+                className={CHECK_BOX}
+                checked={choice.figures && content.figures > 0}
+                disabled={content.figures === 0}
+                onChange={(event) => change({ ...choice, figures: event.target.checked })}
+                data-testid="pack-figures"
+              >
+                {content.figures === 0 ? t("contentPack.export.noFigures") : t("contentPack.export.figuresCount", { count: content.figures })}
+              </Checkbox>
               <CountHint hint={hintFor("figuresOnUnselected")} onInclude={(ids) => change(includeRevisions(content, choice, ids))} />
-              <label className={CHECK_ROW}>
-                <input type="checkbox" className="mt-1" checked={choice.notes && content.notes > 0} disabled={content.notes === 0} onChange={(event) => change({ ...choice, notes: event.target.checked })} data-testid="pack-notes" />
-                <span className={content.notes === 0 ? "text-muted" : ""}>{content.notes === 0 ? t("contentPack.export.noNotes") : t("contentPack.export.notesCount", { count: content.notes })}</span>
-              </label>
+              <Checkbox
+                labelClassName={CHECK_LABEL}
+                className={CHECK_BOX}
+                checked={choice.notes && content.notes > 0}
+                disabled={content.notes === 0}
+                onChange={(event) => change({ ...choice, notes: event.target.checked })}
+                data-testid="pack-notes"
+              >
+                {content.notes === 0 ? t("contentPack.export.noNotes") : t("contentPack.export.notesCount", { count: content.notes })}
+              </Checkbox>
               <CountHint hint={hintFor("notesOnUnselected")} onInclude={(ids) => change(includeRevisions(content, choice, ids))} />
             </div>
           </fieldset>
@@ -299,7 +309,7 @@ export function ExportCard(props: {
           <fieldset className="min-w-0">
             <legend className={LEGEND_CLASS}>{t("contentPack.export.group.media")}</legend>
             {content.media.length === 0 ? (
-              <p className="text-sm text-muted">{t("contentPack.export.noMedia")}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("contentPack.export.noMedia")}</p>
             ) : (
               <ul className="flex flex-col gap-1.5">
                 {content.media.map((media) => (
@@ -324,11 +334,11 @@ export function ExportCard(props: {
               >
                 {t("contentPack.export.applyAll.action")}
               </Button>
-              <p id={applyId} className="min-w-0 flex-1 text-xs text-muted">
+              <p id={applyId} className={`min-w-0 flex-1 ${NOTE_TEXT_CLASS}`}>
                 {t("contentPack.export.applyAll.description", { count: props.others, rules: templateRules(template) })}
               </p>
               {applied ? (
-                <span role="status" className="text-xs text-ok">
+                <span role="status" className="text-note text-ok">
                   {t("contentPack.export.applyAll.done")}
                 </span>
               ) : null}
@@ -353,9 +363,9 @@ function RevisionHints(props: { hint: CardHint | undefined; label: (id: string) 
   if (hint === undefined || (hint.kind !== "translationParents" && hint.kind !== "standalone")) return null;
   const labels = hint.revisionIds.map((id) => t("contentPack.quoted", { text: props.label(id) })).join(t("contentPack.listSeparator"));
   return (
-    <p className={`mt-2 ${HINT_CLASS}`} data-testid={`pack-hint-${hint.kind}`}>
+    <InlineNote className="mt-2" testId={`pack-hint-${hint.kind}`}>
       {t(hint.kind === "translationParents" ? "contentPack.export.hint.translationParents" : "contentPack.export.hint.standalone", { labels })}
-    </p>
+    </InlineNote>
   );
 }
 
@@ -364,12 +374,9 @@ function CountHint(props: { hint: CardHint | undefined; onInclude: (revisionIds:
   const { hint } = props;
   if (hint === undefined || (hint.kind !== "notesOnUnselected" && hint.kind !== "figuresOnUnselected")) return null;
   return (
-    <div className={`ml-6 flex flex-wrap items-center gap-x-3 gap-y-1 ${HINT_CLASS}`} data-testid={`pack-hint-${hint.kind}`}>
-      <span>{t(`contentPack.export.hint.${hint.kind}`, { count: hint.count })}</span>
-      <button type="button" className="font-medium text-accent underline" onClick={() => props.onInclude(hint.revisionIds)}>
-        {t("contentPack.export.hint.includeVersions")}
-      </button>
-    </div>
+    <InlineNote className="ml-6" testId={`pack-hint-${hint.kind}`} action={<TextAction onClick={() => props.onInclude(hint.revisionIds)}>{t("contentPack.export.hint.includeVersions")}</TextAction>}>
+      {t(`contentPack.export.hint.${hint.kind}`, { count: hint.count })}
+    </InlineNote>
   );
 }
 
@@ -390,13 +397,12 @@ function MediaRow(props: { media: ExportPlanMedia; checked: boolean; onChange: (
     </>
   );
   return (
-    <label className={`${CHECK_ROW} ${unavailable === undefined ? "" : "cursor-not-allowed"}`} data-testid="pack-media" data-asset-id={media.assetId}>
-      <input type="checkbox" className="mt-1" checked={props.checked && unavailable === undefined} disabled={unavailable !== undefined} onChange={(event) => props.onChange(event.target.checked)} />
-      <span className="min-w-0">
-        <span className={unavailable === undefined ? "" : "text-muted"}>{name}</span>
+    <div data-testid="pack-media" data-asset-id={media.assetId}>
+      <Checkbox labelClassName={CHECK_LABEL} className={CHECK_BOX} checked={props.checked && unavailable === undefined} disabled={unavailable !== undefined} onChange={(event) => props.onChange(event.target.checked)}>
+        <span>{name}</span>
         <span className="ml-2 font-mono text-xs text-muted">{bytesLabel(media.sizeBytes)}</span>
-        {unavailable === undefined ? null : <span className="block text-xs text-muted">{t(`contentPack.export.mediaUnavailable.${unavailable}`)}</span>}
-      </span>
-    </label>
+        {unavailable === undefined ? null : <span className="block text-note text-muted">{t(`contentPack.export.mediaUnavailable.${unavailable}`)}</span>}
+      </Checkbox>
+    </div>
   );
 }

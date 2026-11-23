@@ -1,4 +1,3 @@
-import { Switch } from "radix-ui";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
@@ -8,6 +7,8 @@ import {
   type UsageUnpricedGroup,
 } from "../../../shared/dto/usage-analytics.ts";
 import { formatCompactCount, formatCount, formatMoney } from "../../format.ts";
+import { NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { Switch } from "../../ui/switch.tsx";
 import { audioText } from "./usage-present.ts";
 
 const GROUPS: readonly UsageUnpricedGroup[] = ["price", "usage", "history"];
@@ -38,11 +39,11 @@ export function UsageCostDetail(props: {
   const simulated = costDetail.simulated;
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-xs text-muted">{t("usage.detail.note")}</p>
+      <p className={NOTE_TEXT_CLASS}>{t("usage.detail.note")}</p>
 
       <section aria-label={t("usage.detail.unpricedTitle")} className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">{t("usage.detail.unpricedTitle")}</h3>
-        {costDetail.unpriced.length === 0 ? <p className="text-xs text-muted">{t("usage.detail.allCounted")}</p> : null}
+        {costDetail.unpriced.length === 0 ? <p className={NOTE_TEXT_CLASS}>{t("usage.detail.allCounted")}</p> : null}
         {GROUPS.map((group) => {
           const rows = costDetail.unpriced.filter((item) => USAGE_UNPRICED_REASON_GROUP[item.reason] === group);
           if (rows.length === 0) return null;
@@ -57,7 +58,7 @@ export function UsageCostDetail(props: {
                     </span>
                     <span className="tabular-nums">{t("usage.detail.times", { n: formatCount(item.requests) })}</span>
                     {group === "price" ? (
-                      <Link to={priceSettingsPath(item.modelKeys)} className="shrink-0 text-xs text-accent hover:underline" onClick={props.onNavigate}>
+                      <Link to={priceSettingsPath(item.modelKeys)} className={`shrink-0 text-xs ${TEXT_ACTION_CLASS}`} onClick={props.onNavigate}>
                         {t("usage.detail.setPrice")}
                       </Link>
                     ) : null}
@@ -84,21 +85,13 @@ export function UsageCostDetail(props: {
       )}
 
       <section className="flex flex-col gap-2 border-t border-line pt-3">
-        <label className="flex cursor-pointer items-center justify-between gap-3">
-          <span>{t("usage.detail.simulate")}</span>
-          <Switch.Root
-            checked={props.simulate}
-            onCheckedChange={props.onSimulate}
-            className="relative h-5 w-9 shrink-0 rounded-full bg-sunken outline-none focus-visible:ring-2 focus-visible:ring-accent data-[state=checked]:bg-accent"
-            data-testid="usage-simulate"
-          >
-            <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-surface shadow transition-transform data-[state=checked]:translate-x-[18px]" />
-          </Switch.Root>
-        </label>
+        <Switch checked={props.simulate} onChange={props.onSimulate} testId="usage-simulate">
+          {t("usage.detail.simulate")}
+        </Switch>
         {props.simulate ? (
           <div className="rounded-md bg-sunken px-3 py-2" data-testid="usage-simulated">
             {simulated === null ? (
-              <p className="text-xs text-muted">{t("usage.detail.simulating")}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("usage.detail.simulating")}</p>
             ) : (
               <>
                 <p className="text-xs text-muted">{t("usage.detail.simulatedLabel")}</p>

@@ -1,11 +1,14 @@
-import { FileText, TriangleAlert } from "lucide-react";
+import { FileText } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { SubtitleImportLimit } from "../../../shared/dto/subtitle-import.ts";
 import { languageNames } from "../../../shared/i18n/zh-CN/languages.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { formatDuration } from "../../format.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { Checkbox, Radio } from "../../ui/checkbox.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { Spinner } from "../../ui/feedback.tsx";
 import { languageLabel } from "./labels.ts";
 import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
@@ -37,7 +40,6 @@ const SKIP = "\u0000skip";
 
 const SECTION = "flex flex-col gap-2 border-t border-line pt-3";
 const HEADING = "text-xs font-medium text-muted";
-const SELECT = "h-8 min-w-0 max-w-full rounded-md border border-line bg-surface px-2 text-sm";
 
 /**
  * The choice for the shown preview. A new preview of the same file (the same digest, after
@@ -81,7 +83,7 @@ export function SubtitleImportPreview(props: {
   if (state.status === "idle") return null;
   if (state.status === "loading") {
     return (
-      <p className="flex items-center gap-2 text-xs text-muted" role="status" data-testid="subtitle-preview-loading">
+      <p className="flex items-center gap-2 text-note text-muted" role="status" data-testid="subtitle-preview-loading">
         <Spinner size={14} />
         {t("subtitleImport.preview.loading")}
       </p>
@@ -95,7 +97,7 @@ export function SubtitleImportPreview(props: {
             {t("subtitleImport.failed.retry")}
           </Button>
         </ErrorView>
-        {plainImportPossible(state.error.code) ? <p className="text-xs text-muted">{t("subtitleImport.failed.plain")}</p> : null}
+        {plainImportPossible(state.error.code) ? <p className={NOTE_TEXT_CLASS}>{t("subtitleImport.failed.plain")}</p> : null}
       </div>
     );
   }
@@ -153,7 +155,13 @@ function ReadyPreview(props: {
       {preview.package === undefined ? (
         <>
           <SpeakerSection preview={preview} choice={choice} onChoice={onChoice} />
-          <TranslationSection preview={preview} choice={choice} onChoice={onChoice} originalLanguage={props.originalLanguage} />
+          <TranslationSection
+            preview={preview}
+            choice={choice}
+            onChoice={onChoice}
+            originalLanguage={props.originalLanguage}
+            {...(blockers.includes("translation_same_language") ? { errorId: sameLanguageErrorId(regionId) } : {})}
+          />
         </>
       ) : (
         <PackageSummary preview={preview} />
@@ -167,8 +175,8 @@ function ReadyPreview(props: {
       )}
 
       {differences.length === 0 ? null : (
-        <details className="group text-xs text-muted" data-testid="subtitle-preview-limits">
-          <summary className="cursor-pointer select-none rounded outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-accent">
+        <details className="group text-note text-muted" data-testid="subtitle-preview-limits">
+          <summary className={`cursor-pointer select-none rounded-sm hover:text-ink ${FOCUS_RING}`}>
             {t("subtitleImport.limits.title", { n: differences.length })}
           </summary>
           <ul className="mt-1.5 flex list-disc flex-col gap-0.5 pl-5">
@@ -182,15 +190,22 @@ function ReadyPreview(props: {
       {blockers.includes("speaker_capacity") || blockers.includes("translation_same_language") ? (
         <div className="flex flex-col gap-1" role="alert" data-testid="subtitle-preview-blockers">
           {blockers.includes("speaker_capacity") ? (
-            <p className="text-xs text-danger" data-testid="subtitle-preview-capacity">
+            <FieldError id={`${regionId}-capacity`} testId="subtitle-preview-capacity">
               {t("subtitleImport.blocker.speaker_capacity", { needed: number(needed), room: number(room) })}
-            </p>
+            </FieldError>
           ) : null}
-          {blockers.includes("translation_same_language") ? <p className="text-xs text-danger">{t("subtitleImport.blocker.translation_same_language")}</p> : null}
+          {blockers.includes("translation_same_language") ? (
+            <FieldError id={sameLanguageErrorId(regionId)}>{t("subtitleImport.blocker.translation_same_language")}</FieldError>
+          ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+/** The id of the same-language error, which the translation language picker names as its description. */
+function sameLanguageErrorId(regionId: string): string {
+  return `${regionId}-same-language`;
 }
 
 /** What the user should know before choosing anything: skipped cues, a time range off the media, altered restore data. */
@@ -221,7 +236,7 @@ function Notices(props: { preview: SubtitlePreview }) {
         <>
           {t("subtitleImport.notice.dropped", { n: number(preview.droppedCues.count) })}
           {sample === undefined ? null : (
-            <span className="mt-0.5 block truncate font-mono text-[11px] text-muted" title={sample}>
+            <span className="mt-0.5 block truncate font-mono text-xs text-muted" title={sample}>
               {t("subtitleImport.notice.droppedSample", { sample })}
             </span>
           )}
@@ -230,15 +245,17 @@ function Notices(props: { preview: SubtitlePreview }) {
     });
   }
   if (items.length === 0) return null;
+  // To be read before choosing anything, so a caution box; several points become a list under one icon.
   return (
-    <ul className="flex flex-col gap-1.5 rounded-md border border-accent/40 bg-accent-soft px-2.5 py-2 text-xs" data-testid="subtitle-preview-notices">
-      {items.map((item) => (
-        <li key={item.key} className="flex items-start gap-2" data-notice={item.key}>
-          <TriangleAlert size={14} className="mt-px shrink-0 text-accent" aria-hidden="true" />
-          <span className="min-w-0">{item.body}</span>
-        </li>
-      ))}
-    </ul>
+    <Callout tone="warn" density="compact" testId="subtitle-preview-notices">
+      <ul className={`flex max-w-[70ch] flex-col gap-1.5 ${items.length > 1 ? "list-disc pl-4" : ""}`}>
+        {items.map((item) => (
+          <li key={item.key} className="min-w-0" data-notice={item.key}>
+            {item.body}
+          </li>
+        ))}
+      </ul>
+    </Callout>
   );
 }
 
@@ -265,7 +282,7 @@ function PackageSummary(props: { preview: SubtitlePreview }) {
           </div>
         ))}
       </dl>
-      <p className="text-xs text-muted">{t("subtitleImport.package.scope")}</p>
+      <p className={NOTE_TEXT_CLASS}>{t("subtitleImport.package.scope")}</p>
     </div>
   );
 }
@@ -295,7 +312,7 @@ function SpeakerSection(props: { preview: SubtitlePreview; choice: SubtitleImpor
             </li>
           ))}
         </ul>
-        {counts.unassigned > 0 ? <p className="text-xs text-muted">{t("subtitleImport.speakers.explicitUnassigned", { n: number(counts.unassigned) })}</p> : null}
+        {counts.unassigned > 0 ? <p className={NOTE_TEXT_CLASS}>{t("subtitleImport.speakers.explicitUnassigned", { n: number(counts.unassigned) })}</p> : null}
       </section>
     );
   }
@@ -314,14 +331,14 @@ function SpeakerSection(props: { preview: SubtitlePreview; choice: SubtitleImpor
       <h4 id={`${ids}-title`} className={HEADING}>
         {t("subtitleImport.speakers.title")}
       </h4>
-      <p id={`${ids}-hint`} className="-mt-1 text-xs text-muted">
+      <p id={`${ids}-hint`} className={`-mt-1 ${NOTE_TEXT_CLASS}`}>
         {t("subtitleImport.speakers.prefixHint")}
       </p>
       <ul className="flex max-h-48 flex-col divide-y divide-line overflow-auto rounded-md border border-line bg-surface" role="group" aria-label={t("subtitleImport.speakers.candidates")} aria-describedby={`${ids}-hint`}>
         {candidates.map((candidate) => (
           <li key={candidate.key}>
             <label className="flex min-w-0 cursor-pointer items-center gap-2.5 px-2.5 py-1.5 hover:bg-sunken">
-              <input type="checkbox" checked={chosen.has(candidate.key)} onChange={(event) => toggle(candidate.key, event.target.checked)} data-testid="subtitle-preview-candidate" data-key={candidate.key} />
+              <Checkbox checked={chosen.has(candidate.key)} onChange={(event) => toggle(candidate.key, event.target.checked)} data-testid="subtitle-preview-candidate" data-key={candidate.key} />
               <span className="min-w-0 flex-1 truncate" title={candidate.label}>
                 {candidate.label}
               </span>
@@ -335,7 +352,7 @@ function SpeakerSection(props: { preview: SubtitlePreview; choice: SubtitleImpor
           <legend className="mb-1 text-xs text-muted">{t("subtitleImport.speakers.unlabeledTitle")}</legend>
           {(["inherit", "unassigned"] as const satisfies readonly UnlabeledRule[]).map((rule) => (
             <label key={rule} className="flex cursor-pointer items-start gap-2 text-sm">
-              <input type="radio" className="mt-1" name={`${ids}-unlabeled`} checked={choice.unlabeled === rule} onChange={() => onChoice({ ...choice, unlabeled: rule })} data-testid={`subtitle-preview-unlabeled-${rule}`} />
+              <Radio className="mt-0.5" name={`${ids}-unlabeled`} checked={choice.unlabeled === rule} onChange={() => onChoice({ ...choice, unlabeled: rule })} data-testid={`subtitle-preview-unlabeled-${rule}`} />
               {t(`subtitleImport.speakers.${rule}`)}
             </label>
           ))}
@@ -370,7 +387,14 @@ function Samples(props: { samples: NonNullable<SubtitlePreview["bilingual"]>["sa
 }
 
 /** Translations of a standard file, shown only when it has them: two pairs and the language they are in. */
-function TranslationSection(props: { preview: SubtitlePreview; choice: SubtitleImportChoice; onChoice: (choice: SubtitleImportChoice) => void; originalLanguage: string | undefined }) {
+function TranslationSection(props: {
+  preview: SubtitlePreview;
+  choice: SubtitleImportChoice;
+  onChoice: (choice: SubtitleImportChoice) => void;
+  originalLanguage: string | undefined;
+  /** The error under the preview that this picker's value causes, if any. */
+  errorId?: string;
+}) {
   const { t, i18n } = useTranslation();
   const number = useNumber();
   const ids = useId();
@@ -390,16 +414,18 @@ function TranslationSection(props: { preview: SubtitlePreview; choice: SubtitleI
       <h4 id={`${ids}-title`} className={HEADING}>
         {t("subtitleImport.translation.title")}
       </h4>
-      <p className="-mt-1 text-xs text-muted">{lead}</p>
+      <p className={`-mt-1 ${NOTE_TEXT_CLASS}`}>{lead}</p>
       {bilingual.samples.length === 0 ? null : <Samples samples={bilingual.samples} />}
       {known !== undefined ? null : (
         <div className="flex flex-col gap-1">
           <label className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="text-xs text-muted">{t("subtitleImport.translation.language")}</span>
-            <select
-              className={SELECT}
+            <NativeSelect
+              size="md"
+              className="max-w-full"
               value={value}
-              aria-describedby={choice.translation === undefined ? `${ids}-pick` : undefined}
+              invalid={props.errorId !== undefined}
+              aria-describedby={choice.translation === undefined ? `${ids}-pick` : props.errorId}
               onChange={(event) => onChoice({ ...choice, translation: event.target.value === SKIP ? null : event.target.value === PICK ? undefined : event.target.value })}
               data-testid="subtitle-preview-translation-language"
             >
@@ -415,12 +441,12 @@ function TranslationSection(props: { preview: SubtitlePreview; choice: SubtitleI
                   {languageLabel(tag, t, i18n)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           {choice.translation === undefined ? (
-            <p id={`${ids}-pick`} className="text-xs text-muted" data-testid="subtitle-preview-translation-pick">
+            <FieldHint id={`${ids}-pick`} testId="subtitle-preview-translation-pick">
               {t("subtitleImport.translation.pickHint")}
-            </p>
+            </FieldHint>
           ) : null}
         </div>
       )}
@@ -448,7 +474,7 @@ function IdentitySection(props: { preview: SubtitlePreview; choice: SubtitleImpo
       <h4 id={`${ids}-title`} className={HEADING}>
         {t("subtitleImport.identity.title")}
       </h4>
-      <p className="-mt-1 text-xs text-muted">{t("subtitleImport.identity.hint")}</p>
+      <p className={`-mt-1 ${NOTE_TEXT_CLASS}`}>{t("subtitleImport.identity.hint")}</p>
       <ul className="flex flex-col gap-2">
         {matches.map((match) => (
           <IdentityRow
@@ -477,7 +503,7 @@ function IdentityRow(props: { match: SameNameMatch; chosen: string | undefined; 
           {t("subtitleImport.identity.candidate", { name: candidate.label, n: number(candidate.count) })}
         </legend>
         <label className="clear-left flex cursor-pointer items-center gap-2 py-0.5 text-sm">
-          <input type="radio" name={name} checked={props.chosen === undefined} onChange={() => props.onChoose(undefined)} data-testid="subtitle-preview-identity-create" />
+          <Radio name={name} checked={props.chosen === undefined} onChange={() => props.onChoose(undefined)} data-testid="subtitle-preview-identity-create" />
           {t("subtitleImport.identity.create")}
         </label>
         {existing.map((speaker) => {
@@ -489,7 +515,7 @@ function IdentityRow(props: { match: SameNameMatch; chosen: string | undefined; 
               className={`flex min-w-0 items-start gap-2 py-0.5 text-sm ${blocked ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
               {...(blocked ? { title: t("subtitleImport.identity.taken") } : {})}
             >
-              <input type="radio" className="mt-1 shrink-0" name={name} checked={props.chosen === speaker.id} disabled={blocked} onChange={() => props.onChoose(speaker.id)} data-testid="subtitle-preview-identity-reuse" data-speaker-id={speaker.id} />
+              <Radio className="mt-0.5" name={name} checked={props.chosen === speaker.id} disabled={blocked} onChange={() => props.onChoose(speaker.id)} data-testid="subtitle-preview-identity-reuse" data-speaker-id={speaker.id} />
               <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
                 <span className="shrink-0">{t("subtitleImport.identity.reuse")}</span>
                 <span className="flex min-w-0 items-center gap-1.5">
@@ -518,11 +544,11 @@ function CurrentSection(props: { preview: SubtitlePreview; choice: SubtitleImpor
   return (
     <div className={SECTION}>
       <label className="flex cursor-pointer items-center gap-2 text-sm">
-        <input type="checkbox" checked={choice.setCurrent} onChange={(event) => onChoice({ ...choice, setCurrent: event.target.checked })} aria-describedby={note === undefined ? undefined : `${ids}-note`} data-testid="subtitle-preview-set-current" />
+        <Checkbox checked={choice.setCurrent} onChange={(event) => onChoice({ ...choice, setCurrent: event.target.checked })} aria-describedby={note === undefined ? undefined : `${ids}-note`} data-testid="subtitle-preview-set-current" />
         {t("subtitleImport.current.label")}
       </label>
       {note === undefined ? null : (
-        <p id={`${ids}-note`} className="-mt-1 pl-6 text-xs text-muted" data-testid="subtitle-preview-current-note">
+        <p id={`${ids}-note`} className={`-mt-1 pl-6 ${NOTE_TEXT_CLASS}`} data-testid="subtitle-preview-current-note">
           {note}
         </p>
       )}

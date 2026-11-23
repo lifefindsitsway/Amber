@@ -7,6 +7,7 @@ import { ApiError } from "../../api/client.ts";
 import { useApi, useTask } from "../../api/context.tsx";
 import { queryKeys } from "../../api/queries.ts";
 import { PlainDescription } from "../../components/plain-description.tsx";
+import { TEXT_ACTION_CLASS, TextAction } from "../../ui/notice.tsx";
 import { useLatestTask } from "./content-data.ts";
 
 /** One key for every entry that fetches a Content's description, so they share one state. */
@@ -63,9 +64,9 @@ export function ContentDescription(props: { content: ContentDetailDto }) {
     select: (mutation) => ({ status: mutation.state.status, data: mutation.state.data as ContentDescriptionFetchDto | undefined, error: mutation.state.error }),
   }).at(-1);
   const retry = (
-    <button type="button" className="rounded text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent" onClick={fetch} data-testid="content-description-retry">
+    <TextAction onClick={fetch} data-testid="content-description-retry">
       {t("common.action.retry")}
-    </button>
+    </TextAction>
   );
   let status: ReactNode = null;
   if (pending) {
@@ -97,7 +98,7 @@ export function ContentDescription(props: { content: ContentDetailDto }) {
     <>
       {text === undefined ? null : <PlainDescription text={text} truncated={content.descriptionTruncated === true} maxChars={CONTENT_DESCRIPTION_MAX_CHARS} />}
       {status === null ? null : (
-        <p className="text-xs text-muted" role="status" data-testid="content-description-status">
+        <p className="max-w-[70ch] text-note text-muted" role="status" data-testid="content-description-status">
           {status}
         </p>
       )}
@@ -114,7 +115,7 @@ export function DescriptionFetchButton(props: { content: ContentDetailDto }) {
   return (
     <button
       type="button"
-      className="rounded text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:text-muted disabled:no-underline"
+      className={`${TEXT_ACTION_CLASS} disabled:cursor-default disabled:text-muted disabled:no-underline`}
       disabled={pending}
       onClick={fetch}
       data-testid="content-description-fetch"

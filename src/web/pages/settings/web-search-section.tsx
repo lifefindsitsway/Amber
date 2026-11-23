@@ -4,7 +4,9 @@ import { WEB_SEARCH_SERVICES, type WebSearchService } from "../../../shared/enum
 import { useWebSearchMutations, useWebSearchProfile } from "../../api/queries.ts";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
-import { ConfirmButton, CredentialInput, CredentialStatus, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { ConfirmButton, CredentialInput, CredentialStatus, Field, fieldHintId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 const DEFAULT_SERVICE: WebSearchService = WEB_SEARCH_SERVICES[0];
 
@@ -27,16 +29,17 @@ export function WebSearchSection() {
   const stored = credentialStatus !== "missing";
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("settings.webSearch.intro")}</p>
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.webSearch.intro")}</p>
       <SettingsBlock
         title={t(`settings.webSearch.services.${service ?? DEFAULT_SERVICE}`)}
         actions={
           service === undefined && !stored ? undefined : (
             <ConfirmButton
               label={t("settings.webSearch.remove")}
+              confirmLabel={t("settings.webSearch.remove")}
               variant="danger"
+              pending={mutations.remove.isPending}
               message={t("settings.webSearch.removeConfirm")}
-              disabled={mutations.remove.isPending}
               onConfirm={() => mutations.remove.mutate()}
               testId="web-search-remove"
             />
@@ -44,9 +47,9 @@ export function WebSearchSection() {
         }
       >
         <Field label={t("settings.webSearch.service")} htmlFor="web-search-service">
-          <select
+          <NativeSelect
             id="web-search-service"
-            className={INPUT_CLASS}
+            className="w-full"
             value={service ?? DEFAULT_SERVICE}
             data-testid="web-search-service"
             onChange={(event) => mutations.service.mutate({ service: event.target.value as WebSearchService })}
@@ -56,7 +59,7 @@ export function WebSearchSection() {
                 {t(`settings.webSearch.services.${item}`)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         <Field
           label={t("settings.webSearch.keyLabel")}
@@ -71,6 +74,7 @@ export function WebSearchSection() {
           <CredentialInput
             key={credentialStatus}
             id="web-search-key"
+            describedBy={fieldHintId("web-search-key")}
             hasCredential={stored}
             pending={mutations.credential.isPending}
             onSubmit={(value) => mutations.credential.mutate({ value, service, fallback: DEFAULT_SERVICE })}
@@ -78,7 +82,14 @@ export function WebSearchSection() {
         </Field>
         <RequestError error={mutations.credential.error ?? mutations.service.error ?? mutations.remove.error} />
         <div className="mt-2 flex flex-wrap items-center gap-3">
-          <Button size="sm" disabled={credentialStatus !== "configured" || mutations.test.isPending} onClick={() => mutations.test.mutate()} data-testid="web-search-test">
+          <Button
+            size="sm"
+            disabled={credentialStatus !== "configured"}
+            loading={mutations.test.isPending}
+            onClick={() => mutations.test.mutate()}
+            aria-describedby="web-search-test-hint"
+            data-testid="web-search-test"
+          >
             {mutations.test.isPending ? t("settings.webSearch.testing") : t("settings.webSearch.test")}
           </Button>
           {mutations.test.data === undefined || mutations.test.isPending ? null : (
@@ -87,20 +98,20 @@ export function WebSearchSection() {
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs text-muted" data-testid="web-search-test-hint">
+        <FieldHint id="web-search-test-hint" className="mt-1.5" testId="web-search-test-hint">
           {t("settings.webSearch.testHint")}
-        </p>
+        </FieldHint>
         <RequestError error={mutations.test.error} />
       </SettingsBlock>
       <SettingsBlock title={t("settings.webSearch.privacyTitle")}>
-        <ul className="list-disc space-y-1 pl-5 text-sm text-muted" data-testid="web-search-privacy">
+        <ul className="max-w-[70ch] list-disc space-y-1 pl-5 text-note text-muted" data-testid="web-search-privacy">
           <li>{t("settings.webSearch.privacy.model", { turns: CHAT_SEARCH_PLAN_TURNS })}</li>
           <li>{t("settings.webSearch.privacy.service", { chars: WEB_SEARCH_QUERY_MAX_CHARS })}</li>
           <li>{t("settings.webSearch.privacy.logs")}</li>
         </ul>
       </SettingsBlock>
       <SettingsBlock title={t("settings.webSearch.billingTitle")}>
-        <p className="text-sm text-muted" data-testid="web-search-billing">
+        <p className={NOTE_TEXT_CLASS} data-testid="web-search-billing">
           {t("settings.webSearch.billing", { queries: WEB_SEARCH_QUERIES_MAX })}
         </p>
       </SettingsBlock>

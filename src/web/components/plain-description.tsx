@@ -60,7 +60,7 @@ export function PlainDescription(props: { text: string; truncated: boolean; maxC
           {showLinks
             ? parts.map((part, index) =>
                 part.kind === "link" ? (
-                  <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                  <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" className="text-link underline-offset-2 hover:underline">
                     {part.text}
                   </a>
                 ) : (
@@ -78,7 +78,7 @@ export function PlainDescription(props: { text: string; truncated: boolean; maxC
       {expanded || overflowing ? (
         <button
           type="button"
-          className="mt-0.5 rounded text-xs text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+          className="mt-0.5 rounded text-xs text-link outline-none underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-accent"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
           data-testid="content-description-toggle"

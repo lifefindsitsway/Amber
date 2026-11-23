@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CircleCheck, Download, FileUp, Mic, TriangleAlert } from "lucide-react";
+import { Download, FileUp, Mic } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { ASR_DIARIZATION_DEFAULT } from "../../../shared/defaults.ts";
@@ -31,6 +31,10 @@ import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { FilePicker } from "../../ui/file-picker.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, FieldHint, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { BurnDialog, BurnTracker } from "./burn-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, revisionGroups, segmentsAt, useRevisions, useSegments, useTranslations, visibleRevisions } from "./content-data.ts";
@@ -255,9 +259,10 @@ export function SubtitlesTab() {
       <div ref={toolbarRef} className="grid grid-cols-[minmax(11rem,min(22.5rem,calc(100%_-_16.75rem)))_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2" data-testid="subtitles-toolbar">
         <div className="min-w-0" data-testid="subtitles-toolbar-version">
           {revision === undefined ? null : (
-            <select
+            <NativeSelect
+              size="sm"
               aria-label={t("contentView.transcript.version")}
-              className="h-7 w-full min-w-0 rounded border border-line bg-surface px-1 text-xs"
+              className="w-full"
               value={revision.id}
               onChange={(event) => setPicked(event.target.value)}
               title={revisionInfo(revision, all, t, i18n)}
@@ -268,13 +273,14 @@ export function SubtitlesTab() {
                   {revisionLabel(item, primaryId, t, i18n, all)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           )}
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <input
+          <TextInput
             type="search"
-            className="h-7 min-w-24 max-w-40 flex-1 rounded border border-line bg-surface px-2 text-xs"
+            size="sm"
+            className="max-w-40 min-w-24 flex-1"
             placeholder={t("contentView.subtitles.filter")}
             aria-label={t("contentView.subtitles.filter")}
             value={filter}
@@ -288,8 +294,8 @@ export function SubtitlesTab() {
           )}
           <RevisionToggleBar toggles={toggles} />
           {tracking ? (
-            <label className="flex items-center gap-1 text-xs" data-testid="follow-toggle">
-              <input type="checkbox" checked={follow} onChange={(event) => setFollow(event.target.checked)} />
+            <label className="flex items-center gap-1.5 text-xs" data-testid="follow-toggle">
+              <Checkbox checked={follow} onChange={(event) => setFollow(event.target.checked)} />
               {t("contentView.subtitles.follow")}
             </label>
           ) : null}
@@ -322,7 +328,7 @@ export function SubtitlesTab() {
           )}
           {noAsr || asrProfiles.isPending ? null : <DiarizationOptions offer={diarizationOffered} choice={diarization} settingPending={settings.isPending} />}
           {noAsr ? (
-            <Link to="/settings/transcription" className="text-xs text-accent hover:underline" data-testid="retranscribe-configure">
+            <Link to="/settings/transcription" className={`self-start text-note ${TEXT_ACTION_CLASS}`} data-testid="retranscribe-configure">
               {t("contentView.subtitles.configureAsr")}
             </Link>
           ) : null}
@@ -331,7 +337,8 @@ export function SubtitlesTab() {
           <Button
             size="sm"
             variant="ghost"
-            disabled={retranscribe.isPending || noAsr || asrProfiles.isPending || settings.isPending || asrModelRef === undefined || diarization.invalidCount}
+            loading={retranscribe.isPending}
+            disabled={noAsr || asrProfiles.isPending || settings.isPending || asrModelRef === undefined || diarization.invalidCount}
             title={t("contentView.subtitles.retranscribeHint")}
             onClick={() => retranscribe.mutate(diarization.request())}
             data-testid="retranscribe"
@@ -369,16 +376,16 @@ export function SubtitlesTab() {
                       data-testid="subtitles-download-ambersub"
                     >
                       <span>{t("contentView.export.format.ambersub")}</span>
-                      <span className="max-w-52 text-xs text-muted">{t("subtitleImport.export.quickHint")}</span>
+                      <span className="max-w-52 text-note text-muted">{t("subtitleImport.export.quickHint")}</span>
                     </DropdownMenu.Item>
                     <DropdownMenu.Separator className="my-1 h-px bg-line" />
                   </>
                 )}
-                <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-xs text-muted" data-testid="subtitles-ass-hint">
+                <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-note text-muted" data-testid="subtitles-ass-hint">
                   {t("contentView.subtitles.assCanvasHint")}
                 </DropdownMenu.Label>
                 {hasSpeakers ? (
-                  <DropdownMenu.Label className="max-w-56 px-2 pt-1 pb-1 text-xs text-muted" data-testid="subtitles-speakers-hint">
+                  <DropdownMenu.Label className="max-w-56 px-2 pt-1 pb-1 text-note text-muted" data-testid="subtitles-speakers-hint">
                     {t("speakerTools.export.quickHint")}
                   </DropdownMenu.Label>
                 ) : null}
@@ -397,8 +404,16 @@ export function SubtitlesTab() {
           </Button>
         </div>
       </div>
-      {missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
-      {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
+      {missing ? (
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="revision-missing">
+          {t("contentView.revisions.missing")}
+        </p>
+      ) : null}
+      {located.unmatched ? (
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="locate-unmatched">
+          {t("contentView.locate.unmatched")}
+        </p>
+      ) : null}
       {download.error instanceof ApiError ? <div className="px-4 pt-2"><ErrorView error={download.error.error} /></div> : null}
       {retranscribe.error instanceof ApiError ? (
         <div className="px-4 pt-2">
@@ -495,13 +510,8 @@ export function SubtitlesTab() {
 }
 
 function ImportSubtitleDialog(props: { open: boolean; onClose: () => void; defaultLanguage: string | undefined }) {
-  const { t } = useTranslation();
-  return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.subtitles.import")}>
-      {/* Mounted only while open, so every opening starts from no file. */}
-      {props.open ? <ImportSubtitleForm onClose={props.onClose} defaultLanguage={props.defaultLanguage} /> : null}
-    </Modal>
-  );
+  // Mounted only while open, so every opening starts from no file.
+  return props.open ? <ImportSubtitleForm onClose={props.onClose} defaultLanguage={props.defaultLanguage} /> : null;
 }
 
 /** What an import brought in, for the dialog's one-line result. */
@@ -578,38 +588,57 @@ function ImportSubtitleForm(props: { onClose: () => void; defaultLanguage: strin
     },
   });
 
+  const dialog = (body: ReactNode, footer: ReactNode) => (
+    // The footer stays in view below a long preview.
+    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.subtitles.import")} footer={footer}>
+      {body}
+    </Modal>
+  );
+
   if (outcome !== undefined) {
-    return <ImportResult outcome={outcome} onClose={props.onClose} />;
+    return dialog(
+      <ImportResult outcome={outcome} />,
+      <Button variant="primary" onClick={props.onClose} data-testid="subtitle-import-done">
+        {t("subtitleImport.dialog.done")}
+      </Button>,
+    );
   }
 
   const stale = upload.error instanceof ApiError && needsFreshPreview(upload.error.error.code);
-  return (
-    <div className="flex flex-col gap-4 text-sm" data-testid="subtitle-import-dialog">
+  return dialog(
+    <div className="flex flex-col gap-5 text-sm" data-testid="subtitle-import-dialog">
       <div className="flex flex-col gap-1.5">
-        <span id={`${ids}-file`} className="text-xs text-muted">
+        <span id={`${ids}-file`} className="text-sm font-medium">
           {t("contentView.subtitles.importFile")}
         </span>
         <FilePicker
           accept={IMPORT_ACCEPT}
           fileName={file?.name}
           labelledBy={`${ids}-file`}
+          describedBy={`${ids}-file-hint`}
           testId="subtitle-import-file"
           onFile={(next) => {
             setFile(next);
             upload.reset();
           }}
         />
-        <p className="text-xs text-muted">{t("subtitleImport.dialog.fileHint")}</p>
+        <FieldHint id={`${ids}-file-hint`}>{t("subtitleImport.dialog.fileHint")}</FieldHint>
       </div>
-      {reference ? (
-        <p className="rounded-md border border-line bg-panel px-3 py-2 text-xs text-muted" data-testid="subtitle-import-reference">
-          {t("subtitleImport.dialog.reference")}
-        </p>
-      ) : null}
+      {reference ? <InlineNote testId="subtitle-import-reference">{t("subtitleImport.dialog.reference")}</InlineNote> : null}
       {askLanguage ? (
-        <label className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="text-xs text-muted">{t("subtitleImport.dialog.language")}</span>
-          <select className="h-8 min-w-0 rounded-md border border-line bg-surface px-2 text-sm" value={language} onChange={(event) => setLanguage(event.target.value)} data-testid="subtitle-import-language">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${ids}-language`} className="text-sm font-medium">
+            {t("subtitleImport.dialog.language")}
+          </label>
+          <NativeSelect
+            id={`${ids}-language`}
+            size="md"
+            className="self-start"
+            value={language}
+            onChange={(event) => setLanguage(event.target.value)}
+            aria-describedby={languageMissing ? `${ids}-language-hint` : undefined}
+            data-testid="subtitle-import-language"
+          >
             <option value="" disabled>
               {t("subtitleImport.dialog.chooseLanguage")}
             </option>
@@ -618,9 +647,9 @@ function ImportSubtitleForm(props: { onClose: () => void; defaultLanguage: strin
                 {languageLabel(tag, t, i18n)}
               </option>
             ))}
-          </select>
-          {languageMissing ? <span className="text-xs text-muted">{t("subtitleImport.dialog.needLanguage")}</span> : null}
-        </label>
+          </NativeSelect>
+          {languageMissing ? <FieldHint id={`${ids}-language-hint`}>{t("subtitleImport.dialog.needLanguage")}</FieldHint> : null}
+        </div>
       ) : null}
       {reference ? null : (
         <SubtitleImportPreview
@@ -653,14 +682,13 @@ function ImportSubtitleForm(props: { onClose: () => void; defaultLanguage: strin
           </ErrorView>
         </div>
       ) : null}
-      {/* Kept in view while a long preview scrolls. */}
-      <div className="sticky -bottom-5 -mx-5 -mb-5 flex justify-end gap-2 border-t border-line bg-surface px-5 py-3">
-        <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-        <Button variant="primary" disabled={!ready || stale || upload.isPending} onClick={() => upload.mutate()} data-testid="subtitle-import-submit">
-          {upload.isPending ? t("subtitleImport.dialog.submitting") : plain && preview === undefined ? t("subtitleImport.dialog.submitPlain") : t("subtitleImport.dialog.submit")}
-        </Button>
-      </div>
-    </div>
+    </div>,
+    <>
+      <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+      <Button variant="primary" loading={upload.isPending} disabled={!ready || stale} onClick={() => upload.mutate()} data-testid="subtitle-import-submit">
+        {upload.isPending ? t("subtitleImport.dialog.submitting") : plain && preview === undefined ? t("subtitleImport.dialog.submitPlain") : t("subtitleImport.dialog.submit")}
+      </Button>
+    </>,
   );
 }
 
@@ -685,7 +713,7 @@ export function importWarningLines(warnings: readonly string[]): Array<KnownWarn
 }
 
 /** The one-line result of an import and the timeline warnings it reported. */
-function ImportResult(props: { outcome: ImportOutcome; onClose: () => void }) {
+function ImportResult(props: { outcome: ImportOutcome }) {
   const { t, i18n } = useTranslation();
   const { outcome } = props;
   const format = new Intl.NumberFormat(i18n.language);
@@ -701,30 +729,21 @@ function ImportResult(props: { outcome: ImportOutcome; onClose: () => void }) {
   const warnings = importWarningLines(outcome.response.warnings);
   return (
     <div className="flex flex-col gap-3 text-sm" data-testid="subtitle-import-result">
-      <p className="flex items-start gap-2 rounded-md border border-line bg-panel px-3 py-2.5" role="status" data-testid="subtitle-import-summary">
-        <CircleCheck size={16} className="mt-0.5 shrink-0 text-ok" aria-hidden="true" />
+      <Callout tone="success" announce="status" testId="subtitle-import-summary">
         <span className="tabular-nums">{parts.join(" · ")}</span>
-      </p>
+      </Callout>
       {warnings.length === 0 ? null : (
-        <div className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent-soft px-3 py-2.5 text-xs" data-testid="subtitle-import-warnings">
-          <TriangleAlert size={14} className="mt-px shrink-0 text-accent" aria-hidden="true" />
-          <div className="min-w-0">
-            <p>{t("subtitleImport.result.warnings")}</p>
-            <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-4">
-              {warnings.map((code) => (
-                <li key={code} data-warning={code}>
-                  {t(`subtitleImport.warning.${code}`)}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
+        <Callout tone="warn" density="compact" testId="subtitle-import-warnings">
+          <p className="max-w-[70ch]">{t("subtitleImport.result.warnings")}</p>
+          <ul className="mt-1 flex max-w-[70ch] list-disc flex-col gap-0.5 pl-4">
+            {warnings.map((code) => (
+              <li key={code} data-warning={code}>
+                {t(`subtitleImport.warning.${code}`)}
+              </li>
+            ))}
+          </ul>
+        </Callout>
       )}
-      <div className="flex justify-end">
-        <Button variant="primary" onClick={props.onClose} data-testid="subtitle-import-done">
-          {t("subtitleImport.dialog.done")}
-        </Button>
-      </div>
     </div>
   );
 }

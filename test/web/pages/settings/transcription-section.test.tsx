@@ -180,20 +180,22 @@ describe("TranscriptionSection", () => {
     // Malformed and repeated ids are refused.
     fireEvent.change(input, { target: { value: "-bad id" } });
     fireEvent.click(add);
-    expect(within(dialog).getByRole("alert").textContent).toContain("模型 ID 只能包含");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(within(dialog).getByTestId("asr-add-model-error").textContent).toContain("模型 ID 只能包含");
+    expect(input.getAttribute("aria-describedby")).toBe(within(dialog).getByTestId("asr-add-model-error").id);
     fireEvent.change(input, { target: { value: "scribe_v2" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(within(dialog).getByRole("alert").textContent).toBe("已添加这个模型");
+    expect(within(dialog).getByTestId("asr-add-model-error").textContent).toBe("已添加这个模型");
     expect(api.calls.some((call) => call.method === "POST")).toBe(false);
 
     // Any other id is added with a family, starting at the one sending the fewest parameters.
     fireEvent.change(input, { target: { value: "scribe_v3" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    const family = within(dialog).getByLabelText("参数兼容 · scribe_v3") as HTMLSelectElement;
-    expect(family.value).toBe("scribe");
-    expect([...family.options].map((option) => option.textContent)).toEqual(["Scribe（通用）", "Scribe v2"]);
+    const family = within(dialog).getByRole("combobox", { name: "参数兼容 · scribe_v3" });
+    expect(family.textContent).toBe("Scribe（通用）");
+    expect(await selectOptionNames(family)).toEqual(["Scribe（通用）", "Scribe v2"]);
     expect(within(dialog).getByText(/决定是否发送热词与语言提示/)).toBeTruthy();
-    fireEvent.change(family, { target: { value: "scribe_v2" } });
+    await chooseOption(family, "Scribe v2");
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() =>
       expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({
@@ -357,7 +359,7 @@ describe("TranscriptionSection", () => {
     renderApp(<TranscriptionSection />);
     fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect(api.calls.some((call) => call.method === "DELETE")).toBe(false);
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(api.calls.some((call) => call.method === "DELETE" && call.path === "/api/asr-profiles/a2")).toBe(true));
     expect(await screen.findByText(/有未完成的任务正在使用这个 Profile/)).toBeTruthy();
   });

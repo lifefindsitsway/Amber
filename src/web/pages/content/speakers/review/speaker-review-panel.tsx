@@ -10,8 +10,9 @@ import { ApiError } from "../../../../api/client.ts";
 import { refreshSpeakerReviewViews } from "../../../../api/content-events.ts";
 import { ErrorView } from "../../../../components/error-view.tsx";
 import { formatDateTime } from "../../../../format.ts";
-import { Button } from "../../../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../../../ui/button.tsx";
 import { Loading } from "../../../../ui/feedback.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../../../ui/notice.tsx";
 import { SpeakerAvatar } from "../speaker-avatar.tsx";
 import { speakerLabel, useSetSpeakersConfirmed, useSpeakerReview, useSpeakers } from "../speaker-data.ts";
 import { SPEAKER_POPOVER_CLASS } from "../speaker-edit-popover.tsx";
@@ -97,9 +98,11 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
     return (
       <div data-testid="speaker-review-panel">
         {header}
-        <p className="px-3 pb-3 text-xs text-danger" role="alert">
-          {t("speakerReview.panel.loadFailed")}
-        </p>
+        <div className="px-3 pb-3">
+          <Callout tone="error" density="compact" announce="alert">
+            {t("speakerReview.panel.loadFailed")}
+          </Callout>
+        </div>
       </div>
     );
   }
@@ -145,7 +148,7 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
           {props.onManageSpeakers === undefined ? null : (
             <button
               type="button"
-              className="shrink-0 rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+              className={`shrink-0 rounded px-1.5 py-0.5 text-xs text-link hover:bg-sunken ${FOCUS_RING}`}
               onClick={props.onManageSpeakers}
               data-testid="speaker-review-manage"
             >
@@ -180,13 +183,16 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
           </div>
         ) : null}
       </section>
-      <p className="border-t border-line px-3 py-2 text-xs text-muted" data-testid="speaker-review-disclaimer">
+      <p className={`border-t border-line px-3 py-2 ${NOTE_TEXT_CLASS}`} data-testid="speaker-review-disclaimer">
         {t("speakerReview.panel.disclaimer")}
       </p>
       {rosterChanged ? (
-        <p className="px-3 pb-2 text-xs text-danger" role="alert" data-testid="speaker-review-roster-changed">
-          {t("speakerReview.panel.rosterChanged")}
-        </p>
+        // Follows the refused confirmation: the roster on screen was read again and needs another look.
+        <div className="px-3 pb-2">
+          <Callout tone="warn" density="compact" announce="alert" testId="speaker-review-roster-changed">
+            {t("speakerReview.panel.rosterChanged")}
+          </Callout>
+        </div>
       ) : null}
       {failure === undefined ? null : (
         <div className="px-3 pb-2">
@@ -195,7 +201,7 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
       )}
       <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-3 py-2.5" data-testid="speaker-review-footer">
         {data.confirmedAt === undefined ? (
-          <Button size="sm" variant="primary" disabled={setConfirmed.isPending || review.isFetching} onClick={() => submit(data, true)} data-testid="speaker-review-confirm">
+          <Button size="sm" variant="primary" loading={setConfirmed.isPending} disabled={review.isFetching} onClick={() => submit(data, true)} data-testid="speaker-review-confirm">
             {t("speakerReview.panel.confirm")}
           </Button>
         ) : (
@@ -203,7 +209,7 @@ export function SpeakerReviewPanel(props: SpeakerReviewTarget & { titleId?: stri
             <span className="mr-auto text-xs text-muted" data-testid="speaker-review-confirmed-at">
               {t("speakerReview.panel.confirmedAt", { time: formatDateTime(data.confirmedAt, i18n.language) })}
             </span>
-            <Button size="sm" disabled={setConfirmed.isPending} onClick={() => submit(data, false)} data-testid="speaker-review-unconfirm">
+            <Button size="sm" loading={setConfirmed.isPending} onClick={() => submit(data, false)} data-testid="speaker-review-unconfirm">
               {t("speakerReview.panel.unconfirm")}
             </Button>
           </>

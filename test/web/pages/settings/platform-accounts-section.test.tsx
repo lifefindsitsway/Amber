@@ -61,7 +61,7 @@ describe("PlatformAccountsSection", () => {
     expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/api/platform-accounts/bilibili/check"]);
 
     fireEvent.click(screen.getByRole("button", { name: "移除登录" }));
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "移除登录" }));
     await waitFor(() => expect(calls.some((call) => call.method === "DELETE" && call.path === "/api/platform-accounts/bilibili")).toBe(true));
     // Outside the desktop client there is no player session to clear.
     expect(fakeShell.clearBilibiliPlayerSession).not.toHaveBeenCalled();
@@ -254,7 +254,7 @@ describe("PlatformAccountsSection in the desktop client", () => {
     const removeFrom = async (platform: "bilibili" | "youtube") => {
       const block = (await screen.findByTestId(`account-${platform}`)).closest("section") as HTMLElement;
       fireEvent.click(within(block).getByRole("button", { name: "移除登录" }));
-      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "移除登录" }));
       await waitFor(() => expect(screen.getByTestId(`account-${platform}`).textContent).toContain("未登录"));
     };
     await removeFrom("youtube");

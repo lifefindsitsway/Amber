@@ -8,7 +8,10 @@ import type { FigureDto } from "../../../shared/dto/figure.ts";
 import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import { formatDuration } from "../../format.ts";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, useContextMenuTarget, type MenuEntry } from "../../ui/context-menu.tsx";
+import { FOCUS_RING } from "../../ui/button.tsx";
 import { Spinner } from "../../ui/feedback.tsx";
+import { FieldError, TEXT_ACTION_CLASS, TextAction } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { blockedComboOf } from "../../shortcut-registry.tsx";
 import type { FigureChangeResult } from "./figure-data.ts";
 import { CAPTION_SIZE_EM, FIGURE_INNER_GAP_EM, type FigureRow } from "./reader-figures.ts";
@@ -109,11 +112,10 @@ function useFigureRowController(): FigureRowController {
  * which cannot hover, always show the toolbar, holding only its 「⋯」 menu there: the menu
  * offers every action, the widths included.
  */
-const REVEAL_CLASS = "opacity-0 group-hover/figure:opacity-100 group-focus-within/figure:opacity-100 data-[open=true]:opacity-100 pointer-coarse:opacity-100";
+const REVEAL_CLASS = "opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover/figure:opacity-100 group-focus-within/figure:opacity-100 data-[open=true]:opacity-100 pointer-coarse:opacity-100";
 /** Toolbar controls a touch screen reaches through the menu instead. */
 const POINTER_ONLY_CLASS = "pointer-coarse:hidden";
-const TOOL_BUTTON_CLASS =
-  "flex size-7 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50";
+const TOOL_BUTTON_CLASS = `flex size-7 items-center justify-center rounded text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING}`;
 const ACCENT_TEXT = "text-xs text-muted";
 
 const isApple = (): boolean => typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/u.test(navigator.userAgent);
@@ -167,21 +169,16 @@ function DeletedFigure(props: { figure: FigureDto }) {
     <div className="mx-auto flex w-fit max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-dashed border-line px-3 py-1.5 text-sm text-muted select-none" {...{ [FIGURE_ID_ATTRIBUTE]: props.figure.id }} data-testid="figure-deleted">
       <span>{t("figures.deleted.text")}</span>
       <span aria-hidden="true">·</span>
-      <button
-        ref={undo}
-        type="button"
-        className="rounded text-accent hover:underline focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-        aria-label={t("figures.deleted.undoLabel")}
-        onClick={() => controller.undo(props.figure)}
-        data-testid="figure-undo"
-      >
+      <button ref={undo} type="button" className={TEXT_ACTION_CLASS} aria-label={t("figures.deleted.undoLabel")} onClick={() => controller.undo(props.figure)} data-testid="figure-undo">
         {t("figures.deleted.undo")}
       </button>
-      {notice === undefined ? null : (
-        <span role="status" className="text-danger">
-          {notice}
-        </span>
-      )}
+      <span role="status">
+        {notice === undefined ? null : (
+          <FieldError id={`figure-${props.figure.id}-deleted-notice`} className="text-sm">
+            {notice}
+          </FieldError>
+        )}
+      </span>
     </div>
   );
 }
@@ -274,11 +271,9 @@ function FigureBody(props: { figure: FigureDto }) {
           ) : null}
         </button>
         {image.state.status === "failed" ? (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-xs text-muted" role="alert">
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-note text-muted" role="alert">
             {t("figures.block.loadFailed")}
-            <button type="button" className="rounded text-accent hover:underline focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none" onClick={image.retry}>
-              {t("figures.block.retry")}
-            </button>
+            <TextAction onClick={image.retry}>{t("figures.block.retry")}</TextAction>
           </span>
         ) : null}
         {liveWidth === undefined ? null : (
@@ -301,49 +296,54 @@ function FigureBody(props: { figure: FigureDto }) {
           data-open={menuOpen ? "true" : "false"}
           data-testid="figure-toolbar"
         >
-          <button
-            type="button"
-            className={`${TOOL_BUTTON_CLASS} ${POINTER_ONLY_CLASS} cursor-grab touch-none active:cursor-grabbing`}
-            aria-label={moves.blocked ?? t("figures.move.handle")}
-            title={moves.blocked ?? t("figures.move.handle")}
-            aria-disabled={moves.blocked !== undefined}
-            onPointerDown={(event) => {
-              if (event.button !== 0 || moves.blocked !== undefined) return;
-              // Starting here never starts a text selection, nor drags the image.
-              event.preventDefault();
-              controller.startDrag(figure, event);
-            }}
-            onKeyDown={onGripKey}
-            {...{ [FIGURE_GRIP_ATTRIBUTE]: "" }}
-            data-testid="figure-grip"
-          >
-            <GripVertical size={14} aria-hidden="true" />
-          </button>
+          <Tooltip content={moves.blocked ?? t("figures.move.handle")}>
+            <button
+              type="button"
+              className={`${TOOL_BUTTON_CLASS} ${POINTER_ONLY_CLASS} cursor-grab touch-none active:cursor-grabbing`}
+              aria-label={moves.blocked ?? t("figures.move.handle")}
+              aria-disabled={moves.blocked !== undefined}
+              onPointerDown={(event) => {
+                if (event.button !== 0 || moves.blocked !== undefined) return;
+                // Starting here never starts a text selection, nor drags the image.
+                event.preventDefault();
+                controller.startDrag(figure, event);
+              }}
+              onKeyDown={onGripKey}
+              {...{ [FIGURE_GRIP_ATTRIBUTE]: "" }}
+              data-testid="figure-grip"
+            >
+              <GripVertical size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
           <div role="group" aria-label={t("figures.width.group")} className={`flex items-center ${POINTER_ONLY_CLASS}`}>
             {FIGURE_WIDTH_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className={`${TOOL_BUTTON_CLASS} text-xs font-medium ${Math.abs(width - preset.ratio) < 0.001 ? "bg-sunken text-ink" : ""}`}
-                aria-label={t(`figures.width.${preset.id}Label`)}
-                aria-pressed={Math.abs(width - preset.ratio) < 0.001}
-                title={t(`figures.width.${preset.id}Label`)}
-                onClick={() => {
-                  if (preset.ratio !== figure.widthRatio) controller.setWidth(figure, preset.ratio);
-                }}
-                data-testid={`figure-width-${preset.id}`}
-              >
-                {t(`figures.width.${preset.id}`)}
-              </button>
+              <Tooltip key={preset.id} content={t(`figures.width.${preset.id}Label`)}>
+                <button
+                  type="button"
+                  className={`${TOOL_BUTTON_CLASS} text-xs font-medium ${Math.abs(width - preset.ratio) < 0.001 ? "bg-sunken text-ink" : ""}`}
+                  aria-label={t(`figures.width.${preset.id}Label`)}
+                  aria-pressed={Math.abs(width - preset.ratio) < 0.001}
+                  onClick={() => {
+                    if (preset.ratio !== figure.widthRatio) controller.setWidth(figure, preset.ratio);
+                  }}
+                  data-testid={`figure-width-${preset.id}`}
+                >
+                  {t(`figures.width.${preset.id}`)}
+                </button>
+              </Tooltip>
             ))}
           </div>
-          <button type="button" className={`${TOOL_BUTTON_CLASS} ${POINTER_ONLY_CLASS}`} aria-label={figure.caption === undefined ? t("figures.caption.add") : t("figures.caption.edit")} title={figure.caption === undefined ? t("figures.caption.add") : t("figures.caption.edit")} onClick={caption.start} data-testid="figure-caption-add">
-            <Pencil size={14} aria-hidden="true" />
-          </button>
+          <Tooltip content={figure.caption === undefined ? t("figures.caption.add") : t("figures.caption.edit")}>
+            <button type="button" className={`${TOOL_BUTTON_CLASS} ${POINTER_ONLY_CLASS}`} aria-label={figure.caption === undefined ? t("figures.caption.add") : t("figures.caption.edit")} onClick={caption.start} data-testid="figure-caption-add">
+              <Pencil size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
           <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenu.Trigger className={TOOL_BUTTON_CLASS} aria-label={t("figures.menu.more")} title={t("figures.menu.more")} data-testid="figure-menu">
-              <MoreHorizontal size={14} aria-hidden="true" />
-            </DropdownMenu.Trigger>
+            <Tooltip content={t("figures.menu.more")}>
+              <DropdownMenu.Trigger className={TOOL_BUTTON_CLASS} aria-label={t("figures.menu.more")} data-testid="figure-menu">
+                <MoreHorizontal size={14} aria-hidden="true" />
+              </DropdownMenu.Trigger>
+            </Tooltip>
             <DropdownMenu.Portal>
               <DropdownMenu.Content align="end" sideOffset={4} className={MENU_CONTENT_CLASS}>
                 <FigureMenuEntries entries={entries} />
@@ -368,11 +368,13 @@ function FigureBody(props: { figure: FigureDto }) {
             </button>
           )}
           {caption.view}
-          {notice === undefined ? null : (
-            <p role="status" className="text-xs text-danger" data-testid="figure-notice">
-              {notice}
-            </p>
-          )}
+          <div role="status">
+            {notice === undefined ? null : (
+              <FieldError id={`figure-${figure.id}-notice`} testId="figure-notice">
+                {notice}
+              </FieldError>
+            )}
+          </div>
         </div>
       )}
       <FigureZoom open={zoomed} onOpenChange={setZoomed} url={image.state.status === "loaded" ? image.state.url : undefined} figure={figure} />
@@ -545,9 +547,9 @@ function useCaptionEditor(figure: FigureDto): { view: ReactNode; start: () => vo
         {status === "saving" ? <Spinner size={12} /> : null}
         {t(`figures.caption.${status}`)}
         {status === "failed" ? (
-          <button type="button" className="text-accent hover:underline" onMouseDown={(event) => event.preventDefault()} onClick={() => void save()}>
+          <TextAction onMouseDown={(event) => event.preventDefault()} onClick={() => void save()}>
             {t("figures.caption.retry")}
-          </button>
+          </TextAction>
         ) : null}
       </span>
     );
@@ -643,7 +645,9 @@ function FigureZoom(props: { open: boolean; onOpenChange: (open: boolean) => voi
           <Dialog.Title className="sr-only">{t("figures.zoom.title")}</Dialog.Title>
           <img src={props.url} alt={props.figure.caption ?? t("figures.block.alt")} className="max-h-[85vh] max-w-[92vw] rounded-md object-contain shadow-xl" draggable={false} />
           {props.figure.caption === undefined ? null : <p className="max-w-[92vw] text-center text-sm whitespace-pre-wrap text-white">{props.figure.caption}</p>}
-          <Dialog.Close className="absolute top-4 right-4 rounded p-1.5 text-white hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none" aria-label={t("figures.zoom.close")}>
+          {/* A native title, not a tooltip layer: the button takes focus as the view opens, and a
+              tooltip opened by that focus would take the first Esc instead of the view. */}
+          <Dialog.Close className={`absolute top-4 right-4 rounded p-1.5 text-white hover:bg-white/10 ${FOCUS_RING}`} aria-label={t("figures.zoom.close")} title={t("figures.zoom.close")}>
             <X size={18} aria-hidden="true" />
           </Dialog.Close>
         </Dialog.Content>

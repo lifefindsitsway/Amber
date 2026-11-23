@@ -6,7 +6,9 @@ import type { AppError } from "../../../shared/errors.ts";
 import { DIARIZATION_UNAVAILABLE_REASONS, type DiarizationUnavailableReason } from "../../../shared/speakers.ts";
 import { parseSpeakerCount, speakerCountOutOfRange, type DiarizationOffer } from "../../components/asr-diarization.ts";
 import { Button } from "../../ui/button.tsx";
+import { Callout, FieldError } from "../../ui/notice.tsx";
 import { Switch } from "../../ui/switch.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 
 /** The error code of a required identification the submission cannot honour. */
 export const DIARIZATION_UNAVAILABLE_CODE = "invalid_request.diarization_unavailable";
@@ -69,15 +71,15 @@ export function DiarizationOptions(props: {
         {t("speakerTools.retranscribe.diarization")}
       </Switch>
       {reasonText === undefined ? null : (
-        <span id={reasonId} className="text-xs text-muted" data-testid="diarization-reason">
+        <span id={reasonId} className="text-note text-muted" data-testid="diarization-reason">
           {reasonText}
         </span>
       )}
       {support !== undefined && choice.on ? <SpeakerCountField support={support} choice={choice} errorId={errorId} /> : null}
       {support !== undefined && choice.on && choice.invalidCount ? (
-        <span id={errorId} role="alert" className="basis-full text-xs text-danger" data-testid="diarization-count-error">
+        <FieldError id={errorId} className="basis-full" testId="diarization-count-error">
           {t("speakerTools.retranscribe.countInvalid", support.speakerCount)}
-        </span>
+        </FieldError>
       ) : null}
     </span>
   );
@@ -87,14 +89,14 @@ function SpeakerCountField(props: { support: AsrDiarizationSupport; choice: Diar
   const { t } = useTranslation();
   const { min, max, semantics } = props.support.speakerCount;
   const input = (
-    <input
-      type="text"
+    <TextInput
+      size="sm"
       inputMode="numeric"
       autoComplete="off"
-      className={`h-7 w-14 rounded border bg-surface px-1 text-center text-xs tabular-nums ${props.choice.invalidCount ? "border-danger" : "border-line"}`}
+      className="w-14 text-center tabular-nums"
       placeholder={t("speakerTools.retranscribe.countAuto")}
       aria-label={t(semantics === "reference" ? "speakerTools.retranscribe.countReferenceLabel" : "speakerTools.retranscribe.countMaximumLabel", { min, max })}
-      aria-invalid={props.choice.invalidCount}
+      invalid={props.choice.invalidCount}
       aria-describedby={props.choice.invalidCount ? props.errorId : undefined}
       value={props.choice.countText}
       onChange={(event) => props.choice.setCountText(event.target.value)}
@@ -141,17 +143,28 @@ export function DiarizationUnavailableNotice(props: { error: AppError; offer: Di
         ? t("speakerTools.retranscribe.unavailable.speaker_count_range", range)
         : t(`speakerTools.retranscribe.unavailable.${reason}`);
   return (
-    <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-line bg-sunken px-3 py-2 text-xs" data-testid="diarization-unavailable" data-reason={reason ?? "unknown"}>
-      <p className="min-w-0 flex-1">
+    // Nothing was sent and the user has to choose how to go on, so a caution rather than a note.
+    <Callout
+      tone="warn"
+      density="compact"
+      announce="alert"
+      testId="diarization-unavailable"
+      data-reason={reason ?? "unknown"}
+      actions={
+        <>
+          <Button size="sm" variant="ghost" onClick={props.onCancel} data-testid="diarization-cancel">
+            {t("common.action.cancel")}
+          </Button>
+          <Button size="sm" variant="primary" loading={props.busy} onClick={props.onContinue} data-testid="diarization-continue">
+            {t("speakerTools.retranscribe.unavailable.continueWithout")}
+          </Button>
+        </>
+      }
+    >
+      <p className="max-w-[70ch]">
         <span className="font-medium">{t("speakerTools.retranscribe.unavailable.title")}</span>
-        <span className="text-muted">{text}</span>
+        <span>{text}</span>
       </p>
-      <Button size="sm" variant="primary" disabled={props.busy} onClick={props.onContinue} data-testid="diarization-continue">
-        {t("speakerTools.retranscribe.unavailable.continueWithout")}
-      </Button>
-      <Button size="sm" variant="ghost" onClick={props.onCancel} data-testid="diarization-cancel">
-        {t("common.action.cancel")}
-      </Button>
-    </div>
+    </Callout>
   );
 }

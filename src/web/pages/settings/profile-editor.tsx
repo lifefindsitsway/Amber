@@ -25,14 +25,17 @@ import { ApiError } from "../../api/client.ts";
 import { useApi } from "../../api/context.tsx";
 import { queryKeys } from "../../api/queries.ts";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { FieldError, FieldHint, InlineNote, TextAction } from "../../ui/notice.tsx";
 import { PasswordInput } from "../../ui/password-input.tsx";
 import { Select, type SelectOption } from "../../ui/select.tsx";
 import { SuggestionInput } from "../../ui/suggestion-input.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { VendorIcon } from "../../ui/vendor-icon.tsx";
-import { Field, fieldHintId, INPUT_CLASS, RequestError } from "./settings-ui.tsx";
+import { describedBy, Field, fieldErrorId, fieldHintId, INPUT_CLASS, RequestError } from "./settings-ui.tsx";
 import { parseTokenCount } from "./token-count.tsx";
 
 /** The edit dialog's "no service" choice; never a preset id. */
@@ -149,6 +152,7 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
     baseURL: useId(),
     suggestions: useId(),
     connection: useId(),
+    form: useId(),
   };
   const editing = profile !== undefined;
   const initialPreset = shownPreset(profile?.presetId);
@@ -460,11 +464,27 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
 
   const serviceHint = chosen ? (editing ? t("settings.models.serviceEditHint") : undefined) : t("settings.models.serviceHint");
   const lockedId = `${ids.baseURL}-locked`;
+  const suffixId = `${ids.baseURL}-suffix`;
+  const baseURLMissing = touched && baseURL.trim() === "" && pendingRegion === undefined;
   const workspaceError = workspaceInvalid || workspaceMissing;
 
   return (
-    <Modal open onOpenChange={onOpenChange} title={editing ? t("settings.models.editProfile") : t("settings.models.addProfile")} wide>
+    <Modal
+      open
+      onOpenChange={onOpenChange}
+      title={editing ? t("settings.models.editProfile") : t("settings.models.addProfile")}
+      wide
+      footer={
+        <>
+          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={ids.form} variant="primary" loading={save.isPending} disabled={!chosen} data-testid="profile-save">
+            {t("common.action.save")}
+          </Button>
+        </>
+      }
+    >
       <form
+        id={ids.form}
         noValidate
         data-testid="profile-editor"
         onSubmit={(event) => {
@@ -506,23 +526,23 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
                 </Field>
                 {supportsWorkspace(vendor) ? (
                   <Field label={t("settings.models.workspace")} htmlFor={ids.workspace} hint={workspaceError ? undefined : t("settings.models.workspaceHint")}>
-                    <input
+                    <TextInput
                       id={ids.workspace}
-                      className={`${INPUT_CLASS} font-mono`}
+                      className="w-full font-mono"
                       value={workspaceText}
                       spellCheck={false}
                       autoComplete="off"
                       disabled={locked !== undefined}
-                      aria-invalid={workspaceError ? true : undefined}
-                      aria-describedby={workspaceError ? `${ids.workspace}-error` : fieldHintId(ids.workspace)}
+                      invalid={workspaceError}
+                      aria-describedby={workspaceError ? fieldErrorId(ids.workspace) : fieldHintId(ids.workspace)}
                       onChange={(event) => typeWorkspace(event.target.value)}
                     />
                     {workspaceInvalid ? (
-                      <InlineError id={`${ids.workspace}-error`} testId="workspace-invalid">
+                      <InlineError id={fieldErrorId(ids.workspace)} testId="workspace-invalid">
                         {t("settings.models.workspaceInvalid")}
                       </InlineError>
                     ) : workspaceMissing && pendingRegion !== undefined ? (
-                      <InlineError id={`${ids.workspace}-error`} testId="workspace-required">
+                      <InlineError id={fieldErrorId(ids.workspace)} testId="workspace-required">
                         {t("settings.models.workspaceRequired", { region: regionName(vendor, pendingRegion) })}
                       </InlineError>
                     ) : null}
@@ -570,21 +590,22 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
             />
 
             <Field label={t("settings.models.name")} htmlFor={ids.name}>
-              <input
+              <TextInput
                 id={ids.name}
-                className={INPUT_CLASS}
+                className="w-full"
                 value={name}
-                aria-invalid={touched && name.trim() === "" ? true : undefined}
+                invalid={touched && name.trim() === ""}
+                aria-describedby={touched && name.trim() === "" ? fieldErrorId(ids.name) : undefined}
                 onChange={(event) => {
                   setDirty(true);
                   setName(event.target.value);
                   setNameTouched(true);
                 }}
               />
-              {touched && name.trim() === "" ? <InlineError>{t("settings.models.required")}</InlineError> : null}
+              {touched && name.trim() === "" ? <InlineError id={fieldErrorId(ids.name)}>{t("settings.models.required")}</InlineError> : null}
             </Field>
 
-            <section className="mb-3 rounded-md border border-line" aria-labelledby={ids.connection} data-testid="profile-connection">
+            <section className="mb-5 rounded-md border border-line" aria-labelledby={ids.connection} data-testid="profile-connection">
               <div className="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5">
                 <h3 id={ids.connection} className="text-xs font-medium text-muted">
                   {t("settings.models.connection")}
@@ -607,7 +628,7 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
                   </p>
                 )}
                 {connectionForced ? null : (
-                  <Button size="sm" variant="ghost" className="ml-auto text-accent-ink dark:text-accent" aria-expanded={connectionShown} onClick={() => setConnectionOpen(!connectionShown)}>
+                  <Button size="sm" variant="ghost" className="ml-auto text-link" aria-expanded={connectionShown} onClick={() => setConnectionOpen(!connectionShown)}>
                     {connectionShown ? t("settings.models.connectionCollapse") : t("settings.models.connectionEdit")}
                   </Button>
                 )}
@@ -627,20 +648,24 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
                     />
                   </Field>
                   <Field label={t("settings.models.baseURL")} htmlFor={ids.baseURL}>
-                    <input
+                    <TextInput
                       id={ids.baseURL}
-                      className={`${INPUT_CLASS} font-mono`}
+                      className="w-full font-mono"
                       value={baseURL}
                       spellCheck={false}
                       autoComplete="off"
                       inputMode="url"
                       disabled={locked !== undefined}
-                      aria-invalid={touched && baseURL.trim() === "" && pendingRegion === undefined ? true : undefined}
-                      aria-describedby={locked === undefined ? undefined : lockedId}
+                      invalid={baseURLMissing}
+                      aria-describedby={describedBy(baseURLMissing && fieldErrorId(ids.baseURL), pathSuffix !== undefined && suffixId, locked !== undefined && lockedId)}
                       onChange={(event) => typeAddress(event.target.value)}
                     />
-                    {touched && baseURL.trim() === "" && pendingRegion === undefined ? <InlineError>{t("settings.models.baseURLRequired")}</InlineError> : null}
-                    {pathSuffix === undefined ? null : <InlineError testId="address-path-suffix">{t("settings.models.addressPathSuffix", { suffix: pathSuffix })}</InlineError>}
+                    {baseURLMissing ? <InlineError id={fieldErrorId(ids.baseURL)}>{t("settings.models.baseURLRequired")}</InlineError> : null}
+                    {pathSuffix === undefined ? null : (
+                      <InlineError id={suffixId} testId="address-path-suffix">
+                        {t("settings.models.addressPathSuffix", { suffix: pathSuffix })}
+                      </InlineError>
+                    )}
                     {locked === undefined ? null : (
                       <InlineError id={lockedId} testId="profile-tasks-conflict">
                         {locked} {t("settings.models.addressReverted")}
@@ -655,22 +680,17 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
         ) : null}
 
         {save.error instanceof ApiError && save.error.error.code === "conflict.profile_tasks_unfinished" ? null : <RequestError error={save.error} />}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={!chosen || save.isPending} data-testid="profile-save">
-            {t("common.action.save")}
-          </Button>
-        </div>
       </form>
     </Modal>
   );
 }
 
-function InlineError({ children, id, testId }: { children: ReactNode; id?: string; testId?: string }) {
+/** A field error right under its control; the control names `id` in its `aria-describedby`. */
+function InlineError({ children, id, testId }: { children: ReactNode; id: string; testId?: string }) {
   return (
-    <p id={id} className="mt-1 text-xs text-danger" data-testid={testId}>
+    <FieldError id={id} className="mt-1.5" {...(testId === undefined ? {} : { testId })}>
       {children}
-    </p>
+    </FieldError>
   );
 }
 
@@ -682,28 +702,27 @@ function InlineError({ children, id, testId }: { children: ReactNode; id?: strin
  */
 function AddressNotice(props: { undo: ConnectionUndo | undefined; restorable: boolean; labelled: boolean; onUndo: () => void; onRestore: () => void }) {
   const { t } = useTranslation();
-  const link = "rounded px-0.5 font-medium text-accent-ink underline decoration-accent/60 underline-offset-2 hover:decoration-accent dark:text-accent";
   return (
     <div aria-live="polite" className="empty:hidden">
       {props.undo !== undefined ? (
-        <p className="border-t border-line px-3 py-2 text-xs text-muted" data-testid="address-changed">
+        <p className="border-t border-line px-3 py-2 text-note text-muted" data-testid="address-changed">
           {props.undo.message}
           <span aria-hidden="true"> · </span>
-          <button type="button" className={link} onClick={props.onUndo}>
+          <TextAction className="font-medium" onClick={props.onUndo}>
             {t("settings.models.addressUndo")}
-          </button>
+          </TextAction>
         </p>
       ) : props.restorable ? (
-        <p className="border-t border-line px-3 py-2 text-xs text-muted" data-testid="address-custom">
+        <p className="border-t border-line px-3 py-2 text-note text-muted" data-testid="address-custom">
           {props.labelled ? (
             <>
               {t("settings.models.addressCustom")}
               <span aria-hidden="true"> · </span>
             </>
           ) : null}
-          <button type="button" className={link} onClick={props.onRestore}>
+          <TextAction className="font-medium" onClick={props.onRestore}>
             {t("settings.models.addressRestore")}
-          </button>
+          </TextAction>
         </p>
       ) : null}
     </div>
@@ -786,40 +805,47 @@ function ModelTable(props: {
             const idMissing = props.touched && row.id === "";
             const duplicate = props.duplicated(row);
             const named = (action: string): string => (row.id === "" ? rowLabel(action, index) : `${action} · ${row.id}`);
+            const rowId = `${props.suggestionsId}-${model.key}`;
             return (
               <tr key={model.key} ref={props.dragRef(model.key)} className={`align-top ${props.dragging === model.key ? "bg-accent-soft" : ""}`} data-testid="model-draft">
                 <td className="pb-2">
-                  <button
-                    type="button"
-                    className="mt-1.5 cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-                    aria-label={named(t("settings.models.dragModel"))}
-                    title={t("settings.models.dragModel")}
-                    {...props.handleProps(model.key)}
-                  >
-                    <GripVertical size={14} aria-hidden="true" />
-                  </button>
+                  <Tooltip content={t("settings.models.dragModel")}>
+                    <button
+                      type="button"
+                      className={`mt-1.5 cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+                      aria-label={named(t("settings.models.dragModel"))}
+                      {...props.handleProps(model.key)}
+                    >
+                      <GripVertical size={14} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                 </td>
                 <td className="pb-2">
-                  <input
+                  <TextInput
                     ref={(element) => {
                       if (element === null) idInputs.current.delete(model.key);
                       else idInputs.current.set(model.key, element);
                     }}
                     aria-label={rowLabel(t("settings.models.modelId"), index)}
-                    aria-invalid={idMissing || duplicate ? true : undefined}
-                    className={`${INPUT_CLASS} font-mono`}
+                    invalid={idMissing || duplicate}
+                    aria-describedby={idMissing || duplicate ? `${rowId}-id-error` : undefined}
+                    className="w-full font-mono"
                     value={model.modelId}
                     spellCheck={false}
                     autoComplete="off"
                     onChange={(event) => props.onChange(model.key, { modelId: event.target.value })}
                   />
-                  {idMissing ? <InlineError>{t("settings.models.required")}</InlineError> : null}
-                  {duplicate ? <InlineError testId="model-duplicate">{t("settings.models.duplicateModel")}</InlineError> : null}
+                  {idMissing ? <InlineError id={`${rowId}-id-error`}>{t("settings.models.required")}</InlineError> : null}
+                  {duplicate && !idMissing ? (
+                    <InlineError id={`${rowId}-id-error`} testId="model-duplicate">
+                      {t("settings.models.duplicateModel")}
+                    </InlineError>
+                  ) : null}
                 </td>
                 <td className="pb-2 pl-2">
                   <SuggestionInput
                     aria-label={rowLabel(t("settings.models.contextWindow"), index)}
-                    aria-describedby={noteId}
+                    aria-describedby={describedBy(Number.isNaN(row.window) && `${rowId}-window-error`, noteId)}
                     aria-invalid={Number.isNaN(row.window) ? true : undefined}
                     suggestions={CONTEXT_WINDOW_SUGGESTION_LABELS}
                     listLabel={t("settings.models.contextWindowSuggestions")}
@@ -827,48 +853,50 @@ function ModelTable(props: {
                     autoComplete="off"
                     spellCheck={false}
                     placeholder={t("settings.models.tokenPlaceholder")}
-                    className={`${INPUT_CLASS} placeholder:text-muted/70`}
+                    className={INPUT_CLASS}
                     value={model.contextWindowTokens}
                     onValueChange={(text) => props.onChange(model.key, { contextWindowTokens: text })}
                   />
-                  {Number.isNaN(row.window) ? <InlineError>{t("settings.models.invalidNumber")}</InlineError> : null}
+                  {Number.isNaN(row.window) ? <InlineError id={`${rowId}-window-error`}>{t("settings.models.invalidNumber")}</InlineError> : null}
                 </td>
                 <td className="pb-2 pl-2">
-                  <input
+                  <TextInput
                     aria-label={rowLabel(t("settings.models.maxOutput"), index)}
-                    aria-invalid={Number.isNaN(row.max) ? true : undefined}
+                    invalid={Number.isNaN(row.max)}
+                    aria-describedby={Number.isNaN(row.max) ? `${rowId}-max-error` : undefined}
                     inputMode="numeric"
                     autoComplete="off"
-                    className={INPUT_CLASS}
+                    className="w-full"
                     value={model.maxOutputTokens}
                     onChange={(event) => props.onChange(model.key, { maxOutputTokens: event.target.value })}
                   />
-                  {Number.isNaN(row.max) ? <InlineError>{t("settings.models.invalidNumber")}</InlineError> : null}
+                  {Number.isNaN(row.max) ? <InlineError id={`${rowId}-max-error`}>{t("settings.models.invalidNumber")}</InlineError> : null}
                 </td>
                 <td className="pb-2 pl-1">
-                  <button
-                    type="button"
-                    className="mt-1.5 rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-                    aria-label={named(t("settings.models.removeModel"))}
-                    title={t("settings.models.removeModel")}
-                    disabled={props.rows.length <= 1}
-                    onClick={() => {
-                      const neighbour = props.rows[index + 1] ?? props.rows[index - 1];
-                      props.onRemove(model.key);
-                      setFocusTarget(neighbour?.model.key ?? ADD);
-                    }}
-                  >
-                    <X size={14} aria-hidden="true" />
-                  </button>
+                  <Tooltip content={t("settings.models.removeModel")}>
+                    <button
+                      type="button"
+                      className={`mt-1.5 rounded p-1 text-muted hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`}
+                      aria-label={named(t("settings.models.removeModel"))}
+                      disabled={props.rows.length <= 1}
+                      onClick={() => {
+                        const neighbour = props.rows[index + 1] ?? props.rows[index - 1];
+                        props.onRemove(model.key);
+                        setFocusTarget(neighbour?.model.key ?? ADD);
+                      }}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      <p id={noteId} className="mb-2 text-xs text-muted" data-testid="context-window-note">
+      <FieldHint id={noteId} className="mb-2" testId="context-window-note">
         {t("settings.models.contextWindowNote")}
-      </p>
+      </FieldHint>
       <div ref={addRow}>
         <Button size="sm" onClick={() => setFocusTarget(props.onAdd())}>
           <Plus size={14} aria-hidden="true" />

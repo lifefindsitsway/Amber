@@ -123,7 +123,11 @@ describe("ContentPage", () => {
   });
 
   it("deletes the Content from the toolbar menu after confirmation and returns to the library", async () => {
-    const { calls } = mockApi({ ...contentRoutes(), "DELETE /api/contents/c1": { status: 204 } });
+    const { calls } = mockApi({
+      ...contentRoutes(),
+      "DELETE /api/contents/c1": { status: 204 },
+      "POST /api/contents/trash-plan": { body: { items: [{ contentId: "c1", state: "ready" }] } },
+    });
     renderApp(
       <Routes>
         <Route path="/contents/:id" element={<ContentPage />} />
@@ -137,6 +141,8 @@ describe("ContentPage", () => {
     fireEvent.click(deleteItem);
     const dialog = await screen.findByRole("dialog", { name: "删除这条内容？" });
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    // The confirmation waits for the pre-check.
+    await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "删除" }).disabled).toBe(false));
     fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
     expect(await screen.findByTestId("library-route")).toBeTruthy();
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1"]);

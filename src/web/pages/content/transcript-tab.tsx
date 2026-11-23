@@ -18,6 +18,9 @@ import { formatDuration } from "../../format.ts";
 import { usePlayerCapabilities, usePlayerTime } from "../../player/player-controller.tsx";
 import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { NOTE_TEXT_CLASS, TEXT_ACTION_CLASS, TextAction } from "../../ui/notice.tsx";
 import { copyText } from "../../ui/clipboard.ts";
 import { notesBySegment } from "../../notes/note-anchor.ts";
 import { useOptionalNotesUi } from "../../notes/note-ui-context.tsx";
@@ -410,9 +413,8 @@ export function RevisionToggleBar(props: { toggles: RevisionToggles }) {
   return (
     <>
       {toggles.historyCount > 0 ? (
-        <label className="flex items-center gap-1 text-xs">
-          <input
-            type="checkbox"
+        <label className="flex items-center gap-1.5 text-xs">
+          <Checkbox
             checked={toggles.historyOpen}
             onChange={(event) => toggles.setHistoryOpen(event.target.checked)}
             data-testid="revision-history-toggle"
@@ -421,9 +423,8 @@ export function RevisionToggleBar(props: { toggles: RevisionToggles }) {
         </label>
       ) : null}
       {toggles.archivedCount > 0 ? (
-        <label className="flex items-center gap-1 text-xs">
-          <input
-            type="checkbox"
+        <label className="flex items-center gap-1.5 text-xs">
+          <Checkbox
             checked={toggles.archivedOpen}
             onChange={(event) => toggles.setArchivedOpen(event.target.checked)}
             data-testid="revision-archived-toggle"
@@ -936,9 +937,10 @@ function TranscriptReader(props: {
     >
       <AsrBanner contentId={page.content.id} revisions={props.readable} primaryId={props.primaryId} onApplySpeakers={props.onApplySpeakers} />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
-        <select
+        <NativeSelect
+          size="sm"
           aria-label={t("contentView.transcript.version")}
-          className="h-7 max-w-80 rounded border border-line bg-surface px-1 text-xs"
+          className="max-w-80"
           value={revision.id}
           onChange={(event) => props.onPick(event.target.value)}
           title={revisionInfo(revision, props.readable, t)}
@@ -949,7 +951,7 @@ function TranscriptReader(props: {
               {revisionLabel(item, props.primaryId, t, undefined, props.readable)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         <SpeakerReviewControl
           contentId={page.content.id}
           revisionId={revision.id}
@@ -962,18 +964,18 @@ function TranscriptReader(props: {
         />
         <RevisionActions contentId={page.content.id} revision={revision} revisions={props.readable} primaryId={props.primaryId} onDeleted={props.onDeleted} />
         <RevisionToggleBar toggles={props.toggles} />
-        <label className="flex items-center gap-1 text-xs">
-          <input type="checkbox" checked={showChanges} disabled={revision.parentRevisionId === undefined} onChange={(event) => setShowChanges(event.target.checked)} />
+        <label className="flex items-center gap-1.5 text-xs">
+          <Checkbox checked={showChanges} disabled={revision.parentRevisionId === undefined} onChange={(event) => setShowChanges(event.target.checked)} />
           {t("contentView.transcript.showChanges")}
         </label>
         {canSetPrimary ? (
-          <Button size="sm" variant="ghost" disabled={setPrimary.isPending} onClick={() => setPrimary.mutate()} data-testid="transcript-set-primary">
+          <Button size="sm" variant="ghost" loading={setPrimary.isPending} onClick={() => setPrimary.mutate()} data-testid="transcript-set-primary">
             <CheckCircle2 size={14} />
             {t("contentView.transcript.setPrimary")}
           </Button>
         ) : null}
         {configured ? (
-          <Button size="sm" disabled={proofread.isPending} onClick={() => proofread.mutate()} data-testid="proofread">
+          <Button size="sm" loading={proofread.isPending} onClick={() => proofread.mutate()} data-testid="proofread">
             <Sparkles size={14} />
             {proofreadLabel}
           </Button>
@@ -1048,19 +1050,17 @@ function TranscriptReader(props: {
       </div>
       {filtered === undefined ? null : <SpeakerFilterBar speakers={speakerList ?? []} selected={filter.selected} turns={filtered.turns} onClear={filter.clear} />}
       {notes.isError ? (
-        <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-notes-failed">
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="transcript-notes-failed">
           {t("notes.transcript.loadFailed")}
           {" · "}
-          <button type="button" className="text-accent hover:underline" onClick={() => void notes.refetch()}>
-            {t("common.action.retry")}
-          </button>
+          <TextAction onClick={() => void notes.refetch()}>{t("common.action.retry")}</TextAction>
         </p>
       ) : null}
       {unmapped > 0 ? (
-        <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-notes-unmapped">
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="transcript-notes-unmapped">
           {t("notes.transcript.unmapped", { count: unmapped })}
           {" · "}
-          <Link to={notesLink} className="text-accent hover:underline">
+          <Link to={notesLink} className={TEXT_ACTION_CLASS}>
             {t("notes.transcript.viewUnmapped")}
           </Link>
         </p>
@@ -1071,24 +1071,30 @@ function TranscriptReader(props: {
           <span className="rounded bg-emerald-500/15 px-1">{t("contentView.transcript.changeUser")}</span>
         </div>
       ) : null}
-      {props.missing ? <p className="px-4 pt-2 text-xs text-muted" data-testid="revision-missing">{t("contentView.revisions.missing")}</p> : null}
-      {located.unmatched ? <p className="px-4 pt-2 text-xs text-muted" data-testid="locate-unmatched">{t("contentView.locate.unmatched")}</p> : null}
+      {props.missing ? (
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="revision-missing">
+          {t("contentView.revisions.missing")}
+        </p>
+      ) : null}
+      {located.unmatched ? (
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="locate-unmatched">
+          {t("contentView.locate.unmatched")}
+        </p>
+      ) : null}
       {figureRows.missing ? (
-        <p className="px-4 pt-2 text-xs text-muted" role="status" data-testid="figure-locate-missing">
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} role="status" data-testid="figure-locate-missing">
           {t("figures.locate.missing")}
         </p>
       ) : null}
       {figureRows.loadFailed ? (
-        <p className="px-4 pt-2 text-xs text-muted" data-testid="figures-load-failed">
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="figures-load-failed">
           {t("figures.loadFailed")}
           {" · "}
-          <button type="button" className="text-accent hover:underline" onClick={figureRows.retry}>
-            {t("common.action.retry")}
-          </button>
+          <TextAction onClick={figureRows.retry}>{t("common.action.retry")}</TextAction>
         </p>
       ) : null}
       {currentChapters?.stale === true ? (
-        <p className="px-4 pt-2 text-xs text-muted" data-testid="transcript-chapters-stale">
+        <p className={`px-4 pt-2 ${NOTE_TEXT_CLASS}`} data-testid="transcript-chapters-stale">
           {t("contentView.chapters.stale")}
         </p>
       ) : null}

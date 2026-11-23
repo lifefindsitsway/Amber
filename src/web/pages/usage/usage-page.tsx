@@ -107,7 +107,7 @@ export function UsagePage() {
                     <UsageLoadError error={summary.error} onRetry={() => void summary.refetch()} />
                   ) : data === undefined ? null : (
                     <>
-                      <div className={`transition-opacity ${stale ? "opacity-60" : ""}`}>
+                      <div className={`transition-opacity duration-150 motion-reduce:transition-none ${stale ? "opacity-60" : ""}`}>
                         <UsageSummaryPanel
                           response={data}
                           currency={currency}

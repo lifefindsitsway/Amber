@@ -5,6 +5,8 @@ import { SPEAKER_REVIEW_SAMPLES_PER_SPEAKER } from "../../../../../shared/defaul
 import type { SpeakerDto } from "../../../../../shared/dto/speaker.ts";
 import { formatDuration } from "../../../../format.ts";
 import { usePlayRange } from "../../../../player/player-controller.tsx";
+import { FOCUS_RING } from "../../../../ui/button.tsx";
+import { NOTE_TEXT_CLASS } from "../../../../ui/notice.tsx";
 import { SpeakerAvatar } from "../speaker-avatar.tsx";
 import { speakerLabel } from "../speaker-data.ts";
 import { reviewSamples, type SampleSentence } from "./review-samples.ts";
@@ -28,14 +30,14 @@ export function ReviewSampleList(props: { contentId: string; sentences: readonly
         <h4 id="speaker-review-samples-title" className="text-xs font-medium">
           {t("speakerReview.samples.title")}
         </h4>
-        <p className="text-xs text-muted">{t("speakerReview.samples.hint", { count: SPEAKER_REVIEW_SAMPLES_PER_SPEAKER })}</p>
+        <p className={NOTE_TEXT_CLASS}>{t("speakerReview.samples.hint", { count: SPEAKER_REVIEW_SAMPLES_PER_SPEAKER })}</p>
       </div>
       {mode === "unsupported" ? (
-        <p className="text-xs text-muted" data-testid="speaker-review-samples-no-player">
+        <p className={NOTE_TEXT_CLASS} data-testid="speaker-review-samples-no-player">
           {t("speakerReview.samples.noPlayer")}
         </p>
       ) : mode === "jump" ? (
-        <p className="text-xs text-muted" data-testid="speaker-review-samples-jump-only">
+        <p className={NOTE_TEXT_CLASS} data-testid="speaker-review-samples-jump-only">
           {t("speakerReview.samples.jumpOnly")}
         </p>
       ) : null}
@@ -67,7 +69,7 @@ export function ReviewSampleList(props: { contentId: string; sentences: readonly
                     {mode === "unsupported" ? null : (
                       <button
                         type="button"
-                        className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+                        className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-link hover:bg-sunken ${FOCUS_RING}`}
                         aria-label={t(mode === "play" ? "speakerReview.samples.playClip" : "speakerReview.samples.jumpClip", { name, time })}
                         onClick={() => playRange(clip.startMs, clip.endMs)}
                         data-testid="speaker-review-sample-play"

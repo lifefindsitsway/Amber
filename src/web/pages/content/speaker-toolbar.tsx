@@ -8,9 +8,9 @@ import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import { speakerShares } from "../../../shared/speaker-turns.ts";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { MENU_CONTENT_CLASS } from "../../ui/context-menu.tsx";
-import { Spinner } from "../../ui/feedback.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { contentKeys } from "./content-data.ts";
 import { filterCounts, sameFilter, type DraftSegment, type FilterCounts, type SpeakerFilter } from "./speaker-draft.ts";
 import { NewSpeakerForm } from "./speakers/new-speaker.tsx";
@@ -135,14 +135,14 @@ export function FilterBar(props: {
   const { t, i18n } = useTranslation();
   if (props.filter.kind === "all") return null;
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken/50 px-4 py-1.5 text-xs" role="status" data-testid="speaker-filter-bar">
+    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken/50 px-4 py-1.5 text-note" role="status" data-testid="speaker-filter-bar">
       <ListFilter size={13} className="shrink-0 text-muted" aria-hidden="true" />
       <span>
         {props.shown === 0
           ? t("speakerEditor.filter.none", { filter: props.label })
           : t("speakerEditor.filter.showing", { filter: props.label, shown: formatCount(props.shown, i18n.language), total: formatCount(props.total, i18n.language) })}
       </span>
-      <button type="button" className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={props.onClear} data-testid="speaker-filter-clear">
+      <button type="button" className={`ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-link hover:bg-sunken ${FOCUS_RING}`} onClick={props.onClear} data-testid="speaker-filter-clear">
         <X size={12} aria-hidden="true" />
         {t("speakerEditor.filter.clear")}
       </button>
@@ -163,7 +163,13 @@ function SpeakerRow(props: { contentId: string; speaker: SpeakerDto; detail?: Re
           </p>
           {props.detail === undefined || props.detail === "" ? null : <div className="text-xs text-muted tabular-nums">{props.detail}</div>}
         </div>
-        <SpeakerEditPopover contentId={props.contentId} speaker={props.speaker} triggerLabel={t("speakerEditor.panel.edit", { name: label })} triggerClassName={ICON_BUTTON_CLASS} testId="speaker-panel-edit">
+        <SpeakerEditPopover
+          contentId={props.contentId}
+          speaker={props.speaker}
+          triggerLabel={t("speakerEditor.panel.edit", { name: label })}
+          triggerClassName={ICON_BUTTON_CLASS}
+          testId="speaker-panel-edit"
+        >
           <Pencil size={13} aria-hidden="true" />
         </SpeakerEditPopover>
         {props.children}
@@ -174,8 +180,7 @@ function SpeakerRow(props: { contentId: string; speaker: SpeakerDto; detail?: Re
 }
 
 /** The small icon buttons of a panel row; the same look as the row's edit trigger. */
-const ICON_BUTTON_CLASS =
-  "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50";
+const ICON_BUTTON_CLASS = `inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING}`;
 
 /** The element under `root` whose `data-*` attribute (camel-cased `key`) is exactly `value`, without building a selector from it. */
 function byData(root: HTMLElement | null, key: string, value: string): HTMLElement | undefined {
@@ -204,18 +209,19 @@ function DeleteConfirm(props: { name: string; warnUndo: boolean; pending: boolea
       <p id={titleId} className="text-sm font-medium [overflow-wrap:anywhere]">
         {t("speakerEditor.panel.deleteConfirm", { name: props.name })}
       </p>
+      {/* To be read before confirming: the undo history loses the steps involving this speaker. */}
       {props.warnUndo ? (
-        <p className="text-xs text-danger" data-testid="speaker-panel-delete-undo">
+        <Callout tone="warn" density="compact" testId="speaker-panel-delete-undo">
           {t("speakerEditor.panel.deleteUndo")}
-        </p>
+        </Callout>
       ) : null}
       {props.error === null ? null : <ErrorView error={appErrorOf(props.error)} />}
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" disabled={props.pending} onClick={props.onCancel} data-delete-cancel="" data-testid="speaker-panel-delete-cancel">
           {t("speakerEditor.panel.cancel")}
         </Button>
-        <Button size="sm" variant="danger" disabled={props.pending} onClick={props.onConfirm} data-testid="speaker-panel-delete-confirm-button">
-          {props.pending ? <Spinner size={12} /> : <Trash2 size={13} aria-hidden="true" />}
+        <Button size="sm" variant="danger-solid" loading={props.pending} onClick={props.onConfirm} data-testid="speaker-panel-delete-confirm-button">
+          {props.pending ? null : <Trash2 size={13} aria-hidden="true" />}
           {props.pending ? t("speakerEditor.panel.deleting") : t("speakerEditor.panel.delete")}
         </Button>
       </div>
@@ -250,6 +256,8 @@ function UnusedSpeakerRow(props: {
     >
       {/* Referenced by some version or draft: no way to delete, and the line under the name says why. */}
       {props.speaker.referenced ? null : (
+        // The native title as the tooltip: focus comes back here when Esc cancels the question, and a
+        // tooltip layer opened by that focus would take the next Esc, which must close the panel.
         <button
           type="button"
           className={ICON_BUTTON_CLASS}
@@ -402,7 +410,7 @@ export function SpeakerPanel(props: {
   const unusedDetail = (speaker: SpeakerDto): ReactNode => {
     if (refused === speaker.id) {
       return (
-        <span className="text-danger" role="alert" data-testid="speaker-panel-in-use">
+        <span className="text-note text-danger" role="alert" data-testid="speaker-panel-in-use">
           {t("speakerEditor.panel.inUse")}
         </span>
       );
@@ -495,7 +503,7 @@ export function SpeakerPanel(props: {
             </h3>
             {props.current.length === 0 ? (
               <div className="flex flex-col items-start gap-2 px-3 py-1.5">
-                <p className="text-xs text-muted">{t("speakerEditor.panel.noneInDraft")}</p>
+                <p className={NOTE_TEXT_CLASS}>{t("speakerEditor.panel.noneInDraft")}</p>
                 {props.columnShown ? null : (
                   <Button
                     size="sm"
@@ -551,7 +559,7 @@ export function SpeakerPanel(props: {
                   type="button"
                   aria-expanded={!folded}
                   aria-controls="speaker-panel-unused-list"
-                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-link outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
                   onClick={() => setShowAllUnused(folded)}
                   data-testid="speaker-panel-more"
                 >

@@ -77,7 +77,8 @@ test("server mode: pick in the library, decide per card, confirm, download", asy
   await expect(confirm.getByTestId("pack-export-size")).toHaveText("合计约 384.0 MB（按登记大小估算，实际以导出时为准）");
   await expect(confirm.getByTestId("pack-export-notice")).toContainText("内容包未加密，包含你的文字与媒体。");
   await expect(confirm.getByTestId("pack-export-checks")).toContainText("所选资料之间没有缺失的依赖。");
-  await confirm.getByTestId("pack-export-start").click();
+  // The start button sits in the dialog footer, outside the scrolling confirmation body.
+  await dialog.getByTestId("pack-export-start").click();
 
   const job = dialog.getByTestId("pack-export-job");
   await expect(job).toHaveAttribute("data-status", "succeeded");

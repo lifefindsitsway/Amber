@@ -32,7 +32,7 @@ export function UsageBasisButton() {
           data-testid="usage-basis"
         >
           <h2 className="mb-2 text-sm font-medium">{t("usage.basis.title")}</h2>
-          <ul className="flex flex-col gap-2 text-xs text-muted">
+          <ul className="flex flex-col gap-2 text-note text-muted">
             {BASIS_ITEMS.map((item) => (
               <li key={item}>{t(`usage.basis.${item}`)}</li>
             ))}

@@ -14,6 +14,7 @@ import { diarizationOffer } from "../../../../components/asr-diarization.ts";
 import { AsrModelSelect } from "../../../../components/asr-model-select.tsx";
 import { ErrorView } from "../../../../components/error-view.tsx";
 import { Button } from "../../../../ui/button.tsx";
+import { Callout, FieldHint, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../../../ui/notice.tsx";
 import { contentKeys } from "../../content-data.ts";
 
 /** The error code of a comparison the Content has no room of speakers for. */
@@ -63,12 +64,16 @@ export function ComparisonTranscribe(props: { contentId: string; durationMs?: nu
   if (profiles.isPending) return null;
   if (usable.length === 0) {
     return (
-      <p className="flex flex-wrap items-center gap-2 text-xs text-muted" data-testid="comparison-transcribe-none">
+      <InlineNote
+        testId="comparison-transcribe-none"
+        action={
+          <Link to="/settings/transcription" className={TEXT_ACTION_CLASS}>
+            {t("speakerCompare.trigger.configure")}
+          </Link>
+        }
+      >
         {t("speakerCompare.trigger.noModel")}
-        <Link to="/settings/transcription" className="text-accent hover:underline">
-          {t("speakerCompare.trigger.configure")}
-        </Link>
-      </p>
+      </InlineNote>
     );
   }
   return (
@@ -91,7 +96,8 @@ export function ComparisonTranscribe(props: { contentId: string; durationMs?: nu
         <Button
           size="sm"
           variant="primary"
-          disabled={model === undefined || offer.status !== "available" || submit.isPending || submit.isSuccess}
+          loading={submit.isPending}
+          disabled={model === undefined || offer.status !== "available" || submit.isSuccess}
           aria-describedby={noteId}
           onClick={() => {
             if (model !== undefined) submit.mutate(model);
@@ -102,18 +108,16 @@ export function ComparisonTranscribe(props: { contentId: string; durationMs?: nu
           {t("speakerCompare.trigger.button")}
         </Button>
       </div>
-      <p id={noteId} className="text-xs text-muted">
-        {offer.status === "over_recommended" ? t("speakerTools.note.overRecommended") : t("speakerCompare.trigger.paid")}
-      </p>
+      <FieldHint id={noteId}>{offer.status === "over_recommended" ? t("speakerTools.note.overRecommended") : t("speakerCompare.trigger.paid")}</FieldHint>
       {submit.isSuccess ? (
-        <p role="status" className="text-xs text-muted" data-testid="comparison-transcribe-submitted">
+        <p role="status" className={NOTE_TEXT_CLASS} data-testid="comparison-transcribe-submitted">
           {t("speakerCompare.trigger.submitted")}
         </p>
       ) : null}
       {room !== undefined ? (
-        <p role="alert" className="text-xs text-danger" data-testid="comparison-capacity">
+        <Callout tone="error" density="compact" announce="alert" testId="comparison-capacity">
           {t("speakerCompare.trigger.capacity", { room: Number(room["room"]), required: Number(room["required"]) })}
-        </p>
+        </Callout>
       ) : failure !== undefined ? (
         <ErrorView error={failure} />
       ) : null}

@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, GripVertical } from "lucide-react";
-import { useRef, useState } from "react";
+import { Boxes, ChevronDown, GripVertical } from "lucide-react";
+import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   OTHER_MODEL_KINDS,
@@ -13,11 +13,15 @@ import {
 import { useApi } from "../../api/context.tsx";
 import { queryKeys, useOtherModelMutations, useOtherModels, useSetModelPricing } from "../../api/queries.ts";
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { FieldError, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TextArea, TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
-import { ConfirmButton, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { ConfirmButton, describedBy, Field, fieldErrorId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 /**
  * `/settings/other-models`: a register of models Amber does not call (speech synthesis,
@@ -34,16 +38,21 @@ export function OtherModelsSection() {
   const items = profiles.data?.items ?? [];
   return (
     <div>
-      <p className="mb-4 text-sm text-muted" data-testid="other-models-intro">
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`} data-testid="other-models-intro">
         {t("settings.otherModels.intro")}
       </p>
       {items.length === 0 ? (
         <SettingsBlock>
-          <EmptyState title={t("settings.otherModels.empty")} hint={t("settings.otherModels.emptyHint")}>
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              {t("settings.otherModels.addProfile")}
-            </Button>
-          </EmptyState>
+          <EmptyState
+            icon={<Boxes size={28} />}
+            title={t("settings.otherModels.empty")}
+            hint={t("settings.otherModels.emptyHint")}
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                {t("settings.otherModels.addProfile")}
+              </Button>
+            }
+          />
         </SettingsBlock>
       ) : (
         <>
@@ -139,24 +148,27 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Ot
     <SettingsBlock
       title={
         <span className="flex items-center gap-1">
-          <button
-            type="button"
-            className="cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-            aria-label={t("settings.otherModels.dragProfile", { name: profile.name })}
-            title={t("settings.otherModels.dragProfile", { name: profile.name })}
-            {...dragHandle}
-          >
-            <GripVertical size={14} />
-          </button>
-          <button
-            type="button"
-            className="rounded p-1 text-muted hover:bg-sunken"
-            aria-expanded={!collapsed}
-            aria-label={t(collapsed ? "settings.otherModels.expandProfile" : "settings.otherModels.collapseProfile", { name: profile.name })}
-            onClick={onToggle}
-          >
-            <ChevronDown size={14} className={collapsed ? "-rotate-90" : ""} />
-          </button>
+          <Tooltip content={t("settings.otherModels.dragProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-label={t("settings.otherModels.dragProfile", { name: profile.name })}
+              {...dragHandle}
+            >
+              <GripVertical size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip content={t(collapsed ? "settings.otherModels.expandProfile" : "settings.otherModels.collapseProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-expanded={!collapsed}
+              aria-label={t(collapsed ? "settings.otherModels.expandProfile" : "settings.otherModels.collapseProfile", { name: profile.name })}
+              onClick={onToggle}
+            >
+              <ChevronDown size={14} className={`transition-transform duration-150 motion-reduce:transition-none ${collapsed ? "-rotate-90" : ""}`} aria-hidden="true" />
+            </button>
+          </Tooltip>
           <span>{profile.name}</span>
           {collapsed ? <span className="text-xs font-normal text-muted">{t("settings.otherModels.modelCount", { count: profile.models.length })}</span> : null}
         </span>
@@ -169,6 +181,8 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Ot
           <ConfirmButton
             label={t("common.action.delete")}
             variant="danger"
+            confirmLabel={t("settings.otherModels.deleteProfileConfirm")}
+            pending={mutations.remove.isPending && mutations.remove.variables === profile.id}
             message={t("settings.otherModels.deleteConfirm", { name: profile.name })}
             onConfirm={() => mutations.remove.mutate(profile.id)}
           />
@@ -183,7 +197,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Ot
             </p>
           )}
           <h3 className="mb-1 text-xs font-medium text-muted">{t("settings.otherModels.modelsTitle")}</h3>
-          {profile.models.length === 0 ? <p className="text-sm text-muted">{t("settings.otherModels.noModels")}</p> : null}
+          {profile.models.length === 0 ? <p className={NOTE_TEXT_CLASS}>{t("settings.otherModels.noModels")}</p> : null}
           <ul className="divide-y divide-line" data-testid="other-model-models">
             {profile.models.map((model) => (
               <li key={model.modelId} className="py-2" data-testid="other-model" data-model={model.modelId}>
@@ -256,6 +270,8 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
   const updateModel = (key: string, change: Partial<ModelDraft>): void =>
     setModels((current) => current.map((model) => (model.key === key ? { ...model, ...change } : model)));
   const shown = rows.order.flatMap((key) => models.find((model) => model.key === key) ?? []);
+  const formId = useId();
+  const nameMissing = touched && name.trim() === "";
 
   return (
     <Modal
@@ -263,29 +279,49 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
       onOpenChange={(open) => (open ? undefined : onClose())}
       title={profile === undefined ? t("settings.otherModels.addProfile") : t("settings.otherModels.editProfile")}
       wide
+      footer={
+        <>
+          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={formId} variant="primary" loading={save.isPending}>
+            {t("common.action.save")}
+          </Button>
+        </>
+      }
     >
       <form
+        id={formId}
         onSubmit={(event) => {
           event.preventDefault();
           setTouched(true);
           if (valid) save.mutate();
         }}
       >
-        <Field label={t("settings.otherModels.name")} htmlFor="other-model-name">
-          <input id="other-model-name" className={INPUT_CLASS} value={name} onChange={(event) => setName(event.target.value)} />
-          {touched && name.trim() === "" ? <p className="text-xs text-danger">{t("settings.otherModels.required")}</p> : null}
+        <Field label={t("settings.otherModels.name")} htmlFor="other-model-name" error={nameMissing ? t("settings.otherModels.required") : undefined}>
+          <TextInput
+            id="other-model-name"
+            className="w-full"
+            value={name}
+            invalid={nameMissing}
+            aria-describedby={nameMissing ? fieldErrorId("other-model-name") : undefined}
+            onChange={(event) => setName(event.target.value)}
+          />
         </Field>
-        <Field label={t("settings.otherModels.note")} htmlFor="other-model-note">
-          <textarea
+        <Field
+          label={t("settings.otherModels.note")}
+          htmlFor="other-model-note"
+          error={noteTooLong ? t("settings.otherModels.noteTooLong", { max: OTHER_MODEL_NOTE_MAX_CHARS }) : undefined}
+        >
+          <TextArea
             id="other-model-note"
             rows={3}
-            className="w-full rounded-md border border-line bg-surface px-2 py-1 text-sm outline-none focus:border-accent"
+            className="w-full"
             value={note}
+            invalid={noteTooLong}
+            aria-describedby={noteTooLong ? fieldErrorId("other-model-note") : undefined}
             onChange={(event) => setNote(event.target.value)}
           />
-          {noteTooLong ? <p className="text-xs text-danger">{t("settings.otherModels.noteTooLong", { max: OTHER_MODEL_NOTE_MAX_CHARS })}</p> : null}
         </Field>
-        <h3 className="mt-4 mb-2 text-xs font-medium text-muted">{t("settings.otherModels.modelsTitle")}</h3>
+        <h3 className="mb-2 text-xs font-medium text-muted">{t("settings.otherModels.modelsTitle")}</h3>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted">
@@ -298,6 +334,9 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
           <tbody>
             {shown.map((model) => {
               const id = model.modelId.trim();
+              const idMissing = touched && id === "";
+              const duplicate = duplicated.has(id);
+              const errorId = `${formId}-${model.key}-error`;
               return (
                 <tr
                   key={model.key}
@@ -306,30 +345,40 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
                   data-testid="other-model-draft"
                 >
                   <td className="pr-1 pb-2">
-                    <button
-                      type="button"
-                      className="mt-1.5 cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-                      aria-label={`${t("settings.otherModels.dragModel")} · ${model.modelId}`}
-                      title={t("settings.otherModels.dragModel")}
-                      {...rows.handleProps(model.key)}
-                    >
-                      <GripVertical size={14} />
-                    </button>
+                    <Tooltip content={t("settings.otherModels.dragModel")}>
+                      <button
+                        type="button"
+                        className={`mt-1.5 cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+                        aria-label={`${t("settings.otherModels.dragModel")} · ${model.modelId}`}
+                        {...rows.handleProps(model.key)}
+                      >
+                        <GripVertical size={14} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
                   </td>
                   <td className="pr-2 pb-2">
-                    <input
+                    <TextInput
                       aria-label={t("settings.otherModels.modelId")}
-                      className={`${INPUT_CLASS} font-mono`}
+                      className="w-full font-mono"
                       value={model.modelId}
+                      invalid={idMissing || duplicate}
+                      aria-describedby={describedBy((idMissing || duplicate) && errorId)}
                       onChange={(event) => updateModel(model.key, { modelId: event.target.value })}
                     />
-                    {touched && id === "" ? <p className="text-xs text-danger">{t("settings.otherModels.required")}</p> : null}
-                    {duplicated.has(id) ? <p className="text-xs text-danger">{t("settings.otherModels.duplicateModel")}</p> : null}
+                    {idMissing ? (
+                      <FieldError id={errorId} className="mt-1.5">
+                        {t("settings.otherModels.required")}
+                      </FieldError>
+                    ) : duplicate ? (
+                      <FieldError id={errorId} className="mt-1.5">
+                        {t("settings.otherModels.duplicateModel")}
+                      </FieldError>
+                    ) : null}
                   </td>
                   <td className="pr-2 pb-2">
-                    <select
+                    <NativeSelect
                       aria-label={t("settings.otherModels.kind")}
-                      className={INPUT_CLASS}
+                      className="w-full"
                       value={model.kind}
                       onChange={(event) => updateModel(model.key, { kind: event.target.value as OtherModelKind })}
                     >
@@ -338,7 +387,7 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
                           {t(`settings.otherModels.kinds.${kind}`)}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </td>
                   <td className="pb-2">
                     <Button size="sm" variant="ghost" onClick={() => setModels((current) => current.filter((item) => item.key !== model.key))}>
@@ -354,12 +403,6 @@ function ProfileEditor({ profile, onClose }: { profile?: OtherModelProfileDto; o
           {t("settings.otherModels.addModel")}
         </Button>
         <RequestError error={mutations.create.error ?? mutations.patch.error} />
-        <div className="mt-4 flex justify-end gap-2">
-          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={save.isPending}>
-            {t("common.action.save")}
-          </Button>
-        </div>
       </form>
     </Modal>
   );

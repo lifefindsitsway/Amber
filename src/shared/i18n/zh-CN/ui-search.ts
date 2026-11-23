@@ -15,7 +15,6 @@ export const search = {
     figure: "图 {{n}}",
     figureCapture: "截图 {{time}}",
   },
-  searching: "搜索中…",
   failed: "搜索失败，请稍后重试",
   empty: "没有找到相关内容",
   emptyHint: "试试更短的关键词，或换个说法",

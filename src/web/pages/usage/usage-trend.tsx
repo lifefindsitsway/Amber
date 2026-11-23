@@ -94,7 +94,7 @@ export function UsageTrend(props: {
             height={narrow ? USAGE_CHART_HEIGHT_NARROW_PX : USAGE_CHART_HEIGHT_PX}
             ariaLabel={t("usage.chart.label", { metric: t(`usage.metric.${metric}`) })}
           />
-          {empty ? <p className="text-xs text-muted">{t("usage.chart.noData")}</p> : null}
+          {empty ? <p className="text-note text-muted">{t("usage.chart.noData")}</p> : null}
         </>
       )}
     </div>

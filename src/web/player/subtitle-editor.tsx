@@ -13,6 +13,7 @@ import {
 } from "../../shared/defaults.ts";
 import { SUBTITLE_BACKGROUND_SCOPES, SUBTITLE_BILINGUAL_ORDERS } from "../../shared/enums.ts";
 import { BASIS_POINTS, defaultSubtitlePlacement, SUBTITLE_SPEAKER_MODES, type SubtitleAppearance, type SubtitlePlacement, type SubtitleSpeakerMode } from "../../shared/subtitle-style.ts";
+import { Checkbox, Radio } from "../ui/checkbox.tsx";
 import type { SubtitleTrackModel } from "./subtitle-overlay.tsx";
 
 /** Swatches beside the colour picker: the default colours first, then a few common subtitle colours. */
@@ -30,6 +31,10 @@ const POSITION_PRESETS: ReadonlyArray<{ id: "bottom" | "top" | "bottomLeft" | "b
 
 const HEX = /^#[0-9A-Fa-f]{6}$/u;
 const FIELD_CLASS = "flex items-center gap-2 text-xs";
+/** A check box or radio with its label, kept at the small text of the rest of the panel. */
+const CHOICE_LABEL_CLASS = "text-xs!";
+/** Sentences that explain, at the note size, in the panel's own dimmed white. */
+const NOTE_CLASS = "max-w-[70ch] text-note text-white/60";
 const BUTTON_CLASS = "rounded border border-white/20 px-2 py-1 text-xs hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50";
 
 function Section(props: { title: string; children: ReactNode; testId?: string }) {
@@ -113,10 +118,9 @@ function ColorField(props: { label: string; value: string; onChange: (value: str
 
 function Toggle(props: { label: string; checked: boolean; onChange: (checked: boolean) => void; testId: string }) {
   return (
-    <label className={FIELD_CLASS}>
-      <input type="checkbox" className="accent-accent" checked={props.checked} onChange={(event) => props.onChange(event.currentTarget.checked)} data-testid={props.testId} />
+    <Checkbox labelClassName={CHOICE_LABEL_CLASS} checked={props.checked} onChange={(event) => props.onChange(event.currentTarget.checked)} data-testid={props.testId}>
       {props.label}
-    </label>
+    </Checkbox>
   );
 }
 
@@ -229,9 +233,9 @@ export function SubtitleEditor(props: { model: SubtitleTrackModel; side: "left" 
         </button>
       </div>
       <div className="flex min-h-0 flex-col gap-2 overflow-y-auto px-3 pb-3">
-        <p className="text-xs text-white/60">{t("contentView.player.subtitles.editor.dragHint")}</p>
+        <p className={NOTE_CLASS}>{t("contentView.player.subtitles.editor.dragHint")}</p>
         {model.fontFallback ? (
-          <p className="text-xs text-white/60" data-testid="subtitle-font-fallback">
+          <p className={NOTE_CLASS} data-testid="subtitle-font-fallback">
             {t("contentView.player.subtitles.fontFallback")}
           </p>
         ) : null}
@@ -327,17 +331,16 @@ export function SubtitleEditor(props: { model: SubtitleTrackModel; side: "left" 
               <span className="w-16 shrink-0 text-white/70">{t("contentView.player.subtitles.editor.backgroundScope")}</span>
               <div className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-1" role="radiogroup" aria-label={t("contentView.player.subtitles.editor.backgroundScope")}>
                 {SUBTITLE_BACKGROUND_SCOPES.map((scope) => (
-                  <label key={scope} className={FIELD_CLASS}>
-                    <input
-                      type="radio"
-                      className="accent-accent"
-                      name="subtitle-background-scope"
-                      checked={appearance.background.scope === scope}
-                      onChange={() => update((current) => ({ ...current, background: { ...current.background, scope } }))}
-                      data-testid={`subtitle-background-scope-${scope}`}
-                    />
+                  <Radio
+                    key={scope}
+                    labelClassName={CHOICE_LABEL_CLASS}
+                    name="subtitle-background-scope"
+                    checked={appearance.background.scope === scope}
+                    onChange={() => update((current) => ({ ...current, background: { ...current.background, scope } }))}
+                    data-testid={`subtitle-background-scope-${scope}`}
+                  >
                     {t(`contentView.player.subtitles.editor.backgroundScopeValue.${scope}`)}
-                  </label>
+                  </Radio>
                 ))}
               </div>
             </div>
@@ -347,17 +350,16 @@ export function SubtitleEditor(props: { model: SubtitleTrackModel; side: "left" 
           <Section title={t("contentView.player.subtitles.editor.bilingualOrder")}>
             <div className="flex gap-3" role="radiogroup" aria-label={t("contentView.player.subtitles.editor.bilingualOrder")}>
               {SUBTITLE_BILINGUAL_ORDERS.map((order) => (
-                <label key={order} className={FIELD_CLASS}>
-                  <input
-                    type="radio"
-                    className="accent-accent"
-                    name="subtitle-bilingual-order"
-                    checked={appearance.bilingualOrder === order}
-                    onChange={() => update((current) => ({ ...current, bilingualOrder: order }))}
-                    data-testid={`subtitle-order-${order}`}
-                  />
+                <Radio
+                  key={order}
+                  labelClassName={CHOICE_LABEL_CLASS}
+                  name="subtitle-bilingual-order"
+                  checked={appearance.bilingualOrder === order}
+                  onChange={() => update((current) => ({ ...current, bilingualOrder: order }))}
+                  data-testid={`subtitle-order-${order}`}
+                >
                   {t(`contentView.player.subtitles.editor.orderValue.${order}`)}
-                </label>
+                </Radio>
               ))}
             </div>
           </Section>
@@ -386,20 +388,19 @@ export function SubtitleEditor(props: { model: SubtitleTrackModel; side: "left" 
         <Section title={t("subtitleSpeaker.editor.title")} testId="subtitle-speaker-section">
           <div className="flex flex-wrap gap-x-3 gap-y-1" role="radiogroup" aria-label={t("subtitleSpeaker.editor.title")} aria-describedby="subtitle-speaker-hint">
             {([undefined, ...SUBTITLE_SPEAKER_MODES] as const).map((mode) => (
-              <label key={mode ?? "off"} className={FIELD_CLASS}>
-                <input
-                  type="radio"
-                  className="accent-accent"
-                  name="subtitle-speaker"
-                  checked={appearance.speaker === mode}
-                  onChange={() => update((current) => withSpeakerMode(current, mode))}
-                  data-testid={`subtitle-speaker-${mode ?? "off"}`}
-                />
+              <Radio
+                key={mode ?? "off"}
+                labelClassName={CHOICE_LABEL_CLASS}
+                name="subtitle-speaker"
+                checked={appearance.speaker === mode}
+                onChange={() => update((current) => withSpeakerMode(current, mode))}
+                data-testid={`subtitle-speaker-${mode ?? "off"}`}
+              >
                 {t(`subtitleSpeaker.editor.value.${mode ?? "off"}`)}
-              </label>
+              </Radio>
             ))}
           </div>
-          <p id="subtitle-speaker-hint" className="text-xs text-white/60">
+          <p id="subtitle-speaker-hint" className={NOTE_CLASS}>
             {t("subtitleSpeaker.editor.hint")}
           </p>
         </Section>

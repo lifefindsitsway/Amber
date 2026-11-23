@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ChapterHeading } from "../../../../src/web/pages/content/reader-chapter.tsx";
 
@@ -49,7 +49,9 @@ describe("ChapterHeading", () => {
   ])("offers a play button outside the heading for %i ms", (ms, name) => {
     const { root, heading } = show({ ms });
     const button = within(root).getByRole("button", { name });
-    expect(button.getAttribute("title")).toBe(name);
+    // The tooltip says the same as the name; it opens on keyboard focus too.
+    act(() => button.focus());
+    expect(screen.getByRole("tooltip").textContent).toBe(name);
     expect(button.getAttribute("type")).toBe("button");
     expect(button.getAttribute("data-testid")).toBe("chapter-play");
     expect(heading.contains(button)).toBe(false);
@@ -68,7 +70,7 @@ describe("ChapterHeading", () => {
     const { root } = show();
     const button = within(root).getByTestId("chapter-play");
     expect(root.className).toContain("group");
-    for (const name of ["opacity-0", "group-hover:opacity-100", "focus-visible:opacity-100", "pointer-coarse:opacity-100", "focus-visible:ring-2", "size-6"]) {
+    for (const name of ["opacity-0", "group-hover:opacity-100", "focus-visible:opacity-100", "pointer-coarse:opacity-100", "focus-visible:outline-2", "size-6"]) {
       expect(button.className.split(" ")).toContain(name);
     }
     button.focus();

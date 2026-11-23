@@ -49,7 +49,7 @@ function expectTimeFirst(reader: HTMLElement, select: ReturnType<typeof vi.fn>, 
     expect(lead.tagName).toBe("BUTTON");
     expect(lead.getAttribute("type")).toBe("button");
     expect(lead.hasAttribute("data-reading-time")).toBe(true);
-    for (const name of ["font-mono", "text-xs", "leading-none", "text-accent", "hover:underline"]) expect(lead.className.split(" ")).toContain(name);
+    for (const name of ["font-mono", "text-xs", "leading-none", "text-link", "hover:underline"]) expect(lead.className.split(" ")).toContain(name);
     expect(lead.className).toContain("mr-2");
     // A 24px hit area from a positioned pseudo-element, leaving the line box alone.
     expect(lead.className).toContain("relative");

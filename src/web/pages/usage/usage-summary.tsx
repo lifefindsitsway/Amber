@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import { ChevronRight, Info } from "lucide-react";
+import { ChartColumn, ChevronRight, Info } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +7,9 @@ import { Link } from "react-router";
 import type { UsageResult, UsageSummaryResponse } from "../../../shared/dto/usage-analytics.ts";
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
 import { formatCompactCount, formatCount } from "../../format.ts";
+import { EmptyState, Skeleton } from "../../ui/feedback.tsx";
+import { TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { UsageCostDetail } from "./usage-cost-detail.tsx";
 import { useNarrowLayout } from "./usage-layout.tsx";
 import { audioText, costView, otherCurrency, RESULT_TONE } from "./usage-present.ts";
@@ -93,7 +96,7 @@ function costColumn(props: {
     caption = (
       <button
         type="button"
-        className="max-w-full truncate rounded text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+        className={`max-w-full truncate ${TEXT_ACTION_CLASS}`}
         data-testid="usage-switch-currency"
         title={t("usage.summary.switchCurrency", { currency: otherName })}
         onClick={() => props.onCurrency(other)}
@@ -110,17 +113,18 @@ function costColumn(props: {
     label: t("usage.summary.cost"),
     labelAction: (
       <Popover.Root open={props.detailOpen} onOpenChange={props.onDetailOpen}>
-        <Popover.Trigger asChild>
-          <button
-            type="button"
-            className="-mr-1 inline-flex h-5 items-center gap-1 rounded px-1 text-xs text-muted outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
-            aria-label={t("usage.summary.detail")}
-            title={t("usage.summary.detail")}
-            data-testid="usage-cost-detail-button"
-          >
-            <Info size={14} aria-hidden="true" />
-          </button>
-        </Popover.Trigger>
+        <Tooltip content={t("usage.summary.detail")}>
+          <Popover.Trigger asChild>
+            <button
+              type="button"
+              className="-mr-1 inline-flex h-5 items-center gap-1 rounded px-1 text-xs text-muted outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
+              aria-label={t("usage.summary.detail")}
+              data-testid="usage-cost-detail-button"
+            >
+              <Info size={14} aria-hidden="true" />
+            </button>
+          </Popover.Trigger>
+        </Tooltip>
         <Popover.Portal>
           <Popover.Content
             side="bottom"
@@ -312,24 +316,22 @@ function NarrowSummary(props: { columns: SummaryColumn[]; idPrefix: string }) {
   );
 }
 
-function Bone(props: { className: string }) {
-  return <div className={`animate-pulse rounded bg-sunken ${props.className}`} />;
-}
-
 /** The summary's own grid filled with placeholders, so the numbers arrive without moving anything. */
 export function SummarySkeleton() {
+  const { t } = useTranslation();
   const narrow = useNarrowLayout();
   const ids = ["cost", "calls", "usage"] as const;
   const columns: SummaryColumn[] = ids.map((id) => ({
     id,
-    label: <Bone className="h-4 w-12" />,
-    main: <Bone className="h-8 w-28" />,
-    bar: <Bone className="h-1 w-full" />,
-    caption: <Bone className="h-4 w-40 max-w-full" />,
-    extra: <Bone className="h-4 w-32 max-w-full" />,
+    label: <Skeleton width={48} height={16} />,
+    main: <Skeleton width={112} height={32} />,
+    bar: <Skeleton height={4} />,
+    caption: <Skeleton width={160} height={16} className="max-w-full" />,
+    extra: <Skeleton width={128} height={16} className="max-w-full" />,
   }));
   return (
     <div className="rounded-lg border border-line bg-panel" role="status" aria-busy="true" data-testid="usage-summary-skeleton">
+      <span className="sr-only">{t("common.state.loading")}</span>
       {narrow ? <NarrowSummary columns={columns} idPrefix="usage-summary-skeleton" /> : <WideSummary columns={columns} idPrefix="usage-summary-skeleton" />}
     </div>
   );
@@ -353,12 +355,17 @@ export function UsageSummaryPanel(props: {
 
   if (summary.requests === 0) {
     return (
-      <div className="flex min-h-12 items-center rounded-lg border border-line bg-panel px-5 text-sm text-muted" data-testid="usage-empty">
-        <span>{t("usage.empty.text")}</span>
-        <Link to="/settings/models" className="ml-2 inline-flex items-center text-accent hover:underline">
-          {t("usage.empty.configure")}
-          <ChevronRight size={14} aria-hidden="true" />
-        </Link>
+      <div className="rounded-lg border border-line bg-panel" data-testid="usage-empty">
+        <EmptyState
+          icon={<ChartColumn size={28} />}
+          title={t("usage.empty.text")}
+          action={
+            <Link to="/settings/models" className={`inline-flex items-center text-sm ${TEXT_ACTION_CLASS}`}>
+              {t("usage.empty.configure")}
+              <ChevronRight size={14} aria-hidden="true" />
+            </Link>
+          }
+        />
       </div>
     );
   }

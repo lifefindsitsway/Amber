@@ -8,7 +8,8 @@ import { normalizeSpeakerName } from "../../../../shared/speakers.ts";
 import { appErrorOf } from "../../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../../components/error-view.tsx";
 import { Button } from "../../../ui/button.tsx";
-import { Spinner } from "../../../ui/feedback.tsx";
+import { FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../../ui/notice.tsx";
+import { TextInput } from "../../../ui/text-field.tsx";
 import { loadPhoto, PHOTO_SOURCE_MAX_BYTES, PhotoError, type EncodedAvatar, type LoadedPhoto } from "./photo-crop.ts";
 import { PhotoCropper } from "./photo-cropper.tsx";
 import { SpeakerAvatar } from "./speaker-avatar.tsx";
@@ -52,6 +53,9 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
   const fileInput = useRef<HTMLInputElement>(null);
   const nameId = useId();
   const counterId = useId();
+  const problemId = useId();
+  const hintId = useId();
+  const photoProblemId = useId();
   const [draft, setDraft] = useState(speaker.name ?? "");
   const [colorIndex, setColorIndex] = useState(speaker.colorIndex);
   const [photo, setPhoto] = useState<PhotoChoice>({ kind: "keep" });
@@ -134,28 +138,36 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
           <label htmlFor={nameId} className="text-xs font-medium text-muted">
             {t("speakerIdentity.edit.name")}
           </label>
-          <input
+          <TextInput
             ref={nameInput}
             id={nameId}
-            type="text"
             value={draft}
             disabled={patch.isPending}
             placeholder={t("speakerIdentity.edit.namePlaceholder", { ordinal: speaker.ordinal })}
-            aria-invalid={tooLong}
-            aria-describedby={counterId}
+            invalid={tooLong}
+            aria-describedby={tooLong ? `${problemId} ${counterId} ${hintId}` : `${counterId} ${hintId}`}
             autoComplete="off"
             spellCheck={false}
-            className={`h-9 w-full rounded-md border bg-surface px-2.5 text-sm outline-none placeholder:text-muted/70 focus-visible:ring-2 focus-visible:ring-accent ${tooLong ? "border-danger" : "border-line"}`}
+            className="w-full"
             onChange={(event) => setDraft(event.target.value)}
             data-testid="speaker-name-input"
           />
-          <p id={counterId} className={`flex justify-between gap-2 text-xs tabular-nums ${tooLong ? "text-danger" : "text-muted"}`}>
-            <span role={tooLong ? "alert" : undefined}>{tooLong ? t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES }) : ""}</span>
-            <span data-testid="speaker-name-counter">{t("speakerIdentity.edit.nameCounter", { count, max: SPEAKER_NAME_MAX_GRAPHEMES })}</span>
-          </p>
-          <p className="text-xs text-muted" data-testid="speaker-name-confirm-hint">
+          {/* The counter is a figure, not a sentence: it stays small, and turns red with the problem. */}
+          <div className="flex items-start justify-between gap-2">
+            {tooLong ? (
+              <FieldError id={problemId} testId="speaker-name-problem">
+                {t("speakerIdentity.edit.nameTooLong", { max: SPEAKER_NAME_MAX_GRAPHEMES })}
+              </FieldError>
+            ) : (
+              <span />
+            )}
+            <span id={counterId} className={`shrink-0 text-xs leading-5 tabular-nums ${tooLong ? "text-danger" : "text-muted"}`} data-testid="speaker-name-counter">
+              {t("speakerIdentity.edit.nameCounter", { count, max: SPEAKER_NAME_MAX_GRAPHEMES })}
+            </span>
+          </div>
+          <FieldHint id={hintId} testId="speaker-name-confirm-hint">
             {t("speakerIdentity.edit.nameConfirmHint")}
-          </p>
+          </FieldHint>
         </div>
       </div>
 
@@ -186,7 +198,7 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
               </li>
             ))}
           </ul>
-          <p className="text-xs text-muted">{t("speakerIdentity.edit.suggestionsHint")}</p>
+          <p className={NOTE_TEXT_CLASS}>{t("speakerIdentity.edit.suggestionsHint")}</p>
         </section>
       )}
 
@@ -235,8 +247,15 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
                 onChange={(event) => void choose(event.target.files?.[0])}
                 data-testid="speaker-photo-input"
               />
-              <Button size="sm" disabled={patch.isPending || reading} onClick={() => fileInput.current?.click()} data-testid="speaker-photo-choose">
-                {reading ? <Spinner size={12} /> : <ImagePlus size={14} aria-hidden="true" />}
+              <Button
+                size="sm"
+                loading={reading}
+                disabled={patch.isPending}
+                aria-describedby={photoProblem === undefined ? undefined : photoProblemId}
+                onClick={() => fileInput.current?.click()}
+                data-testid="speaker-photo-choose"
+              >
+                {reading ? null : <ImagePlus size={14} aria-hidden="true" />}
                 {showsPhoto ? t("speakerIdentity.edit.photoChange") : t("speakerIdentity.edit.photoChoose")}
               </Button>
               {showsPhoto ? (
@@ -245,12 +264,12 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
                 </Button>
               ) : null}
             </div>
-            {photo.kind === "new" ? <p className="text-xs text-muted">{t("speakerIdentity.edit.photoPending")}</p> : <p className="text-xs text-muted">{t("speakerIdentity.edit.photoHint")}</p>}
             {photoProblem === undefined ? null : (
-              <p className="text-xs text-danger" role="alert">
+              <FieldError id={photoProblemId} testId="speaker-photo-problem">
                 {photoProblem === "too_large" ? t("speakerIdentity.edit.photoTooLarge", { mb: PHOTO_SOURCE_MAX_BYTES / BYTES_PER_MB }) : t("speakerIdentity.edit.photoUnreadable")}
-              </p>
+              </FieldError>
             )}
+            <p className={NOTE_TEXT_CLASS}>{photo.kind === "new" ? t("speakerIdentity.edit.photoPending") : t("speakerIdentity.edit.photoHint")}</p>
           </>
         ) : (
           <PhotoCropper
@@ -272,8 +291,7 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
         <Button onClick={props.onCancel} disabled={patch.isPending} data-testid="speaker-edit-cancel">
           {t("speakerIdentity.edit.cancel")}
         </Button>
-        <Button type="submit" variant="primary" disabled={!changed || tooLong || patch.isPending || cropping !== undefined} data-testid="speaker-edit-save">
-          {patch.isPending ? <Spinner size={14} /> : null}
+        <Button type="submit" variant="primary" loading={patch.isPending} disabled={!changed || tooLong || cropping !== undefined} data-testid="speaker-edit-save">
           {patch.isPending ? t("speakerIdentity.edit.saving") : t("speakerIdentity.edit.save")}
         </Button>
       </div>
@@ -284,14 +302,21 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
 /**
  * A trigger that opens the edit form in a popover, for places that edit a speaker without
  * going through the identity card (the editor's speaker panel). Esc closes it and focus goes
- * back to the trigger.
+ * back to the trigger. A `triggerLabel` names an icon-only trigger and is also its tooltip: the
+ * native title, because a tooltip layer opened by that returning focus would take the next Esc,
+ * which must close the panel the trigger sits in.
  */
 export function SpeakerEditPopover(props: { contentId: string; speaker: SpeakerDto; children: ReactNode; triggerClassName?: string; triggerLabel?: string; testId?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <Popover.Root open={open} onOpenChange={setOpen} modal={false}>
       <Popover.Trigger asChild>
-        <button type="button" className={props.triggerClassName} {...(props.triggerLabel === undefined ? {} : { "aria-label": props.triggerLabel })} data-testid={props.testId}>
+        <button
+          type="button"
+          className={props.triggerClassName}
+          {...(props.triggerLabel === undefined ? {} : { "aria-label": props.triggerLabel, title: props.triggerLabel })}
+          data-testid={props.testId}
+        >
           {props.children}
         </button>
       </Popover.Trigger>

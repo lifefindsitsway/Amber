@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, GripVertical } from "lucide-react";
-import { useState } from "react";
+import { AudioLines, ChevronDown, GripVertical } from "lucide-react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ASR_MODEL_ID_PATTERN, ASR_PRESETS, type AsrPreset } from "../../../shared/asr-presets.ts";
 import { ASR_DIARIZATION_DEFAULT, ASR_TEST_AUDIO_MS } from "../../../shared/defaults.ts";
@@ -21,13 +21,16 @@ import { AsrModelSelect, isPickableAsrModel } from "../../components/asr-model-s
 import { ModelPricingControl } from "../../components/model-pricing-dialog.tsx";
 import { formatDateTime } from "../../format.ts";
 import { AsrServiceMark } from "../../models/model-mark.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Callout, FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { Select, type SelectOption } from "../../ui/select.tsx";
 import { Switch } from "../../ui/switch.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
-import { ConfirmButton, CredentialInput, CredentialStatus, Field, fieldHintId, INPUT_CLASS, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
+import { ConfirmButton, CredentialInput, CredentialStatus, describedBy, Field, fieldErrorId, fieldHintId, RequestError, SettingsBlock, TestConnectionError } from "./settings-ui.tsx";
 
 /**
  * `/settings/transcription`: the user's ASR profiles, each one service account with its
@@ -44,14 +47,19 @@ export function TranscriptionSection() {
   const items = profiles.data?.items ?? [];
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("settings.transcription.intro")}</p>
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.transcription.intro")}</p>
       {items.length === 0 ? (
         <SettingsBlock>
-          <EmptyState title={t("settings.transcription.empty")} hint={t("settings.transcription.emptyHint")}>
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              {t("settings.transcription.addProfile")}
-            </Button>
-          </EmptyState>
+          <EmptyState
+            icon={<AudioLines size={28} />}
+            title={t("settings.transcription.empty")}
+            hint={t("settings.transcription.emptyHint")}
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)}>
+                {t("settings.transcription.addProfile")}
+              </Button>
+            }
+          />
         </SettingsBlock>
       ) : (
         <>
@@ -88,9 +96,12 @@ function DefaultModelBlock({ profiles }: { profiles: readonly AsrProfileDto[] })
         noneLabel={t("settings.common.none")}
         size="lg"
         width="fill"
+        describedBy="default-asr-model-hint"
         onChange={(ref) => patch.mutate({ defaultAsrModelRef: ref ?? null })}
       />
-      <p className="mt-2 text-xs text-muted">{t("settings.transcription.defaultModelHint")}</p>
+      <FieldHint id="default-asr-model-hint" className="mt-1.5">
+        {t("settings.transcription.defaultModelHint")}
+      </FieldHint>
       <RequestError error={patch.error} />
     </SettingsBlock>
   );
@@ -111,9 +122,9 @@ function DiarizationBlock() {
         }} describedBy="asr-diarization-hint" testId="asr-diarization">
         {t("speakerTools.settings.diarization")}
       </Switch>
-      <p id="asr-diarization-hint" className="mt-2 text-xs text-muted">
+      <FieldHint id="asr-diarization-hint" className="mt-1.5">
         {t("speakerTools.settings.diarizationHint")}
-      </p>
+      </FieldHint>
       <RequestError error={patch.error} />
     </SettingsBlock>
   );
@@ -220,9 +231,9 @@ function isConflict(error: unknown): boolean {
 function MutationError({ error }: { error: unknown }) {
   const { t } = useTranslation();
   return isConflict(error) ? (
-    <p className="mt-2 text-xs text-danger" role="alert">
+    <Callout tone="error" density="compact" announce="alert" className="mt-2">
       {t("settings.transcription.inUse")}
-    </p>
+    </Callout>
   ) : (
     <RequestError error={error} />
   );
@@ -240,24 +251,27 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
     <SettingsBlock
       title={
         <span className="flex min-w-0 items-center gap-1">
-          <button
-            type="button"
-            className="cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-            aria-label={t("settings.transcription.dragProfile", { name: profile.name })}
-            title={t("settings.transcription.dragProfile", { name: profile.name })}
-            {...dragHandle}
-          >
-            <GripVertical size={14} />
-          </button>
-          <button
-            type="button"
-            className="rounded p-1 text-muted hover:bg-sunken"
-            aria-expanded={!collapsed}
-            aria-label={t(collapsed ? "settings.transcription.expandProfile" : "settings.transcription.collapseProfile", { name: profile.name })}
-            onClick={onToggle}
-          >
-            <ChevronDown size={14} className={collapsed ? "-rotate-90" : ""} />
-          </button>
+          <Tooltip content={t("settings.transcription.dragProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-label={t("settings.transcription.dragProfile", { name: profile.name })}
+              {...dragHandle}
+            >
+              <GripVertical size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip content={t(collapsed ? "settings.transcription.expandProfile" : "settings.transcription.collapseProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-expanded={!collapsed}
+              aria-label={t(collapsed ? "settings.transcription.expandProfile" : "settings.transcription.collapseProfile", { name: profile.name })}
+              onClick={onToggle}
+            >
+              <ChevronDown size={14} className={`transition-transform duration-150 motion-reduce:transition-none ${collapsed ? "-rotate-90" : ""}`} aria-hidden="true" />
+            </button>
+          </Tooltip>
           <AsrServiceMark provider={profile.provider} className="mr-1" />
           <span className="min-w-0 truncate" data-testid="asr-profile-title">
             {profile.name}
@@ -272,8 +286,10 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           </Button>
           <ConfirmButton
             label={t("common.action.delete")}
+            confirmLabel={t("common.action.delete")}
             variant="danger"
             disabled={profile.inUse}
+            pending={mutations.remove.isPending}
             message={t("settings.transcription.deleteConfirm", { name: profile.name })}
             onConfirm={() => mutations.remove.mutate(profile.id)}
           />
@@ -287,9 +303,9 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
             <span className={preset.baseUrlPolicy === "preset_only" ? "" : "font-mono"}>{where}</span>
           </p>
           {profile.inUse ? (
-            <p className="mb-3 text-xs text-danger" data-testid="asr-profile-in-use">
+            <Callout tone="warn" density="compact" className="mb-3" testId="asr-profile-in-use">
               {t("settings.transcription.inUse")}
-            </p>
+            </Callout>
           ) : null}
           <Field
             label={t("settings.transcription.keyLabel")}
@@ -299,6 +315,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           >
             <CredentialInput
               id={`asr-key-${profile.id}`}
+              describedBy={fieldHintId(`asr-key-${profile.id}`)}
               hasCredential={profile.hasCredential}
               pending={mutations.credential.isPending}
               onSubmit={(value) => mutations.credential.mutate({ id: profile.id, value })}
@@ -308,7 +325,8 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           <div className="mt-2 flex items-center gap-3">
             <Button
               size="sm"
-              disabled={!profile.hasCredential || mutations.probe.isPending}
+              disabled={!profile.hasCredential}
+              loading={mutations.probe.isPending}
               onClick={() => mutations.probe.mutate(profile.id, { onSuccess: setProbed })}
             >
               {t("settings.transcription.test")}
@@ -317,7 +335,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           </div>
           <RequestError error={mutations.probe.error} />
           <h3 className="mt-4 mb-1 text-xs font-medium text-muted">{t("settings.transcription.modelsTitle")}</h3>
-          <p className="mb-1 text-xs text-muted" data-testid="asr-test-hint">
+          <p className={`mb-1 ${NOTE_TEXT_CLASS}`} data-testid="asr-test-hint">
             {t("settings.transcription.testModelHint", { seconds: ASR_TEST_AUDIO_MS / 1000 })}
           </p>
           <ol className="divide-y divide-line" data-testid="asr-profile-models">
@@ -355,7 +373,8 @@ function ModelRow({ profile, model }: { profile: AsrProfileDto; model: AsrProfil
         </div>
         <Button
           size="sm"
-          disabled={!profile.hasCredential || !model.available || test.isPending}
+          disabled={!profile.hasCredential || !model.available}
+          loading={test.isPending}
           aria-label={`${label} · ${model.modelId}`}
           title={t("settings.transcription.testModelHint", { seconds: ASR_TEST_AUDIO_MS / 1000 })}
           onClick={() => test.mutate(model.modelId)}
@@ -512,6 +531,7 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
     onClose();
   };
   const [saving, setSaving] = useState(false);
+  const formId = useId();
   const failure = mutations.create.error ?? mutations.patch.error ?? mutations.credential.error;
 
   const serviceOptions: ReadonlyArray<SelectOption<AsrProviderId>> = ASR_PROVIDERS.map((item) => ({
@@ -526,14 +546,24 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
     regionOptions.push({ value: baseURL, label: baseURL, valueTitle: baseURL });
   }
 
+  const nameMissing = touched && name.trim() === "";
   return (
     <Modal
       open
       onOpenChange={(open) => (open ? undefined : onClose())}
       title={profile === undefined ? t("settings.transcription.addProfile") : t("settings.transcription.editProfile")}
       wide
+      footer={
+        <>
+          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={formId} variant="primary" loading={saving}>
+            {t("common.action.save")}
+          </Button>
+        </>
+      }
     >
       <form
+        id={formId}
         onSubmit={(event) => {
           event.preventDefault();
           setTouched(true);
@@ -563,9 +593,15 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
             }}
           />
         </Field>
-        <Field label={t("settings.transcription.name")} htmlFor="asr-name">
-          <input id="asr-name" className={INPUT_CLASS} value={name} onChange={(event) => setName(event.target.value)} />
-          {touched && name.trim() === "" ? <p className="text-xs text-danger">{t("settings.transcription.required")}</p> : null}
+        <Field label={t("settings.transcription.name")} htmlFor="asr-name" error={nameMissing ? t("settings.transcription.required") : undefined}>
+          <TextInput
+            id="asr-name"
+            className="w-full"
+            value={name}
+            invalid={nameMissing}
+            aria-describedby={nameMissing ? fieldErrorId("asr-name") : undefined}
+            onChange={(event) => setName(event.target.value)}
+          />
         </Field>
         {preset.baseUrlPolicy === "preset_only" ? (
           <Field label={t("settings.transcription.region")} htmlFor="asr-region" hint={t("settings.transcription.regionHint")}>
@@ -584,9 +620,9 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
           </Field>
         ) : (
           <Field label={t("settings.transcription.baseURL")} htmlFor="asr-base-url">
-            <input
+            <TextInput
               id="asr-base-url"
-              className={`${INPUT_CLASS} font-mono`}
+              className="w-full font-mono"
               value={baseURL}
               disabled={locked}
               placeholder={preset.endpoints[0]?.baseURL}
@@ -594,7 +630,7 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
             />
           </Field>
         )}
-        <h3 className="mt-4 mb-2 text-xs font-medium text-muted">{t("settings.transcription.modelsTitle")}</h3>
+        <h3 className="mb-2 text-xs font-medium text-muted">{t("settings.transcription.modelsTitle")}</h3>
         <ul data-testid="asr-model-drafts">
           {shown.map((model) => {
             const choosable = model.fresh && !isKnown(preset, model.modelId);
@@ -606,31 +642,30 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
                 data-testid="asr-model-draft"
               >
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-                    aria-label={`${t("settings.transcription.dragModel")} · ${model.modelId}`}
-                    title={t("settings.transcription.dragModel")}
-                    {...rows.handleProps(model.modelId)}
-                  >
-                    <GripVertical size={14} />
-                  </button>
+                  <Tooltip content={t("settings.transcription.dragModel")}>
+                    <button
+                      type="button"
+                      className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+                      aria-label={`${t("settings.transcription.dragModel")} · ${model.modelId}`}
+                      {...rows.handleProps(model.modelId)}
+                    >
+                      <GripVertical size={14} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                   <span className="min-w-0 flex-1 truncate font-mono">{model.modelId}</span>
                   {choosable ? (
-                    <select
-                      aria-label={t("settings.transcription.familyFor", { model: model.modelId })}
-                      className="h-7 rounded border border-line bg-surface px-1 text-xs"
+                    // A menu like the service and region menus above it in this dialog.
+                    <Select
+                      ariaLabel={t("settings.transcription.familyFor", { model: model.modelId })}
+                      describedBy={`${formId}-family-${model.modelId}`}
+                      size="sm"
+                      width="content"
+                      menuWidth="fit"
                       value={model.family ?? preset.customModelFamily}
-                      onChange={(event) =>
-                        setModels((current) => current.map((item) => (item.modelId === model.modelId ? { ...item, family: event.target.value } : item)))
-                      }
-                    >
-                      {preset.families.map((family) => (
-                        <option key={family.id} value={family.id}>
-                          {familyName(provider, family.id)}
-                        </option>
-                      ))}
-                    </select>
+                      options={preset.families.map((family) => ({ value: family.id, label: familyName(provider, family.id) }))}
+                      placeholder={t("settings.transcription.familyFor", { model: model.modelId })}
+                      onChange={(family) => setModels((current) => current.map((item) => (item.modelId === model.modelId ? { ...item, family } : item)))}
+                    />
                   ) : model.family === undefined ? null : (
                     <span className="text-xs text-muted" data-testid="asr-model-draft-family">
                       {familyName(provider, model.family)}
@@ -647,17 +682,23 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
                     {t("settings.transcription.removeModel")}
                   </Button>
                 </div>
-                {choosable ? <p className="ml-8 text-xs text-muted">{t("settings.transcription.familyHint")}</p> : null}
+                {choosable ? (
+                  <FieldHint id={`${formId}-family-${model.modelId}`} className="mt-1.5 ml-8">
+                    {t("settings.transcription.familyHint")}
+                  </FieldHint>
+                ) : null}
               </li>
             );
           })}
         </ul>
         <div className="mt-2 flex items-center gap-2">
-          <input
+          <TextInput
             aria-label={t("settings.transcription.addModel")}
             list={`asr-model-suggestions-${provider}`}
-            className={`${INPUT_CLASS} min-w-0 flex-1 font-mono`}
+            className="min-w-0 flex-1 font-mono"
             value={adding}
+            invalid={addError !== undefined}
+            aria-describedby={addError === undefined ? undefined : `${formId}-add-error`}
             placeholder={t("settings.transcription.addModelPlaceholder")}
             spellCheck={false}
             autoComplete="off"
@@ -683,18 +724,19 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
           </Button>
         </div>
         {addError === undefined ? null : (
-          <p className="mt-1 text-xs text-danger" role="alert">
+          <FieldError id={`${formId}-add-error`} className="mt-1.5" testId="asr-add-model-error">
             {t(addError === "invalid" ? "settings.transcription.invalidModelId" : "settings.transcription.duplicateModel")}
-          </p>
+          </FieldError>
         )}
         {profile === undefined ? (
           <Field label={t("settings.transcription.keyLabel")} htmlFor="asr-new-key" hint={t("settings.common.credential.writeOnly")}>
-            <input
+            <TextInput
               id="asr-new-key"
               type="password"
               autoComplete="off"
               spellCheck={false}
-              className={INPUT_CLASS}
+              className="w-full"
+              aria-describedby={fieldHintId("asr-new-key")}
               value={key}
               placeholder={t("settings.common.credential.placeholder")}
               onChange={(event) => setKey(event.target.value)}
@@ -702,17 +744,17 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
           </Field>
         ) : null}
         {locked || isConflict(mutations.patch.error) ? (
-          <p className="mb-2 text-xs text-danger" role="alert">
+          <Callout
+            tone={isConflict(mutations.patch.error) ? "error" : "warn"}
+            density="compact"
+            // Announced only when it answers a refused save; a profile already in use says so from the start.
+            {...(isConflict(mutations.patch.error) ? { announce: "alert" as const } : {})}
+            className="mt-4"
+          >
             {t("settings.transcription.inUse")}
-          </p>
+          </Callout>
         ) : null}
         {isConflict(mutations.patch.error) ? null : <RequestError error={failure} />}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button onClick={onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={saving}>
-            {t("common.action.save")}
-          </Button>
-        </div>
       </form>
     </Modal>
   );

@@ -15,7 +15,7 @@ import { publishSpeakersChanged } from "../../api/content-events.ts";
 import { useApi, useContentEvents } from "../../api/context.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { formatDuration } from "../../format.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { ApplySpeakersDialog } from "./apply-speakers.tsx";
@@ -467,7 +467,7 @@ export function DraftEditor(props: {
                 {pendingReviews.length === 0 ? null : (
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-xs text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent"
+                    className={`rounded px-1.5 py-0.5 text-xs text-link hover:bg-sunken ${FOCUS_RING}`}
                     onClick={() => setFilter({ kind: "review" })}
                     data-testid="draft-review-count"
                   >
@@ -496,11 +496,11 @@ export function DraftEditor(props: {
                   </div>
                 ) : null}
                 {speakerEditing.summary === undefined ? null : (
-                  <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-1.5 text-xs" role="status" data-testid="apply-result">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-line bg-ok-soft px-4 py-1.5 text-xs" role="status" data-testid="apply-result">
                     <span className="font-medium tabular-nums">
                       {t("speakerEditor.apply.summary", speakerEditing.summary)}
                     </span>
-                    <button type="button" className="ml-auto rounded px-1.5 py-0.5 hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.dismissSummary}>
+                    <button type="button" className={`ml-auto rounded px-1.5 py-0.5 hover:bg-sunken ${FOCUS_RING}`} onClick={speakerEditing.dismissSummary}>
                       {t("speakerEditor.apply.dismiss")}
                     </button>
                   </div>
@@ -510,8 +510,8 @@ export function DraftEditor(props: {
                 {speakerEditing.selectedCount === 0 ? null : (
                   <div className="flex flex-wrap items-center gap-2 border-b border-line bg-sunken/50 px-4 py-1.5 text-xs" role="status" data-testid="speaker-selection-bar">
                     <span className="tabular-nums">{t("speakerEditor.selection.count", { count: speakerEditing.selectedCount })}</span>
-                    <span className="text-muted">{t("speakerEditor.selection.hint")}</span>
-                    <button type="button" className="ml-auto rounded px-1.5 py-0.5 text-accent hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent" onClick={speakerEditing.clearSelection} data-testid="speaker-selection-clear">
+                    <span className="text-note text-muted">{t("speakerEditor.selection.hint")}</span>
+                    <button type="button" className={`ml-auto rounded px-1.5 py-0.5 text-link hover:bg-sunken ${FOCUS_RING}`} onClick={speakerEditing.clearSelection} data-testid="speaker-selection-clear">
                       {t("speakerEditor.selection.clear")}
                     </button>
                   </div>
@@ -560,32 +560,38 @@ export function DraftEditor(props: {
           startCommit(resolution);
         }}
       />
-      <Modal open={conflict !== undefined} onOpenChange={(open) => (open ? undefined : setConflict(undefined))} title={t("contentView.draft.conflictTitle")}>
-        <p className="text-sm" data-testid="draft-conflict">
+      <Modal
+        open={conflict !== undefined}
+        onOpenChange={(open) => (open ? undefined : setConflict(undefined))}
+        title={t("contentView.draft.conflictTitle")}
+        footer={
+          <>
+            <Button
+              onClick={() => {
+                setConflict(undefined);
+                void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
+                exit({ kind: "reload" });
+              }}
+            >
+              {t("contentView.draft.conflictReload")}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                const next = conflict === "" ? undefined : conflict;
+                setConflict(undefined);
+                setExpectedPrimary(next);
+                commit.mutate({ expected: next, ...(lastReview.current === undefined ? {} : { review: lastReview.current }), ...keepSpeakersConfirmedField(keepReview) });
+              }}
+            >
+              {t("contentView.draft.conflictCommit")}
+            </Button>
+          </>
+        }
+      >
+        <p className="max-w-[70ch] text-sm" data-testid="draft-conflict">
           {t("contentView.draft.conflictMessage")}
         </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button
-            onClick={() => {
-              setConflict(undefined);
-              void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
-              exit({ kind: "reload" });
-            }}
-          >
-            {t("contentView.draft.conflictReload")}
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              const next = conflict === "" ? undefined : conflict;
-              setConflict(undefined);
-              setExpectedPrimary(next);
-              commit.mutate({ expected: next, ...(lastReview.current === undefined ? {} : { review: lastReview.current }), ...keepSpeakersConfirmedField(keepReview) });
-            }}
-          >
-            {t("contentView.draft.conflictCommit")}
-          </Button>
-        </div>
       </Modal>
     </SpeakerEditingProvider>
   );

@@ -5,6 +5,8 @@ import { networkAllowlistDtoSchema } from "../../../shared/dto/admin.ts";
 import { useApi } from "../../api/context.tsx";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
+import { FieldHint } from "../../ui/notice.tsx";
+import { TextArea } from "../../ui/text-field.tsx";
 import { RequestError, SettingsBlock } from "../settings/settings-ui.tsx";
 import { adminKeys } from "./admin-data.ts";
 
@@ -42,15 +44,18 @@ export function NetworkSection() {
           <label className="mb-1 block text-xs font-medium text-muted" htmlFor="allowlist-origins">
             {t("admin.network.label")}
           </label>
-          <textarea
+          <TextArea
             id="allowlist-origins"
             rows={6}
             spellCheck={false}
-            className="w-full rounded-md border border-line bg-surface p-2 font-mono text-sm"
+            className="w-full font-mono"
+            aria-describedby="allowlist-origins-hint"
             value={text}
             onChange={(event) => setDraft(event.target.value)}
           />
-          <p className="mt-1 text-xs text-muted">{t("admin.network.hint")}</p>
+          <FieldHint id="allowlist-origins-hint" className="mt-1.5">
+            {t("admin.network.hint")}
+          </FieldHint>
           <RequestError error={save.error} />
           {saved === undefined ? null : (
             <p className="mt-2 text-sm text-ok" role="status">
@@ -58,7 +63,7 @@ export function NetworkSection() {
             </p>
           )}
           <div className="mt-3 flex justify-end">
-            <Button type="submit" variant="primary" disabled={save.isPending || draft === undefined}>
+            <Button type="submit" variant="primary" disabled={draft === undefined} loading={save.isPending}>
               {t("common.action.save")}
             </Button>
           </div>

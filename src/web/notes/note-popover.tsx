@@ -5,6 +5,8 @@ import { useSearchParams } from "react-router";
 import { NOTE_COMMENT_MAX_CHARS } from "../../shared/defaults.ts";
 import type { NoteCreateRequest, NoteDto } from "../../shared/dto/note.ts";
 import { Button } from "../ui/button.tsx";
+import { Callout, TextAction } from "../ui/notice.tsx";
+import { TextArea } from "../ui/text-field.tsx";
 import { useContentPage } from "../pages/content/content-context.tsx";
 import { newestFirst } from "./note-anchor.ts";
 import { MarkAndColor, NoteCard, noteErrorText } from "./note-card.tsx";
@@ -162,9 +164,9 @@ function Footer(props: { ui: NotesUi }) {
   const { t } = useTranslation();
   if (!props.ui.dirty) return null;
   return (
-    <div className="flex flex-col gap-0.5 text-xs">
+    <div className="flex flex-col gap-0.5 text-note">
       {props.ui.warned ? (
-        <p className="text-danger" role="status" data-testid="note-dirty">
+        <p className="text-warn" role="status" data-testid="note-dirty">
           {t("notes.popover.dirty")}
         </p>
       ) : null}
@@ -196,11 +198,11 @@ function Detached(props: { target: NoteTarget; children: ReactNode }) {
       style={style}
       data-testid="note-popover-detached"
     >
-      <div className="flex items-center gap-2 text-xs text-muted">
+      <div className="flex items-center gap-2 text-note text-muted">
         <span className="min-w-0 flex-1">{t("notes.popover.detached")}</span>
-        <button type="button" className="shrink-0 text-accent hover:underline" onClick={locate} data-testid="note-locate-anchor">
+        <TextAction className="shrink-0" onClick={locate} data-testid="note-locate-anchor">
           {t("notes.popover.locate")}
-        </button>
+        </TextAction>
       </div>
       {excerpt === "" ? null : <blockquote className="line-clamp-3 border-l-2 border-line pl-2 text-sm text-muted">{excerpt}</blockquote>}
       {props.children}
@@ -287,8 +289,9 @@ function ComposeBody(props: { target: NoteComposeTarget }) {
         onMark={(mark) => ui.updateCompose({ mark, color: mark === draft.mark ? draft.color : rememberedColor(mark) })}
         onColor={(color) => ui.updateCompose({ color })}
       />
-      <textarea
-        className="min-h-20 w-full resize-y rounded border border-line bg-surface p-1.5 text-sm"
+      <TextArea
+        size="md"
+        className="min-h-20 w-full resize-y"
         value={draft.comment}
         maxLength={NOTE_COMMENT_MAX_CHARS}
         placeholder={t("notes.popover.commentPlaceholder")}
@@ -298,9 +301,9 @@ function ComposeBody(props: { target: NoteComposeTarget }) {
         data-testid="note-compose-input"
       />
       {create.isError ? (
-        <p className="text-xs text-danger" role="alert">
+        <Callout tone="error" density="compact" announce="alert">
           {noteErrorText(create.error, t("notes.popover.saveFailed"))}
-        </p>
+        </Callout>
       ) : null}
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" disabled={create.isPending} onClick={() => ui.close()} data-testid="note-compose-cancel">

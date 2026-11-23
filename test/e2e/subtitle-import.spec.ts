@@ -207,7 +207,7 @@ test("an SRT with leading names: the choices recount offline, the import sends t
   });
   expect(state.inspects).toHaveLength(1);
 
-  await result.getByTestId("subtitle-import-done").click();
+  await dialog.getByTestId("subtitle-import-done").click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // The revision list was read again: the import is there and, made current, shown.
   await expect(versionOptions(page).filter({ hasText: /^导入字幕 · / })).toHaveCount(1);

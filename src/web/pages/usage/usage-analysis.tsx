@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { USAGE_GRANULARITIES, USAGE_METRICS, type UsageGranularity, type UsageMetric, type UsageSummaryResponse } from "../../../shared/dto/usage-analytics.ts";
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { RadioMenu, SegmentedControl } from "./usage-controls.tsx";
 import { MODEL_SORTS, UsageModelsView, type ModelSort } from "./usage-models-view.tsx";
 import type { CredentialVersionLabels } from "./usage-present.ts";
@@ -42,7 +43,7 @@ export function UsageAnalysisPanel(props: {
     <Tabs.Root
       value={props.view}
       onValueChange={(value) => props.onPatch({ view: value === "models" ? "models" : "trend" })}
-      className={`rounded-lg border border-line bg-panel transition-opacity ${props.stale ? "opacity-60" : ""}`}
+      className={`rounded-lg border border-line bg-panel transition-opacity duration-150 motion-reduce:transition-none ${props.stale ? "opacity-60" : ""}`}
       data-testid="usage-analysis"
     >
       <div className="flex min-h-12 flex-wrap items-center justify-between gap-x-3 border-b border-line px-2">
@@ -75,19 +76,20 @@ export function UsageAnalysisPanel(props: {
                 ariaLabel={t("usage.analysis.granularityLabel")}
                 testId="usage-granularity"
               />
-              <button
-                type="button"
-                className={`inline-flex size-8 items-center justify-center rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                  table ? "border-accent bg-accent-soft" : "border-line bg-surface hover:bg-sunken"
-                }`}
-                aria-pressed={table}
-                aria-label={t("usage.analysis.table")}
-                title={t("usage.analysis.table")}
-                data-testid="usage-table-toggle"
-                onClick={() => setTable(!table)}
-              >
-                <Table2 size={16} aria-hidden="true" />
-              </button>
+              <Tooltip content={t("usage.analysis.table")}>
+                <button
+                  type="button"
+                  className={`inline-flex size-8 items-center justify-center rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                    table ? "border-accent bg-accent-soft" : "border-line bg-surface hover:bg-sunken"
+                  }`}
+                  aria-pressed={table}
+                  aria-label={t("usage.analysis.table")}
+                  data-testid="usage-table-toggle"
+                  onClick={() => setTable(!table)}
+                >
+                  <Table2 size={16} aria-hidden="true" />
+                </button>
+              </Tooltip>
             </>
           ) : (
             <RadioMenu

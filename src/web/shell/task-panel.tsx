@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
-import { ArrowRight, EyeOff, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { ArrowRight, EyeOff, ListTodo, X } from "lucide-react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import { taskDetailDtoSchema, type TaskDto } from "../../shared/dto/task.ts";
@@ -24,9 +24,12 @@ import { ConfirmDialog, appErrorOf } from "../components/confirm-dialog.tsx";
 import { ErrorView } from "../components/error-view.tsx";
 import { taskKindLabel } from "../components/task-kind-label.ts";
 import { latestStageRuns, ResendPrompt, runningStep, waitingUnits } from "../components/task-flow.tsx";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Checkbox } from "../ui/checkbox.tsx";
 import { keepOpenForContextMenu, useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
-import { EmptyState } from "../ui/feedback.tsx";
+import { EmptyState, SkeletonRows } from "../ui/feedback.tsx";
+import { FieldError, InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 
 const openRequests = new EventTarget();
 
@@ -125,7 +128,7 @@ export function TaskPanel(props: { open: boolean; onOpenChange: (open: boolean) 
         >
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
             <Dialog.Title className="text-base font-semibold">{t("shell.tasks.title")}</Dialog.Title>
-            <Dialog.Close className="rounded p-1 text-muted hover:bg-sunken" aria-label={t("common.action.close")}>
+            <Dialog.Close className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`} aria-label={t("common.action.close")}>
               <X size={16} />
             </Dialog.Close>
           </div>
@@ -198,7 +201,12 @@ function TaskLists(props: { onNavigate: () => void }) {
     <>
       <div className="flex-1 overflow-auto p-3">
         {active.length === 0 && finished.length === 0 ? (
-          loading ? null : <EmptyState title={t("shell.tasks.empty")} />
+          loading ? (
+            // About the height of a task card, so the cards replace the placeholders in place.
+            <SkeletonRows count={3} rowHeight={76} gap={8} testId="task-panel-loading" />
+          ) : (
+            <EmptyState icon={<ListTodo size={28} />} title={t("shell.tasks.empty")} hint={t("shell.tasks.emptyHint")} />
+          )
         ) : (
           <div className="flex flex-col gap-4">
             {active.length === 0 ? null : (
@@ -273,12 +281,10 @@ function TaskLists(props: { onNavigate: () => void }) {
         </div>
       )}
       {removal === undefined ? null : (
-        <div role="status" data-testid="task-history-removed" className="flex items-center gap-2 border-t border-line bg-sunken px-4 py-2 text-xs">
+        <div role="status" data-testid="task-history-removed" className="flex items-center gap-3 border-t border-line bg-sunken px-4 py-2 text-note">
           <span className="min-w-0 flex-1">{t("shell.tasks.historyActions.removed", { count: removal.hidden })}</span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-accent"
+          <TextAction
+            className="shrink-0 font-medium disabled:opacity-50"
             disabled={restore.isPending}
             onClick={() => {
               restore.mutate(removal.batchIds);
@@ -287,10 +293,12 @@ function TaskLists(props: { onNavigate: () => void }) {
             data-testid="task-history-undo"
           >
             {t("shell.tasks.historyActions.undo")}
-          </Button>
-          <button type="button" className="rounded p-1 text-muted hover:bg-surface" aria-label={t("common.action.close")} onClick={() => setRemoval(undefined)}>
-            <X size={12} aria-hidden="true" />
-          </button>
+          </TextAction>
+          <Tooltip content={t("common.action.close")}>
+            <button type="button" className={`rounded p-1 text-muted hover:bg-surface hover:text-ink ${FOCUS_RING}`} aria-label={t("common.action.close")} onClick={() => setRemoval(undefined)}>
+              <X size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
       )}
       <ConfirmDialog
@@ -324,12 +332,17 @@ function CapacityLine(props: { onNavigate: () => void }) {
   if (!admin || settings.data === undefined) return null;
   const target = mode === "local" ? "/settings/storage#concurrency" : "/admin/instance#concurrency";
   return (
-    <p data-testid="task-capacity" className="border-b border-line px-4 py-2 text-xs text-muted">
-      {t("shell.tasks.capacity", { count: settings.data.concurrencyPipeline })} ·{" "}
-      <Link to={target} onClick={props.onNavigate} className="text-accent hover:underline">
-        {t("shell.tasks.adjust")}
-      </Link>
-    </p>
+    <InlineNote
+      testId="task-capacity"
+      className="border-b border-line px-4 py-2"
+      action={
+        <Link to={target} onClick={props.onNavigate} className={TEXT_ACTION_CLASS}>
+          {t("shell.tasks.adjust")}
+        </Link>
+      }
+    >
+      {t("shell.tasks.capacity", { count: settings.data.concurrencyPipeline })}
+    </InlineNote>
   );
 }
 
@@ -414,6 +427,7 @@ function TaskCard(props: { task: TaskDto; onNavigate: () => void; onGone: () => 
     mutationFn: () => api.post(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, taskDetailDtoSchema),
     onSettled: () => hub.refresh(task.id),
   });
+  const cancelErrorId = useId();
   const target = taskTarget(task);
   const navigate = useNavigate();
   // The same two actions the card's buttons offer, under the same conditions.
@@ -455,12 +469,24 @@ function TaskCard(props: { task: TaskDto; onNavigate: () => void; onGone: () => 
       {!finished && waiting.length > 0 ? <ResendPrompt taskId={task.id} units={waiting} /> : null}
       <div className="mt-2 flex gap-2">
         {finished ? null : (
-          <Button size="sm" variant="ghost" disabled={cancel.isPending} onClick={() => cancel.mutate()}>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={cancel.isPending}
+            onClick={() => cancel.mutate()}
+            {...(cancel.isError ? { "aria-describedby": cancelErrorId } : {})}
+          >
             {t("shell.tasks.cancel")}
           </Button>
         )}
         {target === undefined ? null : <ViewLink target={target} onNavigate={props.onNavigate} />}
       </div>
+      {/* A refused cancel leaves the task running: say so beside the button, which can be pressed again. */}
+      {cancel.isError && !finished ? (
+        <FieldError id={cancelErrorId} className="mt-1.5" testId="task-cancel-error">
+          {appErrorOf(cancel.error).userMessage === "" ? t("shell.tasks.cancelFailed") : appErrorOf(cancel.error).userMessage}
+        </FieldError>
+      ) : null}
     </li>
   );
 }
@@ -485,9 +511,8 @@ function HistoryCard(props: { task: TaskDto; onNavigate: () => void; onRemove: (
   return (
     <li ref={menuTarget} data-testid="task-history-card" className="flex gap-2 rounded-md border border-line p-3 text-sm">
       {props.onCheckedChange === undefined ? null : (
-        <input
-          type="checkbox"
-          className="mt-0.5 size-4 shrink-0 accent-accent"
+        <Checkbox
+          className="mt-0.5"
           checked={props.checked === true}
           aria-label={t("shell.tasks.historyActions.selectCard", { title })}
           data-testid="task-history-check"

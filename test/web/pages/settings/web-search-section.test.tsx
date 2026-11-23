@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { WebSearchSection } from "../../../../src/web/pages/settings/web-search-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -56,7 +56,7 @@ describe("WebSearchSection", () => {
     const { calls } = setup({ service: "tavily", credentialStatus: "configured" });
     await screen.findByTestId("web-search-credential");
     fireEvent.click(screen.getByTestId("web-search-remove"));
-    fireEvent.click(await screen.findByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "移除" }));
     await waitFor(() => expect(screen.getByTestId("web-search-credential").textContent).toBe("未配置"));
     expect(calls.some((call) => call.method === "DELETE" && call.path === "/api/web-search")).toBe(true);
   });

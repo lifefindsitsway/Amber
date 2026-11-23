@@ -194,9 +194,10 @@ test("transcription models: a typed-in model is added with a family, then tested
   const input = dialog.getByLabel("添加模型");
   await input.fill("fun-asr-2026");
   await input.press("Enter");
-  const family = dialog.getByLabel("参数兼容 · fun-asr-2026");
-  await expect(family).toHaveValue("fun_asr");
-  await family.selectOption("qwen_audio");
+  const family = dialog.getByRole("combobox", { name: "参数兼容 · fun-asr-2026" });
+  await expect(family).toHaveText("Fun-ASR（不发送热词）");
+  await family.click();
+  await page.getByRole("option", { name: "千问 ASR（发送热词）" }).click();
   await dialog.getByRole("button", { name: "保存" }).click();
   await expect(dialog).toBeHidden();
   expect(backend.mutations.at(-1)?.body).toEqual({

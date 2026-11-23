@@ -1,18 +1,20 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, Navigate } from "react-router";
 import { authMeDtoSchema } from "../../shared/dto/system.ts";
 import { ApiError } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
 import { queryKeys, useMe, useSetupStatus } from "../api/queries.ts";
-import { AUTH_INPUT, AuthCard } from "../auth/auth-card.tsx";
+import { AUTH_FORM, AUTH_PASSWORD_INPUT, AuthCard, AuthField } from "../auth/auth-card.tsx";
 import { ChangePasswordForm } from "../auth/change-password-form.tsx";
 import { peekNext } from "../auth/next-path.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { Button } from "../ui/button.tsx";
 import { Loading } from "../ui/feedback.tsx";
-import { PasswordField } from "../ui/password-input.tsx";
+import { Callout, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { PasswordInput } from "../ui/password-input.tsx";
+import { TextInput } from "../ui/text-field.tsx";
 
 /**
  * `/login`: username and password, then — when an administrator reset
@@ -25,6 +27,7 @@ export function LoginPage() {
   const client = useApi();
   const queryClient = useQueryClient();
   const me = useMe();
+  const formId = useId();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   // The password just verified by the login step, so the change step need not ask again.
@@ -69,23 +72,31 @@ export function LoginPage() {
   const failure = login.error instanceof ApiError ? login.error : undefined;
   return (
     <LoginCard>
-      <form onSubmit={submit} className="flex flex-col gap-3" data-testid="login-form">
-        <label className="flex flex-col gap-1 text-sm">
-          {t("auth.login.username")}
-          <input autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} className={AUTH_INPUT} />
-        </label>
-        <PasswordField label={t("auth.login.password")} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className={AUTH_INPUT} />
+      <form onSubmit={submit} className={AUTH_FORM} data-testid="login-form">
+        <AuthField
+          id={`${formId}-username`}
+          label={t("auth.login.username")}
+          control={(field) => <TextInput {...field} autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} className="w-full" />}
+        />
+        <AuthField
+          id={`${formId}-password`}
+          label={t("auth.login.password")}
+          control={(field) => (
+            <PasswordInput {...field} autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className={AUTH_PASSWORD_INPUT} />
+          )}
+        />
+        {/* Not tied to one field: a refused login never says whether the user name or the password was wrong. */}
         {failure === undefined ? null : failure.error.class === "rate_limited" ? (
-          <p role="alert" className="text-sm text-danger">
+          <Callout tone="error" density="compact" announce="alert">
             {failure.retryAfterSeconds === undefined
               ? t("auth.login.rateLimitedNoDelay")
               : t("auth.login.rateLimited", { seconds: failure.retryAfterSeconds })}
-          </p>
+          </Callout>
         ) : (
           <ErrorView error={failure.error} />
         )}
-        <Button type="submit" variant="primary" disabled={login.isPending}>
-          {login.isPending ? t("auth.login.submitting") : t("auth.login.submit")}
+        <Button type="submit" variant="primary" loading={login.isPending}>
+          {t("auth.login.submit")}
         </Button>
       </form>
     </LoginCard>
@@ -110,7 +121,7 @@ function LoginCard(props: { children: ReactNode }) {
       {...(uninitialized
         ? {
             footer: (
-              <Link to="/setup" className="text-accent hover:underline">
+              <Link to="/setup" className={TEXT_ACTION_CLASS}>
                 {t("auth.login.setupLink")}
               </Link>
             ),

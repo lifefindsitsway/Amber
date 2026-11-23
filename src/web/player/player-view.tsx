@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { InlineNote } from "../ui/notice.tsx";
 import { BilibiliPlayer } from "./bilibili-player.tsx";
 import type { PlayerSource } from "./capabilities.ts";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
@@ -103,9 +104,9 @@ export function PlayerView(props: {
     <>
       {player}
       {active === "iframe" && props.subtitles !== undefined && (props.subtitles.mode !== "off" || props.subtitles.editing) ? (
-        <p className="mt-1 text-xs text-muted" data-testid="player-subtitles-iframe-hint">
+        <InlineNote className="mt-1.5" testId="player-subtitles-iframe-hint">
           {t("contentView.player.subtitles.iframeHint")}
-        </p>
+        </InlineNote>
       ) : null}
       {props.renderBelow?.(active)}
     </>
@@ -129,7 +130,9 @@ function FailedPlayer(props: { originalUrl?: string; onCache?: () => void }) {
           </Button>
         )}
         {props.originalUrl === undefined ? null : (
-          <a className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" href={props.originalUrl} target="_blank" rel="noopener noreferrer">
+          <a
+            className={`inline-flex h-7 items-center rounded-md border border-line bg-surface px-2 text-xs font-medium transition duration-150 motion-reduce:transition-none hover:bg-sunken ${FOCUS_RING}`}
+            href={props.originalUrl} target="_blank" rel="noopener noreferrer">
             {t("contentView.player.openOriginal")}
           </a>
         )}

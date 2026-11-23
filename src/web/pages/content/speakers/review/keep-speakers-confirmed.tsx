@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Checkbox } from "../../../../ui/checkbox.tsx";
 import { useRevisions, useSegments } from "../../content-data.ts";
 import type { DraftSegment } from "../../speaker-draft.ts";
 import { draftAttribution } from "./draft-attribution.ts";
@@ -73,10 +74,9 @@ export function KeepSpeakersConfirmed(props: { state: KeepSpeakersConfirmedState
   const { state } = props;
   if (!state.visible) return null;
   return (
-    <div className="flex items-start gap-1.5 text-xs" data-testid="keep-speakers-confirmed">
-      <input
+    <div className="flex items-start gap-2 text-note" data-testid="keep-speakers-confirmed">
+      <Checkbox
         id={id}
-        type="checkbox"
         className="mt-0.5"
         checked={state.checked}
         disabled={props.disabled}

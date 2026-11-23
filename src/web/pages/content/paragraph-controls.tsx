@@ -187,7 +187,6 @@ export function ParagraphControl(props: { index: number }) {
         variant="ghost"
         disabled={action.blocked !== undefined || editing.locked}
         onClick={() => editing.toggle(props.index)}
-        className="focus-visible:outline-2 focus-visible:outline-accent"
         aria-keyshortcuts={apple ? "Meta+Enter" : "Control+Enter"}
         {...(action.blocked === undefined ? {} : { "aria-describedby": reasonId })}
         data-testid="paragraph-action"
@@ -199,7 +198,7 @@ export function ParagraphControl(props: { index: number }) {
         </kbd>
       </Button>
       {action.blocked === undefined ? null : (
-        <span id={reasonId} className="text-xs text-muted" data-testid="paragraph-blocked" data-reason={action.blocked}>
+        <span id={reasonId} className="text-note text-muted" data-testid="paragraph-blocked" data-reason={action.blocked}>
           {t(`paragraphEditor.blocked.${action.blocked}`)}
         </span>
       )}

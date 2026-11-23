@@ -177,7 +177,7 @@ describe("StorageSection in the desktop client", () => {
     const second = screen.getAllByTestId("burn-output")[1] as HTMLElement;
     fireEvent.click(within(second).getByRole("button", { name: "删除" }));
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(1));
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/media/m2"]);
     expect(screen.queryByRole("button", { name: "重置全部凭据" })).toBeNull();
@@ -463,7 +463,7 @@ describe("cache volume and pending replacements", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(calls.filter((call) => call.method === "POST")).toEqual([]);
     fireEvent.click(screen.getByTestId("cache-hold-keep-h1"));
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "保留当前文件" }));
     await waitFor(() => expect(screen.queryByTestId("cache-hold-keep-h1")).toBeNull());
     expect(reads()).toBeGreaterThan(before);
     fireEvent.click(screen.getByTestId("cache-hold-restore-h2"));

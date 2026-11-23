@@ -887,7 +887,9 @@ describe("chat thread rename and pin", () => {
     expect(screen.queryByTestId("chat-thread-pinned")).toBeNull();
     expect(within(items[1]!).getByRole("button", { name: "重命名会话「第一个会话」" })).toBeTruthy();
     const pin = within(items[1]!).getByRole("button", { name: "置顶会话「第一个会话」" });
-    expect(pin.getAttribute("title")).toBe("置顶");
+    // Named in a tooltip.
+    fireEvent.focus(pin);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("置顶");
 
     fireEvent.click(pin);
     await waitFor(() => expect(patches(calls, "th1")).toEqual([{ pinned: true }]));
@@ -897,7 +899,8 @@ describe("chat thread rename and pin", () => {
     expect(within(items[0]!).getByTestId("chat-thread-pinned").getAttribute("aria-label")).toBe("已置顶");
     expect(within(items[1]!).queryByTestId("chat-thread-pinned")).toBeNull();
     const unpin = within(items[0]!).getByRole("button", { name: "取消置顶会话「第一个会话」" });
-    expect(unpin.getAttribute("title")).toBe("取消置顶");
+    fireEvent.focus(unpin);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("取消置顶");
     // Pinning a thread does not open it: the latest created one stays open.
     expect(screen.getByTestId("chat-thread-title").textContent).toBe("第二个会话");
     expect(screen.getByText("第二个回答")).toBeTruthy();
@@ -1613,7 +1616,11 @@ describe("chat panel docking and floating", () => {
     ] as const) {
       const button = within(header).getByTestId(id);
       expect(button.textContent, id).toBe("");
-      expect(button.getAttribute("title"), id).toBe(name);
+      expect(button.getAttribute("aria-label"), id).toBe(name);
+      fireEvent.focus(button);
+      expect((await screen.findByRole("tooltip")).textContent, id).toBe(name);
+      fireEvent.blur(button);
+      await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
     }
     // Clearing every thread wears a broom, so it is not taken for a thread's own delete (a bin).
     expect(within(header).getByTestId("chat-clear").querySelector("svg")?.getAttribute("class")).toContain("brush-cleaning");

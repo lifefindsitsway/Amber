@@ -36,8 +36,10 @@ import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
 import { resetSubtitlePrefsMemory } from "../../player/subtitle-prefs.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Callout, FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { SettingsBlock } from "./settings-ui.tsx";
 import { ImportPackButton, PackActiveNotice } from "../content-pack/pack-entry.tsx";
 
@@ -148,15 +150,13 @@ function ExportCard() {
   const total = estimate.data === undefined ? 0 : estimate.data.database.bytes + (includeOriginals ? estimate.data.originals.bytes : 0) + (includeCache ? estimate.data.cache.bytes : 0);
   return (
     <SettingsBlock title={t("backup.export.title")} intro={t("backup.export.intro")}>
-      <div className="mb-3 flex flex-col gap-2 text-sm">
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={includeOriginals} disabled={running} onChange={(event) => setIncludeOriginals(event.target.checked)} data-testid="backup-include-originals" />
+      <div className="mb-3 flex flex-col items-start gap-2">
+        <Checkbox checked={includeOriginals} disabled={running} onChange={(event) => setIncludeOriginals(event.target.checked)} data-testid="backup-include-originals">
           {t("backup.export.includeOriginals")}
-        </label>
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={includeCache} disabled={running} onChange={(event) => setIncludeCache(event.target.checked)} data-testid="backup-include-cache" />
+        </Checkbox>
+        <Checkbox checked={includeCache} disabled={running} onChange={(event) => setIncludeCache(event.target.checked)} data-testid="backup-include-cache">
           {t("backup.export.includeCache")}
-        </label>
+        </Checkbox>
       </div>
       <div className="mb-3 text-sm" data-testid="backup-estimate">
         <p className="mb-1 text-xs font-medium text-muted">{t("backup.export.estimate")}</p>
@@ -176,8 +176,8 @@ function ExportCard() {
         )}
       </div>
       {unreadable.length === 0 ? null : (
-        <div className="mb-3 rounded-md border border-line p-3 text-sm" data-testid="backup-unreadable">
-          <p className="mb-1">{t("backup.export.unreadableTitle", { count: unreadable.length })}</p>
+        // Export cannot go on until these are dealt with, so a boxed caution rather than a quiet note.
+        <Callout tone="warn" className="mb-3" title={t("backup.export.unreadableTitle", { count: unreadable.length })} testId="backup-unreadable">
           <ul className="mb-2 list-disc pl-5 text-muted">
             {unreadable.map((item) => (
               <li key={item.assetId}>
@@ -185,24 +185,37 @@ function ExportCard() {
               </li>
             ))}
           </ul>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={excludeUnreadable} onChange={(event) => setExcludeUnreadable(event.target.checked)} data-testid="backup-exclude-unreadable" />
+          <Checkbox
+            checked={excludeUnreadable}
+            onChange={(event) => setExcludeUnreadable(event.target.checked)}
+            aria-describedby={blockedByUnreadable ? "backup-unreadable-blocking" : undefined}
+            data-testid="backup-exclude-unreadable"
+          >
             {t("backup.export.excludeUnreadable")}
-          </label>
-          {blockedByUnreadable ? <p className="mt-1 text-xs text-danger">{t("backup.export.unreadableBlocking")}</p> : null}
-        </div>
+          </Checkbox>
+          {blockedByUnreadable ? (
+            <FieldError id="backup-unreadable-blocking" className="mt-1.5">
+              {t("backup.export.unreadableBlocking")}
+            </FieldError>
+          ) : null}
+        </Callout>
       )}
-      <ul className="mb-3 list-disc pl-5 text-xs text-muted" data-testid="backup-notice">
-        <li className="text-danger">{t("backup.export.unencrypted")}</li>
-        <li>{t("backup.export.noSecrets")}</li>
-        <li>{t("backup.export.timePoint")}</li>
-      </ul>
+      <div className="mb-3 flex flex-col gap-2" data-testid="backup-notice">
+        {/* The file leaves Amber unprotected: to be read before exporting, so it is boxed. */}
+        <Callout tone="warn" density="compact">
+          {t("backup.export.unencrypted")}
+        </Callout>
+        <ul className={`list-disc pl-5 ${NOTE_TEXT_CLASS}`}>
+          <li>{t("backup.export.noSecrets")}</li>
+          <li>{t("backup.export.timePoint")}</li>
+        </ul>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" disabled={disabled} onClick={() => start.mutate()} data-testid="backup-export-start">
+        <Button variant="primary" disabled={disabled} loading={start.isPending} onClick={() => start.mutate()} data-testid="backup-export-start">
           {t("backup.export.start")}
         </Button>
-        {updateBusy ? <span className="text-xs text-muted">{t("backup.export.blockedByUpdate")}</span> : null}
-        {restoring ? <span className="text-xs text-muted">{t("backup.export.blockedByRestore")}</span> : null}
+        {updateBusy ? <span className="text-note text-muted">{t("backup.export.blockedByUpdate")}</span> : null}
+        {restoring ? <span className="text-note text-muted">{t("backup.export.blockedByRestore")}</span> : null}
       </div>
       {startError === undefined ? null : (
         <div className="mt-3">
@@ -220,7 +233,7 @@ function DroppedList(props: { dropped: readonly DroppedPreference[] }) {
   const { t } = useTranslation();
   if (props.dropped.length === 0) return null;
   return (
-    <div className="mt-2 text-xs text-muted" data-testid="backup-dropped">
+    <div className={`mt-2 ${NOTE_TEXT_CLASS}`} data-testid="backup-dropped">
       <p>{t("backup.export.droppedTitle", { count: props.dropped.length })}</p>
       <ul className="list-disc pl-5">
         {props.dropped.map((item) => (
@@ -247,7 +260,7 @@ function ExportJobView(props: { job: BackupExportJobDto; dropped: readonly Dropp
           <p className="mt-1 text-xs text-muted">
             {t("backup.export.progress", { done: formatBytes(job.bytesDone), total: formatBytes(job.bytesTotal), filesDone: job.filesDone, filesTotal: job.filesTotal })}
           </p>
-          <Button size="sm" className="mt-2" disabled={props.cancelling} onClick={props.onCancel} data-testid="backup-export-cancel">
+          <Button size="sm" className="mt-2" loading={props.cancelling} onClick={props.onCancel} data-testid="backup-export-cancel">
             {t("backup.export.cancel")}
           </Button>
         </>
@@ -263,7 +276,7 @@ function ExportJobView(props: { job: BackupExportJobDto; dropped: readonly Dropp
         <>
           <p className="mb-2">{t("backup.export.failed")}</p>
           {job.error === undefined ? null : <ErrorView error={job.error} />}
-          {job.failedAsset === undefined ? null : <p className="mt-2 text-xs">{t("backup.export.failedAsset", { name: job.failedAsset.displayName })}</p>}
+          {job.failedAsset === undefined ? null : <p className="mt-2 text-note">{t("backup.export.failedAsset", { name: job.failedAsset.displayName })}</p>}
         </>
       ) : null}
       {job.status === "running" ? <DroppedList dropped={props.dropped} /> : null}
@@ -385,6 +398,7 @@ function RestoreCard() {
   const ready = header !== undefined && (!needsOriginalsDir || (stage.step === "inspected" && stage.originals !== undefined));
   const fresh = readiness.data?.fresh === true;
   const blocked = updateBusy || exportBusy || running;
+  const replaces = (readiness.data?.willReplace.length ?? 0) > 0;
   return (
     <SettingsBlock title={t("backup.restore.title")} intro={t("backup.restore.intro")}>
       {readiness.data === undefined ? (
@@ -394,10 +408,11 @@ function RestoreCard() {
           <ErrorView error={appErrorOf(readiness.error)} />
         )
       ) : fresh ? null : (
-        <div className="mb-3 rounded-md border border-line p-3 text-sm" data-testid="restore-not-fresh">
-          <p>{t("backup.restore.notFresh")}</p>
-          <p className="mb-2">{t("backup.restore.notFreshHowTo")}</p>
-          <details className="mb-2 text-xs" data-testid="restore-clear-help">
+        // Why restoring is unavailable here: to be read before trying, so it is boxed.
+        <Callout tone="info" className="mb-3" testId="restore-not-fresh">
+          <p className="max-w-[70ch]">{t("backup.restore.notFresh")}</p>
+          <p className="mb-2 max-w-[70ch]">{t("backup.restore.notFreshHowTo")}</p>
+          <details className="mb-2 text-note" data-testid="restore-clear-help">
             <summary className="cursor-pointer text-muted">{t("backup.restore.clearHelpTitle")}</summary>
             <p className="mt-1 text-danger">{t("backup.restore.clearHelpBody")}</p>
           </details>
@@ -415,18 +430,18 @@ function RestoreCard() {
               );
             })}
           </ul>
-        </div>
+        </Callout>
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Button disabled={!fresh || blocked} onClick={() => void pick()} data-testid="restore-pick">
           {t("backup.restore.pick")}
         </Button>
-        {updateBusy ? <span className="text-xs text-muted">{t("backup.export.blockedByUpdate")}</span> : null}
+        {updateBusy ? <span className="text-note text-muted">{t("backup.export.blockedByUpdate")}</span> : null}
       </div>
       {pickError === undefined ? null : (
-        <p className="mt-2 text-sm text-danger" role="alert">
+        <Callout tone="error" announce="alert" className="mt-2">
           {t("backup.restore.shellRefused", { reason: pickError })}
-        </p>
+        </Callout>
       )}
       {stage.step === "inspected" && !stage.report.ok ? (
         <div className="mt-3">
@@ -447,12 +462,14 @@ function RestoreCard() {
           </ul>
           {needsOriginalsDir ? (
             <div className="mt-3">
-              <Button size="sm" disabled={blocked} onClick={() => void pickOriginals()} data-testid="restore-pick-originals">
+              <Button size="sm" disabled={blocked} onClick={() => void pickOriginals()} aria-describedby="restore-originals-hint" data-testid="restore-pick-originals">
                 {t("backup.restore.pickOriginalsDir")}
               </Button>
-              <p className="mt-1 text-xs text-muted">{t("backup.restore.originalsDirHint")}</p>
+              <FieldHint id="restore-originals-hint" className="mt-1.5">
+                {t("backup.restore.originalsDirHint")}
+              </FieldHint>
               {stage.step === "inspected" && stage.originals !== undefined ? (
-                <p className="mt-1 text-xs" data-testid="restore-originals-dir">
+                <p className="mt-1 text-note" data-testid="restore-originals-dir">
                   {t("backup.restore.originalsDirChosen", { path: stage.originals.path })}
                 </p>
               ) : null}
@@ -463,9 +480,22 @@ function RestoreCard() {
           </Button>
         </div>
       )}
-      <Modal open={confirming} onOpenChange={setConfirming} title={t("backup.restore.confirmTitle")}>
-        <div className="mb-4 text-sm" data-testid="restore-confirm">
-          {(readiness.data?.willReplace.length ?? 0) === 0 ? (
+      <Modal
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={t("backup.restore.confirmTitle")}
+        footer={
+          <>
+            <Button onClick={() => setConfirming(false)}>{t("common.action.cancel")}</Button>
+            {/* Replacing the listed settings cannot be undone, so that case takes the destructive look. */}
+            <Button variant={replaces ? "danger-solid" : "primary"} onClick={() => void run()} data-testid="restore-confirm-start">
+              {t("backup.restore.confirm")}
+            </Button>
+          </>
+        }
+      >
+        <div className="text-sm" data-testid="restore-confirm">
+          {!replaces ? (
             <p className="mb-2">{t("backup.restore.confirmReplaceNone")}</p>
           ) : (
             <>
@@ -483,19 +513,13 @@ function RestoreCard() {
             <li>{t("backup.restore.confirmBackend")}</li>
           </ul>
         </div>
-        <div className="flex justify-end gap-2">
-          <Button onClick={() => setConfirming(false)}>{t("common.action.cancel")}</Button>
-          <Button variant="primary" onClick={() => void run()} data-testid="restore-confirm-start">
-            {t("backup.restore.confirm")}
-          </Button>
-        </div>
       </Modal>
       {stage.step === "running" ? <RestoreOverlay progress={stage.progress} /> : null}
       {stage.step === "done" ? <RestoreResult report={stage.report} preferences={stage.preferences} /> : null}
       {stage.step === "refused" ? (
-        <p className="mt-3 text-sm text-danger" role="alert">
+        <Callout tone="error" announce="alert" className="mt-3">
           {t("backup.restore.shellRefused", { reason: stage.reason })}
-        </p>
+        </Callout>
       ) : null}
     </SettingsBlock>
   );
@@ -509,7 +533,7 @@ function RestoreOverlay(props: { progress: RestoreProgress | undefined }) {
       <div className="w-80 rounded-lg border border-line bg-surface p-4 text-sm shadow-xl">
         <p className="mb-2 font-medium">{t("backup.restore.running")}</p>
         {progress === undefined ? (
-          <p className="text-xs text-muted">{t("backup.restore.waitingBackend")}</p>
+          <p className={NOTE_TEXT_CLASS}>{t("backup.restore.waitingBackend")}</p>
         ) : (
           <>
             <progress className="h-1.5 w-full" max={Math.max(1, progress.total)} value={Math.min(progress.done, progress.total)} />

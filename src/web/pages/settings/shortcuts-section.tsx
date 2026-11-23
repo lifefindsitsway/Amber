@@ -10,8 +10,10 @@ import {
 } from "../../../shared/shortcuts.ts";
 import { usePatchSettings, useSettings } from "../../api/queries.ts";
 import { comboOf, useShortcutRegistry } from "../../shortcut-registry.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
+import { FieldError } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 const MODIFIER_KEY_NAMES = new Set(["Control", "Shift", "Alt", "Meta", "AltGraph", "OS"]);
@@ -54,6 +56,7 @@ export function ShortcutsSection() {
           <tbody>
             {SHORTCUT_ACTIONS.map((action) => {
               const problem = problems[action];
+              const problemId = `shortcut-problem-${action}`;
               return (
                 <tr key={action} className="border-t border-line align-top" data-action={action}>
                   <td className="py-2">{t(`common.shortcut.${action}`)}</td>
@@ -61,23 +64,25 @@ export function ShortcutsSection() {
                     {capturing === action ? (
                       <CaptureField
                         label={t(`common.shortcut.${action}`)}
+                        problemId={problem === undefined ? undefined : problemId}
                         onCombo={(combo) => record(action, combo)}
                         onCancel={() => setCapturing(undefined)}
                       />
                     ) : (
                       <button
                         type="button"
-                        className="rounded border border-line bg-sunken px-2 py-1 font-mono text-xs hover:border-accent"
+                        className={`rounded border bg-sunken px-2 py-1 font-mono text-xs hover:border-accent ${problem === undefined ? "border-line" : "border-danger"} ${FOCUS_RING}`}
                         aria-label={`${t(`common.shortcut.${action}`)} ${proposed[action]}`}
+                        aria-describedby={problem === undefined ? undefined : problemId}
                         onClick={() => setCapturing(action)}
                       >
                         {proposed[action]}
                       </button>
                     )}
                     {problem === undefined ? null : (
-                      <p className="mt-1 text-xs text-danger" role="alert">
+                      <FieldError id={problemId} className="mt-1.5" testId={`shortcut-problem-${action}`}>
                         {t(`settings.shortcuts.problem.${problem}`)}
-                      </p>
+                      </FieldError>
                     )}
                   </td>
                   <td className="py-2 text-right">
@@ -130,7 +135,7 @@ export function ShortcutsSection() {
  * Records the next key combination. The registry is suspended while capturing, so bound
  * combinations reach this field instead of triggering their actions.
  */
-function CaptureField(props: { label: string; onCombo: (combo: string) => void; onCancel: () => void }) {
+function CaptureField(props: { label: string; problemId: string | undefined; onCombo: (combo: string) => void; onCancel: () => void }) {
   const { t } = useTranslation();
   const registry = useShortcutRegistry();
   const { onCombo } = props;
@@ -147,11 +152,14 @@ function CaptureField(props: { label: string; onCombo: (combo: string) => void; 
     onCombo(comboOf(event.nativeEvent));
   };
   return (
-    <input
+    <TextInput
       autoFocus
       readOnly
+      size="sm"
       aria-label={props.label}
-      className="h-7 w-40 rounded border border-accent bg-surface px-2 font-mono text-xs outline-none"
+      aria-describedby={props.problemId}
+      invalid={props.problemId !== undefined}
+      className="w-40 font-mono"
       placeholder={t("settings.shortcuts.capture")}
       onKeyDown={onKeyDown}
       onBlur={props.onCancel}

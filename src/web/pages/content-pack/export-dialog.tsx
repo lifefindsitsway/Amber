@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { CONTENT_PACK_FILE_EXTENSION } from "../../../shared/backup-names.ts";
 import type { ContentPackExportJobDto, ContentPackExportPlanDto, ExportPlanContent } from "../../../shared/dto/content-pack.ts";
@@ -12,9 +13,11 @@ import { localTimeStamp, pickPackDestination } from "../../desktop/bridge.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { BlockedCard, DANGER_HINT_CLASS, ExportCard, useSummaryLine } from "./export-card.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { BlockedCard, ExportCard, useSummaryLine } from "./export-card.tsx";
 import {
   applyToContent,
   buildSelection,
@@ -41,8 +44,43 @@ export interface ExportRequest {
   focusContentId?: string;
 }
 
-/** Bottom bar that stays in view while the dialog body scrolls; the dialog's own padding is `p-5`. */
-export const STICKY_FOOTER = "sticky -bottom-5 -mx-5 -mb-5 mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-5 py-3";
+const FooterTarget = createContext<HTMLElement | null>(null);
+
+/**
+ * A wide sectioned dialog whose footer the step showing inside fills, through `PackFooter`: the
+ * buttons and the totals belong to the step, yet stay in view below the scrolling body.
+ */
+export function PackModal(props: { open: boolean; onOpenChange: (open: boolean) => void; title: string; children: ReactNode }) {
+  const [target, setTarget] = useState<HTMLDivElement | null>(null);
+  return (
+    <Modal
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+      title={props.title}
+      size="wide"
+      footer={<div ref={setTarget} className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-2" data-testid="pack-dialog-footer" />}
+    >
+      <FooterTarget.Provider value={target}>{props.children}</FooterTarget.Provider>
+    </Modal>
+  );
+}
+
+/**
+ * The buttons of the step on show, in the footer of the `PackModal` around it, cancel first;
+ * `status` (totals, what still blocks the main action) reads at the footer's left end. Every
+ * step renders one, so the footer is never an empty bar.
+ */
+export function PackFooter(props: { children: ReactNode; status?: ReactNode }) {
+  const target = useContext(FooterTarget);
+  if (target === null) return null;
+  return createPortal(
+    <>
+      {props.status === undefined ? null : <div className="min-w-0 flex-1 basis-48 text-note text-muted">{props.status}</div>}
+      <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">{props.children}</div>
+    </>,
+    target,
+  );
+}
 
 /**
  * The export wizard. It reads the export plan of the picked Contents, lets the user decide
@@ -54,9 +92,9 @@ export const STICKY_FOOTER = "sticky -bottom-5 -mx-5 -mb-5 mt-4 flex flex-wrap i
 export function ExportPackDialog(props: { open: boolean; onClose: () => void; request: ExportRequest | undefined; resumeJobId?: string | undefined }) {
   const { t } = useTranslation();
   return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentPack.export.title")} wide>
+    <PackModal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentPack.export.title")}>
       {props.open ? <ExportFlow request={props.request} resumeJobId={props.resumeJobId} onClose={props.onClose} /> : null}
-    </Modal>
+    </PackModal>
   );
 }
 
@@ -83,8 +121,21 @@ function ExportFlow(props: { request: ExportRequest | undefined; resumeJobId: st
   if (shown.step === "job") {
     return <ExportJobView jobId={shown.jobId} onBack={props.request === undefined ? undefined : () => setStep({ step: "choose" })} onClose={props.onClose} />;
   }
-  if (props.request === undefined || active.isPending) return <Loading />;
+  if (props.request === undefined || active.isPending) return <LoadingStep onClose={props.onClose} />;
   return <ExportChoices request={props.request} memory={memory} step={shown.step} setStep={setStep} importRunning={active.data?.importJobId !== undefined} onClose={props.onClose} />;
+}
+
+/** A step still reading, with the way out the footer always offers. */
+function LoadingStep(props: { onClose: () => void; children?: ReactNode }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {props.children ?? <Loading />}
+      <PackFooter>
+        <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+      </PackFooter>
+    </>
+  );
 }
 
 function ExportChoices(props: {
@@ -107,13 +158,26 @@ function ExportChoices(props: {
   });
   if (plan.isPending) {
     return (
-      <p className="flex items-center gap-2 py-6 text-sm text-muted" role="status">
-        {t("contentPack.export.loading")}
-      </p>
+      <LoadingStep onClose={props.onClose}>
+        <p className="flex items-center gap-2 py-6 text-sm text-muted" role="status">
+          {t("contentPack.export.loading")}
+        </p>
+      </LoadingStep>
     );
   }
   if (plan.isError) {
-    return <ErrorView error={appErrorOf(plan.error)} />;
+    return (
+      <>
+        <ErrorView error={appErrorOf(plan.error)}>
+          <Button size="sm" onClick={() => void plan.refetch()} data-testid="pack-export-plan-retry">
+            {t("common.action.retry")}
+          </Button>
+        </ErrorView>
+        <PackFooter>
+          <Button onClick={props.onClose}>{t("contentPack.export.close")}</Button>
+        </PackFooter>
+      </>
+    );
   }
   return (
     <PlanEditor
@@ -228,9 +292,9 @@ function PlanEditor(props: {
         {blocked.map((content) => (
           <BlockedCard key={content.contentId} content={content} />
         ))}
-        <div className="flex justify-end">
+        <PackFooter>
           <Button onClick={props.onClose}>{t("contentPack.export.close")}</Button>
-        </div>
+        </PackFooter>
       </div>
     );
   }
@@ -284,16 +348,15 @@ function PlanEditor(props: {
       {plan.collections.length === 0 ? null : (
         <fieldset className="mt-2 min-w-0" data-testid="pack-export-collections">
           <legend className="mb-1 text-sm font-medium">{t("contentPack.export.collections.title")}</legend>
-          <p className="mb-2 text-xs text-muted">{t("contentPack.export.collections.intro")}</p>
+          <p className={`mb-2 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.collections.intro")}</p>
           <ul className="flex flex-col gap-1.5">
             {plan.collections.map((collection) => {
               const carried = carriedMembers(collection, exportableIds);
               return (
                 <li key={collection.collectionId}>
-                  <label className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
+                  <Checkbox
+                      labelClassName="items-start! text-sm"
+                      className="mt-0.5"
                       checked={carried > 0 && collections.has(collection.collectionId)}
                       disabled={carried === 0}
                       onChange={(event) =>
@@ -306,34 +369,33 @@ function PlanEditor(props: {
                       }
                       data-testid="pack-collection"
                       data-collection-id={collection.collectionId}
-                    />
-                    <span className="min-w-0">
+                    >
                       <span className="break-words">{collection.name}</span>
                       <span className="ml-2 text-xs text-muted">
                         {carried === 0 ? t("contentPack.export.collections.noneCarried") : t("contentPack.export.collections.carried", { carried, total: collection.memberCount })}
                       </span>
-                    </span>
-                  </label>
+                    </Checkbox>
                 </li>
               );
             })}
           </ul>
         </fieldset>
       )}
-      <div className={STICKY_FOOTER}>
-        <div className="min-w-0 text-xs text-muted" aria-live="polite">
-          <span>{t("contentPack.export.totalContents", { count: exportable.length })}</span>
-          {t("contentPack.separator")}
-          <span data-testid="pack-export-total">{t("contentPack.export.total", { size: bytesLabel(size) })}</span>
-          {invalid.length > 0 ? <span className="ml-2 text-danger">{t("contentPack.export.fixProblems", { count: invalid.length })}</span> : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button variant="primary" disabled={invalid.length > 0} onClick={() => props.setStep({ step: "confirm" })} data-testid="pack-export-next">
-            {t("contentPack.export.next")}
-          </Button>
-        </div>
-      </div>
+      <PackFooter
+        status={
+          <div aria-live="polite">
+            <span>{t("contentPack.export.totalContents", { count: exportable.length })}</span>
+            {t("contentPack.separator")}
+            <span data-testid="pack-export-total">{t("contentPack.export.total", { size: bytesLabel(size) })}</span>
+            {invalid.length > 0 ? <span className="ml-2 text-danger">{t("contentPack.export.fixProblems", { count: invalid.length })}</span> : null}
+          </div>
+        }
+      >
+        <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+        <Button variant="primary" disabled={invalid.length > 0} onClick={() => props.setStep({ step: "confirm" })} data-testid="pack-export-next">
+          {t("contentPack.export.next")}
+        </Button>
+      </PackFooter>
     </div>
   );
 }
@@ -396,9 +458,9 @@ function ExportConfirm(props: {
           ))}
         </ul>
         {blocked.length === 0 ? null : (
-          <p className="mt-1.5 text-xs text-muted">{t("contentPack.export.confirm.skipped", { titles: blocked.map((content) => t("contentPack.quoted", { text: titleOf(content.title, t) })).join(t("contentPack.listSeparator")) })}</p>
+          <p className={`mt-1.5 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.confirm.skipped", { titles: blocked.map((content) => t("contentPack.quoted", { text: titleOf(content.title, t) })).join(t("contentPack.listSeparator")) })}</p>
         )}
-        <p className="mt-1.5 text-xs text-muted">
+        <p className={`mt-1.5 ${NOTE_TEXT_CLASS}`}>
           {collectionNames.length === 0 ? t("contentPack.export.confirm.noCollections") : t("contentPack.export.confirm.collections", { names: collectionNames.map((name) => t("contentPack.quoted", { text: name })).join(t("contentPack.listSeparator")) })}
         </p>
       </section>
@@ -417,31 +479,30 @@ function ExportConfirm(props: {
       <p className="font-medium" data-testid="pack-export-size">
         {t("contentPack.export.confirm.size", { size: bytesLabel(props.size) })}
       </p>
-      <ul className="list-disc pl-5 text-xs text-muted" data-testid="pack-export-notice">
-        <li className="text-danger">{t("contentPack.export.confirm.unencrypted")}</li>
-        <li>{t("contentPack.export.confirm.noSecrets")}</li>
-      </ul>
-      {props.notice === undefined ? null : (
-        <p className="text-sm text-muted" role="status">
-          {props.notice}
-        </p>
-      )}
+      {/* Read before the pack is written: once it leaves, nothing in it is protected. */}
+      <Callout tone="warn" testId="pack-export-notice">
+        <ul className="flex max-w-[70ch] flex-col gap-1">
+          <li className="font-medium">{t("contentPack.export.confirm.unencrypted")}</li>
+          <li className="text-note text-muted">{t("contentPack.export.confirm.noSecrets")}</li>
+        </ul>
+      </Callout>
+      {props.notice === undefined ? null : <InlineNote role="status">{props.notice}</InlineNote>}
       {props.error === undefined ? null : busyJob ? (
-        <p className={DANGER_HINT_CLASS} role="alert">
+        <Callout tone="warn" announce="alert">
           {t("contentPack.export.jobBusy")}
-        </p>
+        </Callout>
       ) : (
         <ErrorView error={props.error} />
       )}
-      {props.importRunning && props.error === undefined ? <p className="text-xs text-muted">{t("contentPack.export.jobBusy")}</p> : null}
-      <div className={STICKY_FOOTER}>
+      {props.importRunning && props.error === undefined ? <InlineNote>{t("contentPack.export.jobBusy")}</InlineNote> : null}
+      <PackFooter>
         <Button onClick={props.onBack} disabled={props.busy}>
           {t("contentPack.export.back")}
         </Button>
-        <Button variant="primary" disabled={props.busy || props.importRunning} onClick={props.onStart} data-testid="pack-export-start">
+        <Button variant="primary" loading={props.busy} disabled={props.importRunning} onClick={props.onStart} data-testid="pack-export-start">
           {props.desktop ? t("contentPack.export.confirm.startDesktop") : t("contentPack.export.confirm.startServer")}
         </Button>
-      </div>
+      </PackFooter>
     </div>
   );
 }
@@ -465,15 +526,24 @@ function ExportJobView(props: { jobId: string; onBack: (() => void) | undefined;
   }, [status, queryClient]);
   if (job.isError) {
     return (
-      <div className="flex flex-col gap-3">
+      <>
         <ErrorView error={appErrorOf(job.error)} />
-        <div className="flex justify-end">
+        <PackFooter>
           <Button onClick={props.onClose}>{t("contentPack.export.close")}</Button>
-        </div>
-      </div>
+        </PackFooter>
+      </>
     );
   }
-  if (job.data === undefined) return <Loading />;
+  if (job.data === undefined) {
+    return (
+      <>
+        <Loading />
+        <PackFooter>
+          <Button onClick={props.onClose}>{t("contentPack.export.close")}</Button>
+        </PackFooter>
+      </>
+    );
+  }
   return <ExportJobBody job={job.data} cancelling={cancel.isPending} onCancel={() => cancel.mutate()} onBack={props.onBack} onClose={props.onClose} />;
 }
 
@@ -506,7 +576,7 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
           ) : null}
           <p className="mt-1 text-xs text-muted">{t("contentPack.export.resultDetail", { count: result.contents, size: bytesLabel(result.sizeBytes) })}</p>
           {result.downloadPath === undefined ? null : expired ? (
-            <p className="mt-2 text-xs text-muted">{t("contentPack.export.expired")}</p>
+            <p className={`mt-2 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.expired")}</p>
           ) : (
             <div className="mt-3 flex flex-col items-start gap-1.5">
               {/* A plain link: the browser saves the file itself, chunk by chunk, outside the page. */}
@@ -519,7 +589,7 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
                 <Download size={14} aria-hidden="true" className="shrink-0" />
                 <span className="truncate">{t("contentPack.export.download", { name: result.fileName })}</span>
               </a>
-              {result.expiresAt === undefined ? null : <p className="text-xs text-muted">{t("contentPack.export.downloadHint", { time: formatDateTime(result.expiresAt, i18n.language) })}</p>}
+              {result.expiresAt === undefined ? null : <p className={NOTE_TEXT_CLASS}>{t("contentPack.export.downloadHint", { time: formatDateTime(result.expiresAt, i18n.language) })}</p>}
             </div>
           )}
         </div>
@@ -529,23 +599,20 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
         <div className="flex flex-col gap-2">
           <p className="font-medium">{t("contentPack.export.failed")}</p>
           {job.error === undefined ? null : <ErrorView error={job.error} />}
-          {job.failedContent === undefined ? null : <p className="text-xs">{t("contentPack.export.failedContent", { title: titleOf(job.failedContent.title, t) })}</p>}
+          {job.failedContent === undefined ? null : <p className="text-note">{t("contentPack.export.failedContent", { title: titleOf(job.failedContent.title, t) })}</p>}
         </div>
       ) : null}
-      <div className={STICKY_FOOTER}>
-        <span />
-        <div className="flex items-center gap-2">
-          {job.status === "running" ? (
-            <Button disabled={props.cancelling} onClick={props.onCancel} data-testid="pack-export-cancel">
-              {props.cancelling ? t("contentPack.export.cancelling") : t("contentPack.export.cancel")}
-            </Button>
-          ) : null}
-          {(job.status === "failed" || job.status === "cancelled") && props.onBack !== undefined ? <Button onClick={props.onBack}>{t("contentPack.export.back")}</Button> : null}
-          <Button variant={job.status === "running" ? "secondary" : "primary"} onClick={props.onClose}>
-            {t("contentPack.export.close")}
+      <PackFooter>
+        {job.status === "running" ? (
+          <Button loading={props.cancelling} onClick={props.onCancel} data-testid="pack-export-cancel">
+            {props.cancelling ? t("contentPack.export.cancelling") : t("contentPack.export.cancel")}
           </Button>
-        </div>
-      </div>
+        ) : null}
+        {(job.status === "failed" || job.status === "cancelled") && props.onBack !== undefined ? <Button onClick={props.onBack}>{t("contentPack.export.back")}</Button> : null}
+        <Button variant={job.status === "running" ? "secondary" : "primary"} onClick={props.onClose}>
+          {t("contentPack.export.close")}
+        </Button>
+      </PackFooter>
     </div>
   );
 }

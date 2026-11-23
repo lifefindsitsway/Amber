@@ -45,7 +45,7 @@ export function SpeakerBasisLine(props: {
   const notice = speakerBasisNotice(t, { stale: props.stale, speakerContext: props.speakerContext, primary });
   if (notice === undefined) return null;
   return (
-    <p role="note" className={`text-xs text-muted ${props.className ?? ""}`} data-testid={props.testId} data-state={notice.state}>
+    <p role="note" className={`text-note text-muted ${props.className ?? ""}`} data-testid={props.testId} data-state={notice.state}>
       {notice.text}
     </p>
   );
@@ -61,7 +61,7 @@ export function SpeakersNotReadHint(props: { contentId: string; revisionId: stri
   const state = useTranscriptSpeakerState(props.contentId, props.revisionId);
   if (!speakersNotRead(state)) return null;
   return (
-    <span className={`text-xs text-muted ${props.className ?? ""}`} data-testid={props.testId}>
+    <span className={`text-note text-muted ${props.className ?? ""}`} data-testid={props.testId}>
       {t("speakerContext.notRead")}
     </span>
   );

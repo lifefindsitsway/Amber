@@ -4,8 +4,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "reac
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { EmptyState } from "../../ui/feedback.tsx";
+import { NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 import { normalizeSelection, paramsWithSelection, rowIndexOfSegment, SPEAKER_PARAM, skippedParts, type FilteredRow, type FilterSpeaker, type GapRow } from "./speaker-filter.ts";
 import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
@@ -80,16 +83,18 @@ export function SpeakerFilterButton(props: {
   const label = props.selected.length === 0 ? t("speakerContext.filter.trigger") : t("speakerContext.filter.triggerActive", { count: props.selected.length });
   return (
     <Popover.Root modal={false}>
-      <Popover.Trigger asChild>
-        <Button size="sm" variant={props.selected.length === 0 ? "ghost" : "secondary"} aria-label={label} title={label} data-testid="speaker-filter">
-          <UsersRound size={14} aria-hidden="true" />
-          {props.selected.length === 0 ? null : (
-            <span className="tabular-nums" aria-hidden="true">
-              {props.selected.length}
-            </span>
-          )}
-        </Button>
-      </Popover.Trigger>
+      <Tooltip content={label}>
+        <Popover.Trigger asChild>
+          <Button size="sm" variant={props.selected.length === 0 ? "ghost" : "secondary"} aria-label={label} data-testid="speaker-filter">
+            <UsersRound size={14} aria-hidden="true" />
+            {props.selected.length === 0 ? null : (
+              <span className="tabular-nums" aria-hidden="true">
+                {props.selected.length}
+              </span>
+            )}
+          </Button>
+        </Popover.Trigger>
+      </Tooltip>
       <Popover.Portal>
         <Popover.Content
           side="bottom"
@@ -102,7 +107,7 @@ export function SpeakerFilterButton(props: {
         >
           <p className="px-2 pt-1 pb-2 text-xs font-medium text-muted">{t("speakerContext.filter.title")}</p>
           {offered.length === 0 ? (
-            <p className="px-2 pb-2 text-xs text-muted">{t("speakerContext.filter.noSpeakers")}</p>
+            <p className={`px-2 pb-2 ${NOTE_TEXT_CLASS}`}>{t("speakerContext.filter.noSpeakers")}</p>
           ) : (
             <ul className="flex flex-col">
               {offered.map((speaker) => {
@@ -111,7 +116,7 @@ export function SpeakerFilterButton(props: {
                 return (
                   <li key={speaker.id}>
                     <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-sunken" data-testid="speaker-filter-option" data-speaker-id={speaker.id}>
-                      <input type="checkbox" checked={chosen.has(speaker.id)} onChange={() => toggle(speaker.id)} />
+                      <Checkbox checked={chosen.has(speaker.id)} onChange={() => toggle(speaker.id)} />
                       <SpeakerAvatar contentId={props.contentId} speaker={speaker} size={22} decorative />
                       <span className="min-w-0 flex-1 truncate" title={name}>
                         {name}
@@ -144,9 +149,9 @@ export function SpeakerFilterBar(props: { speakers: readonly SpeakerDto[]; selec
   return (
     <div className="flex flex-wrap items-center gap-2 px-4 pt-2 text-xs" data-testid="speaker-filter-bar">
       <span role="status">{t("speakerContext.filter.active", { names: selectedNames(t, props.speakers, props.selected), turns: props.turns })}</span>
-      <button type="button" className="text-accent hover:underline" onClick={props.onClear} data-testid="speaker-filter-clear">
+      <TextAction onClick={props.onClear} data-testid="speaker-filter-clear">
         {t("speakerContext.filter.clear")}
-      </button>
+      </TextAction>
     </div>
   );
 }
@@ -180,7 +185,7 @@ export function SpeakerGap(props: { gap: GapRow; onReturn: (firstSkippedId: stri
       <span className="h-px flex-1 border-t border-dashed border-line" aria-hidden="true" />
       <button
         type="button"
-        className="shrink-0 rounded px-2 py-0.5 text-xs text-muted hover:bg-sunken hover:text-ink"
+        className={`shrink-0 rounded px-2 py-0.5 text-xs text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
         aria-label={t("speakerContext.filter.gapLabel", { duration })}
         {...{ [READER_PART_ATTRIBUTE]: "gap" }}
         onClick={() => props.onReturn(props.gap.firstSkippedId)}

@@ -5,10 +5,12 @@ import type { ChatMessageDto } from "../../shared/dto/chat.ts";
 import { useProviders } from "../api/queries.ts";
 import { formatBeijingDateTime, formatBeijingDateTimeSeconds } from "../format.ts";
 import { LlmModelMark } from "../models/model-mark.tsx";
+import { FOCUS_RING } from "../ui/button.tsx";
 import { copyText } from "../ui/clipboard.ts";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { useAutoDismiss } from "../use-auto-dismiss.ts";
 
-const ICON_BUTTON = "flex size-6 items-center justify-center rounded text-muted hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40";
+const ICON_BUTTON = `flex size-6 items-center justify-center rounded text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
 
 /**
  * The row under an answer: copy · retry (last turn only) · delete the turn · the model's mark,
@@ -39,29 +41,35 @@ export function ChatMessageFooter(props: {
   const time = finished ?? props.askedAt;
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted" data-testid="chat-turn-footer">
-      <button
-        type="button"
-        className={ICON_BUTTON}
-        disabled={!props.copyable}
-        title={copied === undefined ? t("chat.turn.copy") : t("chat.turn.copied")}
-        aria-label={t("chat.turn.copy")}
-        data-testid="chat-turn-copy"
-        onClick={() => {
-          void copyText(props.copy()).then((ok) => {
-            if (ok) setCopied(Date.now());
-          });
-        }}
-      >
-        {copied === undefined ? <Copy size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
-      </button>
-      {props.onRetry === undefined ? null : (
-        <button type="button" className={ICON_BUTTON} disabled={props.busy} title={t("chat.turn.retry")} aria-label={t("chat.turn.retry")} data-testid="chat-turn-retry" onClick={props.onRetry}>
-          <RotateCcw size={13} aria-hidden="true" />
+      <Tooltip content={copied === undefined ? t("chat.turn.copy") : t("chat.turn.copied")}>
+        <button
+          type="button"
+          className={ICON_BUTTON}
+          disabled={!props.copyable}
+          aria-label={t("chat.turn.copy")}
+          data-testid="chat-turn-copy"
+          data-copied={copied === undefined ? undefined : "true"}
+          onClick={() => {
+            void copyText(props.copy()).then((ok) => {
+              if (ok) setCopied(Date.now());
+            });
+          }}
+        >
+          {copied === undefined ? <Copy size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
         </button>
+      </Tooltip>
+      {props.onRetry === undefined ? null : (
+        <Tooltip content={t("chat.turn.retry")}>
+          <button type="button" className={ICON_BUTTON} disabled={props.busy} aria-label={t("chat.turn.retry")} data-testid="chat-turn-retry" onClick={props.onRetry}>
+            <RotateCcw size={13} aria-hidden="true" />
+          </button>
+        </Tooltip>
       )}
-      <button type="button" className={ICON_BUTTON} disabled={props.busy} title={t("chat.turn.delete")} aria-label={t("chat.turn.delete")} data-testid="chat-turn-delete" onClick={props.onDelete}>
-        <Trash2 size={13} aria-hidden="true" />
-      </button>
+      <Tooltip content={t("chat.turn.delete")}>
+        <button type="button" className={ICON_BUTTON} disabled={props.busy} aria-label={t("chat.turn.delete")} data-testid="chat-turn-delete" onClick={props.onDelete}>
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
+      </Tooltip>
       {model === undefined ? null : (
         <span className="ml-1 flex min-w-0 items-center gap-1">
           <LlmModelMark modelId={model.modelId} presetId={presetId} size={14} />

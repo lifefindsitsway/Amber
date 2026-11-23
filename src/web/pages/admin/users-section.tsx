@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { Users } from "lucide-react";
+import { useId, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { PASSWORD_MIN_LEN } from "../../../shared/defaults.ts";
@@ -9,10 +10,12 @@ import { useApi } from "../../api/context.tsx";
 import { queryKeys, useMe } from "../../api/queries.ts";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
-import { Loading } from "../../ui/feedback.tsx";
+import { EmptyState, SkeletonRows } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { ConfirmDialog } from "../../components/confirm-dialog.tsx";
-import { Field, INPUT_CLASS, RequestError, SettingsBlock } from "../settings/settings-ui.tsx";
+import { describedBy, Field, fieldErrorId, fieldHintId, INPUT_CLASS, RequestError, SettingsBlock } from "../settings/settings-ui.tsx";
 import { adminKeys, useAdminUsers } from "./admin-data.ts";
 import { PasswordInput } from "../../ui/password-input.tsx";
 
@@ -61,10 +64,20 @@ export function UsersSection() {
           </Button>
         }
       >
-        {users.isPending ? <Loading /> : null}
+        {users.isPending ? <SkeletonRows count={3} rowHeight={28} /> : null}
         <RequestError error={users.error} />
         <RequestError error={patch.error} />
-        {users.data?.users.length === 0 ? <p className="text-sm text-muted">{t("admin.users.empty")}</p> : null}
+        {users.data?.users.length === 0 ? (
+          <EmptyState
+            icon={<Users size={28} />}
+            title={t("admin.users.empty")}
+            action={
+              <Button variant="primary" onClick={() => setDialog({ kind: "create" })}>
+                {t("admin.users.create")}
+              </Button>
+            }
+          />
+        ) : null}
         {users.data === undefined || users.data.users.length === 0 ? null : (
           // Below 42rem of list width status, quota and creation time fold under the username.
           <div className="@container">
@@ -92,9 +105,9 @@ export function UsersSection() {
                       </span>
                     </td>
                     <td className="py-1.5 pr-3">
-                      <select
+                      <NativeSelect
                         aria-label={t("admin.users.role")}
-                        className="h-7 rounded border border-line bg-surface px-1 text-xs"
+                        size="sm"
                         value={user.role}
                         disabled={patch.isPending}
                         onChange={(event) => patch.mutate({ id: user.id, body: { role: event.target.value as UserRole } })}
@@ -104,7 +117,7 @@ export function UsersSection() {
                             {t(`admin.users.roleValue.${role}`)}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </td>
                     <td className={`${WIDE_ONLY} py-1.5 pr-3 whitespace-nowrap`}>{t(`admin.users.statusValue.${user.status}`)}</td>
                     <td className={`${WIDE_ONLY} py-1.5 pr-3 whitespace-nowrap`}>{limitOf(user)}</td>
@@ -196,35 +209,58 @@ function CreateUserDialog(props: { onClose: () => void; onDone: () => void }) {
     if ([...password].length < PASSWORD_MIN_LEN) return setProblem(t("admin.users.passwordTooShort", { min: PASSWORD_MIN_LEN }));
     create.mutate();
   };
+  const formId = useId();
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("admin.users.createTitle")}>
-      <form onSubmit={submit} data-testid="create-user-form">
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("admin.users.createTitle")}
+      footer={
+        <>
+          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={formId} variant="primary" loading={create.isPending}>
+            {t("common.action.create")}
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={submit} data-testid="create-user-form">
         <Field label={t("admin.users.username")} hint={t("admin.users.usernameHint")} htmlFor="new-user-name">
-          <input id="new-user-name" required autoComplete="off" className={INPUT_CLASS} value={username} onChange={(event) => setUsername(event.target.value)} />
+          <TextInput
+            id="new-user-name"
+            required
+            autoComplete="off"
+            className="w-full"
+            aria-describedby={fieldHintId("new-user-name")}
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+          />
         </Field>
-        <Field label={t("admin.users.password")} hint={t("admin.users.passwordHint", { min: PASSWORD_MIN_LEN })} htmlFor="new-user-password">
-          <PasswordInput id="new-user-password" required autoComplete="new-password" className={INPUT_CLASS} value={password} onChange={(event) => setPassword(event.target.value)} />
+        <Field label={t("admin.users.password")} hint={t("admin.users.passwordHint", { min: PASSWORD_MIN_LEN })} error={problem} htmlFor="new-user-password">
+          <PasswordInput
+            id="new-user-password"
+            required
+            autoComplete="new-password"
+            className={INPUT_CLASS}
+            aria-invalid={problem === undefined ? undefined : true}
+            aria-describedby={describedBy(problem !== undefined && fieldErrorId("new-user-password"), fieldHintId("new-user-password"))}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
         </Field>
         <Field label={t("admin.users.displayName")} htmlFor="new-user-display">
-          <input id="new-user-display" className={INPUT_CLASS} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+          <TextInput id="new-user-display" className="w-full" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
         </Field>
         <Field label={t("admin.users.role")} htmlFor="new-user-role">
-          <select id="new-user-role" className={INPUT_CLASS} value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
+          <NativeSelect id="new-user-role" className="w-full" value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
             {USER_ROLES.map((item) => (
               <option key={item} value={item}>
                 {t(`admin.users.roleValue.${item}`)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
-        {problem === undefined ? null : <p className="mb-2 text-sm text-danger">{problem}</p>}
         <RequestError error={create.error} />
-        <div className="mt-3 flex justify-end gap-2">
-          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={create.isPending}>
-            {t("common.action.create")}
-          </Button>
-        </div>
       </form>
     </Modal>
   );
@@ -260,23 +296,37 @@ function EditUserDialog(props: { user: AdminUserDto; onClose: () => void; onDone
     if (Object.keys(body).length === 0) return props.onClose();
     save.mutate(body);
   };
+  const formId = useId();
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("admin.users.editTitle", { username: props.user.username })}>
-      <form onSubmit={submit}>
-        <Field label={t("admin.users.displayName")} htmlFor="edit-user-display">
-          <input id="edit-user-display" className={INPUT_CLASS} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-        </Field>
-        <Field label={t("admin.users.storageLimitGB")} htmlFor="edit-user-limit">
-          <input id="edit-user-limit" inputMode="decimal" className={INPUT_CLASS} value={limit} onChange={(event) => setLimit(event.target.value)} />
-        </Field>
-        {problem === undefined ? null : <p className="mb-2 text-sm text-danger">{problem}</p>}
-        <RequestError error={save.error} />
-        <div className="mt-3 flex justify-end gap-2">
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("admin.users.editTitle", { username: props.user.username })}
+      footer={
+        <>
           <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={save.isPending}>
+          <Button type="submit" form={formId} variant="primary" loading={save.isPending}>
             {t("common.action.save")}
           </Button>
-        </div>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={submit}>
+        <Field label={t("admin.users.displayName")} htmlFor="edit-user-display">
+          <TextInput id="edit-user-display" className="w-full" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+        </Field>
+        <Field label={t("admin.users.storageLimitGB")} error={problem} htmlFor="edit-user-limit">
+          <TextInput
+            id="edit-user-limit"
+            inputMode="decimal"
+            className="w-full"
+            invalid={problem !== undefined}
+            aria-describedby={problem === undefined ? undefined : fieldErrorId("edit-user-limit")}
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+          />
+        </Field>
+        <RequestError error={save.error} />
       </form>
     </Modal>
   );
@@ -300,20 +350,36 @@ function ResetPasswordDialog(props: { user: AdminUserDto; onClose: () => void; o
     if ([...password].length < PASSWORD_MIN_LEN) return setProblem(t("admin.users.passwordTooShort", { min: PASSWORD_MIN_LEN }));
     reset.mutate();
   };
+  const formId = useId();
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("admin.users.resetTitle", { username: props.user.username })} description={t("admin.users.resetHint")}>
-      <form onSubmit={submit}>
-        <Field label={t("admin.users.newPassword")} hint={t("admin.users.passwordHint", { min: PASSWORD_MIN_LEN })} htmlFor="reset-password">
-          <PasswordInput id="reset-password" required autoComplete="new-password" className={INPUT_CLASS} value={password} onChange={(event) => setPassword(event.target.value)} />
-        </Field>
-        {problem === undefined ? null : <p className="mb-2 text-sm text-danger">{problem}</p>}
-        <RequestError error={reset.error} />
-        <div className="mt-3 flex justify-end gap-2">
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("admin.users.resetTitle", { username: props.user.username })}
+      description={t("admin.users.resetHint")}
+      footer={
+        <>
           <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={reset.isPending}>
+          <Button type="submit" form={formId} variant="primary" loading={reset.isPending}>
             {t("admin.users.resetPassword")}
           </Button>
-        </div>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={submit}>
+        <Field label={t("admin.users.newPassword")} hint={t("admin.users.passwordHint", { min: PASSWORD_MIN_LEN })} error={problem} htmlFor="reset-password">
+          <PasswordInput
+            id="reset-password"
+            required
+            autoComplete="new-password"
+            className={INPUT_CLASS}
+            aria-invalid={problem === undefined ? undefined : true}
+            aria-describedby={describedBy(problem !== undefined && fieldErrorId("reset-password"), fieldHintId("reset-password"))}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </Field>
+        <RequestError error={reset.error} />
       </form>
     </Modal>
   );

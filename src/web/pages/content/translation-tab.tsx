@@ -17,6 +17,9 @@ import { FailedTaskNotice } from "../../components/failed-task-notice.tsx";
 import { ModelSelect } from "../../components/model-select.tsx";
 import { TaskFlow } from "../../components/task-flow.tsx";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
+import { FieldError, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, useLatestTranslateTask, useRevisions, useTranslations } from "./content-data.ts";
@@ -59,6 +62,7 @@ export function TranslationTab() {
   const options = useMemo(() => chatModelOptions(providers.data?.items ?? []), [providers.data]);
   const modelEntries = useMemo(() => chatModelEntries(options), [options]);
   const modelPickerId = useId();
+  const customErrorId = useId();
   const [pickedModel, setPickedModel] = useState<string | undefined>(undefined);
   const [chosen, setChosen] = useState<string[]>([]);
   const [custom, setCustom] = useState("");
@@ -99,6 +103,7 @@ export function TranslationTab() {
   const choices = [...new Set([...targetLanguageChoices(source?.language), ...chosen])];
   const toggle = (tag: string): void => setChosen(chosen.includes(tag) ? chosen.filter((item) => item !== tag) : [...chosen, tag]);
   const customValid = languageTagSchema.safeParse(custom.trim()).success && (source === undefined || primarySubtag(custom.trim()) !== primarySubtag(source.language));
+  const customInvalid = custom.trim() !== "" && !customValid;
   const openVersion = (revisionId: string): void => {
     // The version list may predate the translation; the subtitles tab picks it once re-read.
     void queryClient.invalidateQueries({ queryKey: contentKeys.revisions(contentId) });
@@ -121,15 +126,16 @@ export function TranslationTab() {
               {choices.map((tag) => (
                 <label
                   key={tag}
-                  className={`flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${chosen.includes(tag) ? "border-accent bg-accent-soft text-accent" : "border-line"}`}
+                  // The chip is the check box's face: the box itself is visually hidden, so the chip shows its focus.
+                  className={`flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition duration-150 motion-reduce:transition-none has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent ${chosen.includes(tag) ? "border-accent bg-accent-soft text-accent" : "border-line hover:bg-sunken"}`}
                 >
-                  <input type="checkbox" className="sr-only" checked={chosen.includes(tag)} onChange={() => toggle(tag)} data-testid={`translation-language-${tag}`} />
+                  <Checkbox className="sr-only" checked={chosen.includes(tag)} onChange={() => toggle(tag)} data-testid={`translation-language-${tag}`} />
                   {label(tag)}
                 </label>
               ))}
             </div>
             <form
-              className="flex items-center gap-2"
+              className="flex flex-col gap-1.5"
               onSubmit={(event) => {
                 event.preventDefault();
                 if (!customValid) return;
@@ -138,24 +144,29 @@ export function TranslationTab() {
                 setCustom("");
               }}
             >
-              <input
-                className="h-7 w-56 rounded border border-line bg-surface px-2 text-xs"
-                placeholder={t("contentView.translation.customLanguage")}
-                aria-label={t("contentView.translation.customLanguage")}
-                value={custom}
-                onChange={(event) => setCustom(event.target.value)}
-              />
-              <Button size="sm" type="submit" disabled={!customValid}>
-                <Plus size={14} />
-                {t("contentView.translation.addLanguage")}
-              </Button>
-              {custom.trim() !== "" && !customValid ? <span className="text-xs text-danger">{t("contentView.translation.invalidLanguage")}</span> : null}
+              <div className="flex items-center gap-2">
+                <TextInput
+                  size="sm"
+                  className="w-56"
+                  placeholder={t("contentView.translation.customLanguage")}
+                  aria-label={t("contentView.translation.customLanguage")}
+                  value={custom}
+                  invalid={customInvalid}
+                  aria-describedby={customInvalid ? customErrorId : undefined}
+                  onChange={(event) => setCustom(event.target.value)}
+                />
+                <Button size="sm" type="submit" disabled={!customValid}>
+                  <Plus size={14} />
+                  {t("contentView.translation.addLanguage")}
+                </Button>
+              </div>
+              {customInvalid ? <FieldError id={customErrorId}>{t("contentView.translation.invalidLanguage")}</FieldError> : null}
             </form>
           </fieldset>
           {options.length === 0 ? (
-            <p className="text-xs text-muted">
+            <p className={NOTE_TEXT_CLASS}>
               {t("contentView.translation.needsModel")}{" "}
-              <Link to="/settings/models" className="text-accent hover:underline">
+              <Link to="/settings/models" className={TEXT_ACTION_CLASS}>
                 {t("common.action.goConfigure")}
               </Link>
             </p>
@@ -179,9 +190,9 @@ export function TranslationTab() {
               </div>
             </div>
           )}
-          <p className="text-xs text-muted">
+          <p className={NOTE_TEXT_CLASS}>
             {t("contentView.translation.termsHint")}{" "}
-            <Link to="/settings/terminology" className="text-accent hover:underline">
+            <Link to="/settings/terminology" className={TEXT_ACTION_CLASS}>
               {t("contentView.translation.termsLink")}
             </Link>
           </p>
@@ -193,7 +204,7 @@ export function TranslationTab() {
             <SpeakersNotReadHint contentId={contentId} revisionId={primaryId} testId="translation-speakers-not-read" />
           </div>
           {replacesManual ? (
-            <p className="text-xs text-muted" data-testid="translation-replaces-manual">
+            <p className={NOTE_TEXT_CLASS} data-testid="translation-replaces-manual">
               {t("editor.entry.retranslateHint")}
             </p>
           ) : null}

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DropdownMenu } from "radix-ui";
 import { Check, ChevronDown, ChevronRight, FolderOpen, Library, ListTodo, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Trash2, UserRound } from "lucide-react";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useState, type FormEvent, type ReactElement, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { matchPath, NavLink, useLocation, useNavigate } from "react-router";
 import { SIDEBAR_COLLECTION_ITEMS, SIDEBAR_RECENT_ITEMS, THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
@@ -21,10 +21,13 @@ import { ErrorView } from "../components/error-view.tsx";
 import { RESOURCES } from "../i18n.ts";
 import { useReportSidebarWidth } from "../layout-width.tsx";
 import { listLoopState } from "../player/list-loop.ts";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
 import { useContextMenuTarget } from "../ui/context-menu.tsx";
 import { Modal } from "../ui/modal.tsx";
+import { InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 import { Splitter } from "../ui/splitter.tsx";
+import { TextArea, TextInput } from "../ui/text-field.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { AboutDialog } from "./about-dialog.tsx";
 import { SloganMark } from "./slogan-mark.tsx";
 import { useOpenTasksRequest, useTaskListRefresh } from "./task-panel.tsx";
@@ -166,18 +169,25 @@ export function Sidebar(props: { onOpenOmnibox: () => void; onOpenTasks: () => v
             <SloganMark label={t("shell.sidebar.slogan")} className="block h-auto w-full text-accent" />
           </div>
         )}
-        <IconButton label={t("common.nav.search")} onClick={props.onOpenOmnibox}>
+        <IconButton label={t("common.nav.search")} side={collapsed ? "right" : "bottom"} onClick={props.onOpenOmnibox}>
           <Search size={16} />
         </IconButton>
-        <IconButton label={collapsed ? t("common.nav.expand") : t("common.nav.collapse")} onClick={toggle}>
+        <IconButton label={collapsed ? t("common.nav.expand") : t("common.nav.collapse")} side={collapsed ? "right" : "bottom"} onClick={toggle}>
           {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
         </IconButton>
       </div>
       <div className="px-2">
-        <NavLink to="/new" data-testid="sidebar-new" title={t("common.nav.newSummary")} className="flex h-9 items-center justify-center gap-1.5 rounded-md bg-accent-glow px-3 text-sm font-medium text-accent-ink hover:brightness-105">
-          <Sparkles size={16} aria-hidden="true" />
-          {collapsed ? null : t("common.nav.newSummary")}
-        </NavLink>
+        <CollapsedTip label={t("common.nav.newSummary")} collapsed={collapsed}>
+          <NavLink
+            to="/new"
+            data-testid="sidebar-new"
+            {...collapsedName(t("common.nav.newSummary"), collapsed)}
+            className={`flex h-9 items-center justify-center gap-1.5 rounded-md bg-accent-glow px-3 text-sm font-medium text-accent-ink hover:brightness-105 ${FOCUS_RING}`}
+          >
+            <Sparkles size={16} aria-hidden="true" />
+            {collapsed ? null : t("common.nav.newSummary")}
+          </NavLink>
+        </CollapsedTip>
       </div>
       <div className="mt-2 flex flex-col gap-0.5 px-2">
         <NavItem to="/library" icon={<Library size={16} />} label={t("common.nav.library")} collapsed={collapsed} />
@@ -189,7 +199,15 @@ export function Sidebar(props: { onOpenOmnibox: () => void; onOpenTasks: () => v
         {collapsed ? null : (
           <>
             <Group title={t("common.nav.collections")} action={<IconButton label={t("shell.sidebar.newCollection")} onClick={() => setCreating(true)}><Plus size={14} /></IconButton>}>
-              {(collections.data?.items ?? []).length === 0 ? <p className="px-2 py-1 text-xs text-muted">{t("shell.sidebar.noCollections")}</p> : null}
+              {collections.data?.items.length === 0 ? (
+                <InlineNote
+                  className="px-2 py-1"
+                  testId="sidebar-no-collections"
+                  action={<TextAction onClick={() => setCreating(true)}>{t("shell.sidebar.createFirstCollection")}</TextAction>}
+                >
+                  {t("shell.sidebar.noCollections")}
+                </InlineNote>
+              ) : null}
               {(collections.data?.items ?? []).map((collection) => {
                 const open = collection.itemCount > 0 && (expanded[collection.id] ?? collection.id === current.collectionId);
                 return (
@@ -218,16 +236,20 @@ export function Sidebar(props: { onOpenOmnibox: () => void; onOpenTasks: () => v
                     {recentTotal}
                   </span>
                 ) : null}
-                <ChevronDown size={14} aria-hidden="true" className={recentCollapsed ? "-rotate-90" : ""} />
+                <ChevronDown size={14} aria-hidden="true" className={`${CHEVRON_MOTION} ${recentCollapsed ? "-rotate-90" : ""}`} />
               </button>
               {recentCollapsed ? null : (
                 <div className="flex flex-col gap-0.5">
-                  {recentItems.length === 0 ? <p className="px-2 py-1 text-xs text-muted">{t("shell.sidebar.noRecent")}</p> : null}
+                  {recent.data?.items.length === 0 ? (
+                    <InlineNote className="px-2 py-1" testId="sidebar-no-recent">
+                      {t("shell.sidebar.noRecent")}
+                    </InlineNote>
+                  ) : null}
                   {recentItems.map((content) => (
                     <RecentRow key={content.id} content={content} onDeleted={onDeleted} />
                   ))}
                   {recentTotal > recentItems.length ? (
-                    <NavLink to="/library?uncollected=1" className="px-2 py-1 text-xs text-accent hover:underline" data-testid="recent-view-all">
+                    <NavLink to="/library?uncollected=1" className={`self-start px-2 py-1 text-xs ${TEXT_ACTION_CLASS}`} data-testid="recent-view-all">
                       {t("common.action.viewAll")}
                     </NavLink>
                   ) : null}
@@ -238,11 +260,19 @@ export function Sidebar(props: { onOpenOmnibox: () => void; onOpenTasks: () => v
         )}
       </div>
       <div className="flex flex-col gap-1 border-t border-line p-2">
-        <button type="button" data-testid="sidebar-tasks" onClick={props.onOpenTasks} title={t("common.nav.tasks")} className={`${rowClass(false)} ${collapsed ? "justify-center" : ""}`}>
-          <ListTodo size={16} aria-hidden="true" />
-          {collapsed ? null : <span className="flex-1 text-left">{t("common.nav.tasks")}</span>}
-          {taskCount > 0 ? <span className="rounded-full bg-accent-glow px-1.5 text-xs text-accent-ink">{taskCount}</span> : null}
-        </button>
+        <CollapsedTip label={t("common.nav.tasks")} collapsed={collapsed}>
+          <button
+            type="button"
+            data-testid="sidebar-tasks"
+            onClick={props.onOpenTasks}
+            {...collapsedName(t("common.nav.tasks"), collapsed)}
+            className={`${rowClass(false)} ${collapsed ? "justify-center" : ""}`}
+          >
+            <ListTodo size={16} aria-hidden="true" />
+            {collapsed ? null : <span className="flex-1 text-left">{t("common.nav.tasks")}</span>}
+            {taskCount > 0 ? <span className="rounded-full bg-accent-glow px-1.5 text-xs text-accent-ink">{taskCount}</span> : null}
+          </button>
+        </CollapsedTip>
         <AccountMenu collapsed={collapsed} />
       </div>
       <NewCollectionDialog open={creating} onOpenChange={setCreating} />
@@ -308,15 +338,17 @@ function CollectionRow(props: { collection: CollectionDto; open: boolean; conten
           ) : null}
         </NavLink>
         {filled ? (
-          <button
-            type="button"
-            aria-expanded={props.open}
-            aria-label={t(props.open ? "shell.sidebar.collapseCollection" : "shell.sidebar.expandCollection", { name })}
-            onClick={props.onToggle}
-            className="absolute top-1 right-1 flex size-6 items-center justify-center rounded text-muted hover:bg-line hover:text-ink"
-          >
-            <ChevronDown size={14} aria-hidden="true" className={props.open ? "" : "-rotate-90"} />
-          </button>
+          <Tooltip content={t(props.open ? "shell.sidebar.collapseCollection" : "shell.sidebar.expandCollection", { name })} side="right">
+            <button
+              type="button"
+              aria-expanded={props.open}
+              aria-label={t(props.open ? "shell.sidebar.collapseCollection" : "shell.sidebar.expandCollection", { name })}
+              onClick={props.onToggle}
+              className={`absolute top-1 right-1 flex size-6 items-center justify-center rounded text-muted hover:bg-line hover:text-ink ${FOCUS_RING}`}
+            >
+              <ChevronDown size={14} aria-hidden="true" className={`${CHEVRON_MOTION} ${props.open ? "" : "-rotate-90"}`} />
+            </button>
+          </Tooltip>
         ) : null}
       </div>
       {props.open ? <CollectionItems collectionId={id} contentId={props.contentId} onDeleted={props.onDeleted} /> : null}
@@ -329,12 +361,43 @@ function rowClass(active: boolean): string {
   return `flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm ${active ? "bg-sunken font-medium" : "hover:bg-sunken"}`;
 }
 
+/** Rotating a disclosure chevron, quick and still under reduced motion. */
+const CHEVRON_MOTION = "transition-transform duration-150 motion-reduce:transition-none";
+
+/**
+ * The name of an entry whose text the collapsed column hides: the icon alone is not a name, so
+ * the entry carries it as `aria-label` (and the tooltip shows it). Expanded entries are named by
+ * their text; the native title still helps when a narrow column truncates it.
+ */
+function collapsedName(label: string, collapsed: boolean): { "aria-label": string } | { title: string } {
+  return collapsed ? { "aria-label": label } : { title: label };
+}
+
+/** The tooltip of an entry in the collapsed icon column, to its right; expanded entries show their text instead. */
+function CollapsedTip(props: { label: string; collapsed: boolean; children: ReactElement }) {
+  return props.collapsed ? (
+    <Tooltip content={props.label} side="right">
+      {props.children}
+    </Tooltip>
+  ) : (
+    props.children
+  );
+}
+
 function NavItem(props: { to: string; icon: ReactNode; label: string; collapsed: boolean; end?: boolean; testId?: string }) {
   return (
-    <NavLink to={props.to} end={props.end === true} title={props.label} {...(props.testId === undefined ? {} : { "data-testid": props.testId })} className={({ isActive }) => `${rowClass(isActive)} ${props.collapsed ? "justify-center" : ""}`}>
-      {props.icon}
-      {props.collapsed ? null : <span className="truncate">{props.label}</span>}
-    </NavLink>
+    <CollapsedTip label={props.label} collapsed={props.collapsed}>
+      <NavLink
+        to={props.to}
+        end={props.end === true}
+        {...collapsedName(props.label, props.collapsed)}
+        {...(props.testId === undefined ? {} : { "data-testid": props.testId })}
+        className={({ isActive }) => `${rowClass(isActive)} ${props.collapsed ? "justify-center" : ""}`}
+      >
+        {props.icon}
+        {props.collapsed ? null : <span className="truncate">{props.label}</span>}
+      </NavLink>
+    </CollapsedTip>
   );
 }
 
@@ -350,11 +413,13 @@ function Group(props: { title: string; action?: ReactNode; children: ReactNode }
   );
 }
 
-function IconButton(props: { label: string; onClick: () => void; children: ReactNode }) {
+function IconButton(props: { label: string; onClick: () => void; children: ReactNode; side?: "top" | "right" | "bottom" }) {
   return (
-    <button type="button" aria-label={props.label} title={props.label} onClick={props.onClick} className="rounded-md p-1.5 text-muted hover:bg-sunken hover:text-ink">
-      {props.children}
-    </button>
+    <Tooltip content={props.label} side={props.side ?? "top"}>
+      <button type="button" aria-label={props.label} onClick={props.onClick} className={`rounded-md p-1.5 text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}>
+        {props.children}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -400,7 +465,7 @@ function CollectionItems(props: { collectionId: string; contentId: string | unde
         );
       })}
       {items.length > shown.length ? (
-        <NavLink to={`/collections/${props.collectionId}`} className="px-2 py-1 text-xs text-accent hover:underline">
+        <NavLink to={`/collections/${props.collectionId}`} className={`self-start px-2 py-1 text-xs ${TEXT_ACTION_CLASS}`}>
           {t("common.action.viewAll")}
         </NavLink>
       ) : null}
@@ -431,14 +496,16 @@ function AccountMenu(props: { collapsed: boolean }) {
   return (
     <>
       <DropdownMenu.Root>
-        <DropdownMenu.Trigger
-          data-testid="account-card"
-          className={`${rowClass(false)} ${props.collapsed ? "justify-center" : ""}`}
-          {...(props.collapsed ? { "aria-label": name, title: name } : {})}
-        >
-          {server ? <UserRound size={16} aria-hidden="true" /> : <Settings size={16} aria-hidden="true" />}
-          {props.collapsed ? null : <span className="truncate">{name}</span>}
-        </DropdownMenu.Trigger>
+        <CollapsedTip label={name} collapsed={props.collapsed}>
+          <DropdownMenu.Trigger
+            data-testid="account-card"
+            className={`${rowClass(false)} ${props.collapsed ? "justify-center" : ""}`}
+            {...(props.collapsed ? { "aria-label": name } : {})}
+          >
+            {server ? <UserRound size={16} aria-hidden="true" /> : <Settings size={16} aria-hidden="true" />}
+            {props.collapsed ? null : <span className="truncate">{name}</span>}
+          </DropdownMenu.Trigger>
+        </CollapsedTip>
         <DropdownMenu.Portal>
           <DropdownMenu.Content side="top" align="start" sideOffset={6} className={`${menu} min-w-52`}>
             <DropdownMenu.Item className={item} onSelect={() => void navigate("/settings/models")}>
@@ -534,6 +601,7 @@ function NewCollectionDialog(props: { open: boolean; onOpenChange: (open: boolea
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const formId = useId();
   const create = useMutation({
     mutationFn: () =>
       api.post("/api/collections", collectionDtoSchema, { body: { name: name.trim(), ...(description.trim() === "" ? {} : { description: description.trim() }) } }),
@@ -551,19 +619,23 @@ function NewCollectionDialog(props: { open: boolean; onOpenChange: (open: boolea
   };
   return (
     <Modal open={props.open} onOpenChange={props.onOpenChange} title={t("shell.sidebar.newCollectionTitle")}>
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          {t("shell.sidebar.collectionName")}
-          <input value={name} onChange={(event) => setName(event.target.value)} className="h-9 rounded-md border border-line bg-surface px-2" />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          {t("shell.sidebar.collectionDescription")}
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} className="rounded-md border border-line bg-surface px-2 py-1" />
-        </label>
+      <form onSubmit={submit} className="flex flex-col gap-5">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${formId}-name`} className="text-sm">
+            {t("shell.sidebar.collectionName")}
+          </label>
+          <TextInput id={`${formId}-name`} value={name} onChange={(event) => setName(event.target.value)} className="w-full" />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`${formId}-description`} className="text-sm">
+            {t("shell.sidebar.collectionDescription")}
+          </label>
+          <TextArea id={`${formId}-description`} value={description} onChange={(event) => setDescription(event.target.value)} rows={3} className="w-full" />
+        </div>
         {create.error instanceof ApiError ? <ErrorView error={create.error.error} /> : null}
         <div className="flex justify-end gap-2">
           <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={name.trim() === "" || create.isPending}>
+          <Button type="submit" variant="primary" disabled={name.trim() === ""} loading={create.isPending}>
             {t("common.action.create")}
           </Button>
         </div>

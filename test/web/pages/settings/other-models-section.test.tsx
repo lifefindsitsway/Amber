@@ -139,7 +139,7 @@ describe("OtherModelsSection", () => {
     const video = screen.getAllByTestId("other-model-profile-card")[0] as HTMLElement;
     fireEvent.click(within(video).getByRole("button", { name: "删除" }));
     expect(api.calls.some((call) => call.method === "DELETE")).toBe(false);
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "删除 Profile" }));
     await waitFor(() => expect(api.calls.some((call) => call.method === "DELETE" && call.path === "/api/other-models/o2")).toBe(true));
   });
 });

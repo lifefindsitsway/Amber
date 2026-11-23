@@ -11,6 +11,7 @@ import { queryKeys, queryString } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
+import { Banner } from "../../ui/notice.tsx";
 import { newerAsrRevision } from "./content-data.ts";
 import { speakerCountOf } from "./speaker-draft.ts";
 import { revisionLabel, revisionTimeLabel } from "./labels.ts";
@@ -85,37 +86,46 @@ export function AsrBanner(props: {
   const speakerCount = props.onApplySpeakers === undefined ? 0 : (speakers.data ?? 0);
   const applySpeakers = speakerCount >= 2 ? props.onApplySpeakers : undefined;
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-2 text-xs" data-testid="asr-banner">
-      <span className="min-w-0 flex-1">
-        {t("contentView.revisions.asrBanner", { time: revisionTimeLabel(asr.createdAt), label: revisionLabel(primary, undefined, t, i18n, props.revisions) })}
-      </span>
-      {applySpeakers === undefined ? null : (
-        <>
-          <span className="text-muted">{t("speakerEditor.banner.speakers", { count: speakerCount })}</span>
-          <Button size="sm" variant="primary" onClick={() => applySpeakers(asr.id)} data-testid="asr-banner-apply-speakers">
-            {t("speakerEditor.banner.apply")}
-          </Button>
-        </>
-      )}
-      <Button size="sm" variant={applySpeakers === undefined ? "primary" : "secondary"} disabled={setPrimary.isPending} onClick={() => setPrimary.mutate(asr.id)} data-testid="asr-banner-set-primary">
-        {t("contentView.revisions.asrBannerSetPrimary")}
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => {
-          writeDismissed(props.contentId, asr.id);
-          setDismissed(asr.id);
-        }}
-        data-testid="asr-banner-dismiss"
+    // A state of the whole pane with a decision to make (switch or dismiss): a strip across
+    // its top, in the neutral tone since nothing is wrong.
+    <>
+      <Banner
+        tone="info"
+        testId="asr-banner"
+        actions={
+          <>
+            {applySpeakers === undefined ? null : (
+              <>
+                <span className="text-note text-muted">{t("speakerEditor.banner.speakers", { count: speakerCount })}</span>
+                <Button size="sm" variant="primary" onClick={() => applySpeakers(asr.id)} data-testid="asr-banner-apply-speakers">
+                  {t("speakerEditor.banner.apply")}
+                </Button>
+              </>
+            )}
+            <Button size="sm" variant={applySpeakers === undefined ? "primary" : "secondary"} loading={setPrimary.isPending} onClick={() => setPrimary.mutate(asr.id)} data-testid="asr-banner-set-primary">
+              {t("contentView.revisions.asrBannerSetPrimary")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                writeDismissed(props.contentId, asr.id);
+                setDismissed(asr.id);
+              }}
+              data-testid="asr-banner-dismiss"
+            >
+              {t("contentView.revisions.asrBannerDismiss")}
+            </Button>
+          </>
+        }
       >
-        {t("contentView.revisions.asrBannerDismiss")}
-      </Button>
+        {t("contentView.revisions.asrBanner", { time: revisionTimeLabel(asr.createdAt), label: revisionLabel(primary, undefined, t, i18n, props.revisions) })}
+      </Banner>
       {setPrimary.error instanceof ApiError ? (
-        <div className="basis-full">
+        <div className="border-b border-line px-4 py-2">
           <ErrorView error={setPrimary.error.error} />
         </div>
       ) : null}
-    </div>
+    </>
   );
 }

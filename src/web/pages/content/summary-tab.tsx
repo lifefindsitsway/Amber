@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Copy, Download, History, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, FileText, History, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -22,11 +22,13 @@ import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
 import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
 import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { usePlayerController } from "../../player/player-controller.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { copyText } from "../../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
 import { EmptyState, Loading, Spinner } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Callout, NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { ApiError } from "../../api/client.ts";
 import { useContentPage } from "./content-context.tsx";
 import { ExportDialog } from "./export-dialog.tsx";
@@ -62,7 +64,7 @@ export function SummaryTab() {
     templates.find((entry) => entry.template.id === fallbackId) ??
     templates[0];
   if (selected === undefined) {
-    return <EmptyState title={t("contentView.summary.noTemplates")} />;
+    return <EmptyState icon={<FileText size={28} />} title={t("contentView.summary.noTemplates")} />;
   }
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -116,7 +118,7 @@ function TemplateSwitcher(props: { templates: TemplateEntry[]; selectedId: strin
             role="tab"
             aria-selected={active}
             data-testid={`summary-template-${entry.template.id}`}
-            className={`rounded-full border px-2.5 py-1 text-xs ${active ? "border-accent bg-accent-soft text-accent" : "border-line hover:bg-sunken"}`}
+            className={`rounded-full border px-2.5 py-1 text-xs transition duration-150 motion-reduce:transition-none ${FOCUS_RING} ${active ? "border-accent bg-accent-soft text-accent" : "border-line hover:bg-sunken"}`}
             onClick={() => props.onPick(entry.template.id)}
           >
             {templateName(entry.template, t)}
@@ -196,7 +198,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
       {current === undefined ? t("contentView.summary.generate") : t("contentView.summary.regenerate")}
     </Button>
   ) : (
-    <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="summary-configure">
+    <Link to="/settings/models" className={`inline-flex h-7 items-center rounded-md border border-line px-2 text-xs hover:bg-sunken ${FOCUS_RING}`} data-testid="summary-configure">
       {t("common.action.goConfigure")}
     </Link>
   );
@@ -226,15 +228,15 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
         </Button>
         {configured ? <SpeakersNotReadHint contentId={page.content.id} revisionId={page.primaryRevisionId} testId="summary-speakers-not-read" /> : null}
       </div>
-      {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
+      {!configured ? <p className={NOTE_TEXT_CLASS}>{t("contentView.summary.needsModel")}</p> : null}
       {/* One notice for the tab: the chapters below run with the same default model. */}
       {configured && windowMissing && defaultModel !== undefined ? <ContextWindowNotice modelRef={defaultModel} density="compact" onSaved={windowSaved} testId="summary-context-window" /> : null}
       {generate.error instanceof ApiError ? <ErrorView error={generate.error.error} /> : null}
       {entry.activeTaskId !== undefined ? <TaskFlow taskId={entry.activeTaskId} /> : null}
       {entry.stale ? (
-        <div className="rounded-md border border-line bg-accent-soft px-3 py-2 text-xs" data-testid="summary-stale">
+        <Callout tone="warn" density="compact" testId="summary-stale">
           {t(`contentView.stale.${entry.staleReason ?? "transcript_changed"}`)}
-        </div>
+        </Callout>
       ) : null}
       {current === undefined ? (
         <SummaryEmpty
@@ -243,7 +245,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
         />
       ) : (
         <>
-          {current.quality === "degraded" ? <p className="text-xs text-muted">{t("contentView.summary.degraded")}</p> : null}
+          {current.quality === "degraded" ? <p className={NOTE_TEXT_CLASS}>{t("contentView.summary.degraded")}</p> : null}
           <SpeakerBasisLine
             contentId={page.content.id}
             primaryRevisionId={page.primaryRevisionId}
@@ -299,7 +301,7 @@ function SummaryEmpty(props: { latestTaskId: string | undefined; summaryTemplate
   const redos = useLatestRedos(page.content.id, FOLDED_REDO_STAGES, props.summaryTemplateId);
   return (
     <div className="flex flex-col gap-3" data-testid="summary-empty">
-      <EmptyState title={t("contentView.summary.empty")} hint={t("contentView.summary.emptyHint")} />
+      <EmptyState icon={<Sparkles size={28} />} title={t("contentView.summary.empty")} hint={t("contentView.summary.emptyHint")} />
       {props.latestTaskId === undefined ? null : <ContentTaskFlow taskId={props.latestTaskId} redos={redos.data ?? {}} />}
     </div>
   );
@@ -348,7 +350,13 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
   });
   const frozen = new Set(revisions.data?.frozenRevisionIds ?? []);
   return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.summary.history")} wide>
+    <Modal
+      open={props.open}
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("contentView.summary.history")}
+      wide
+      footer={<Button onClick={props.onClose}>{t("common.action.close")}</Button>}
+    >
       {remove.error instanceof ApiError ? <ErrorView error={remove.error.error} /> : null}
       {revisions.data === undefined ? (
         <Loading />
@@ -372,7 +380,7 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
                           <Button size="sm" variant="ghost" disabled={deleting} onClick={() => setConfirming(undefined)}>
                             {t("common.action.cancel")}
                           </Button>
-                          <Button size="sm" variant="danger" disabled={deleting} onClick={() => remove.mutate(revision.id)} data-testid="summary-history-delete-confirm">
+                          <Button size="sm" variant="danger-solid" loading={deleting} onClick={() => remove.mutate(revision.id)} data-testid="summary-history-delete-confirm">
                             {t("contentView.summary.deleteVersionConfirm")}
                           </Button>
                         </>
@@ -381,20 +389,28 @@ function HistoryDialog(props: { open: boolean; onClose: () => void; artifactId: 
                           <Button size="sm" disabled={deleting} onClick={() => makeCurrent.mutate(revision)}>
                             {t("contentView.summary.useVersion")}
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={isFrozen || deleting}
-                            title={isFrozen ? t("contentView.summary.deleteVersionFrozen") : t("contentView.summary.deleteVersion")}
-                            aria-label={t("contentView.summary.deleteVersion")}
-                            onClick={() => {
-                              remove.reset();
-                              setConfirming(revision.id);
-                            }}
-                            data-testid="summary-history-delete"
-                          >
-                            <Trash2 size={14} aria-hidden="true" />
-                          </Button>
+                          {isFrozen ? (
+                            // A disabled button gets no pointer events for a tooltip; the native title still explains why.
+                            <Button size="sm" variant="ghost" disabled title={t("contentView.summary.deleteVersionFrozen")} aria-label={t("contentView.summary.deleteVersion")} data-testid="summary-history-delete">
+                              <Trash2 size={14} aria-hidden="true" />
+                            </Button>
+                          ) : (
+                            <Tooltip content={t("contentView.summary.deleteVersion")}>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={deleting}
+                                aria-label={t("contentView.summary.deleteVersion")}
+                                onClick={() => {
+                                  remove.reset();
+                                  setConfirming(revision.id);
+                                }}
+                                data-testid="summary-history-delete"
+                              >
+                                <Trash2 size={14} aria-hidden="true" />
+                              </Button>
+                            </Tooltip>
+                          )}
                         </>
                       )}
                     </span>
@@ -504,7 +520,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
             <span title={activeStage === undefined ? undefined : t("contentView.chapters.restorePlatformBusyHint")}>
               <button
                 type="button"
-                className="inline-flex h-7 items-center whitespace-nowrap rounded-md px-1.5 text-xs text-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted"
+                className={`inline-flex h-7 items-center whitespace-nowrap rounded-md px-1.5 text-xs text-muted transition duration-150 motion-reduce:transition-none hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-muted ${FOCUS_RING}`}
                 disabled={busy || restore.isPending}
                 onClick={() => restore.mutate(platformRevision.id)}
                 data-testid="chapters-restore-platform"
@@ -514,7 +530,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
             </span>
           )}
           {showConfigure ? (
-            <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="chapters-configure">
+            <Link to="/settings/models" className={`inline-flex h-7 items-center rounded-md border border-line px-2 text-xs hover:bg-sunken ${FOCUS_RING}`} data-testid="chapters-configure">
               {t("common.action.goConfigure")}
             </Link>
           ) : (
@@ -538,7 +554,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
         <SpeakersNotReadHint className="mb-2 block text-right" contentId={contentId} revisionId={page.primaryRevisionId} testId="chapters-speakers-not-read" />
       )}
       {hasTranscript ? null : (
-        <p className="mb-2 text-xs text-muted" data-testid="chapters-needs-transcript">
+        <p className={`mb-2 ${NOTE_TEXT_CLASS}`} data-testid="chapters-needs-transcript">
           {t("contentView.chapters.needsTranscript")}
         </p>
       )}
@@ -554,7 +570,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
           // Chapter work started elsewhere (another tab, a processing run) after this page last
           // read the chapters: the generic wording of this code is about deleting, so say what
           // it means here; the chapters re-read on their own when that work ends.
-          <p className="mb-2 text-xs text-muted" role="status" data-testid="chapters-restore-busy">
+          <p className={`mb-2 ${NOTE_TEXT_CLASS}`} role="status" data-testid="chapters-restore-busy">
             {t("contentView.chapters.restorePlatformBusy")}
           </p>
         ) : (
@@ -568,7 +584,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
           <ErrorView error={chapters.error.error} />
         </div>
       ) : null}
-      {chapters.data?.current?.stale === true ? <p className="mb-2 text-xs text-muted">{t("contentView.chapters.stale")}</p> : null}
+      {chapters.data?.current?.stale === true ? <p className={`mb-2 ${NOTE_TEXT_CLASS}`}>{t("contentView.chapters.stale")}</p> : null}
       {/* Platform chapters read no transcript, so they have no speaker basis to speak of. */}
       {chapters.data?.current?.origin.kind === "ai" ? (
         <SpeakerBasisLine
@@ -589,7 +605,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
       ) : loaded && hasTranscript ? (
         <div className="rounded-md bg-sunken px-3 py-2.5" data-testid="chapters-empty">
           <p className="text-sm">{t("contentView.chapters.empty")}</p>
-          <p className="mt-0.5 text-xs text-muted">{t("contentView.chapters.emptyHint")}</p>
+          <p className={`mt-0.5 ${NOTE_TEXT_CLASS}`}>{t("contentView.chapters.emptyHint")}</p>
         </div>
       ) : null}
     </section>
@@ -621,23 +637,23 @@ function ChapterFailure(props: { taskId: string }) {
   const run = task.detail === undefined ? undefined : latestStageRuns(task.detail).find((item) => item.stage === "chapter");
   return (
     <div className="mb-2" data-testid="chapters-failed">
-      <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-danger">
+      <p className="flex flex-wrap items-center gap-x-1.5 text-note text-danger">
         <span>{t("contentView.chapters.lastFailed")}</span>
         <span aria-hidden="true">·</span>
-        <button type="button" className="underline" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chapters-failed-toggle">
+        <TextAction aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chapters-failed-toggle">
           {open ? t("contentView.chapters.hideReason") : t("contentView.chapters.showReason")}
-        </button>
+        </TextAction>
       </p>
       {!open ? null : (
         <div className="mt-1.5">
           {run?.error !== undefined ? (
             <ErrorView error={run.error} stage="chapter" {...(run.engine === undefined ? {} : { engine: run.engine })} />
           ) : task.detail !== undefined || task.gone === true ? (
-            <p className="text-xs text-muted">{t("contentView.chapters.reasonUnavailable")}</p>
+            <p className={NOTE_TEXT_CLASS}>{t("contentView.chapters.reasonUnavailable")}</p>
           ) : task.error instanceof ApiError ? (
             <ErrorView error={task.error.error} />
           ) : (
-            <p className="flex items-center gap-1.5 text-xs text-muted" role="status">
+            <p className="flex items-center gap-1.5 text-note text-muted" role="status">
               <Spinner size={14} />
               {t("common.state.loading")}
             </p>
@@ -659,12 +675,12 @@ function ChapterItem(props: { chapter: ChapterRevisionDto["chapters"][number]; s
   return (
     <li className="rounded-md px-2 py-1.5 hover:bg-sunken">
       <div className="flex items-start gap-2">
-        <button type="button" className="font-mono text-xs text-accent hover:underline" data-reading-time onClick={() => props.onSeek(chapter.startMs)}>
+        <button type="button" className={`rounded-sm font-mono text-xs text-link underline-offset-2 hover:underline ${FOCUS_RING}`} data-reading-time onClick={() => props.onSeek(chapter.startMs)}>
           {formatDuration(chapter.startMs)}
         </button>
         <div className="min-w-0 flex-1">
           {/* The whole heading toggles; the expanded text stays outside it so it can be selected and copied. */}
-          <button type="button" className="flex w-full items-start gap-2 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <button type="button" className={`flex w-full items-start gap-2 rounded-sm text-left ${FOCUS_RING}`} aria-expanded={open} onClick={() => setOpen(!open)}>
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-medium">{chapter.title}</span>
               {chapter.summary === undefined ? null : <span className="block text-xs text-muted">{chapter.summary}</span>}

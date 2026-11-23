@@ -5,6 +5,7 @@ import { DecoratedText } from "../../notes/decorated-text.tsx";
 import type { SentenceNote } from "../../notes/note-anchor.ts";
 import { formatDuration } from "../../format.ts";
 import { termRanges } from "../../search/search.ts";
+import { FOCUS_RING } from "../../ui/button.tsx";
 import { READER_PART_ATTRIBUTE } from "./reader-selection.ts";
 import type { ReaderTypography } from "./reader-typography.ts";
 
@@ -62,7 +63,7 @@ export function ReaderTime(props: { startMs: number; onSeek: () => void }) {
   return (
     <button
       type="button"
-      className="relative mr-2 font-mono text-xs leading-none text-accent hover:underline before:absolute before:inset-x-0 before:top-1/2 before:h-6 before:-translate-y-1/2 before:content-['']"
+      className={`relative mr-2 rounded-sm font-mono text-xs leading-none text-link underline-offset-2 hover:underline ${FOCUS_RING} before:absolute before:inset-x-0 before:top-1/2 before:h-6 before:-translate-y-1/2 before:content-['']`}
       data-reading-time
       {...{ [READER_PART_ATTRIBUTE]: "time" }}
       onClick={props.onSeek}

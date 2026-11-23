@@ -96,6 +96,10 @@ describe("ChatMessageFooter", () => {
     renderFooter(ANSWER);
     fireEvent.click(screen.getByTestId("chat-turn-copy"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("复制的文字"));
-    await waitFor(() => expect(screen.getByTestId("chat-turn-copy").getAttribute("title")).toBe("已复制"));
+    // The tooltip, named 「复制回答」 until then, now says it was copied.
+    await waitFor(() => expect(screen.getByTestId("chat-turn-copy").getAttribute("data-copied")).toBe("true"));
+    fireEvent.focus(screen.getByTestId("chat-turn-copy"));
+    expect((await screen.findByRole("tooltip")).textContent).toBe("已复制");
+    expect(screen.getByTestId("chat-turn-copy").getAttribute("aria-label")).toBe("复制回答");
   });
 });

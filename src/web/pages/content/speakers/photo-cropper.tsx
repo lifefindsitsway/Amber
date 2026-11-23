@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../../ui/button.tsx";
-import { Spinner } from "../../../ui/feedback.tsx";
+import { Callout } from "../../../ui/notice.tsx";
 import { CROP_ZOOM_MAX, drawCrop, encodeAvatar, initialCrop, normalizeCrop, panCrop, type CropState, type EncodedAvatar, type LoadedPhoto } from "./photo-crop.ts";
 
 /** Side of the crop view in CSS pixels. */
@@ -103,7 +103,7 @@ export function PhotoCropper(props: { photo: LoadedPhoto; onConfirm: (avatar: En
         {/* Everything outside the circle is dimmed: what is inside becomes the avatar. */}
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-full" style={{ boxShadow: CROP_MASK_SHADOW }} />
       </div>
-      <p id={hintId} className="max-w-56 text-center text-xs text-muted">
+      <p id={hintId} className="max-w-56 text-center text-note text-muted">
         {t("speakerIdentity.crop.areaHint")}
       </p>
       <label className="flex w-full items-center gap-3 text-xs text-muted">
@@ -120,16 +120,16 @@ export function PhotoCropper(props: { photo: LoadedPhoto; onConfirm: (avatar: En
         />
       </label>
       {failed ? (
-        <p className="w-full text-xs text-danger" role="alert">
+        // Follows the click on 「确定」, so it is announced; the user can retry or pick another photo.
+        <Callout tone="error" density="compact" announce="alert" className="w-full" testId="speaker-crop-failed">
           {t("speakerIdentity.edit.photoEncodeFailed")}
-        </p>
+        </Callout>
       ) : null}
       <div className="flex w-full justify-end gap-2">
         <Button size="sm" onClick={props.onCancel} disabled={working}>
           {t("speakerIdentity.crop.cancel")}
         </Button>
-        <Button size="sm" variant="primary" onClick={() => void confirm()} disabled={working} data-testid="speaker-crop-confirm">
-          {working ? <Spinner size={12} /> : null}
+        <Button size="sm" variant="primary" onClick={() => void confirm()} loading={working} data-testid="speaker-crop-confirm">
           {t("speakerIdentity.crop.confirm")}
         </Button>
       </div>

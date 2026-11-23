@@ -1,6 +1,6 @@
 import type { TFunction } from "i18next";
 import { Info } from "lucide-react";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   modelPricingSchema,
@@ -18,12 +18,13 @@ import {
 import { ApiError } from "../api/client.ts";
 import { Button } from "../ui/button.tsx";
 import { Modal } from "../ui/modal.tsx";
+import { NativeSelect } from "../ui/native-select.tsx";
+import { FieldError, FieldHint, NOTE_TEXT_CLASS } from "../ui/notice.tsx";
+import { TextArea, TextInput } from "../ui/text-field.tsx";
 import { ErrorView } from "./error-view.tsx";
 
 /** The unit whose absence leaves cache-hit requests out of a cost estimate. */
 const CACHE_READ_UNIT: PriceUnit = "cached_input_tokens_per_million";
-
-const INPUT_CLASS = "h-9 rounded-md border border-line bg-surface px-2 text-sm outline-none focus:border-accent disabled:opacity-60";
 
 /**
  * One line naming every item of a price ("<amount> <currency> / <unit>", joined by " · "),
@@ -61,7 +62,7 @@ export function ModelPricingControl(props: {
         <span data-testid="model-pricing-summary">{formatPricing(props.pricing, t)}</span>
       )}
       {cacheUnpriced ? (
-        <span className="inline-flex items-center gap-1 text-accent" title={t("settings.pricing.cacheObservedHint")} data-testid="pricing-cache-marker">
+        <span className="inline-flex items-center gap-1 text-warn" title={t("settings.pricing.cacheObservedHint")} data-testid="pricing-cache-marker">
           <Info size={12} aria-hidden="true" />
           {t("settings.pricing.cacheObservedMarker")}
         </span>
@@ -129,6 +130,9 @@ export function ModelPricingDialog(props: {
   // Judged on the units alone, so the reason shows even while an amount is still being typed.
   const conflict = pricingConflict({ currency, items: candidate.items }, props.scope);
   const cacheHint = props.cacheObserved === true && !used.has(CACHE_READ_UNIT);
+  const formId = useId();
+  const conflictId = `${formId}-conflict`;
+  const noteErrorId = `${formId}-note-error`;
 
   const submit = (pricing: ModelPricing | null): void => {
     setPending(true);
@@ -141,47 +145,70 @@ export function ModelPricingDialog(props: {
   };
 
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("settings.pricing.title", { model: props.modelId })}>
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("settings.pricing.title", { model: props.modelId })}
+      testId="model-pricing-dialog"
+      footer={
+        <>
+          {props.pricing === undefined ? null : (
+            <Button variant="danger" className="mr-auto" disabled={pending} onClick={() => submit(null)}>
+              {t("settings.pricing.clear")}
+            </Button>
+          )}
+          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+          <Button type="submit" form={formId} variant="primary" loading={pending} disabled={conflict !== undefined}>
+            {t("common.action.save")}
+          </Button>
+        </>
+      }
+    >
       <form
-        data-testid="model-pricing-dialog"
+        id={formId}
         onSubmit={(event) => {
           event.preventDefault();
           setTouched(true);
           if (parsed.success && conflict === undefined) submit(parsed.data);
         }}
       >
-        <p className="mb-3 text-xs text-muted">{t("settings.pricing.intro")}</p>
-        <div className="mb-3">
+        <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.pricing.intro")}</p>
+        <div className="mb-5">
           <label className="mb-1 block text-xs font-medium text-muted" htmlFor="pricing-currency">
             {t("settings.pricing.currency")}
           </label>
-          <select id="pricing-currency" className={`${INPUT_CLASS} w-32`} value={currency} onChange={(event) => setCurrency(event.target.value as PriceCurrency)}>
+          <NativeSelect id="pricing-currency" className="w-32" value={currency} onChange={(event) => setCurrency(event.target.value as PriceCurrency)}>
             {PRICE_CURRENCIES.map((item) => (
               <option key={item} value={item}>
                 {t(`settings.pricing.currencies.${item}`)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
         <h3 className="mb-1 text-xs font-medium text-muted">{t("settings.pricing.items")}</h3>
         <ul>
           {items.map((item, index) => {
             const amountOk = PRICE_AMOUNT_PATTERN.test(item.amount.trim());
+            const amountErrorId = `${formId}-amount-${item.key}-error`;
+            const amountInvalid = touched && !amountOk;
             return (
               <li key={item.key} className="mb-2" data-testid="pricing-item">
                 <div className="flex items-center gap-2">
-                  <input
+                  <TextInput
                     aria-label={`${t("settings.pricing.amount")} ${index + 1}`}
                     inputMode="decimal"
-                    className={`${INPUT_CLASS} w-28 min-w-0 shrink-0 font-mono`}
+                    className="w-28 shrink-0 font-mono"
                     value={item.amount}
+                    invalid={amountInvalid}
+                    aria-describedby={amountInvalid ? amountErrorId : undefined}
                     onChange={(event) => setItems((current) => current.map((row) => (row.key === item.key ? { ...row, amount: event.target.value } : row)))}
                   />
                   <span className="shrink-0 text-sm text-muted">{`${t(`settings.pricing.currencies.${currency}`)} /`}</span>
-                  <select
+                  <NativeSelect
                     aria-label={`${t("settings.pricing.unit")} ${index + 1}`}
-                    className={`${INPUT_CLASS} min-w-0 flex-1`}
+                    className="flex-1"
                     value={item.unit}
+                    aria-describedby={conflict === undefined ? undefined : conflictId}
                     onChange={(event) =>
                       setItems((current) => current.map((row) => (row.key === item.key ? { ...row, unit: event.target.value as PriceUnit } : row)))
                     }
@@ -193,7 +220,7 @@ export function ModelPricingDialog(props: {
                           {t(`settings.pricing.unitOptions.${unit}`)}
                         </option>
                       ))}
-                  </select>
+                  </NativeSelect>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -204,20 +231,24 @@ export function ModelPricingDialog(props: {
                     {t("settings.pricing.removeItem")}
                   </Button>
                 </div>
-                {touched && !amountOk ? <p className="mt-1 text-xs text-danger">{t("settings.pricing.invalidAmount")}</p> : null}
+                {amountInvalid ? (
+                  <FieldError id={amountErrorId} className="mt-1.5">
+                    {t("settings.pricing.invalidAmount")}
+                  </FieldError>
+                ) : null}
               </li>
             );
           })}
         </ul>
         {conflict === undefined ? null : (
-          <p className="mt-2 text-xs text-danger" role="alert" data-testid="pricing-conflict">
+          <FieldError id={conflictId} className="mt-2" testId="pricing-conflict">
             {t(`settings.pricing.conflict.${conflict}`)}
-          </p>
+          </FieldError>
         )}
         {cacheHint ? (
-          <p className="mt-2 text-xs text-muted" data-testid="pricing-cache-hint">
+          <FieldHint id={`${formId}-cache-hint`} className="mt-2" testId="pricing-cache-hint">
             {t("settings.pricing.cacheObservedHint")}
-          </p>
+          </FieldHint>
         ) : null}
         <Button
           size="sm"
@@ -232,40 +263,31 @@ export function ModelPricingDialog(props: {
         >
           {t("settings.pricing.addItem")}
         </Button>
-        <div className="mt-3">
+        <div className="mt-5">
           <label className="mb-1 block text-xs font-medium text-muted" htmlFor="pricing-note">
             {t("settings.pricing.note")}
           </label>
-          <textarea
+          <TextArea
             id="pricing-note"
             rows={2}
-            className="w-full rounded-md border border-line bg-surface px-2 py-1 text-sm outline-none focus:border-accent"
+            className="w-full"
             value={note}
             placeholder={t("settings.pricing.notePlaceholder")}
+            invalid={noteTooLong}
+            aria-describedby={noteTooLong ? noteErrorId : undefined}
             onChange={(event) => setNote(event.target.value)}
           />
-          {noteTooLong ? <p className="text-xs text-danger">{t("settings.pricing.noteTooLong", { max: PRICE_NOTE_MAX_CHARS })}</p> : null}
+          {noteTooLong ? (
+            <FieldError id={noteErrorId} className="mt-1.5">
+              {t("settings.pricing.noteTooLong", { max: PRICE_NOTE_MAX_CHARS })}
+            </FieldError>
+          ) : null}
         </div>
         {error instanceof ApiError ? (
           <div className="mt-2">
             <ErrorView error={error.error} />
           </div>
         ) : null}
-        <div className="mt-4 flex items-center justify-between gap-2">
-          <div>
-            {props.pricing === undefined ? null : (
-              <Button variant="danger" disabled={pending} onClick={() => submit(null)}>
-                {t("settings.pricing.clear")}
-              </Button>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-            <Button type="submit" variant="primary" disabled={pending || conflict !== undefined}>
-              {t("common.action.save")}
-            </Button>
-          </div>
-        </div>
       </form>
     </Modal>
   );

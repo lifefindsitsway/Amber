@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { API_PAGE_SIZE_DEFAULT, CONTENT_LIST_IDS_MAX, CONTENT_PACK_MERGE_DURATION_WARN_MS } from "../../../shared/defaults.ts";
@@ -11,8 +12,10 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { formatDuration } from "../../format.ts";
 import { hitsByContent, useSearch } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
-import { Loading } from "../../ui/feedback.tsx";
+import { EmptyState, SkeletonRows } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { durationsDiffer } from "./import-model.ts";
 import { comparePack } from "./pack-api.ts";
 import { sourceLine, titleOf } from "./pack-labels.ts";
@@ -32,7 +35,12 @@ export function TargetPicker(props: {
 }) {
   const { t } = useTranslation();
   return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentPack.import.mergeOther.title")}>
+    <Modal
+      open={props.open}
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("contentPack.import.mergeOther.title")}
+      footer={<Button onClick={props.onClose}>{t("common.action.cancel")}</Button>}
+    >
       {props.open ? <PickerBody {...props} /> : null}
     </Modal>
   );
@@ -64,20 +72,20 @@ function PickerBody(props: { jobId: string; item: PackPreviewContent; onPicked: 
   return (
     <div className="flex flex-col gap-3 text-sm" data-testid="pack-target-picker">
       <p className="text-muted">{t("contentPack.import.mergeOther.intro", { title: titleOf(props.item.title, t) })}</p>
-      <input
+      <TextInput
         type="search"
-        className="h-8 rounded-md border border-line bg-surface px-2 text-sm"
+        size="md"
         placeholder={t("contentPack.import.mergeOther.search")}
         aria-label={t("contentPack.import.mergeOther.search")}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         data-testid="pack-target-search"
       />
-      {found.active ? null : <p className="text-xs text-muted">{t("contentPack.import.mergeOther.recent")}</p>}
+      {found.active ? null : <p className={NOTE_TEXT_CLASS}>{t("contentPack.import.mergeOther.recent")}</p>}
       {loading ? (
-        <Loading />
+        <SkeletonRows count={4} rowHeight={40} />
       ) : items.length === 0 ? (
-        <p className="py-4 text-center text-muted">{t("contentPack.import.mergeOther.empty")}</p>
+        <EmptyState title={t("contentPack.import.mergeOther.empty")} />
       ) : (
         <ul className="flex max-h-80 flex-col divide-y divide-line overflow-auto rounded-md border border-line">
           {items.map((content) => {
@@ -90,12 +98,15 @@ function PickerBody(props: { jobId: string; item: PackPreviewContent; onPicked: 
                   </p>
                   <p className="text-xs text-muted">{sourceLine(content.source.kind, content.durationMs, t)}</p>
                   {warn ? (
-                    <p className="text-xs text-danger">
-                      {t("contentPack.import.mergeOther.durationWarning", { pack: formatDuration(props.item.durationMs ?? 0), local: formatDuration(content.durationMs ?? 0) })}
+                    <p className="flex items-start gap-1 text-note text-warn">
+                      <TriangleAlert size={14} className="mt-[3px] shrink-0" aria-hidden="true" />
+                      <span className="min-w-0">
+                        {t("contentPack.import.mergeOther.durationWarning", { pack: formatDuration(props.item.durationMs ?? 0), local: formatDuration(content.durationMs ?? 0) })}
+                      </span>
                     </p>
                   ) : null}
                 </div>
-                <Button size="sm" disabled={pick.isPending} onClick={() => pick.mutate(content)} aria-label={`${t("contentPack.import.mergeOther.choose")} · ${titleOf(content.title, t)}`}>
+                <Button size="sm" loading={pick.isPending && pick.variables?.id === content.id} disabled={pick.isPending} onClick={() => pick.mutate(content)} aria-label={`${t("contentPack.import.mergeOther.choose")} · ${titleOf(content.title, t)}`}>
                   {pick.isPending && pick.variables?.id === content.id ? t("contentPack.import.mergeOther.comparing") : t("contentPack.import.mergeOther.choose")}
                 </Button>
               </li>

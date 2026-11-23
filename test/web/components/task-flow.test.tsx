@@ -240,6 +240,9 @@ describe("TaskFlow", () => {
     renderApp(<TaskFlow taskId="t5" />);
     expect(await screen.findByText(/2 个请求已发出但结果未知/)).toBeTruthy();
     expect(screen.getAllByTestId("resend-prompt")).toHaveLength(1);
+    // A possible second charge is read before acting: a caution box, announced as it appears.
+    expect(screen.getByTestId("resend-prompt").dataset["tone"]).toBe("warn");
+    expect(screen.getByTestId("resend-prompt").getAttribute("role")).toBe("alert");
     expect(screen.getAllByRole("button", { name: /确认重新发送/ })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "确认重新发送（2）" }));
     const posts = () => calls.filter((call) => call.method === "POST").map((call) => call.path);

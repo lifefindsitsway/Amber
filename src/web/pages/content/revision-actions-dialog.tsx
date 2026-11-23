@@ -17,7 +17,10 @@ import { queryKeys } from "../../api/queries.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { searchKeys } from "../../search/search.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import type { ContentSummariesDto } from "../../../shared/dto/summary.ts";
 import { transcriptDraftDtoSchema } from "../../../shared/dto/transcript.ts";
 import { translationsDtoSchema } from "../../../shared/dto/translation.ts";
@@ -156,11 +159,13 @@ export function RevisionActions(props: {
   return (
     <>
       <DropdownMenu.Root>
-        <DropdownMenu.Trigger asChild>
-          <Button size="sm" variant="ghost" aria-label={t("contentView.revisions.actions")} title={t("contentView.revisions.actions")} data-testid="revision-actions">
-            <MoreHorizontal size={14} />
-          </Button>
-        </DropdownMenu.Trigger>
+        <Tooltip content={t("contentView.revisions.actions")}>
+          <DropdownMenu.Trigger asChild>
+            <Button size="sm" variant="ghost" aria-label={t("contentView.revisions.actions")} data-testid="revision-actions">
+              <MoreHorizontal size={14} aria-hidden="true" />
+            </Button>
+          </DropdownMenu.Trigger>
+        </Tooltip>
         <DropdownMenu.Portal>
           <DropdownMenu.Content align="start" className="z-50 min-w-40 rounded-md border border-line bg-surface p-1 text-sm shadow-lg">
             <DropdownMenu.Item
@@ -177,7 +182,7 @@ export function RevisionActions(props: {
               </DropdownMenu.Item>
             )}
             {isPrimary || isProtected(revision) ? (
-              <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-xs text-muted" data-testid="revision-actions-hint">
+              <DropdownMenu.Label className="max-w-56 px-2 pt-1.5 pb-1 text-note text-muted" data-testid="revision-actions-hint">
                 {isPrimary ? t("contentView.revisions.primaryHint") : t("contentView.revisions.protectedHint")}
               </DropdownMenu.Label>
             ) : null}
@@ -276,9 +281,40 @@ export function RevisionDeleteDialog(props: {
   const failure = otherError ?? (archive.error instanceof ApiError ? archive.error : discard.error instanceof ApiError ? discard.error : undefined);
 
   return (
-    <Modal open onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.revisions.deleteTitle")}>
-      <div className="flex flex-col gap-3 text-sm" data-testid="revision-delete-dialog">
-        <p className="text-xs text-muted">{t("contentView.revisions.deleteSet")}</p>
+    <Modal
+      open
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("contentView.revisions.deleteTitle")}
+      // On the dialog itself, so the footer's buttons are inside it too.
+      testId="revision-delete-dialog"
+      footer={
+        <>
+          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+          {blockers.draft > 0 ? (
+            <Button
+              // The second click is the step that throws the draft away.
+              variant={confirmDiscard ? "danger-solid" : "danger"}
+              loading={discard.isPending}
+              disabled={busy}
+              onClick={() => (confirmDiscard ? discard.mutate() : setConfirmDiscard(true))}
+              data-testid="revision-discard-draft"
+            >
+              {confirmDiscard ? t("contentView.revisions.discardDraftConfirm") : t("contentView.revisions.discardDraft")}
+            </Button>
+          ) : null}
+          {blocked && !revision.archived && !isPrimary ? (
+            <Button loading={archive.isPending} disabled={busy || blockers.draft > 0} onClick={() => archive.mutate()} data-testid="revision-archive-instead">
+              {t("contentView.revisions.archiveInstead")}
+            </Button>
+          ) : null}
+          <Button variant="danger-solid" loading={remove.isPending} disabled={busy || blocked || isPrimary} onClick={() => remove.mutate()} data-testid="revision-delete-confirm">
+            {t("contentView.revisions.deleteConfirm")}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 text-sm">
+        <p className={NOTE_TEXT_CLASS}>{t("contentView.revisions.deleteSet")}</p>
         <ul className="flex flex-col gap-1" data-testid="revision-delete-set">
           {members.map((member) => (
             <li key={member.id} className="rounded bg-sunken px-2 py-1 text-xs" data-revision-id={member.id}>
@@ -288,8 +324,7 @@ export function RevisionDeleteDialog(props: {
         </ul>
         {revision.descendantIds.length > 0 ? (
           <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={withDescendants}
               onChange={(event) => {
                 setWithDescendants(event.target.checked);
@@ -302,7 +337,7 @@ export function RevisionDeleteDialog(props: {
         ) : null}
         {historyCount > 0 ? (
           <div className="flex flex-col gap-1" data-testid="revision-history-artifacts">
-            <p className="text-xs text-muted">{t("contentView.revisions.historyTitle")}</p>
+            <p className={NOTE_TEXT_CLASS}>{t("contentView.revisions.historyTitle")}</p>
             <ul className="flex flex-col gap-1">
               {history.map((artifact) => (
                 <li key={artifact.revisionId} className="rounded bg-sunken px-2 py-1 text-xs" data-artifact-revision-id={artifact.revisionId}>
@@ -311,8 +346,7 @@ export function RevisionDeleteDialog(props: {
               ))}
             </ul>
             <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={withHistory}
                 onChange={(event) => {
                   setWithHistory(event.target.checked);
@@ -322,45 +356,30 @@ export function RevisionDeleteDialog(props: {
               />
               {t("contentView.revisions.withHistory", { count: historyCount })}
             </label>
-            <p className="text-xs text-muted">{t("contentView.revisions.withHistoryHint")}</p>
+            <p className={NOTE_TEXT_CLASS}>{t("contentView.revisions.withHistoryHint")}</p>
           </div>
         ) : null}
-        {isPrimary ? <p className="text-xs text-muted">{t("contentView.revisions.primaryHint")}</p> : null}
+        {isPrimary ? <p className={NOTE_TEXT_CLASS}>{t("contentView.revisions.primaryHint")}</p> : null}
         {blocked ? (
-          <div className="flex flex-col gap-1" data-testid="revision-blockers">
-            <p className="text-xs text-muted">{t("contentView.revisions.blockersTitle")}</p>
-            <ul className="flex flex-col gap-0.5 text-xs">
-              {blocking.map((category) => (
-                <li key={category} data-testid={`revision-blocker-${category}`}>
-                  {t(`contentView.revisions.blocker.${category}`, { count: blockers[category] })}
-                </li>
-              ))}
-            </ul>
-          </div>
+          <Callout tone="warn" density="compact" testId="revision-blockers">
+            <div className="flex flex-col gap-1">
+              <p>{t("contentView.revisions.blockersTitle")}</p>
+              <ul className="flex flex-col gap-0.5">
+                {blocking.map((category) => (
+                  <li key={category} data-testid={`revision-blocker-${category}`}>
+                    {t(`contentView.revisions.blocker.${category}`, { count: blockers[category] })}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </Callout>
         ) : null}
-        {confirmDiscard ? <p className="text-xs text-danger" data-testid="revision-discard-draft-hint">{t("contentView.revisions.discardDraftHint")}</p> : null}
+        {confirmDiscard ? (
+          <Callout tone="warn" density="compact" announce="status" testId="revision-discard-draft-hint">
+            {t("contentView.revisions.discardDraftHint")}
+          </Callout>
+        ) : null}
         {failure === undefined ? null : <ErrorView error={failure.error} />}
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          {blockers.draft > 0 ? (
-            <Button
-              variant="danger"
-              disabled={busy}
-              onClick={() => (confirmDiscard ? discard.mutate() : setConfirmDiscard(true))}
-              data-testid="revision-discard-draft"
-            >
-              {confirmDiscard ? t("contentView.revisions.discardDraftConfirm") : t("contentView.revisions.discardDraft")}
-            </Button>
-          ) : null}
-          {blocked && !revision.archived && !isPrimary ? (
-            <Button disabled={busy || blockers.draft > 0} onClick={() => archive.mutate()} data-testid="revision-archive-instead">
-              {t("contentView.revisions.archiveInstead")}
-            </Button>
-          ) : null}
-          <Button variant="danger" disabled={busy || blocked || isPrimary} onClick={() => remove.mutate()} data-testid="revision-delete-confirm">
-            {t("contentView.revisions.deleteConfirm")}
-          </Button>
-        </div>
       </div>
     </Modal>
   );

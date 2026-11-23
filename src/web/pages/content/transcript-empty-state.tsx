@@ -1,4 +1,4 @@
-import { FileUp, Mic } from "lucide-react";
+import { FileText, FileUp, Mic } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import type { ContentProcessingStatus } from "../../../shared/enums.ts";
@@ -33,7 +33,7 @@ export function TranscriptEmptyState() {
     setParams(next, { replace: true });
   };
   return (
-    <EmptyState title={t("contentView.transcript.empty")} hint={t(`contentView.transcript.${hint}`)}>
+    <EmptyState icon={<FileText size={28} />} title={t("contentView.transcript.empty")} hint={t(`contentView.transcript.${hint}`)}>
       {hint === "emptyHintIdle" ? (
         <div className="mt-1 flex flex-wrap justify-center gap-2" data-testid="transcript-empty-actions">
           <Button size="sm" onClick={() => open("transcribe")} data-testid="transcript-empty-transcribe">

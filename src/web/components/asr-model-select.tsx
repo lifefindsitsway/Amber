@@ -79,6 +79,9 @@ export function AsrModelSelect(props: {
   /** A binding that stays listed (under `currentLabel`) even after another model is picked, so it can be chosen again. */
   bound?: AsrModelRefDto | undefined;
   id?: string | undefined;
+  /** Ids of the hint or error that describe the picker. */
+  describedBy?: string | undefined;
+  invalid?: boolean | undefined;
   size?: SelectSize | undefined;
   width?: "fill" | "content" | undefined;
   /** Extra classes on the trigger, e.g. a maximum width. */
@@ -116,6 +119,8 @@ export function AsrModelSelect(props: {
       }}
       id={props.id}
       ariaLabel={props.label}
+      describedBy={props.describedBy}
+      invalid={props.invalid}
       testId={props.testId}
       disabled={props.disabled}
       size={props.size}

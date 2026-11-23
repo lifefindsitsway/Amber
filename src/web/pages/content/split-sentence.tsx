@@ -1,9 +1,13 @@
 import { Scissors } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SPEAKER_SPLIT_MIN_MS } from "../../../shared/defaults.ts";
 import { canSplit, splitPoint, type SplitPointSource } from "../../../shared/speaker-split.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { FieldError } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { formatDuration } from "../../format.ts";
 import { useParagraphEditingContext } from "./paragraph-controls.tsx";
 import { speakerLabel } from "./speakers/speaker-data.ts";
@@ -31,6 +35,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
   const paragraphs = useParagraphEditingContext();
   const { segment, index } = props;
   const splittable = canSplit(segment);
+  const rangeErrorId = useId();
   const [caret, setCaret] = useState<number | undefined>(() => caretOf(index));
   // The caret moves with typing and clicks in the input; the control only reads it.
   const latestIndex = useRef(index);
@@ -88,7 +93,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
           <Scissors size={13} aria-hidden="true" />
           {t("speakerEditor.split.action")}
         </Button>
-        <span className="text-xs text-muted" data-testid="split-disabled-reason">
+        <span className="text-note text-muted" data-testid="split-disabled-reason">
           {reason}
         </span>
       </span>
@@ -106,8 +111,9 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
         <>
           <label className="flex items-center gap-1 text-xs text-muted">
             <span>{t("speakerEditor.split.at")}</span>
-            <input
+            <TextInput
               type="number"
+              size="sm"
               inputMode="numeric"
               min={segment.startMs + SPEAKER_SPLIT_MIN_MS}
               max={segment.endMs - SPEAKER_SPLIT_MIN_MS}
@@ -115,7 +121,8 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
               value={field}
               aria-label={t("speakerEditor.split.timeLabel")}
               aria-invalid={!inRange}
-              className={`h-6 w-20 rounded border bg-surface px-1.5 font-mono text-xs tabular-nums text-ink focus-visible:outline-2 focus-visible:outline-accent ${inRange ? "border-line" : "border-danger"}`}
+              aria-describedby={inRange ? undefined : rangeErrorId}
+              className="w-20 font-mono tabular-nums"
               onChange={(event) => {
                 setText(event.target.value);
                 const ms = Number(event.target.value);
@@ -129,19 +136,20 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
               {formatDuration(atMs)}
             </span>
           </label>
-          <span className="rounded bg-sunken px-1.5 py-0.5 text-[11px] text-muted" data-testid="split-source" data-source={source}>
+          <span className="rounded bg-sunken px-1.5 py-0.5 text-xs text-muted" data-testid="split-source" data-source={source}>
             {t(`speakerEditor.split.source.${source}`)}
           </span>
           {!paragraphs.speakerPickers ? null : (["left", "right"] as const).map((half) => {
             const value = half === "left" ? leftSpeaker : rightSpeaker;
             const name = t(half === "left" ? "speakerEditor.split.leftSpeaker" : "speakerEditor.split.rightSpeaker");
             return (
-              <select
+              <NativeSelect
                 key={half}
+                size="sm"
                 value={value ?? ""}
                 aria-label={t("speakerEditor.split.speakerFor", { half: name })}
                 title={t("speakerEditor.split.speakerFor", { half: name })}
-                className="h-6 max-w-32 rounded border border-line bg-surface px-1 text-xs"
+                className="max-w-32"
                 onChange={(event) => setChosen({ ...chosen, [half]: event.target.value === "" ? null : event.target.value })}
                 data-testid={`split-speaker-${half}`}
               >
@@ -151,21 +159,19 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
                     {speakerLabel(t, speaker)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             );
           })}
           <label className="flex items-center gap-1.5 text-xs text-muted">
-            <input type="checkbox" className="accent-accent" checked={rightStarts} onChange={(event) => setRightStarts(event.target.checked)} data-testid="split-right-starts" />
+            <Checkbox checked={rightStarts} onChange={(event) => setRightStarts(event.target.checked)} data-testid="split-right-starts" />
             {t("paragraphEditor.splitRightStarts")}
           </label>
           {inRange ? null : (
-            <span className="text-xs text-danger" role="status">
-              {t("speakerEditor.split.outOfRange", { ms: SPEAKER_SPLIT_MIN_MS })}
-            </span>
+            <FieldError id={rangeErrorId}>{t("speakerEditor.split.outOfRange", { ms: SPEAKER_SPLIT_MIN_MS })}</FieldError>
           )}
         </>
       ) : (
-        <span className="text-xs text-muted">{t("speakerEditor.split.needCaret")}</span>
+        <span className="text-note text-muted">{t("speakerEditor.split.needCaret")}</span>
       )}
     </div>
   );

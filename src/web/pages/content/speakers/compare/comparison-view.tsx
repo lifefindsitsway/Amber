@@ -1,4 +1,4 @@
-import { Play, StepForward, TriangleAlert } from "lucide-react";
+import { Play, StepForward } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TranscriptRevisionListItemDto } from "../../../../../shared/dto/content.ts";
@@ -8,8 +8,10 @@ import type { ComparedSentence } from "../../../../../shared/speaker-comparison.
 import { appErrorOf } from "../../../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../../../components/error-view.tsx";
 import { formatDuration } from "../../../../format.ts";
-import { Button } from "../../../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../../../ui/button.tsx";
 import { Loading } from "../../../../ui/feedback.tsx";
+import { NativeSelect } from "../../../../ui/native-select.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../../../ui/notice.tsx";
 import { useSegments } from "../../content-data.ts";
 import { revisionLabel } from "../../labels.ts";
 import { SpeakerAvatar } from "../speaker-avatar.tsx";
@@ -48,8 +50,6 @@ export interface ComparisonViewProps {
    */
   activeCategory?: AttributionDifferenceKind | null;
 }
-
-const SELECT_CLASS = "h-8 min-w-0 max-w-full rounded-md border border-line bg-surface px-2 text-sm focus-visible:outline-2 focus-visible:outline-accent";
 
 const percent = (share: number): number => Math.round(share * 100);
 
@@ -104,7 +104,7 @@ export function ComparisonView(props: ComparisonViewProps) {
         <h2 id={`${ids}-title`} className="text-sm font-semibold">
           {t("speakerCompare.title")}
         </h2>
-        <p className="text-xs text-muted">{t("speakerCompare.description")}</p>
+        <p className={NOTE_TEXT_CLASS}>{t("speakerCompare.description")}</p>
       </header>
 
       {other === undefined ? (
@@ -117,13 +117,13 @@ export function ComparisonView(props: ComparisonViewProps) {
           {candidates.length > 1 ? (
             <label className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">
               <span>{t("speakerCompare.source")}</span>
-              <select className={SELECT_CLASS} value={other.id} onChange={(event) => setPicked(event.target.value)} data-testid="comparison-source">
+              <NativeSelect size="md" className="max-w-full" value={other.id} onChange={(event) => setPicked(event.target.value)} data-testid="comparison-source">
                 {candidates.map((item) => (
                   <option key={item.id} value={item.id}>
                     {revisionLabel(item, undefined, t, i18n, props.revisions)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
           ) : null}
           {loaded.isPending ? <Loading /> : null}
@@ -138,10 +138,9 @@ export function ComparisonView(props: ComparisonViewProps) {
                 ))}
               </p>
               {result.comparison.unreliable ? (
-                <p role="alert" className="flex items-start gap-2 rounded-md bg-accent-soft px-3 py-2 text-sm" data-testid="comparison-unreliable">
-                  <TriangleAlert size={14} aria-hidden="true" />
+                <Callout tone="warn" announce="alert" testId="comparison-unreliable">
                   {t("speakerCompare.unreliable")}
-                </p>
+                </Callout>
               ) : null}
 
               <Correspondences
@@ -187,7 +186,7 @@ export function ComparisonView(props: ComparisonViewProps) {
                   </ul>
                 )}
               </section>
-              <p className="text-xs text-muted">{t("speakerCompare.caveat")}</p>
+              <p className={NOTE_TEXT_CLASS}>{t("speakerCompare.caveat")}</p>
             </>
           )}
         </>
@@ -202,7 +201,7 @@ function FilterChip(props: { active: boolean; onClick: () => void; testId: strin
       type="button"
       aria-pressed={props.active}
       onClick={props.onClick}
-      className={`h-7 rounded-full border px-2.5 text-xs tabular-nums focus-visible:outline-2 focus-visible:outline-accent ${props.active ? "border-accent bg-accent-soft text-accent" : "border-line text-muted hover:bg-sunken"}`}
+      className={`h-7 rounded-full border px-2.5 text-xs tabular-nums transition-colors duration-150 motion-reduce:transition-none ${FOCUS_RING} ${props.active ? "border-accent bg-accent-soft text-accent" : "border-line text-muted hover:bg-sunken"}`}
       data-testid={props.testId}
     >
       {props.children}
@@ -223,10 +222,12 @@ function Correspondences(props: {
   const { t } = useTranslation();
   return (
     <section className="flex flex-col gap-1.5" aria-labelledby={props.labelledBy}>
-      <h3 id={props.labelledBy} className="text-xs font-medium text-muted">
-        {t("speakerCompare.correspondence.title")}
-        <span className="ml-2 font-normal">{t("speakerCompare.correspondence.hint")}</span>
-      </h3>
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <h3 id={props.labelledBy} className="text-xs font-medium text-muted">
+          {t("speakerCompare.correspondence.title")}
+        </h3>
+        <p className="text-note text-muted">{t("speakerCompare.correspondence.hint")}</p>
+      </div>
       <ul className="flex flex-col divide-y divide-line rounded-md border border-line" data-testid="comparison-mapping">
         {props.correspondences.map((item) => {
           const source = props.speakerById.get(item.sourceId);
@@ -246,8 +247,9 @@ function Correspondences(props: {
               </div>
               <label className="flex min-w-0 items-center gap-2 text-xs text-muted">
                 <span className="shrink-0">{t("speakerCompare.correspondence.as")}</span>
-                <select
-                  className={`${SELECT_CLASS} w-44`}
+                <NativeSelect
+                  size="md"
+                  className="w-44 max-w-full"
                   value={item.targetId ?? ""}
                   aria-label={t("speakerCompare.correspondence.mapFor", { name })}
                   onChange={(event) => props.onChoose(item.sourceId, event.target.value === "" ? null : event.target.value)}
@@ -259,7 +261,7 @@ function Correspondences(props: {
                     </option>
                   ))}
                   <option value="">{t("speakerCompare.correspondence.nobody")}</option>
-                </select>
+                </NativeSelect>
               </label>
             </li>
           );
@@ -294,7 +296,7 @@ function DifferenceRow(props: {
       ) : (
         <button
           type="button"
-          className="w-14 shrink-0 text-left font-mono text-xs text-accent tabular-nums hover:underline"
+          className={`w-14 shrink-0 rounded-sm text-left font-mono text-xs text-link tabular-nums underline-offset-2 hover:underline ${FOCUS_RING}`}
           aria-label={t("speakerCompare.row.locate", { time })}
           onClick={() => props.onLocate?.(difference.segmentId)}
           data-testid="comparison-locate"

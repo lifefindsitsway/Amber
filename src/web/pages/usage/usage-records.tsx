@@ -7,6 +7,7 @@ import type { UsageActivity, UsageCall } from "../../../shared/dto/usage-analyti
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
 import { useUsageCalls } from "../../api/queries.ts";
 import { formatBeijingMonthDay, formatBeijingTime, formatBeijingTimeSeconds, formatCount } from "../../format.ts";
+import { EmptyState, Skeleton } from "../../ui/feedback.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import { CostCell, UsageBreakdownTooltip, UsageCell, useBreakdownOpen, VersionTag } from "./usage-cells.tsx";
 import { UsageError } from "./usage-error.tsx";
@@ -160,7 +161,7 @@ function Chevron(props: {
         props.onToggle();
       }}
     >
-      <ChevronRight size={16} className={`transition-transform ${props.expanded ? "rotate-90" : ""}`} aria-hidden="true" />
+      <ChevronRight size={16} className={`transition-transform duration-150 motion-reduce:transition-none ${props.expanded ? "rotate-90" : ""}`} aria-hidden="true" />
     </button>
   );
 }
@@ -330,7 +331,8 @@ function CallRows(props: {
   if (calls.isPending) {
     return (
       <PlaceholderRow id={props.panelId} narrow={props.narrow} testId="usage-calls-loading">
-        <div className="mx-3 h-4 animate-pulse rounded bg-line" />
+        {/* The row's ground is the skeleton's own colour, so this one is drawn in the line colour. */}
+        <Skeleton width="auto" height={16} className="mx-3 bg-line!" />
       </PlaceholderRow>
     );
   }
@@ -338,7 +340,7 @@ function CallRows(props: {
     return (
       <PlaceholderRow id={props.panelId} narrow={props.narrow} testId="usage-calls-error">
         <div className="px-3">
-          <UsageError message={t("usage.records.callsError")} onRetry={() => void calls.refetch()} compact />
+          <UsageError message={t("usage.records.callsError")} onRetry={() => void calls.refetch()} />
         </div>
       </PlaceholderRow>
     );
@@ -434,15 +436,15 @@ function CallRow(props: {
   );
 }
 
-function SkeletonRows(props: { narrow: boolean }) {
+function RecordSkeletonRows(props: { narrow: boolean }) {
   const columns = props.narrow ? NARROW_COLUMNS : WIDE_COLUMNS;
   return (
     <>
       {Array.from({ length: SKELETON_ROWS }, (_, index) => (
-        <tr key={index} className={`border-t border-line ${props.narrow ? "h-[84px]" : "h-14"}`} data-testid="usage-record-skeleton">
+        <tr key={index} className={`border-t border-line ${props.narrow ? "h-[84px]" : "h-14"}`} aria-hidden="true" data-testid="usage-record-skeleton">
           {columns.map((_width, column) => (
             <td key={column} className="px-3">
-              <div className="h-4 animate-pulse rounded bg-sunken" />
+              <Skeleton height={16} />
             </td>
           ))}
         </tr>
@@ -493,15 +495,15 @@ export function UsageRecords(props: {
             {props.error ? (
               <tr>
                 <td colSpan={columnCount} className="h-20 px-3">
-                  <UsageError message={t("usage.records.error")} onRetry={props.onRetry} compact />
+                  <UsageError message={t("usage.records.error")} onRetry={props.onRetry} />
                 </td>
               </tr>
             ) : props.items === undefined ? (
-              <SkeletonRows narrow={narrow} />
+              <RecordSkeletonRows narrow={narrow} />
             ) : props.items.length === 0 ? (
               <tr>
-                <td colSpan={columnCount} className="h-20 px-3 text-center text-sm text-muted">
-                  {t("usage.records.empty")}
+                <td colSpan={columnCount} className="px-3">
+                  <EmptyState title={t("usage.records.empty")} />
                 </td>
               </tr>
             ) : (

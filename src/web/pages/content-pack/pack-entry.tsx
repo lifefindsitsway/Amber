@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { contentPackImportJobDtoSchema } from "../../../shared/dto/content-pack.ts";
 import { useApi } from "../../api/context.tsx";
 import { Button } from "../../ui/button.tsx";
+import { Callout, TextAction } from "../../ui/notice.tsx";
 import { ExportPackDialog, type ExportRequest } from "./export-dialog.tsx";
 import { ImportPackDialog } from "./import-dialog.tsx";
 import { packKeys, useActivePackJobs } from "./pack-api.ts";
@@ -67,17 +68,14 @@ export function PackActiveNotice(props: { className?: string }) {
   return (
     <>
       {kind === undefined || opened !== undefined ? null : (
-        <div
-          role="status"
-          className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-accent/40 bg-accent-soft px-3 py-2 text-sm ${props.className ?? ""}`}
-          data-testid="pack-active-notice"
-          data-kind={kind}
-        >
-          <span>{text}</span>
-          <button type="button" className="font-medium text-accent underline" onClick={() => setOpened(kind)} data-testid="pack-active-open">
-            {t("contentPack.active.open")}
-          </button>
-        </div>
+        <Callout tone="info" density="compact" announce="status" className={props.className ?? ""} testId="pack-active-notice" data-kind={kind}>
+          <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span>{text}</span>
+            <TextAction className="font-medium" onClick={() => setOpened(kind)} data-testid="pack-active-open">
+              {t("contentPack.active.open")}
+            </TextAction>
+          </span>
+        </Callout>
       )}
       <ExportPackDialog open={opened === "export"} onClose={() => setOpened(undefined)} request={undefined} resumeJobId={exportJobId} />
       <ImportPackDialog open={opened === "import"} onClose={() => setOpened(undefined)} resumeJobId={importJobId} />

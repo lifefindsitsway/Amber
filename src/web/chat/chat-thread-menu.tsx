@@ -4,6 +4,15 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatThreadDto } from "../../shared/dto/chat.ts";
 import { formatBeijingDateTime } from "../format.ts";
+import { FOCUS_RING } from "../ui/button.tsx";
+import { InlineNote } from "../ui/notice.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
+
+/**
+ * A thread row's icon buttons. Delete is drawn like its neighbours: in a menu every entry has the
+ * same colour, and the danger colour is kept for the confirmation that follows.
+ */
+const ROW_ICON = `rounded p-1 text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-line hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
 
 /** A thread's title as listed: the user's own name, else the first line of its first question, else 「新对话」. */
 export function useThreadTitle(): (thread: ChatThreadDto | undefined) => string {
@@ -36,7 +45,7 @@ export function ChatThreadMenu(props: {
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-sm font-medium hover:bg-sunken"
+          className={`flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-sm font-medium hover:bg-sunken ${FOCUS_RING}`}
           aria-label={t("chat.threads.menu")}
           title={currentTitle}
           data-testid="chat-thread-menu"
@@ -58,7 +67,7 @@ export function ChatThreadMenu(props: {
           className="z-50 flex max-h-[60vh] w-80 flex-col overflow-auto rounded-md border border-line bg-surface p-1 text-sm shadow-lg"
           data-testid="chat-thread-list"
         >
-          {props.threads.length === 0 ? <p className="px-2 py-1.5 text-xs text-muted">{t("chat.threads.empty")}</p> : null}
+          {props.threads.length === 0 ? <InlineNote className="px-2 py-1.5">{t("chat.threads.empty")}</InlineNote> : null}
           <ul>
             {props.threads.map((thread) => {
               const title = titleOf(thread);
@@ -69,7 +78,7 @@ export function ChatThreadMenu(props: {
                 <li key={thread.id} className={`group flex items-center gap-1 rounded ${current ? "bg-accent-soft" : "hover:bg-sunken"}`} data-testid="chat-thread-item" data-thread-id={thread.id}>
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 flex-col items-start px-2 py-1.5 text-left focus-visible:outline-none"
+                    className="flex min-w-0 flex-1 flex-col items-start rounded px-2 py-1.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
                     aria-current={current ? "true" : undefined}
                     onClick={() => {
                       setOpen(false);
@@ -85,47 +94,50 @@ export function ChatThreadMenu(props: {
                       {props.running.has(thread.id) ? ` · ${t("chat.threads.running")}` : ""}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className="rounded p-1 text-muted hover:bg-line hover:text-ink"
-                    aria-label={t("chat.threads.renameNamed", { title })}
-                    title={t("chat.threads.rename")}
-                    onClick={() => {
-                      setOpen(false);
-                      props.onRename(thread);
-                    }}
-                    data-testid="chat-thread-rename"
-                  >
-                    <Pencil size={13} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded p-1 text-muted hover:bg-line hover:text-ink"
-                    aria-label={t(pinned ? "chat.threads.unpinNamed" : "chat.threads.pinNamed", { title })}
-                    title={t(pinned ? "chat.threads.unpin" : "chat.threads.pin")}
-                    onClick={() => {
-                      // The menu stays open, so the thread is seen moving to its new place.
-                      props.onPin(thread, !pinned);
-                    }}
-                    data-testid="chat-thread-pin"
-                    data-pinned={pinned ? "true" : "false"}
-                  >
-                    {pinned ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}
-                  </button>
-                  <button
-                    type="button"
-                    className="mr-1 rounded p-1 text-muted hover:bg-line hover:text-danger disabled:opacity-40"
-                    aria-label={t("chat.threads.deleteNamed", { title })}
-                    title={t("chat.threads.delete")}
-                    disabled={props.running.has(thread.id)}
-                    onClick={() => {
-                      setOpen(false);
-                      props.onDelete(thread);
-                    }}
-                    data-testid="chat-thread-delete"
-                  >
-                    <Trash2 size={13} aria-hidden="true" />
-                  </button>
+                  <Tooltip content={t("chat.threads.rename")}>
+                    <button
+                      type="button"
+                      className={ROW_ICON}
+                      aria-label={t("chat.threads.renameNamed", { title })}
+                      onClick={() => {
+                        setOpen(false);
+                        props.onRename(thread);
+                      }}
+                      data-testid="chat-thread-rename"
+                    >
+                      <Pencil size={13} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={t(pinned ? "chat.threads.unpin" : "chat.threads.pin")}>
+                    <button
+                      type="button"
+                      className={ROW_ICON}
+                      aria-label={t(pinned ? "chat.threads.unpinNamed" : "chat.threads.pinNamed", { title })}
+                      onClick={() => {
+                        // The menu stays open, so the thread is seen moving to its new place.
+                        props.onPin(thread, !pinned);
+                      }}
+                      data-testid="chat-thread-pin"
+                      data-pinned={pinned ? "true" : "false"}
+                    >
+                      {pinned ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}
+                    </button>
+                  </Tooltip>
+                  <Tooltip content={t("chat.threads.delete")}>
+                    <button
+                      type="button"
+                      className={`mr-1 ${ROW_ICON}`}
+                      aria-label={t("chat.threads.deleteNamed", { title })}
+                      disabled={props.running.has(thread.id)}
+                      onClick={() => {
+                        setOpen(false);
+                        props.onDelete(thread);
+                      }}
+                      data-testid="chat-thread-delete"
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                 </li>
               );
             })}

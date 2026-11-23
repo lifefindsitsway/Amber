@@ -2,6 +2,7 @@ import { Fragment, useState, type FocusEvent, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import type { UsageModalityUsage } from "../../../shared/dto/usage-analytics.ts";
 import type { PriceCurrency } from "../../../shared/model-pricing.ts";
+import { TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import {
   breakdownSentence,
@@ -182,7 +183,7 @@ export function CostCell(props: { view: CostView; currency: PriceCurrency; onCur
       {note === undefined ? null : switchable ? (
         <button
           type="button"
-          className="max-w-full truncate rounded text-xs text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
+          className={`max-w-full truncate text-xs ${TEXT_ACTION_CLASS}`}
           title={t("usage.cost.switchHint", { currency: t(`usage.currencyNames.${otherCurrency(props.currency)}`) })}
           onClick={(event) => {
             event.stopPropagation();

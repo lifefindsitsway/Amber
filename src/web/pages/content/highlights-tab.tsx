@@ -17,6 +17,7 @@ import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { HighlightBand, highlightTone } from "../../player/timeline.tsx";
 import { Button } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { Callout, InlineNote } from "../../ui/notice.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, useHighlights } from "./content-data.ts";
 import { visibleHighlights } from "./highlight-items.ts";
@@ -87,17 +88,17 @@ export function HighlightsTab() {
         {configured && hasTranscript ? <SpeakersNotReadHint contentId={contentId} revisionId={page.primaryRevisionId} testId="highlights-speakers-not-read" /> : null}
         <ThresholdSlider />
       </div>
-      {!configured ? <p className="text-xs text-muted">{t("contentView.summary.needsModel")}</p> : null}
-      {!hasTranscript ? <p className="text-xs text-muted">{t("contentView.highlights.needsTranscript")}</p> : null}
+      {!configured ? <InlineNote>{t("contentView.summary.needsModel")}</InlineNote> : null}
+      {!hasTranscript ? <InlineNote>{t("contentView.highlights.needsTranscript")}</InlineNote> : null}
       {configured && hasTranscript && windowMissing && defaultModel !== undefined ? (
         <ContextWindowNotice modelRef={defaultModel} density="compact" onSaved={windowSaved} testId="highlights-context-window" />
       ) : null}
       {recompute.error instanceof ApiError ? <ErrorView error={recompute.error.error} /> : null}
       {activeTaskId === undefined ? null : <TaskFlow taskId={activeTaskId} />}
       {current?.stale === true ? (
-        <div className="rounded-md border border-line bg-accent-soft px-3 py-2 text-xs" data-testid="highlights-stale">
+        <Callout tone="warn" density="compact" testId="highlights-stale">
           {t(`contentView.stale.${current.staleReason ?? "transcript_changed"}`)}
-        </div>
+        </Callout>
       ) : null}
       {current === undefined ? null : (
         <SpeakerBasisLine
@@ -109,7 +110,7 @@ export function HighlightsTab() {
         />
       )}
       {current === undefined ? (
-        <EmptyState title={t("contentView.highlights.empty")} hint={t("contentView.highlights.emptyHint")} />
+        <EmptyState icon={<Sparkles size={24} />} title={t("contentView.highlights.empty")} hint={t("contentView.highlights.emptyHint")} />
       ) : (
         <HighlightList revision={current} />
       )}
@@ -160,7 +161,7 @@ function HighlightList(props: { revision: HighlightRevisionDto }) {
       {duration > 0 ? <HighlightBand durationMs={duration} highlights={visible} testId="highlights-timeline" /> : null}
       <p className="text-xs text-muted">{t("contentView.highlights.shown", { shown: visible.length, total: revision.items.length })}</p>
       {visible.length === 0 ? (
-        <p className="text-sm text-muted">{t("contentView.highlights.noneAboveThreshold")}</p>
+        <InlineNote>{t("contentView.highlights.noneAboveThreshold")}</InlineNote>
       ) : (
         <ol ref={menuTarget} className="flex flex-col gap-1" data-testid="highlight-items" data-revision-id={revision.transcriptRevisionId}>
           {visible.map((item) => {

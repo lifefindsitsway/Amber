@@ -197,7 +197,7 @@ describe("SystemPromptsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "恢复内置" }));
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
     expect(await screen.findByText("将「AI 切章」恢复为内置提示词？")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    fireEvent.click(within(screen.getAllByRole("dialog").at(-1) as HTMLElement).getByRole("button", { name: "恢复内置" }));
     await waitFor(() => expect(calls.find((call) => call.method === "DELETE")?.path).toBe("/api/prompts/chapter.ai"));
     await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.path === "/api/prompts")).toHaveLength(2));
   });

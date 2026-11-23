@@ -130,7 +130,7 @@ function QrAttempt(props: { attempt: PlatformQrAttemptDto; refreshing: boolean; 
         {t(`settings.platformAccounts.qr.${status}`)}
       </p>
       {expired ? (
-        <Button size="sm" variant="primary" disabled={props.refreshing} onClick={props.onRefresh}>
+        <Button size="sm" variant="primary" loading={props.refreshing} onClick={props.onRefresh}>
           {t("settings.platformAccounts.qr.refresh")}
         </Button>
       ) : null}

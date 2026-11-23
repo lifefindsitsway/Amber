@@ -6,6 +6,7 @@ import { clearBilibiliPlayerSession, rotateMasterKey } from "../../desktop/bridg
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { ConfirmDialog } from "../../components/confirm-dialog.tsx";
 import { SettingsBlock } from "../settings/settings-ui.tsx";
 
@@ -57,13 +58,20 @@ export function CredentialsSection(props: { title?: string }) {
         </p>
       )}
       {rotateFailed === undefined ? null : (
-        <div className="mb-3 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert" data-testid="rotate-failed">
-          <p>{t("admin.credentials.rotateFailed")}</p>
-          {rotateFailed === "" ? null : <p className="mt-1 text-xs text-muted">{rotateFailed}</p>}
-          <Button size="sm" className="mt-2" disabled={rotating} onClick={() => void rotate()}>
-            {t("admin.credentials.rotateRetry")}
-          </Button>
-        </div>
+        <Callout
+          tone="error"
+          announce="alert"
+          className="mb-3"
+          testId="rotate-failed"
+          actions={
+            <Button size="sm" loading={rotating} onClick={() => void rotate()}>
+              {t("admin.credentials.rotateRetry")}
+            </Button>
+          }
+        >
+          <p className="max-w-[70ch]">{t("admin.credentials.rotateFailed")}</p>
+          {rotateFailed === "" ? null : <p className={`mt-1 break-all ${NOTE_TEXT_CLASS}`}>{rotateFailed}</p>}
+        </Callout>
       )}
       <Button variant="danger" onClick={() => setOpen(true)}>
         {t("admin.credentials.action")}

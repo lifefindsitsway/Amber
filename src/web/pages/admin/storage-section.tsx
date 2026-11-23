@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { adminStorageDtoSchema } from "../../../shared/dto/admin.ts";
 import { useApi } from "../../api/context.tsx";
 import { formatBytes } from "../../../shared/units.ts";
-import { Loading } from "../../ui/feedback.tsx";
+import { SkeletonRows } from "../../ui/feedback.tsx";
 import { RequestError, SettingsBlock } from "../settings/settings-ui.tsx";
 import { adminKeys, useAdminUsers } from "./admin-data.ts";
 
@@ -16,7 +16,7 @@ export function AdminStorageSection() {
   const nameOf = (userId: string): string => users.data?.users.find((user) => user.id === userId)?.username ?? userId;
   return (
     <SettingsBlock intro={t("admin.storage.intro")}>
-      {storage.isPending ? <Loading /> : null}
+      {storage.isPending ? <SkeletonRows count={3} rowHeight={20} /> : null}
       <RequestError error={storage.error} />
       {storage.data === undefined ? null : (
         <>

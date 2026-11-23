@@ -15,6 +15,7 @@ import { AsrModelSelect, encodeAsrModel, initialAsrModelRef, useAsrModelLabel } 
 import { ModelSelect, type ModelSelectEntry } from "./model-select.tsx";
 import { Button } from "../ui/button.tsx";
 import { Spinner } from "../ui/feedback.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
 import { ErrorView, useEngineLabel } from "./error-view.tsx";
 import { ContextWindowNotice } from "../models/context-window-notice.tsx";
 import { AsrServiceMark, LlmModelMark } from "../models/model-mark.tsx";
@@ -104,17 +105,26 @@ export function ResendPrompt(props: { taskId: string; units: WorkUnitDto[] }) {
   if (props.units.length === 0) return null;
   const count = props.units.length;
   return (
-    <div data-testid="resend-prompt" className="mt-2 rounded-md border border-accent/40 bg-accent-soft p-2 text-sm" role="alert">
-      <p>{t("shell.flow.resendWarning", { count })}</p>
-      <Button size="sm" variant="primary" className="mt-2" disabled={resend.isPending} onClick={() => resend.mutate(props.units.map((unit) => unit.id))}>
-        {t("shell.flow.confirmResend", { count })}
-      </Button>
+    // A paid call may be billed twice, so it is read before acting: a caution box, not a quiet note.
+    <Callout
+      tone="warn"
+      density="compact"
+      announce="alert"
+      testId="resend-prompt"
+      className="mt-2"
+      actions={
+        <Button size="sm" variant="primary" loading={resend.isPending} onClick={() => resend.mutate(props.units.map((unit) => unit.id))}>
+          {t("shell.flow.confirmResend", { count })}
+        </Button>
+      }
+    >
+      <p className="max-w-[70ch]">{t("shell.flow.resendWarning", { count })}</p>
       {resend.error instanceof ApiError ? (
         <div className="mt-2">
           <ErrorView error={resend.error.error} />
         </div>
       ) : null}
-    </div>
+    </Callout>
   );
 }
 
@@ -195,10 +205,16 @@ export function TaskFlow(props: { taskId: string }) {
   const { t } = useTranslation();
   const view = useTask(props.taskId);
   if (view.detail === undefined) {
-    return view.error === undefined ? <Spinner /> : <p className="text-sm text-danger">{t("shell.flow.loadFailed")}</p>;
+    return view.error === undefined ? <Spinner /> : <FlowLoadFailed />;
   }
   const detail = view.detail;
   return <FlowSection task={detail} status={detail.statusProjection} rows={latestStageRuns(detail).map((run) => ({ run, owner: detail }))} />;
+}
+
+/** Nothing to act on: the flow is shown again once the Task can be read. */
+function FlowLoadFailed() {
+  const { t } = useTranslation();
+  return <InlineNote icon={<CircleAlert size={14} className="text-danger" aria-hidden="true" />}>{t("shell.flow.loadFailed")}</InlineNote>;
 }
 
 /** Stages a single-stage Task can redo after `process_content`. */
@@ -244,7 +260,7 @@ export function ContentTaskFlow(props: { taskId: string; redos: Partial<Record<R
   const chapter = useTask(props.redos.chapter);
   const summary = useTask(props.redos.summary);
   if (view.detail === undefined) {
-    return view.error === undefined ? <Spinner /> : <p className="text-sm text-danger">{t("shell.flow.loadFailed")}</p>;
+    return view.error === undefined ? <Spinner /> : <FlowLoadFailed />;
   }
   const detail = view.detail;
   const redos: Partial<Record<RedoStage, TaskDetailDto>> = {};
@@ -348,14 +364,14 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
       </div>
       {run.status === "running" ? (
         <div className="mt-1.5 h-1 overflow-hidden rounded bg-sunken">
-          <div className="h-full bg-accent transition-all" style={{ width: `${Math.round(run.progress * 100)}%` }} />
+          <div className="h-full bg-accent transition-[width] duration-150 motion-reduce:transition-none" style={{ width: `${Math.round(run.progress * 100)}%` }} />
         </div>
       ) : null}
       {/* The transcription service reports nothing while it works, so the bar rests after the upload. */}
       {run.status === "running" && (props.step === "transcribe" || props.step === "awaitResult") ? (
-        <p className="mt-1 text-xs text-muted" data-testid="step-hint">
+        <InlineNote className="mt-1" testId="step-hint">
           {t(props.step === "transcribe" ? "shell.flow.transcribeHint" : "shell.flow.awaitResultHint")}
-        </p>
+        </InlineNote>
       ) : null}
       {engineLabel === undefined || run.engine === undefined || run.status === "failed" ? null : <EngineLine engine={run.engine} label={engineLabel} />}
       {run.status === "failed" && run.error !== undefined ? (
@@ -363,9 +379,9 @@ function StageRow(props: { taskId: string; run: StageRunDto; step?: WorkStep | u
           <ErrorView error={run.error} stage={run.stage} {...(run.engine === undefined ? {} : { engine: run.engine })}>
             <RerunControls run={run} needs={props.needs} pending={retry.isPending} onRerun={(choice) => retry.mutate(choice ?? {})} />
             {/* A re-run reads the prompts in effect now, so an edit or a restore made since the failure applies. */}
-            {LLM_STAGES.has(run.stage) ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunPromptHint")}</span> : null}
+            {LLM_STAGES.has(run.stage) ? <span className={`self-center ${NOTE_TEXT_CLASS}`}>{t("shell.flow.rerunPromptHint")}</span> : null}
             {run.error.class === "auth_required" ? (
-              <Link className="self-center text-sm text-accent underline" to="/settings/platform-accounts">
+              <Link className={`self-center text-sm ${TEXT_ACTION_CLASS}`} to="/settings/platform-accounts">
                 {t("shell.flow.platformAccounts")}
               </Link>
             ) : null}
@@ -412,7 +428,7 @@ function WaitingAsrConfiguration(props: { run: StageRunDto; pending: boolean; on
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
       <span className="text-muted">{t("shell.flow.waitingConfiguration")}</span>
-      <Link className="text-accent underline" to="/settings/transcription">
+      <Link className={TEXT_ACTION_CLASS} to="/settings/transcription">
         {t("shell.flow.configureAsr")}
       </Link>
       {needsModel && options.length > 0 ? (
@@ -454,7 +470,7 @@ function WaitingModelConfiguration(props: { run: StageRunDto; needs: ModelNeeds;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
       <span className="text-muted">{t("shell.flow.waitingConfiguration")}</span>
-      <Link className="text-accent underline" to={isLlm ? "/settings/models" : "/settings/transcription"}>
+      <Link className={TEXT_ACTION_CLASS} to={isLlm ? "/settings/models" : "/settings/transcription"}>
         {isLlm ? t("shell.flow.configureLlm") : t("shell.flow.configureAsr")}
       </Link>
       {needsModel && options.length > 0 ? (
@@ -522,7 +538,7 @@ function RerunWithAsrModel(props: { current: AsrModelRefDto; provider: string | 
       <Button size="sm" disabled={props.pending} onClick={() => props.onRerun(changed ? { asrModelRef: selected } : {})}>
         {t("shell.flow.rerun")}
       </Button>
-      {changed ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunAsrModelHint")}</span> : null}
+      {changed ? <span className={`self-center ${NOTE_TEXT_CLASS}`}>{t("shell.flow.rerunAsrModelHint")}</span> : null}
     </>
   );
 }
@@ -562,7 +578,7 @@ function RerunWithModel(props: { current: ModelRefDto; needs: ModelNeeds; pendin
       <Button id={rerunId} size="sm" disabled={props.pending || windowMissing} onClick={() => props.onRerun(changed ? selectedRef : undefined)}>
         {t("shell.flow.rerun")}
       </Button>
-      {changed ? <span className="self-center text-xs text-muted">{t("shell.flow.rerunModelHint")}</span> : null}
+      {changed ? <span className={`self-center ${NOTE_TEXT_CLASS}`}>{t("shell.flow.rerunModelHint")}</span> : null}
       {windowMissing && selectedRef !== undefined ? <ContextWindowNotice modelRef={selectedRef} density="compact" variant="minimal" onSaved={windowSaved} className="order-last basis-full" testId="rerun-context-window" /> : null}
     </>
   );

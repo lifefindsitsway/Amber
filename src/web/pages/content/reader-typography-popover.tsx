@@ -12,21 +12,25 @@ import {
 } from "../../../shared/defaults.ts";
 import { READER_LINE_HEIGHT_OPTIONS, readerCustomFontSchema, readerSideMargin, type ReaderFont, type ReaderTypography } from "../../../shared/reader-typography.ts";
 import type { BundledFontFace } from "../../bundled-fonts.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { Radio } from "../../ui/checkbox.tsx";
+import { FieldError } from "../../ui/notice.tsx";
+import { Switch } from "../../ui/switch.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { bundledFaceOf, isLocalFontAvailable, READER_FONT_CHOICES, type ReaderFontChoice } from "./reader-font.ts";
 import type { ReaderTypographyChange } from "./reader-typography.ts";
 
 export type { ReaderTypographyChange };
 
-const STEP_BUTTON =
-  "flex size-7 shrink-0 items-center justify-center rounded-md border border-line bg-surface text-ink outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40";
+const STEP_BUTTON = `flex size-7 shrink-0 items-center justify-center rounded-md border border-line bg-surface text-ink transition duration-150 motion-reduce:transition-none hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
 
 /** Line heights print with one decimal, so the five choices line up (`2.0`, not `2`). */
 const lineHeightLabel = (value: number): string => value.toFixed(1);
 
 /** One segment of a segmented choice (font, line height): a visually hidden radio inside its label. */
 const SEGMENT =
-  "flex flex-1 cursor-pointer items-center justify-center gap-1 rounded px-1 py-1 text-xs text-muted transition-colors hover:text-ink has-checked:bg-surface has-checked:font-semibold has-checked:text-ink has-checked:shadow-sm has-focus-visible:ring-2 has-focus-visible:ring-accent";
+  "flex flex-1 cursor-pointer items-center justify-center gap-1 rounded px-1 py-1 text-xs text-muted transition-colors duration-150 motion-reduce:transition-none hover:text-ink has-checked:bg-surface has-checked:font-semibold has-checked:text-ink has-checked:shadow-sm has-focus-visible:ring-2 has-focus-visible:ring-accent";
 
 const choiceOf = (font: ReaderFont | undefined): ReaderFontChoice => font ?? "default";
 
@@ -60,13 +64,15 @@ export function ReaderTypographyPopover(props: {
   const fontPick = useFontPick(props.loadFont, props.onChange);
   return (
     <Popover.Root modal={false}>
-      <Popover.Trigger asChild>
-        <Button size="sm" variant="ghost" aria-label={t("speakerReader.typography.triggerLabel")} title={t("speakerReader.typography.label")} data-testid="reader-typography">
-          <span aria-hidden="true" className="font-serif text-[13px] leading-none font-semibold tracking-tight">
-            {t("speakerReader.typography.trigger")}
-          </span>
-        </Button>
-      </Popover.Trigger>
+      <Tooltip content={t("speakerReader.typography.label")}>
+        <Popover.Trigger asChild>
+          <Button size="sm" variant="ghost" aria-label={t("speakerReader.typography.triggerLabel")} data-testid="reader-typography">
+            <span aria-hidden="true" className="font-serif text-[13px] leading-none font-semibold tracking-tight">
+              {t("speakerReader.typography.trigger")}
+            </span>
+          </Button>
+        </Popover.Trigger>
+      </Tooltip>
       <Popover.Portal>
         <Popover.Content
           side="bottom"
@@ -98,8 +104,7 @@ export function ReaderTypographyPopover(props: {
               <div className="flex rounded-md border border-line bg-sunken p-0.5" data-testid="reader-line-heights">
                 {READER_LINE_HEIGHT_OPTIONS.map((option) => (
                   <label key={option} className={`${SEGMENT} tabular-nums`}>
-                    <input
-                      type="radio"
+                    <Radio
                       name={`${groupId}-line-height`}
                       className="sr-only"
                       value={option}
@@ -126,21 +131,10 @@ export function ReaderTypographyPopover(props: {
             />
 
             {props.speakerMode ? (
-              <label className="flex cursor-pointer items-center justify-between gap-3">
-                <span className="font-medium">{t("speakerReader.typography.showSpeakers")}</span>
-                <span className="relative inline-flex shrink-0">
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    className="peer sr-only"
-                    checked={value.showSpeakers}
-                    onChange={(event) => props.onChange({ showSpeakers: event.target.checked })}
-                    data-testid="reader-show-speakers"
-                  />
-                  <span aria-hidden="true" className="h-5 w-9 rounded-full bg-sunken ring-1 ring-line transition-colors peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-accent" />
-                  <span aria-hidden="true" className="pointer-events-none absolute top-0.5 left-0.5 size-4 rounded-full bg-surface shadow transition-transform peer-checked:translate-x-4" />
-                </span>
-              </label>
+              // Reversed so the label reads first and the switch sits at the right edge, as in a settings row.
+              <Switch checked={value.showSpeakers} onChange={(checked) => props.onChange({ showSpeakers: checked })} className="w-full flex-row-reverse justify-between font-medium" testId="reader-show-speakers">
+                {t("speakerReader.typography.showSpeakers")}
+              </Switch>
             ) : null}
 
             <div className="flex justify-end border-t border-line pt-3">
@@ -158,6 +152,8 @@ export function ReaderTypographyPopover(props: {
 /**
  * A labelled range with 「−」 and 「+」 beside it, for a number that moves in steps (the font
  * size, the side margin). Whatever is set is snapped to a step and kept within the range.
+ * The step buttons keep the native title as their tooltip: inside this popover a tooltip layer
+ * would take the first Esc for itself, and Esc must close the popover at once.
  */
 function SteppedSlider(props: {
   label: string;
@@ -288,8 +284,10 @@ function FontGroup(props: {
   const { t } = useTranslation();
   const { pending, failed, pick } = props.pick;
   const current = choiceOf(props.value.font);
+  const failureId = `${props.name}-failed`;
+  const showFailure = failed || (props.fontUnavailable && pending === undefined);
   return (
-    <fieldset className="min-w-0">
+    <fieldset className="min-w-0" aria-describedby={showFailure ? failureId : undefined}>
       <legend className="mb-2 font-medium">{t("readerFont.label")}</legend>
       <div className="flex rounded-md border border-line bg-sunken p-0.5" data-testid="reader-fonts">
         {READER_FONT_CHOICES.map((choice) => {
@@ -298,8 +296,7 @@ function FontGroup(props: {
           const loading = pending === undefined ? props.fontLoading && choice === current : choice === pending;
           return (
             <label key={choice} className={SEGMENT} aria-busy={loading || undefined} data-loading={loading ? "true" : undefined}>
-              <input
-                type="radio"
+              <Radio
                 name={props.name}
                 className="sr-only"
                 value={choice}
@@ -317,11 +314,14 @@ function FontGroup(props: {
           );
         })}
       </div>
-      {failed || (props.fontUnavailable && pending === undefined) ? (
-        <p role="status" className="mt-2 text-xs text-danger" data-testid="reader-font-failed">
-          {t("readerFont.loadFailed")}
-        </p>
-      ) : null}
+      {/* The read fails after the pick, so the failure is announced; the live region stays mounted for that. */}
+      <div role="status">
+        {showFailure ? (
+          <FieldError id={failureId} className="mt-2" testId="reader-font-failed">
+            {t("readerFont.loadFailed")}
+          </FieldError>
+        ) : null}
+      </div>
       {current === "custom" ? <CustomFontField stored={props.value.customFont} onChange={props.onChange} /> : null}
     </fieldset>
   );
@@ -357,28 +357,27 @@ function CustomFontField(props: { stored: string | undefined; onChange: (change:
       <label htmlFor={id} className="sr-only">
         {t("readerFont.customLabel")}
       </label>
-      <input
+      <TextInput
         id={id}
-        type="text"
+        size="sm"
         value={draft}
         placeholder={t("readerFont.customPlaceholder")}
         autoComplete="off"
         spellCheck={false}
-        aria-invalid={invalid || undefined}
+        invalid={invalid}
         aria-describedby={`${id}-status`}
-        className="h-7 w-full rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent aria-invalid:border-danger"
+        className="w-full"
         onChange={(event) => change(event.target.value)}
         data-testid="reader-custom-font"
       />
-      <p id={`${id}-status`} role="status" className={`mt-1 text-xs ${invalid ? "text-danger" : "text-muted"}`} data-testid="reader-custom-font-status">
-        {invalid
-          ? t("readerFont.customInvalid", { max: READER_FONT_NAME_MAX_CHARS })
-          : found === undefined
-            ? null
-            : found
-              ? t("readerFont.customFound")
-              : t("readerFont.customMissing")}
-      </p>
+      {/* One live region for both the rule and the measured result, which arrives after typing. */}
+      <div id={`${id}-status`} role="status" className="mt-1.5" data-testid="reader-custom-font-status">
+        {invalid ? (
+          <FieldError id={`${id}-invalid`}>{t("readerFont.customInvalid", { max: READER_FONT_NAME_MAX_CHARS })}</FieldError>
+        ) : found === undefined ? null : (
+          <p className="text-note text-muted">{found ? t("readerFont.customFound") : t("readerFont.customMissing")}</p>
+        )}
+      </div>
     </div>
   );
 }

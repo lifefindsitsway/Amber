@@ -8,9 +8,11 @@ import { FIGURE_DELETED_RETENTION_DAYS } from "../../../shared/defaults.ts";
 import type { FigureDto } from "../../../shared/dto/figure.ts";
 import { formatDateTime, formatDuration } from "../../format.ts";
 import { useFrameSource } from "../../player/figure-capture.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../ui/context-menu.tsx";
 import { Spinner } from "../../ui/feedback.tsx";
+import { FieldError, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { pickShownRevision, readableRevisions, useRevisions, useSegments } from "./content-data.ts";
 import { useReaderFigures } from "./figure-context.ts";
@@ -31,7 +33,10 @@ import {
 import { useFigureImage } from "./use-figure-image.ts";
 
 const ITEM_CLASS = `${MENU_ITEM_CLASS} items-start`;
-const NOTE_CLASS = "block text-xs text-muted";
+/** A sentence under a menu entry (why it is off, what it takes). */
+const NOTE_CLASS = "block text-note text-muted";
+/** A time under a menu entry. */
+const META_CLASS = "block text-xs text-muted";
 const isApple = (): boolean => typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/u.test(navigator.userAgent);
 
 function Thumbnail(props: { figure: FigureDto }) {
@@ -63,7 +68,6 @@ const DONE_KEY = {
   restore: "figureInsert.status.restoreDone",
 } as const satisfies Record<FigureInsertKind, string>;
 
-const LINK_BUTTON_CLASS = "rounded text-accent hover:underline focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none";
 
 /** One insert started in the reading view: under way (with 「取消」 for a file being sent), done, cancelled or failed. */
 function StatusLine(props: { status: FigureInsertStatus }) {
@@ -77,7 +81,7 @@ function StatusLine(props: { status: FigureInsertStatus }) {
         <Spinner size={12} />
         <span>{t(PENDING_KEY[status.kind])}</span>
         {cancel === undefined ? null : (
-          <button type="button" className={LINK_BUTTON_CLASS} aria-label={t("figureInsert.status.cancelLabel")} onClick={cancel} data-testid="figure-insert-cancel">
+          <button type="button" className={TEXT_ACTION_CLASS} aria-label={t("figureInsert.status.cancelLabel")} onClick={cancel} data-testid="figure-insert-cancel">
             {t("figureInsert.status.cancel")}
           </button>
         )}
@@ -88,15 +92,16 @@ function StatusLine(props: { status: FigureInsertStatus }) {
     return (
       <span className="flex items-center gap-2" data-testid="figure-insert-line" data-phase="failed">
         <span className="text-danger">{status.message}</span>
-        <button
-          type="button"
-          className="rounded p-0.5 text-muted hover:bg-sunken hover:text-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-          aria-label={t("figureInsert.status.dismiss")}
-          title={t("figureInsert.status.dismiss")}
-          onClick={() => figureInsertStatus.dismiss(status.id)}
-        >
-          <X size={12} aria-hidden="true" />
-        </button>
+        <Tooltip content={t("figureInsert.status.dismiss")}>
+          <button
+            type="button"
+            className={`rounded p-0.5 text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+            aria-label={t("figureInsert.status.dismiss")}
+            onClick={() => figureInsertStatus.dismiss(status.id)}
+          >
+            <X size={12} aria-hidden="true" />
+          </button>
+        </Tooltip>
       </span>
     );
   }
@@ -143,7 +148,7 @@ function InsertStatus(props: { contentId: string }) {
     <span ref={outer} className={`absolute top-full z-30 mt-1 ${placement.alignEnd ? "right-0" : "left-0"}`} data-testid="figure-insert-status">
       <span
         ref={box}
-        className={`flex w-max max-w-72 flex-col gap-1 text-xs ${entries.length === 0 ? "" : "rounded-md border border-line bg-surface px-2 py-1 shadow-sm"}`}
+        className={`flex w-max max-w-72 flex-col gap-1 text-note ${entries.length === 0 ? "" : "rounded-md border border-line bg-surface px-2 py-1 shadow-sm"}`}
         style={placement.maxWidth === undefined ? undefined : { maxWidth: `min(18rem, ${placement.maxWidth}px)` }}
       >
         <span role="status" aria-live="polite" className="flex flex-col gap-1" data-testid="figure-insert-progress">
@@ -202,9 +207,12 @@ export function FigureInsertMenu(): ReactNode {
   const frozen = useRef<FrozenInsert>({ target: undefined, frame: undefined });
   const fileInput = useRef<HTMLInputElement>(null);
   const reasonId = useId();
+  const limitId = useId();
   const unavailable = useUnavailableReason(contentId, api !== undefined);
   const atLimit = figuresAtLimit(figures.data);
   const limitText = t("figureInsert.menu.atLimit", { limit: figures.data?.limit ?? 0 });
+  // The entries the limit turns off name it, so it is read with them.
+  const limitNote = atLimit ? { "aria-describedby": limitId } : {};
   const deleted = figures.data?.recentlyDeleted ?? [];
   const captureReason = source?.kind === "video" ? undefined : source?.kind === "audio" ? t("figureInsert.menu.captureNoPicture") : t("figureInsert.menu.captureNeedsVideo");
 
@@ -235,14 +243,14 @@ export function FigureInsertMenu(): ReactNode {
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content align="start" sideOffset={4} collisionPadding={8} className={`${MENU_CONTENT_CLASS} w-72 max-w-[var(--radix-dropdown-menu-content-available-width)]`} data-testid="figure-insert-menu">
-            <DropdownMenu.Item className={ITEM_CLASS} disabled={captureReason !== undefined || atLimit} onSelect={capture} data-testid="figure-insert-capture">
+            <DropdownMenu.Item className={ITEM_CLASS} disabled={captureReason !== undefined || atLimit} onSelect={capture} {...limitNote} data-testid="figure-insert-capture">
               <Camera size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
               <span className="min-w-0">
                 {t("figureInsert.menu.capture")}
                 {captureReason === undefined ? null : <span className={NOTE_CLASS}>{captureReason}</span>}
               </span>
             </DropdownMenu.Item>
-            <DropdownMenu.Item className={ITEM_CLASS} disabled={atLimit} onSelect={() => fileInput.current?.click()} data-testid="figure-insert-upload">
+            <DropdownMenu.Item className={ITEM_CLASS} disabled={atLimit} onSelect={() => fileInput.current?.click()} {...limitNote} data-testid="figure-insert-upload">
               <ImageUp size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
               <span className="min-w-0">
                 {t("figureInsert.menu.upload")}
@@ -250,9 +258,9 @@ export function FigureInsertMenu(): ReactNode {
               </span>
             </DropdownMenu.Item>
             {atLimit ? (
-              <p className="px-2 py-1 text-xs text-danger" data-testid="figure-insert-limit">
+              <FieldError id={limitId} className="px-2 py-1" testId="figure-insert-limit">
                 {limitText}
-              </p>
+              </FieldError>
             ) : null}
             <DropdownMenu.Separator className="my-1 h-px bg-line" />
             <DropdownMenu.Sub>
@@ -266,7 +274,7 @@ export function FigureInsertMenu(): ReactNode {
               </DropdownMenu.SubTrigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.SubContent sideOffset={4} collisionPadding={8} className={`${MENU_CONTENT_CLASS} flex max-h-80 w-80 max-w-[var(--radix-dropdown-menu-content-available-width)] flex-col overflow-y-auto`} data-testid="figure-insert-recent-list">
-                  <p className="px-2 py-1 text-xs text-muted">{t("figureInsert.menu.recentHint", { days: FIGURE_DELETED_RETENTION_DAYS })}</p>
+                  <p className="px-2 py-1 text-note text-muted">{t("figureInsert.menu.recentHint", { days: FIGURE_DELETED_RETENTION_DAYS })}</p>
                   {deleted.map((figure) => {
                     const name = figureName(figure, t);
                     return (
@@ -283,9 +291,9 @@ export function FigureInsertMenu(): ReactNode {
                           <span className="block truncate" title={name}>
                             {name}
                           </span>
-                          {figure.deletedAt === undefined ? null : <span className={NOTE_CLASS}>{t("figureInsert.recent.deletedAt", { time: formatDateTime(figure.deletedAt, i18n.language) })}</span>}
+                          {figure.deletedAt === undefined ? null : <span className={META_CLASS}>{t("figureInsert.recent.deletedAt", { time: formatDateTime(figure.deletedAt, i18n.language) })}</span>}
                         </span>
-                        <span className="shrink-0 text-xs text-accent">{t("figureInsert.recent.restore")}</span>
+                        <span className="shrink-0 text-xs text-link">{t("figureInsert.recent.restore")}</span>
                       </DropdownMenu.Item>
                     );
                   })}
@@ -293,7 +301,7 @@ export function FigureInsertMenu(): ReactNode {
               </DropdownMenu.Portal>
             </DropdownMenu.Sub>
             <DropdownMenu.Separator className="my-1 h-px bg-line" />
-            <p className="px-2 py-1 text-xs text-muted" data-testid="figure-insert-paste-hint">
+            <p className="px-2 py-1 text-note text-muted" data-testid="figure-insert-paste-hint">
               {t("figureInsert.menu.pasteHint", { keys: t(isApple() ? "figureInsert.menu.pasteKeysMeta" : "figureInsert.menu.pasteKeysCtrl") })}
             </p>
           </DropdownMenu.Content>

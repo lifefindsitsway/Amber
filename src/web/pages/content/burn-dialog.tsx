@@ -21,7 +21,10 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { burnFileName, burnOutputsKey, fetchBurnOutputs, saveBurnProduct } from "../../desktop/burn-outputs.ts";
 import { upgradeTrackPref, useSubtitlePrefs, type SubtitleTrackPref } from "../../player/subtitle-prefs.ts";
 import { Button } from "../../ui/button.tsx";
+import { Radio } from "../../ui/checkbox.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, pickTranslation, translationCurrents, useTranslations, visibleRevisions, type TranslationCurrents } from "./content-data.ts";
@@ -274,14 +277,30 @@ export function BurnDialog(props: {
       }}
       title={t("contentView.burn.title")}
       description={t("contentView.burn.hint")}
+      footer={
+        <>
+          <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
+          <Button
+            variant="primary"
+            loading={start.isPending}
+            disabled={body === undefined || source === undefined}
+            onClick={() => {
+              if (body !== undefined) start.mutate(body);
+            }}
+            data-testid="burn-start"
+          >
+            {t("contentView.burn.start")}
+          </Button>
+        </>
+      }
     >
       <div className="flex flex-col gap-3 text-sm">
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-xs text-muted">{t("contentView.burn.mode")}</legend>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted">{t("contentView.burn.originalRevision")}</span>
-            <select
-              className="h-8 rounded border border-line bg-surface px-2"
+            <NativeSelect
+              size="md"
               value={original.id}
               onChange={(event) => {
                 setPickedOriginal(event.target.value);
@@ -294,13 +313,12 @@ export function BurnDialog(props: {
                   {revisionLabel(item, props.primaryId, t, i18n, originals)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           <div className="flex flex-wrap gap-x-4 gap-y-1">
             {BURN_MODES.map((value) => (
               <label key={value} className="inline-flex items-center gap-2">
-                <input
-                  type="radio"
+                <Radio
                   name="burn-mode"
                   value={value}
                   checked={mode === value}
@@ -311,12 +329,12 @@ export function BurnDialog(props: {
               </label>
             ))}
           </div>
-          {translations.length === 0 ? <p className="text-xs text-muted">{t("contentView.burn.noTranslation")}</p> : null}
+          {translations.length === 0 ? <InlineNote>{t("contentView.burn.noTranslation")}</InlineNote> : null}
           {mode === "original" || translations.length === 0 ? null : (
             <label className="flex flex-col gap-1">
               <span className="text-xs text-muted">{t("contentView.burn.translation")}</span>
-              <select
-                className="h-8 rounded border border-line bg-surface px-2"
+              <NativeSelect
+                size="md"
                 value={translationId}
                 onChange={(event) => setPickedTranslation(event.target.value)}
                 data-testid="burn-translation"
@@ -326,19 +344,19 @@ export function BurnDialog(props: {
                     {revisionLabel(item, props.primaryId, t, i18n, translations)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
           )}
         </fieldset>
         {source === undefined ? (
-          <p className="text-xs text-muted" data-testid="burn-source-video">
+          <p className={NOTE_TEXT_CLASS} data-testid="burn-source-video">
             {t("contentView.burn.noSourceVideo")}
           </p>
         ) : (
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted">{t("contentView.burn.sourceVideo")}</span>
-            <select
-              className="h-8 rounded border border-line bg-surface px-2"
+            <NativeSelect
+              size="md"
               value={source.asset.id}
               onChange={(event) => {
                 setPickedSource(event.target.value);
@@ -351,15 +369,14 @@ export function BurnDialog(props: {
                   {sourceLabel(item)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         )}
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-xs text-muted">{t("contentView.burn.delivery")}</legend>
           {SUBTITLE_DELIVERIES.map((value) => (
             <label key={value} className="flex items-start gap-2">
-              <input
-                type="radio"
+              <Radio
                 name="burn-delivery"
                 className="mt-1"
                 value={value}
@@ -372,7 +389,7 @@ export function BurnDialog(props: {
               />
               <span className="flex flex-col">
                 <span>{t(`contentView.burn.deliveryValue.${value}`)}</span>
-                <span id={`burn-delivery-hint-${value}`} className="text-xs text-muted">
+                <span id={`burn-delivery-hint-${value}`} className="text-note text-muted">
                   {t(`contentView.burn.deliveryHint.${value}`)}
                 </span>
               </span>
@@ -384,8 +401,7 @@ export function BurnDialog(props: {
             <legend className="mb-1 text-xs text-muted">{t("contentView.burn.container")}</legend>
             {SOFT_CONTAINERS.map((value) => (
               <label key={value} className="flex items-start gap-2">
-                <input
-                  type="radio"
+                <Radio
                   name="burn-container"
                   className="mt-1"
                   value={value}
@@ -399,7 +415,7 @@ export function BurnDialog(props: {
                 />
                 <span className="flex flex-col">
                   <span>{t(`contentView.burn.containerValue.${value}`)}</span>
-                  <span id={`burn-container-hint-${value}`} className="text-xs text-muted">
+                  <span id={`burn-container-hint-${value}`} className="text-note text-muted">
                     {value === "mp4" && speakerMode !== undefined ? (
                       <span data-testid="burn-mp4-speaker-unsupported">{t("subtitleSpeaker.burn.mp4Unsupported")}</span>
                     ) : (
@@ -432,7 +448,7 @@ export function BurnDialog(props: {
           </Button>
         </div>
         {speakerMode !== undefined && original.speakersConfirmedAt === undefined ? (
-          <p className="text-xs text-muted" data-testid="burn-speakers-unreviewed">
+          <p className={NOTE_TEXT_CLASS} data-testid="burn-speakers-unreviewed">
             {t("subtitleSpeaker.burn.unreviewed")}
           </p>
         ) : null}
@@ -441,40 +457,33 @@ export function BurnDialog(props: {
             {delivery === "soft" ? t("contentView.burn.estimatedSize", { size: formatBytes(source.asset.sizeBytes) }) : t("contentView.burn.estimatedSizeHard")}
           </p>
         )}
-        <ul className="flex list-disc flex-col gap-1 pl-4 text-xs text-muted">
+        <ul className={`flex list-disc flex-col gap-1 pl-4 ${NOTE_TEXT_CLASS}`}>
           <li>{t("contentView.burn.streamsNote")}</li>
           <li>{t("contentView.burn.fidelityNote")}</li>
         </ul>
         {unsupported !== undefined ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2 text-sm" role="alert" data-testid="burn-unsupported">
-            <span className="min-w-0 flex-1">{t("contentView.burn.unsupported", { streams: listFormat.format(unsupported) })}</span>
-            <Button
-              size="sm"
-              onClick={() => {
-                setContainer("mkv");
-                start.reset();
-              }}
-              data-testid="burn-use-mkv"
-            >
-              {t("contentView.burn.useMkv")}
-            </Button>
-          </div>
+          <Callout
+            tone="error"
+            announce="alert"
+            testId="burn-unsupported"
+            actions={
+              <Button
+                size="sm"
+                onClick={() => {
+                  setContainer("mkv");
+                  start.reset();
+                }}
+                data-testid="burn-use-mkv"
+              >
+                {t("contentView.burn.useMkv")}
+              </Button>
+            }
+          >
+            {t("contentView.burn.unsupported", { streams: listFormat.format(unsupported) })}
+          </Callout>
         ) : start.error instanceof ApiError ? (
           <ErrorView error={start.error.error} />
         ) : null}
-        <div className="flex justify-end gap-2">
-          <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
-          <Button
-            variant="primary"
-            disabled={body === undefined || source === undefined || start.isPending}
-            onClick={() => {
-              if (body !== undefined) start.mutate(body);
-            }}
-            data-testid="burn-start"
-          >
-            {t("contentView.burn.start")}
-          </Button>
-        </div>
       </div>
     </Modal>
   );
@@ -524,22 +533,29 @@ export function BurnTracker(props: { taskId: string; title: string; onClose: () 
           </Button>
         </ErrorView>
       ) : (
-        <div className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm" role="status" data-testid="burn-save-state">
-          <span className="min-w-0 flex-1">
-            {state.kind === "saving"
-              ? t("contentView.burn.saving")
-              : state.kind === "saved"
-                ? t("contentView.burn.saved", { path: state.path })
-                : state.kind === "kept"
-                  ? t("contentView.burn.kept")
-                  : t("contentView.burn.outputMissing")}
-          </span>
-          {state.kind === "saving" ? null : (
-            <Button size="sm" variant="ghost" onClick={props.onClose}>
-              {t("common.action.close")}
-            </Button>
-          )}
-        </div>
+        <Callout
+          tone={state.kind === "saved" ? "success" : state.kind === "missing" ? "warn" : "info"}
+          density="compact"
+          announce="status"
+          testId="burn-save-state"
+          {...(state.kind === "saving"
+            ? {}
+            : {
+                actions: (
+                  <Button size="sm" variant="ghost" onClick={props.onClose}>
+                    {t("common.action.close")}
+                  </Button>
+                ),
+              })}
+        >
+          {state.kind === "saving"
+            ? t("contentView.burn.saving")
+            : state.kind === "saved"
+              ? t("contentView.burn.saved", { path: state.path })
+              : state.kind === "kept"
+                ? t("contentView.burn.kept")
+                : t("contentView.burn.outputMissing")}
+        </Callout>
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import type { SpeakerDto } from "../../../shared/dto/speaker.ts";
 import type { TranscriptSegmentDto } from "../../../shared/dto/transcript.ts";
 import { speakerModeFor } from "../../../shared/speaker-turns.ts";
 import { formatDuration } from "../../format.ts";
+import { FOCUS_RING } from "../../ui/button.tsx";
 import { useSegments } from "./content-data.ts";
 import { SpeakerAvatar } from "./speakers/speaker-avatar.tsx";
 import { speakerLabel, useSpeakers } from "./speakers/speaker-data.ts";
@@ -119,7 +120,7 @@ export function CitationCard(props: { contentId: string; cited: CitedSentence | 
           {action === "unsupported" ? null : (
             <button
               type="button"
-              className="mt-1.5 inline-flex h-6 items-center gap-1 rounded px-1.5 text-accent hover:bg-sunken"
+              className={`mt-1.5 inline-flex h-6 items-center gap-1 rounded px-1.5 text-link hover:bg-sunken ${FOCUS_RING}`}
               onClick={() => props.playback.playRange(segment.startMs, segment.endMs)}
               data-testid="citation-card-play"
             >

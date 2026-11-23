@@ -160,7 +160,7 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
       aria-keyshortcuts="0 1 2 3 4 5 6 7 8 9"
       aria-haspopup="menu"
       title={t("speakerEditor.lead.hint")}
-      className={`flex h-8 w-28 items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-accent data-[state=open]:bg-sunken @max-[520px]:w-auto ${view.selected ? "bg-accent-soft ring-1 ring-accent/50" : ""}`}
+      className={`flex h-8 w-28 items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-accent data-[state=open]:bg-sunken @max-[520px]:w-auto ${view.selected ? "bg-accent-soft ring-1 ring-accent/50" : ""}`}
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
       data-speaker-lead=""
@@ -184,7 +184,7 @@ export const SpeakerLead = memo(function SpeakerLead(props: { index: number }) {
           {known ? name : ""}
         </span>
       ) : null}
-      {view.review === "needs_review" ? <CircleQuestionMark size={13} className="shrink-0 text-accent" aria-hidden="true" data-testid="speaker-lead-review" /> : null}
+      {view.review === "needs_review" ? <CircleQuestionMark size={13} className="shrink-0 text-warn" aria-hidden="true" data-testid="speaker-lead-review" /> : null}
     </button>
   );
   if (!armed) return face;

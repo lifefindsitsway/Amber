@@ -131,8 +131,11 @@ describe("SpeakerEditForm", () => {
   it("refuses a name past the limit instead of cutting it", async () => {
     await openForm();
     fireEvent.change(screen.getByTestId("speaker-name-input"), { target: { value: "字".repeat(SPEAKER_NAME_MAX_GRAPHEMES + 1) } });
-    expect(screen.getByRole("alert").textContent).toContain(String(SPEAKER_NAME_MAX_GRAPHEMES));
+    // The message is the field's error, read with the field (not a second, live announcement).
+    const problem = screen.getByTestId("speaker-name-problem");
+    expect(problem.textContent).toContain(String(SPEAKER_NAME_MAX_GRAPHEMES));
     expect(screen.getByTestId("speaker-name-input").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByTestId("speaker-name-input").getAttribute("aria-describedby")?.split(" ")).toContain(problem.id);
     expect((screen.getByTestId("speaker-edit-save") as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -282,6 +285,8 @@ describe("photo choosing", () => {
     fireEvent.click(screen.getByTestId("speaker-trigger"));
     fireEvent.click(await screen.findByTestId("speaker-card-edit"));
     fireEvent.change(await screen.findByTestId("speaker-photo-input"), { target: { files: [new File(["x"], "me.svg", { type: "image/svg+xml" })] } });
-    expect((await screen.findByRole("alert")).textContent).toContain("无法读取");
+    const problem = await screen.findByTestId("speaker-photo-problem");
+    expect(problem.textContent).toContain("无法读取");
+    expect(screen.getByTestId("speaker-photo-choose").getAttribute("aria-describedby")).toBe(problem.id);
   });
 });

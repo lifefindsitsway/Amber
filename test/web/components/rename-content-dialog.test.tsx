@@ -45,6 +45,32 @@ describe("RenameContentDialog", () => {
     expect(groupReads()).toBe(2);
   });
 
+  it("marks an emptied title as the field's error and saves on Enter, but not on the Enter that picks an input-method candidate", async () => {
+    const onOpenChange = vi.fn();
+    const { calls } = mockApi({ "GET /api/contents/c1": { body: detail() }, "PATCH /api/contents/c1": { body: content("c1", { title: "新标题", customTitle: "新标题" }) } });
+    renderApp(<RenameContentDialog contentId="c1" onOpenChange={onOpenChange} />);
+    const input = (await screen.findByLabelText("标题")) as HTMLInputElement;
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(screen.queryByTestId("rename-content-error")).toBeNull();
+
+    fireEvent.change(input, { target: { value: "  " } });
+    const error = screen.getByTestId("rename-content-error");
+    expect(error.textContent).toBe("标题不能为空");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")).toBe(error.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+
+    fireEvent.change(input, { target: { value: "新标题" } });
+    expect(screen.queryByTestId("rename-content-error")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ title: "新标题" }]);
+  });
+
   it("keeps the dialog open with the reason when the rename is refused", async () => {
     const onOpenChange = vi.fn();
     mockApi({

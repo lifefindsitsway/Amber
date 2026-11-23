@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { Trash2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
 import { CACHE_MEDIA_TYPES, type CacheMediaQuality, type CacheMediaType } from "../../../shared/cache-file-name.ts";
@@ -26,7 +26,11 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { cacheLocationKey } from "../../desktop/cached-media.ts";
 import { cacheHeight, compareCacheQuality, isAudioOnly, qualityLabel } from "../../player/media-url.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox, Radio } from "../../ui/checkbox.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, FieldHint } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
 import { contentKeys } from "./content-data.ts";
 
 const DEFAULT_QUALITY: CacheMediaQuality = CACHE_MEDIA_QUALITIES.find((quality) => quality === CACHE_MEDIA_MAX_HEIGHT) ?? CACHE_MEDIA_QUALITIES[0];
@@ -183,13 +187,18 @@ export function CacheMediaDialog(props: {
   onOpenChange: (open: boolean) => void;
   onStarted: (taskId: string) => void;
 }) {
-  const { t } = useTranslation();
-  return (
-    <Modal open={props.open} onOpenChange={props.onOpenChange} title={t("contentView.cache.title")} description={t("contentView.cache.hint")}>
-      {/* Mounted only while open, so every opening starts from the current title and defaults. */}
-      <CacheMediaForm contentId={props.contentId} title={props.title} media={props.media} onClose={() => props.onOpenChange(false)} onStarted={props.onStarted} />
-    </Modal>
-  );
+  // Mounted only while open, so every opening starts from the current title and defaults. The
+  // form draws the dialog itself: its buttons live in the dialog's footer and follow its state.
+  return props.open ? (
+    <CacheMediaForm
+      contentId={props.contentId}
+      title={props.title}
+      media={props.media}
+      onOpenChange={props.onOpenChange}
+      onClose={() => props.onOpenChange(false)}
+      onStarted={props.onStarted}
+    />
+  ) : null;
 }
 
 /** What a check is about: the three things the user chooses. */
@@ -246,8 +255,16 @@ function sameReview(a: CacheMediaInspectDto, b: CacheMediaInspectDto): boolean {
   );
 }
 
-function CacheMediaForm(props: { contentId: string; title: string | undefined; media: readonly MediaAssetDto[]; onClose: () => void; onStarted: (taskId: string) => void }) {
+function CacheMediaForm(props: {
+  contentId: string;
+  title: string | undefined;
+  media: readonly MediaAssetDto[];
+  onOpenChange: (open: boolean) => void;
+  onClose: () => void;
+  onStarted: (taskId: string) => void;
+}) {
   const { t } = useTranslation();
+  const qualityHintId = useId();
   const client = useApi();
   const queryClient = useQueryClient();
   const [type, setType] = useState<CacheMediaType>("video");
@@ -490,120 +507,133 @@ function CacheMediaForm(props: { contentId: string; title: string | undefined; m
   const phase = !checkable ? undefined : current !== undefined ? current.status : autoPaused ? undefined : "checking";
   const error = start.error ?? (check?.status === "failed" ? check.error : undefined);
   return (
-    <div className="flex flex-col gap-3 text-sm">
-      <fieldset className="flex flex-col gap-1">
-        <legend className="mb-1 text-xs text-muted">{t("contentView.cache.type")}</legend>
-        {CACHE_MEDIA_TYPES.map((value) => (
-          <label key={value} className="inline-flex items-center gap-2">
-            <input
-              type="radio"
-              name="cache-type"
-              value={value}
-              checked={type === value}
-              onChange={() => edit(() => setType(value), { settleName: true })}
-              disabled={locked}
-              data-testid={`cache-type-${value}`}
-            />
-            {t(`contentView.cache.typeValue.${value}`)}
-          </label>
-        ))}
-      </fieldset>
-      {type !== "video" ? null : probe.kind === "ready" && probe.status === "audio_only" ? (
-        <p className="text-xs text-danger" role="status" data-testid="cache-qualities-audio-only">
-          {t("contentView.cache.qualitiesAudioOnly")}
-        </p>
-      ) : (
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-muted">{t("contentView.cache.quality")}</span>
-          {probe.kind === "loading" ? (
-            <select className="h-8 rounded border border-line bg-surface px-2" value="" disabled data-testid="cache-quality">
-              <option value="">{t("contentView.cache.qualityProbing")}</option>
-            </select>
-          ) : (
-            <select
-              className="h-8 rounded border border-line bg-surface px-2"
-              value={quality}
-              onChange={(event) => {
-                const next = qualityOptions.find((option) => String(option.tier) === event.target.value);
-                if (next !== undefined) edit(() => setQuality(next.tier), { settleName: true });
-              }}
-              disabled={locked}
-              data-testid="cache-quality"
-            >
-              {qualityOptions.map((option) => (
-                <option key={option.tier} value={option.tier}>
-                  {qualityOptionLabel(option, t)}
-                </option>
-              ))}
-            </select>
-          )}
-          {probe.kind === "loading" ? null : listed ? (
-            <span className="text-xs text-muted" data-testid="cache-qualities-hint">
-              {t("contentView.cache.qualitiesHint")}
-            </span>
-          ) : (
-            <span className="text-xs text-muted" data-testid="cache-qualities-unknown">
-              {t("contentView.cache.qualitiesUnknown")}
-            </span>
-          )}
-        </label>
-      )}
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-muted">{t("contentView.cache.fileName")}</span>
-        <input
-          className="h-8 rounded border border-line bg-surface px-2"
-          value={fileName}
-          maxLength={DISPLAY_NAME_MAX_CHARS}
-          onChange={(event) => {
-            const next = event.target.value;
-            edit(() => setFileName(next));
-          }}
-          disabled={locked}
-          data-testid="cache-file-name"
-        />
-      </label>
-      {phase === undefined || phase === "failed" ? null : (
-        <p className={`text-xs ${answer !== undefined && !answer.disk.ok ? "text-danger" : "text-muted"}`} role="status" data-testid="cache-preflight">
-          {answer === undefined ? t("contentView.cache.preflightChecking") : preflightText(answer, t)}
-        </p>
-      )}
-      {shown === undefined ? null : (
-        <InspectionPanel
-          inspection={shown}
-          requestedType={type}
-          requestedQuality={quality}
-          blockers={blockers}
-          overwriteConfirmed={overwriteConfirmed}
-          onOverwriteConfirmed={setOverwriteConfirmed}
-        />
-      )}
-      {error instanceof ApiError ? <ErrorView error={error.error} /> : null}
-      <div className="flex justify-end gap-2">
-        <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-        {shown === undefined ? (
-          <>
-            {intent === undefined || start.isPending ? null : (
-              <Button onClick={() => setIntent(undefined)} data-testid="cache-cancel-wait">
-                {t("contentView.cache.cancelWaiting")}
+    <Modal
+      open
+      onOpenChange={props.onOpenChange}
+      title={t("contentView.cache.title")}
+      description={t("contentView.cache.hint")}
+      footer={
+        <>
+          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+          {shown === undefined ? (
+            <>
+              {intent === undefined || start.isPending ? null : (
+                <Button onClick={() => setIntent(undefined)} data-testid="cache-cancel-wait">
+                  {t("contentView.cache.cancelWaiting")}
+                </Button>
+              )}
+              <Button variant="primary" loading={locked} disabled={type === "video" && videoBlocked} onClick={begin} data-testid="cache-inspect">
+                {start.isPending ? t("contentView.cache.starting") : intent !== undefined ? t("contentView.cache.waiting") : t("contentView.cache.start")}
               </Button>
-            )}
-            <Button variant="primary" disabled={locked || (type === "video" && videoBlocked)} onClick={begin} data-testid="cache-inspect">
-              {start.isPending ? t("contentView.cache.starting") : intent !== undefined ? t("contentView.cache.waiting") : t("contentView.cache.start")}
+            </>
+          ) : (
+            <Button
+              variant="primary"
+              loading={start.isPending}
+              disabled={!canConfirm}
+              onClick={() => submit(shown, { type, quality, fileName }, { ...(overwriteConfirmed && overwrite !== undefined ? { overwriteAssetId: overwrite.assetId } : {}), confirmed: true, retried: false })}
+              data-testid="cache-confirm"
+            >
+              {start.isPending ? t("contentView.cache.starting") : t("contentView.cache.confirm")}
             </Button>
-          </>
+          )}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 text-sm">
+        <fieldset className="flex flex-col gap-1">
+          <legend className="mb-1 text-xs text-muted">{t("contentView.cache.type")}</legend>
+          {CACHE_MEDIA_TYPES.map((value) => (
+            <label key={value} className="inline-flex items-center gap-2">
+              <Radio
+                name="cache-type"
+                value={value}
+                checked={type === value}
+                onChange={() => edit(() => setType(value), { settleName: true })}
+                disabled={locked}
+                data-testid={`cache-type-${value}`}
+              />
+              {t(`contentView.cache.typeValue.${value}`)}
+            </label>
+          ))}
+        </fieldset>
+        {type !== "video" ? null : probe.kind === "ready" && probe.status === "audio_only" ? (
+          <Callout tone="warn" density="compact" announce="status" testId="cache-qualities-audio-only">
+            {t("contentView.cache.qualitiesAudioOnly")}
+          </Callout>
         ) : (
-          <Button
-            variant="primary"
-            disabled={!canConfirm}
-            onClick={() => submit(shown, { type, quality, fileName }, { ...(overwriteConfirmed && overwrite !== undefined ? { overwriteAssetId: overwrite.assetId } : {}), confirmed: true, retried: false })}
-            data-testid="cache-confirm"
-          >
-            {start.isPending ? t("contentView.cache.starting") : t("contentView.cache.confirm")}
-          </Button>
+          <div className="flex flex-col gap-1.5">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted">{t("contentView.cache.quality")}</span>
+              {probe.kind === "loading" ? (
+                <NativeSelect size="md" value="" disabled data-testid="cache-quality">
+                  <option value="">{t("contentView.cache.qualityProbing")}</option>
+                </NativeSelect>
+              ) : (
+                <NativeSelect
+                  size="md"
+                  value={quality}
+                  onChange={(event) => {
+                    const next = qualityOptions.find((option) => String(option.tier) === event.target.value);
+                    if (next !== undefined) edit(() => setQuality(next.tier), { settleName: true });
+                  }}
+                  disabled={locked}
+                  aria-describedby={qualityHintId}
+                  data-testid="cache-quality"
+                >
+                  {qualityOptions.map((option) => (
+                    <option key={option.tier} value={option.tier}>
+                      {qualityOptionLabel(option, t)}
+                    </option>
+                  ))}
+                </NativeSelect>
+              )}
+            </label>
+            {/* Outside the label, so the hint describes the list instead of joining its name. */}
+            {probe.kind === "loading" ? null : listed ? (
+              <FieldHint id={qualityHintId} testId="cache-qualities-hint">
+                {t("contentView.cache.qualitiesHint")}
+              </FieldHint>
+            ) : (
+              <FieldHint id={qualityHintId} testId="cache-qualities-unknown">
+                {t("contentView.cache.qualitiesUnknown")}
+              </FieldHint>
+            )}
+          </div>
         )}
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-muted">{t("contentView.cache.fileName")}</span>
+          <TextInput
+            size="md"
+            value={fileName}
+            maxLength={DISPLAY_NAME_MAX_CHARS}
+            onChange={(event) => {
+              const next = event.target.value;
+              edit(() => setFileName(next));
+            }}
+            disabled={locked}
+            data-testid="cache-file-name"
+          />
+        </label>
+        {phase === undefined || phase === "failed" ? null : (
+          <p className={`max-w-[70ch] text-note ${answer !== undefined && !answer.disk.ok ? "text-danger" : "text-muted"}`} role="status" data-testid="cache-preflight">
+            {answer === undefined ? t("contentView.cache.preflightChecking") : preflightText(answer, t)}
+          </p>
+        )}
+        {shown === undefined ? null : (
+          <InspectionPanel
+            inspection={shown}
+            requestedType={type}
+            requestedQuality={quality}
+            blockers={blockers}
+            overwriteConfirmed={overwriteConfirmed}
+            onOverwriteConfirmed={setOverwriteConfirmed}
+          />
+        )}
+        {error instanceof ApiError ? <ErrorView error={error.error} /> : null}
+        <CacheList contentId={props.contentId} rows={rows} onDeleted={invalidateCheck} />
       </div>
-      <CacheList contentId={props.contentId} rows={rows} onDeleted={invalidateCheck} />
-    </div>
+    </Modal>
   );
 }
 
@@ -640,7 +670,7 @@ function InspectionPanel(props: {
   const expectedHeight = inspection.expected.height;
   const differs = props.requestedType === "video" && inspection.expected.type === "video" && expectedHeight !== undefined && expectedHeight !== props.requestedQuality;
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-line px-3 py-2 text-xs" data-testid="cache-inspection">
+    <div className="flex flex-col gap-2 rounded-md border border-line bg-panel px-3 py-2 text-note" data-testid="cache-inspection">
       {differs ? (
         <p data-testid="cache-expected-differs">
           {t("contentView.cache.expectedDiffers", { expected: qualityLabel(expectedHeight, t), requested: qualityLabel(props.requestedQuality, t) })}
@@ -657,37 +687,40 @@ function InspectionPanel(props: {
         </p>
       ))}
       {overwrite === undefined ? null : (
-        <div className="flex flex-col gap-1 rounded border border-danger/40 bg-danger/5 px-2 py-1.5" data-testid="cache-overwrite">
-          <p className="break-all">
-            {t("contentView.cache.overwrite", { title: overwrite.title ?? t("contentView.untitled"), name: overwrite.fileName, size: formatBytes(overwrite.sizeBytes) })}
-          </p>
-          <label className="inline-flex items-center gap-2">
-            <input
-              type="checkbox"
+        <Callout tone="warn" density="compact" testId="cache-overwrite">
+          <div className="flex flex-col gap-1.5">
+            <p className="break-all">
+              {t("contentView.cache.overwrite", { title: overwrite.title ?? t("contentView.untitled"), name: overwrite.fileName, size: formatBytes(overwrite.sizeBytes) })}
+            </p>
+            <Checkbox
               checked={props.overwriteConfirmed}
               onChange={(event) => props.onOverwriteConfirmed(event.target.checked)}
+              labelClassName="text-note"
               data-testid="cache-overwrite-confirm"
-            />
-            {t("contentView.cache.overwriteConfirm")}
-          </label>
-        </div>
+            >
+              {t("contentView.cache.overwriteConfirm")}
+            </Checkbox>
+          </div>
+        </Callout>
       )}
       {props.blockers.length === 0 ? null : (
-        <ul className="flex list-disc flex-col gap-1 pl-4 text-danger" role="alert" data-testid="cache-blocked">
-          {props.blockers.map((blocker) =>
-            blocker === "diskLow" ? (
-              <li key={blocker}>
-                {t("contentView.cache.diskLow")}{" "}
-                {t("contentView.cache.diskCache", { free: formatBytes(inspection.disk.cache.freeBytes), reserve: formatBytes(inspection.disk.cache.lowWaterBytes) })}
-                {inspection.disk.data === undefined
-                  ? null
-                  : `; ${t("contentView.cache.diskData", { free: formatBytes(inspection.disk.data.freeBytes), reserve: formatBytes(inspection.disk.data.lowWaterBytes) })}`}
-              </li>
-            ) : (
-              <li key={blocker}>{t(`contentView.cache.${blocker}`)}</li>
-            ),
-          )}
-        </ul>
+        <Callout tone="error" density="compact" announce="alert">
+          <ul className="flex list-disc flex-col gap-1 pl-4" data-testid="cache-blocked">
+            {props.blockers.map((blocker) =>
+              blocker === "diskLow" ? (
+                <li key={blocker}>
+                  {t("contentView.cache.diskLow")}{" "}
+                  {t("contentView.cache.diskCache", { free: formatBytes(inspection.disk.cache.freeBytes), reserve: formatBytes(inspection.disk.cache.lowWaterBytes) })}
+                  {inspection.disk.data === undefined
+                    ? null
+                    : `; ${t("contentView.cache.diskData", { free: formatBytes(inspection.disk.data.freeBytes), reserve: formatBytes(inspection.disk.data.lowWaterBytes) })}`}
+                </li>
+              ) : (
+                <li key={blocker}>{t(`contentView.cache.${blocker}`)}</li>
+              ),
+            )}
+          </ul>
+        </Callout>
       )}
     </div>
   );

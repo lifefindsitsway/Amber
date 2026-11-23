@@ -12,8 +12,11 @@ import { useContentExport, useExportFigureCount } from "../../export/export-data
 import { upgradeTrackPref, useSubtitlePrefs } from "../../player/subtitle-prefs.ts";
 import { exportSaver } from "../../export/export-saver.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { pickTranslation, rootsOf, translationCurrents, useChapters, useRevisions, useSegments, useSummaries, useTranslations, visibleRevisions } from "./content-data.ts";
 import { revisionLabel, templateName } from "./labels.ts";
@@ -88,7 +91,18 @@ export function translationsOf(revisionId: string | undefined, revisions: Readon
 export function ExportDialog(props: { open: boolean; onClose: () => void; templateId?: string }) {
   const { t } = useTranslation();
   return (
-    <Modal open={props.open} onOpenChange={(open) => (open ? undefined : props.onClose())} title={t("contentView.export.title")} wide>
+    <Modal
+      open={props.open}
+      onOpenChange={(open) => (open ? undefined : props.onClose())}
+      title={t("contentView.export.title")}
+      wide
+      // Every export starts from its own button in the body; the footer only closes, in reach however long the body.
+      footer={
+        <Button onClick={props.onClose} data-testid="export-close">
+          {t("common.action.close")}
+        </Button>
+      }
+    >
       {props.open ? <ExportForm {...(props.templateId === undefined ? {} : { templateId: props.templateId })} /> : null}
     </Modal>
   );
@@ -196,7 +210,7 @@ function ExportForm(props: { templateId?: string }) {
   const filesWithSpeakers = subtitleHasSpeakers && (fileSpeakers ?? true);
   const speakerChoice: SubtitleSpeakerChoice | undefined = filesWithSpeakers ? { labels: speakerLabels } : undefined;
   const nothing = choice.summaryTemplateId === undefined && !choice.chapters && choice.transcriptRevisionId === undefined && choice.subtitlesRevisionId === undefined;
-  const select = "h-7 max-w-80 rounded border border-line bg-surface px-1 text-xs";
+  const select = "max-w-80";
 
   return (
     <div className="flex flex-col gap-4 text-sm" data-testid="export-dialog">
@@ -204,41 +218,41 @@ function ExportForm(props: { templateId?: string }) {
         <fieldset className="flex flex-col gap-3">
           <legend className="mb-1 font-medium">{t("contentView.export.sections")}</legend>
           <label className="flex flex-wrap items-center gap-2">
-            <input type="checkbox" checked={summaryOn && summaryTemplate !== undefined} disabled={summaryTemplate === undefined} onChange={(event) => setSummaryOn(event.target.checked)} data-testid="export-summary" />
+            <Checkbox checked={summaryOn && summaryTemplate !== undefined} disabled={summaryTemplate === undefined} onChange={(event) => setSummaryOn(event.target.checked)} data-testid="export-summary" />
             {t("contentView.export.summary")}
             {generated.length > 1 ? (
-              <select className={select} value={summaryTemplate} onChange={(event) => setTemplateId(event.target.value)} aria-label={t("contentView.summary.templates")}>
+              <NativeSelect size="sm" className={select} value={summaryTemplate} onChange={(event) => setTemplateId(event.target.value)} aria-label={t("contentView.summary.templates")}>
                 {generated.map((entry) => (
                   <option key={entry.template.id} value={entry.template.id}>
                     {templateName(entry.template, t)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             ) : null}
           </label>
           {hasChapters ? (
             <label className="flex items-center gap-2">
-              <input type="checkbox" checked={chaptersOn} onChange={(event) => setChaptersOn(event.target.checked)} data-testid="export-chapters" />
+              <Checkbox checked={chaptersOn} onChange={(event) => setChaptersOn(event.target.checked)} data-testid="export-chapters" />
               {t("contentView.export.chapters")}
             </label>
           ) : null}
           <label className="flex flex-wrap items-center gap-2">
-            <input type="checkbox" checked={transcriptOn && transcriptRevision !== undefined} disabled={transcriptRevision === undefined} onChange={(event) => setTranscriptOn(event.target.checked)} data-testid="export-transcript" />
+            <Checkbox checked={transcriptOn && transcriptRevision !== undefined} disabled={transcriptRevision === undefined} onChange={(event) => setTranscriptOn(event.target.checked)} data-testid="export-transcript" />
             {t("contentView.export.transcript")}
             {transcriptRevision === undefined ? null : (
-              <select className={select} value={transcriptRevision} onChange={(event) => setTranscriptId(event.target.value)} aria-label={t("contentView.export.transcript")} data-testid="export-transcript-revision">
+              <NativeSelect size="sm" className={select} value={transcriptRevision} onChange={(event) => setTranscriptId(event.target.value)} aria-label={t("contentView.export.transcript")} data-testid="export-transcript-revision">
                 {primary === undefined ? null : <option value={primary.id}>{t("contentView.export.transcriptPrimary", { label: label(primary) })}</option>}
                 {roots.map((root) => (
                   <option key={root.id} value={root.id}>
                     {t("contentView.export.transcriptRoot", { label: label(root) })}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             )}
           </label>
           {transcriptOn && transcriptHasSpeakers ? (
             <label className="flex items-center gap-2 pl-6 text-xs">
-              <input type="checkbox" checked={markdownSpeakers ?? true} onChange={(event) => setMarkdownSpeakers(event.target.checked)} data-testid="export-markdown-speakers" />
+              <Checkbox checked={markdownSpeakers ?? true} onChange={(event) => setMarkdownSpeakers(event.target.checked)} data-testid="export-markdown-speakers" />
               {t("speakerTools.export.includeSpeakers")}
             </label>
           ) : null}
@@ -253,23 +267,23 @@ function ExportForm(props: { templateId?: string }) {
             />
           ) : null}
           <label className="flex flex-wrap items-center gap-2">
-            <input type="checkbox" checked={subtitlesOn && subtitleRevision !== undefined} disabled={subtitleRevision === undefined} onChange={(event) => setSubtitlesOn(event.target.checked)} data-testid="export-subtitles" />
+            <Checkbox checked={subtitlesOn && subtitleRevision !== undefined} disabled={subtitleRevision === undefined} onChange={(event) => setSubtitlesOn(event.target.checked)} data-testid="export-subtitles" />
             {t("contentView.export.subtitles")}
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={backlinks} onChange={(event) => setBacklinks(event.target.checked)} data-testid="export-backlinks" />
+            <Checkbox checked={backlinks} onChange={(event) => setBacklinks(event.target.checked)} data-testid="export-backlinks" />
             {t("contentView.export.backlinks")}
           </label>
           {subtitleRevision === undefined ? null : (
             <label className="flex flex-col gap-1">
               <span className="text-xs text-muted">{t("contentView.export.subtitleRevision")}</span>
-              <select className={select} value={subtitleRevision} onChange={(event) => setSubtitleId(event.target.value)} data-testid="export-subtitle-revision">
+              <NativeSelect size="sm" className={select} value={subtitleRevision} onChange={(event) => setSubtitleId(event.target.value)} data-testid="export-subtitle-revision">
                 {subtitleChoices.map((revision) => (
                   <option key={revision.id} value={revision.id}>
                     {label(revision)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
           )}
         </fieldset>
@@ -293,50 +307,50 @@ function ExportForm(props: { templateId?: string }) {
               </Button>
             </div>
             {downloadChoice.figures === true ? (
-              <p id={copyNoteId} className="text-xs text-muted" data-testid="export-copy-note">
+              <p id={copyNoteId} className={NOTE_TEXT_CLASS} data-testid="export-copy-note">
                 {t("exportFile.dialog.copyWithoutFigures")}
               </p>
             ) : null}
-            {nothing ? <p className="text-xs text-muted">{t("contentView.export.nothingSelected")}</p> : null}
+            {nothing ? <p className={NOTE_TEXT_CLASS}>{t("contentView.export.nothingSelected")}</p> : null}
           </div>
           <div className="flex flex-col gap-2">
             <span className="font-medium">{t("contentView.export.subtitleFiles")}</span>
             {pairs.length > 1 ? (
               <label className="flex items-center gap-2 text-xs">
                 <span className="text-muted">{t("contentView.export.translation")}</span>
-                <select className={select} value={translation} onChange={(event) => setTranslationId(event.target.value)} data-testid="export-translation">
+                <NativeSelect size="sm" className={select} value={translation} onChange={(event) => setTranslationId(event.target.value)} data-testid="export-translation">
                   {pairs.map((revision) => (
                     <option key={revision.id} value={revision.id}>
                       {label(revision)}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
             ) : null}
             {subtitleHasSpeakers ? (
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
                 <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={fileSpeakers ?? true} onChange={(event) => setFileSpeakers(event.target.checked)} data-testid="export-speakers" />
+                  <Checkbox checked={fileSpeakers ?? true} onChange={(event) => setFileSpeakers(event.target.checked)} data-testid="export-speakers" />
                   {t("speakerTools.export.includeSpeakers")}
                 </label>
                 {filesWithSpeakers ? (
                   <label className="flex items-center gap-2">
                     <span className="text-muted">{t("speakerTools.export.labels")}</span>
-                    <select className={select} value={speakerLabels} onChange={(event) => setSpeakerLabels(event.target.value as SpeakerLabelMode)} aria-describedby={labelsHintId} data-testid="export-speaker-labels">
+                    <NativeSelect size="sm" className={select} value={speakerLabels} onChange={(event) => setSpeakerLabels(event.target.value as SpeakerLabelMode)} aria-describedby={labelsHintId} data-testid="export-speaker-labels">
                       {SPEAKER_LABEL_MODES.map((mode) => (
                         <option key={mode} value={mode}>
                           {t(`speakerTools.export.label.${mode}`)}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                 ) : null}
               </div>
             ) : null}
             {filesWithSpeakers ? (
-              <p id={labelsHintId} className="text-xs text-muted" data-testid="export-speaker-labels-hint">
+              <FieldHint id={labelsHintId} testId="export-speaker-labels-hint">
                 {t("speakerTools.export.labelsHint")}
-              </p>
+              </FieldHint>
             ) : null}
             {/* One row per format: the button and what the file carries, so the choice is made knowing what a re-import brings back. */}
             <ul className="grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-3 gap-y-2" data-testid="export-formats">
@@ -373,14 +387,14 @@ function ExportForm(props: { templateId?: string }) {
               />
             </ul>
             {subtitleIsTranslation ? (
-              <p className="text-xs text-muted" data-testid="export-ambersub-translated">
+              <p className={NOTE_TEXT_CLASS} data-testid="export-ambersub-translated">
                 {t("contentView.export.ambersubTranslated")}
               </p>
             ) : null}
-            {pairs.length === 0 ? <p className="text-xs text-muted">{t("contentView.export.noTranslation")}</p> : null}
+            {pairs.length === 0 ? <p className={NOTE_TEXT_CLASS}>{t("contentView.export.noTranslation")}</p> : null}
           </div>
           {savedAs !== undefined && !exportFile.isPending ? (
-            <p role="status" className="text-xs text-muted" data-testid="export-saved">
+            <p role="status" className={NOTE_TEXT_CLASS} data-testid="export-saved">
               {t("exportFile.dialog.saved", { filename: savedAs })}
             </p>
           ) : null}
@@ -400,7 +414,7 @@ function FormatRow(props: { format: SubtitleExportFormat | "ambersub"; disabled:
       <Button size="sm" className="justify-self-start" disabled={props.disabled} onClick={props.onExport} aria-describedby={noteId} data-testid={`export-format-${props.format}`}>
         {props.label ?? t(`contentView.export.format.${props.format}`)}
       </Button>
-      <span id={noteId} className="text-xs text-muted" data-testid={`export-note-${props.format}`}>
+      <span id={noteId} className="text-note text-muted" data-testid={`export-note-${props.format}`}>
         {props.note ?? t(`contentView.export.formatNote.${props.format}`)}
       </span>
     </li>
@@ -420,8 +434,7 @@ function FigureOption(props: { count: number | undefined; checked: boolean; onCh
   return (
     <div className={`flex flex-col gap-0.5 text-xs ${props.className ?? ""}`}>
       <label className={`flex items-center gap-2 ${props.count === undefined || none ? "text-muted" : ""}`}>
-        <input
-          type="checkbox"
+        <Checkbox
           checked={props.checked}
           disabled={props.count === undefined || none}
           onChange={(event) => props.onChange(event.target.checked)}
@@ -431,7 +444,7 @@ function FigureOption(props: { count: number | undefined; checked: boolean; onCh
         {props.count === undefined ? t("exportFile.dialog.figuresLoading") : t("exportFile.dialog.figures", { count: props.count })}
       </label>
       {hint === undefined ? null : (
-        <span id={hintId} className="pl-6 text-muted" data-testid={`${props.testId}-hint`}>
+        <span id={hintId} className="pl-6 text-note text-muted" data-testid={`${props.testId}-hint`}>
           {hint}
         </span>
       )}

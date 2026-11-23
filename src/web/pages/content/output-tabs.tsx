@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
+import { FOCUS_RING } from "../../ui/button.tsx";
 import { CONTENT_TABS, parseTab, type ContentTab } from "./content-context.tsx";
 import { HighlightsTab } from "./highlights-tab.tsx";
 import { SubtitlesTab } from "./subtitles-tab.tsx";
@@ -41,7 +42,7 @@ export function OutputTabs() {
             role="tab"
             aria-selected={item === tab}
             data-testid={`output-tab-${item}`}
-            className={`shrink-0 whitespace-nowrap rounded-t-md px-3 py-1.5 text-sm ${item === tab ? "border-b-2 border-accent font-medium" : "text-muted hover:text-ink"}`}
+            className={`shrink-0 whitespace-nowrap rounded-t-md px-3 py-1.5 text-sm transition-colors duration-150 motion-reduce:transition-none ${FOCUS_RING} ${item === tab ? "border-b-2 border-accent font-medium" : "text-muted hover:text-ink"}`}
             onClick={() => open(item)}
           >
             {t(`contentView.tab.${item}`)}

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
 import { PASSWORD_MIN_LEN } from "../../shared/defaults.ts";
@@ -7,11 +7,13 @@ import { authMeDtoSchema } from "../../shared/dto/system.ts";
 import { ApiError } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
 import { queryKeys } from "../api/queries.ts";
-import { AUTH_INPUT, AuthCard } from "../auth/auth-card.tsx";
+import { AUTH_FORM, AUTH_PASSWORD_INPUT, AuthCard, AuthField } from "../auth/auth-card.tsx";
 import { takeNext } from "../auth/next-path.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { Button } from "../ui/button.tsx";
-import { PasswordField } from "../ui/password-input.tsx";
+import { Callout, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { PasswordInput } from "../ui/password-input.tsx";
+import { TextInput } from "../ui/text-field.tsx";
 
 /** The request header that carries the one-time setup token; never the URL. */
 const SETUP_TOKEN_HEADER = "x-amber-setup-token";
@@ -26,12 +28,15 @@ export function SetupPage() {
   const client = useApi();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const formId = useId();
   const [token, setToken] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [problem, setProblem] = useState<string | undefined>(undefined);
+  // A check made before sending, shown under the field it is about.
+  const [problem, setProblem] = useState<{ field: "password" | "confirm"; message: string } | undefined>(undefined);
+  const tokenInput = useRef<HTMLInputElement>(null);
   const setup = useMutation({
     mutationFn: () =>
       client.post("/api/setup", authMeDtoSchema, {
@@ -48,55 +53,88 @@ export function SetupPage() {
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     setProblem(undefined);
-    if ([...password].length < PASSWORD_MIN_LEN) return setProblem(t("admin.users.passwordTooShort", { min: PASSWORD_MIN_LEN }));
-    if (password !== confirm) return setProblem(t("auth.changePassword.mismatch"));
+    if ([...password].length < PASSWORD_MIN_LEN) return setProblem({ field: "password", message: t("admin.users.passwordTooShort", { min: PASSWORD_MIN_LEN }) });
+    if (password !== confirm) return setProblem({ field: "confirm", message: t("auth.changePassword.mismatch") });
     setup.mutate();
   };
   const failure = setup.error instanceof ApiError ? setup.error : undefined;
+  // A refused token is the token field's problem; it stays until the next attempt.
+  const badToken = failure?.status === 401;
+  // A problem found on sending shows while focus is still on the submit button, and a field
+  // error is not a live region: moving focus to the field at fault (once it is marked invalid
+  // and described by the error) is what makes a screen reader say why nothing was created.
+  useEffect(() => {
+    if (problem !== undefined) document.getElementById(`${formId}-${problem.field}`)?.focus();
+  }, [problem, formId]);
+  useEffect(() => {
+    if (badToken) tokenInput.current?.focus();
+  }, [badToken, setup.error]);
+  const fieldError = (field: "password" | "confirm"): { error: string } | Record<string, never> => (problem?.field === field ? { error: problem.message } : {});
   return (
     <AuthCard
       title={t("auth.setup.title")}
       intro={t("auth.setup.intro")}
       footer={
-        <Link to="/login" className="text-accent hover:underline">
+        <Link to="/login" className={TEXT_ACTION_CLASS}>
           {t("auth.setup.backToLogin")}
         </Link>
       }
     >
-      <form onSubmit={submit} className="flex flex-col gap-3" data-testid="setup-form">
-        <label className="flex flex-col gap-1 text-sm">
-          {t("auth.setup.token")}
-          <input autoComplete="off" spellCheck={false} required value={token} onChange={(event) => setToken(event.target.value)} className={`${AUTH_INPUT} font-mono`} />
-          <span className="text-xs text-muted">{t("auth.setup.tokenHint")}</span>
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          {t("auth.setup.username")}
-          <input autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} className={AUTH_INPUT} />
-          <span className="text-xs text-muted">{t("auth.setup.usernameHint")}</span>
-        </label>
-        <PasswordField label={t("auth.setup.password")} autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} className={AUTH_INPUT} />
-        <PasswordField label={t("auth.setup.confirmPassword")} autoComplete="new-password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} className={AUTH_INPUT} />
-        <label className="flex flex-col gap-1 text-sm">
-          {t("auth.setup.displayName")}
-          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} className={AUTH_INPUT} />
-        </label>
-        {problem === undefined ? null : <p className="text-sm text-danger">{problem}</p>}
-        {failure === undefined ? null : failure.status === 401 ? (
-          <p role="alert" className="text-sm text-danger">
-            {t("auth.setup.badToken")}
-          </p>
-        ) : failure.status === 409 ? (
-          <p role="alert" className="text-sm text-danger">
-            {t("auth.setup.alreadyInitialized")}{" "}
-            <Link to="/login" className="text-accent underline">
-              {t("auth.setup.goLogin")}
-            </Link>
-          </p>
+      <form onSubmit={submit} className={AUTH_FORM} data-testid="setup-form">
+        <AuthField
+          id={`${formId}-token`}
+          label={t("auth.setup.token")}
+          hint={t("auth.setup.tokenHint")}
+          {...(badToken ? { error: t("auth.setup.badToken") } : {})}
+          control={(field) => (
+            <TextInput {...field} ref={tokenInput} autoComplete="off" spellCheck={false} required value={token} onChange={(event) => setToken(event.target.value)} className="w-full font-mono" />
+          )}
+        />
+        <AuthField
+          id={`${formId}-username`}
+          label={t("auth.setup.username")}
+          hint={t("auth.setup.usernameHint")}
+          control={(field) => <TextInput {...field} autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} className="w-full" />}
+        />
+        <AuthField
+          id={`${formId}-password`}
+          label={t("auth.setup.password")}
+          {...fieldError("password")}
+          control={(field) => (
+            <PasswordInput {...field} autoComplete="new-password" required value={password} onChange={(event) => setPassword(event.target.value)} className={AUTH_PASSWORD_INPUT} />
+          )}
+        />
+        <AuthField
+          id={`${formId}-confirm`}
+          label={t("auth.setup.confirmPassword")}
+          {...fieldError("confirm")}
+          control={(field) => (
+            <PasswordInput {...field} autoComplete="new-password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} className={AUTH_PASSWORD_INPUT} />
+          )}
+        />
+        <AuthField
+          id={`${formId}-display-name`}
+          label={t("auth.setup.displayName")}
+          control={(field) => <TextInput {...field} value={displayName} onChange={(event) => setDisplayName(event.target.value)} className="w-full" />}
+        />
+        {failure === undefined || badToken ? null : failure.status === 409 ? (
+          <Callout
+            tone="info"
+            density="compact"
+            announce="status"
+            actions={
+              <Link to="/login" className={`font-medium ${TEXT_ACTION_CLASS}`}>
+                {t("auth.setup.goLogin")}
+              </Link>
+            }
+          >
+            {t("auth.setup.alreadyInitialized")}
+          </Callout>
         ) : (
           <ErrorView error={failure.error} />
         )}
-        <Button type="submit" variant="primary" disabled={setup.isPending}>
-          {setup.isPending ? t("auth.setup.submitting") : t("auth.setup.submit")}
+        <Button type="submit" variant="primary" loading={setup.isPending}>
+          {t("auth.setup.submit")}
         </Button>
       </form>
     </AuthCard>

@@ -1,14 +1,17 @@
 import type { TFunction } from "i18next";
 import { Check, ChevronDown, Globe } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import type { ChatWebSearchDto, WebSourceDto } from "../../shared/dto/chat.ts";
 import { WEB_SEARCH_MODES, type WebSearchMode, type WebSearchReason, type WebSearchStatus } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { formatBeijingDate } from "../format.ts";
+import { FOCUS_RING } from "../ui/button.tsx";
 import { Spinner } from "../ui/feedback.tsx";
+import { TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 
 /**
  * Where one answer's web search stands: the queries while it runs, then its outcome. Built
@@ -30,21 +33,30 @@ export function storedSearchView(search: ChatWebSearchDto | undefined): WebSearc
 export function WebSearchToggle(props: { mode: WebSearchMode; available: boolean; onChange: (mode: WebSearchMode) => void }) {
   const { t } = useTranslation();
   const label = t("chat.webSearch.label");
+  const reasonId = useId();
   if (!props.available) {
     return (
       <span className="flex items-center gap-1" data-testid="chat-web-search-unavailable">
-        <button
-          type="button"
-          disabled
-          className="flex h-7 items-center rounded-md border border-line px-1.5 opacity-50"
-          title={t("chat.webSearch.unconfigured")}
-          aria-label={label}
-          data-testid="chat-web-search"
-          data-mode="off"
-        >
-          <Globe size={14} aria-hidden="true" />
-        </button>
-        <Link to="/settings/web-search" className="text-accent hover:underline" data-testid="chat-web-search-configure">
+        {/* A disabled button gets no pointer events, so the reason's tooltip sits on a wrapper. */}
+        <Tooltip content={t("chat.webSearch.unconfigured")}>
+          <span className="inline-flex">
+            <button
+              type="button"
+              disabled
+              className="flex h-7 items-center rounded-md border border-line px-1.5 opacity-50"
+              aria-label={label}
+              aria-describedby={reasonId}
+              data-testid="chat-web-search"
+              data-mode="off"
+            >
+              <Globe size={14} aria-hidden="true" />
+            </button>
+          </span>
+        </Tooltip>
+        <span id={reasonId} className="sr-only">
+          {t("chat.webSearch.unconfigured")}
+        </span>
+        <Link to="/settings/web-search" className={TEXT_ACTION_CLASS} data-testid="chat-web-search-configure">
           {t("chat.webSearch.configure")}
         </Link>
       </span>
@@ -53,17 +65,18 @@ export function WebSearchToggle(props: { mode: WebSearchMode; available: boolean
   const active = props.mode !== "off";
   return (
     <DropdownMenu.Root modal={false}>
-      <DropdownMenu.Trigger
-        className={`flex h-7 items-center gap-1 rounded-md border px-1.5 outline-none hover:border-accent focus-visible:border-accent ${active ? "border-accent text-accent" : "border-line"}`}
-        title={`${label} · ${t(`chat.webSearch.modes.${props.mode}`)}`}
-        aria-label={`${label} · ${t(`chat.webSearch.modes.${props.mode}`)}`}
-        data-testid="chat-web-search"
-        data-mode={props.mode}
-      >
-        <Globe size={14} aria-hidden="true" />
-        {active ? <span className="whitespace-nowrap">{t(`chat.webSearch.modes.${props.mode}`)}</span> : null}
-        <ChevronDown size={12} aria-hidden="true" />
-      </DropdownMenu.Trigger>
+      <Tooltip content={`${label} · ${t(`chat.webSearch.modes.${props.mode}`)}`}>
+        <DropdownMenu.Trigger
+          className={`flex h-7 items-center gap-1 rounded-md border px-1.5 transition-colors duration-150 motion-reduce:transition-none hover:border-accent ${FOCUS_RING} ${active ? "border-accent text-accent" : "border-line"}`}
+          aria-label={`${label} · ${t(`chat.webSearch.modes.${props.mode}`)}`}
+          data-testid="chat-web-search"
+          data-mode={props.mode}
+        >
+          <Globe size={14} aria-hidden="true" />
+          {active ? <span className="whitespace-nowrap">{t(`chat.webSearch.modes.${props.mode}`)}</span> : null}
+          <ChevronDown size={12} aria-hidden="true" />
+        </DropdownMenu.Trigger>
+      </Tooltip>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side="top" align="start" sideOffset={4} className="z-50 w-64 rounded-md border border-line bg-surface p-1 text-sm shadow-lg" data-testid="chat-web-search-menu">
           <DropdownMenu.RadioGroup value={props.mode} onValueChange={(value) => props.onChange(value as WebSearchMode)}>
@@ -81,7 +94,7 @@ export function WebSearchToggle(props: { mode: WebSearchMode; available: boolean
                 </span>
                 <span className="flex flex-col">
                   <span>{t(`chat.webSearch.modes.${mode}`)}</span>
-                  <span className="text-xs text-muted">{t(`chat.webSearch.hints.${mode}`)}</span>
+                  <span className="text-note text-muted">{t(`chat.webSearch.hints.${mode}`)}</span>
                 </span>
               </DropdownMenu.RadioItem>
             ))}
@@ -114,7 +127,7 @@ export function WebSearchStatusLine(props: { view: WebSearchView }) {
   const view = props.view;
   if (view.phase === "searching") {
     return (
-      <p className="mb-1 flex items-center gap-1.5 text-xs text-muted" data-testid="chat-search-status" data-status="searching">
+      <p className="mb-1 flex items-center gap-1.5 text-note text-muted" data-testid="chat-search-status" data-status="searching">
         <Spinner size={12} />
         {view.queries.length === 0 ? t("chat.webSearch.status.searchingPlain") : t("chat.webSearch.status.searching", { queries: view.queries.join(" · ") })}
       </p>
@@ -128,23 +141,23 @@ export function WebSearchStatusLine(props: { view: WebSearchView }) {
         ? t("chat.webSearch.status.partial", { count: view.sources.length })
         : t("chat.webSearch.status.none", { reason: reasonText(t, view) });
   return (
-    <div className="mb-1 text-xs" data-testid="chat-search-status" data-status={view.status}>
-      <p className={`flex flex-wrap items-center gap-1.5 ${failed ? "rounded bg-danger/10 px-1.5 py-0.5 text-danger" : "text-muted"}`}>
-        <Globe size={12} aria-hidden="true" />
+    <div className="mb-1 text-note" data-testid="chat-search-status" data-status={view.status}>
+      <p className={`flex w-fit max-w-full flex-wrap items-center gap-1.5 ${failed ? "rounded bg-danger-soft px-1.5 py-0.5 text-danger" : "text-muted"}`}>
+        <Globe size={12} className="shrink-0" aria-hidden="true" />
         <span>{text}</span>
         {view.sources.length === 0 ? null : (
-          <button type="button" className="text-accent hover:underline" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chat-sources-toggle">
+          <TextAction aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chat-sources-toggle">
             {open ? t("chat.webSearch.sourcesHide") : t("chat.webSearch.sources", { count: view.sources.length })}
-          </button>
+          </TextAction>
         )}
       </p>
       {open ? (
-        <ol className="mt-1 flex flex-col gap-0.5 rounded bg-sunken px-2 py-1" data-testid="chat-sources">
+        <ol className="mt-1 flex flex-col gap-0.5 rounded bg-sunken px-2 py-1 text-xs" data-testid="chat-sources">
           {view.sources.map((source) => (
             <li key={source.id} className="flex min-w-0 items-baseline gap-1.5">
               <span className="shrink-0 font-mono text-muted">[{source.index}]</span>
               {WEB_URL.test(source.url) ? (
-                <a href={source.url} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-accent hover:underline" title={source.url} data-testid="chat-source-link">
+                <a href={source.url} target="_blank" rel="noopener noreferrer" className={`min-w-0 truncate ${TEXT_ACTION_CLASS}`} title={source.url} data-testid="chat-source-link">
                   {source.title === "" ? source.url : source.title}
                 </a>
               ) : (

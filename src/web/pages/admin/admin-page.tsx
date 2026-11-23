@@ -1,8 +1,10 @@
+import { ShieldOff } from "lucide-react";
 import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { Navigate, NavLink, useParams } from "react-router";
 import { useMe } from "../../api/queries.ts";
 import { EmptyState, Loading, PageHeader } from "../../ui/feedback.tsx";
+import { NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { InstanceSettingsEditor } from "../settings/storage-section.tsx";
 import { CredentialsSection } from "./credentials-section.tsx";
 import { NetworkSection } from "./network-section.tsx";
@@ -17,7 +19,7 @@ function InstanceSection() {
   const { t } = useTranslation();
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("admin.instance.intro")}</p>
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("admin.instance.intro")}</p>
       <InstanceSettingsEditor />
     </div>
   );
@@ -43,7 +45,7 @@ export function AdminPage() {
     return <Loading />;
   }
   if (me.data?.mode !== "server" || me.data.role !== "admin") {
-    return <EmptyState title={t("admin.forbidden")} />;
+    return <EmptyState icon={<ShieldOff size={28} />} title={t("admin.forbidden")} />;
   }
   if (!(ADMIN_SECTIONS as readonly string[]).includes(section ?? "")) {
     return <Navigate to="/admin/users" replace />;

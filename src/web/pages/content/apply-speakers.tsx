@@ -1,4 +1,3 @@
-import { TriangleAlert } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TranscriptRevisionListItemDto } from "../../../shared/dto/content.ts";
@@ -10,6 +9,8 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { useSegments } from "./content-data.ts";
 import { revisionLabel } from "./labels.ts";
 import type { DraftSegment } from "./speaker-draft.ts";
@@ -35,8 +36,6 @@ function rankOf(revision: TranscriptRevisionListItemDto): number {
   const status = diarizationStatusOf(revision);
   return status === "unknown" && revision.kind === "asr" ? 1 : RANKS[status];
 }
-
-const SELECT_CLASS = "h-8 min-w-0 max-w-full rounded-md border border-line bg-surface px-2 text-sm focus-visible:outline-2 focus-visible:outline-accent";
 
 /** The speakers a revision's sentences name, in order of first appearance, with how many sentences each has. */
 export function sourceSpeakers(segments: readonly Pick<TranscriptSegmentDto, "speakerId">[]): Array<{ speakerId: string; sentences: number }> {
@@ -122,8 +121,30 @@ export function ApplySpeakersDialog(props: {
   const revisionName = (revision: TranscriptRevisionListItemDto): string => revisionLabel(revision, undefined, t, i18n, props.revisions);
 
   return (
-    <Modal open={props.open} onOpenChange={props.onOpenChange} title={t("speakerEditor.apply.title")} description={t("speakerEditor.apply.description")} wide>
-      <div className="flex flex-col gap-5" data-testid="apply-speakers">
+    <Modal
+      open={props.open}
+      onOpenChange={props.onOpenChange}
+      title={t("speakerEditor.apply.title")}
+      description={t("speakerEditor.apply.description")}
+      wide
+      testId="apply-speakers"
+      footer={
+        <>
+          <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
+          <Button
+            variant="primary"
+            disabled={alignment === undefined || !hasSpeakers}
+            onClick={() => {
+              if (alignment !== undefined && props.onApply(alignment)) props.onOpenChange(false);
+            }}
+            data-testid="apply-confirm"
+          >
+            {t("speakerEditor.apply.confirm")}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-5">
         {candidates.length === 0 ? (
           <p className="text-sm text-muted" data-testid="apply-none">
             {t("speakerEditor.apply.none")}
@@ -133,13 +154,13 @@ export function ApplySpeakersDialog(props: {
             <h3 id={`${selectId}-source`} className="text-xs font-medium text-muted">
               {t("speakerEditor.apply.source")}
             </h3>
-            <select className={SELECT_CLASS} value={effective} aria-labelledby={`${selectId}-source`} onChange={(event) => setPicked(event.target.value)} data-testid="apply-source">
+            <NativeSelect size="md" className="max-w-full" value={effective} aria-labelledby={`${selectId}-source`} onChange={(event) => setPicked(event.target.value)} data-testid="apply-source">
               {candidates.map((item) => (
                 <option key={item.id} value={item.id}>
                   {t(diarizationStatusOf(item) === "applied" ? "speakerEditor.apply.sourceRecognized" : "speakerEditor.apply.sourceOption", { label: revisionName(item) })}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </section>
         )}
         {loaded.isPending && effective !== undefined && props.open ? <Loading /> : null}
@@ -171,8 +192,9 @@ export function ApplySpeakersDialog(props: {
                       </div>
                       <label className="flex min-w-0 items-center gap-2 text-xs text-muted">
                         <span className="shrink-0">{t("speakerEditor.apply.as")}</span>
-                        <select
-                          className={`${SELECT_CLASS} w-44`}
+                        <NativeSelect
+                          size="md"
+                          className="w-44 max-w-full"
                           value={value ?? ""}
                           aria-label={t("speakerEditor.apply.mapFor", { name: own === undefined ? entry.speakerId : speakerLabel(t, own) })}
                           onChange={(event) => setChoices({ ...choices, [entry.speakerId]: event.target.value === "" ? null : event.target.value })}
@@ -187,7 +209,7 @@ export function ApplySpeakersDialog(props: {
                               </option>
                             ))}
                           <option value="">{t("speakerEditor.apply.nobody")}</option>
-                        </select>
+                        </NativeSelect>
                       </label>
                     </li>
                   );
@@ -205,30 +227,17 @@ export function ApplySpeakersDialog(props: {
                     {t("speakerEditor.apply.summary", { auto: alignment.auto, needsReview: alignment.needsReview, unassigned: alignment.unassigned })}
                   </p>
                   {alignment.lowCoverage ? (
-                    <p className="flex items-start gap-2 rounded-md bg-accent-soft px-3 py-2 text-xs" role="alert" data-testid="apply-low-coverage">
-                      <TriangleAlert size={14} className="mt-px shrink-0 text-accent" aria-hidden="true" />
-                      <span>{t("speakerEditor.apply.lowCoverage", { percent: Math.round(alignment.coverage * 100) })}</span>
-                    </p>
+                    // Must be read before applying: the source may well be the wrong one.
+                    <Callout tone="warn" density="compact" announce="alert" testId="apply-low-coverage">
+                      {t("speakerEditor.apply.lowCoverage", { percent: Math.round(alignment.coverage * 100) })}
+                    </Callout>
                   ) : null}
-                  <p className="text-xs text-muted">{t("speakerEditor.apply.effect")}</p>
+                  <p className={NOTE_TEXT_CLASS}>{t("speakerEditor.apply.effect")}</p>
                 </>
               )}
             </section>
           </>
         )}
-        <div className="flex justify-end gap-2">
-          <Button onClick={() => props.onOpenChange(false)}>{t("common.action.cancel")}</Button>
-          <Button
-            variant="primary"
-            disabled={alignment === undefined || !hasSpeakers}
-            onClick={() => {
-              if (alignment !== undefined && props.onApply(alignment)) props.onOpenChange(false);
-            }}
-            data-testid="apply-confirm"
-          >
-            {t("speakerEditor.apply.confirm")}
-          </Button>
-        </div>
       </div>
     </Modal>
   );

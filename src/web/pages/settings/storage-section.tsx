@@ -31,9 +31,13 @@ import { formatDateTime } from "../../format.ts";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
 import { ErrorView } from "../../components/error-view.tsx";
 import { Button } from "../../ui/button.tsx";
-import { Loading } from "../../ui/feedback.tsx";
+import { Loading, SkeletonRows } from "../../ui/feedback.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TextInput } from "../../ui/text-field.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
-import { ConfirmButton, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { ConfirmButton, Field, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 /** Shown in this order: the task limit decides queueing, the other two pace the work inside tasks. */
 const CONCURRENCY_FIELDS = ["concurrencyPipeline"] as const;
@@ -58,12 +62,12 @@ export function StorageSection() {
     <div>
       {server ? (
         <>
-          {admin ? <p className="mb-4 text-sm text-muted">{t("settings.storage.serverHint")}</p> : null}
+          {admin ? <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.storage.serverHint")}</p> : null}
           <MyStorageBlock />
         </>
       ) : (
         <>
-          <p className="mb-4 text-sm text-muted">{t("settings.storage.intro")}</p>
+          <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.storage.intro")}</p>
           {version.isPending ? <Loading /> : <InstanceSettingsEditor lowWaterHint localCache />}
         </>
       )}
@@ -91,7 +95,7 @@ export function InstanceSettingsEditor({ lowWaterHint = false, localCache = fals
       {instance.isPending ? <Loading /> : null}
       {instance.data === undefined ? (
         instance.error instanceof ApiError && instance.error.error.class === "forbidden" ? (
-          <p className="mb-4 text-sm text-muted">{t("settings.storage.forbidden")}</p>
+          <InlineNote className="mb-4">{t("settings.storage.forbidden")}</InlineNote>
         ) : (
           <RequestError error={instance.error} />
         )
@@ -221,11 +225,11 @@ function InstanceBlock(props: {
             const bad = text !== undefined && !locked(key) && !validValue(key, text);
             return (
               <Field key={key} label={t(`settings.storage.${key}`)} hint={hint(key)} htmlFor={`instance-${key}`}>
-                <input
+                <TextInput
                   id={`instance-${key}`}
-                  className={INPUT_CLASS}
+                  className="w-full"
                   disabled={locked(key)}
-                  aria-invalid={bad || undefined}
+                  invalid={bad}
                   value={text ?? String(settings[key])}
                   onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
                   {...(isConcurrencyKey(key) ? { type: "number", min: 1, max: CONCURRENCY_LIMITS[key], step: 1 } : { inputMode: "decimal" as const })}
@@ -239,9 +243,9 @@ function InstanceBlock(props: {
               hint={locked("uploadRetentionDefault") ? t("settings.storage.fromEnv") : undefined}
               htmlFor="instance-retention"
             >
-              <select
+              <NativeSelect
                 id="instance-retention"
-                className={INPUT_CLASS}
+                className="w-full"
                 disabled={locked("uploadRetentionDefault")}
                 value={retention ?? settings.uploadRetentionDefault}
                 onChange={(event) => setRetention(event.target.value as UploadRetentionPolicy)}
@@ -251,14 +255,14 @@ function InstanceBlock(props: {
                     {t(`settings.storage.retention.${policy}`)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
           ) : null}
         </div>
         {props.footer}
         <RequestError error={save.error} />
         <div className="flex justify-end">
-          <Button type="submit" variant="primary" disabled={invalid || Object.keys(patch).length === 0 || save.isPending}>
+          <Button type="submit" variant="primary" disabled={invalid || Object.keys(patch).length === 0} loading={save.isPending}>
             {t("common.action.save")}
           </Button>
         </div>
@@ -277,7 +281,7 @@ function DiskExplainer({ localCache }: { localCache: boolean }) {
   const directories = localCache ? t("settings.storage.diskExplainer.directoriesLocal") : t("settings.storage.diskExplainer.directoriesServer");
   const effect = localCache ? t("settings.storage.diskExplainer.effectLocal") : t("settings.storage.diskExplainer.effectServer");
   return (
-    <div className="mb-3 space-y-1 text-xs text-muted" data-testid="disk-explainer">
+    <div className={`mb-5 space-y-1 ${NOTE_TEXT_CLASS}`} data-testid="disk-explainer">
       <p>{directories}</p>
       <p>{`${t("settings.storage.diskExplainer.lowWater")}${effect}`}</p>
     </div>
@@ -319,29 +323,35 @@ function LowWaterRatioHint({ settings }: { settings: InstanceSettingsDto }) {
   }
   const gb = settings.lowWaterFreeGB;
   return (
-    <div className="mb-3 rounded-md border border-accent/40 bg-accent/5 p-3 text-sm" role="status" data-testid="low-water-hint">
-      <p>{t("settings.storage.lowWaterHint.text", { gb })}</p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" variant="primary" disabled={apply.isPending} data-testid="low-water-hint-apply" onClick={() => apply.mutate()}>
-          {t("settings.storage.lowWaterHint.apply", { gb })}
-        </Button>
-        <Button
-          size="sm"
-          data-testid="low-water-hint-dismiss"
-          onClick={() => {
-            setDismissed(true);
-            try {
-              localStorage.setItem(LOW_WATER_HINT_KEY, "dismissed");
-            } catch {
-              // Private mode without storage: the hint stays away for this visit only.
-            }
-          }}
-        >
-          {t("settings.storage.lowWaterHint.dismiss")}
-        </Button>
-      </div>
+    <Callout
+      tone="info"
+      className="mb-5"
+      testId="low-water-hint"
+      actions={
+        <>
+          <Button size="sm" variant="primary" loading={apply.isPending} data-testid="low-water-hint-apply" onClick={() => apply.mutate()}>
+            {t("settings.storage.lowWaterHint.apply", { gb })}
+          </Button>
+          <Button
+            size="sm"
+            data-testid="low-water-hint-dismiss"
+            onClick={() => {
+              setDismissed(true);
+              try {
+                localStorage.setItem(LOW_WATER_HINT_KEY, "dismissed");
+              } catch {
+                // Private mode without storage: the hint stays away for this visit only.
+              }
+            }}
+          >
+            {t("settings.storage.lowWaterHint.dismiss")}
+          </Button>
+        </>
+      }
+    >
+      <p className="max-w-[70ch]">{t("settings.storage.lowWaterHint.text", { gb })}</p>
       <RequestError error={apply.error} />
-    </div>
+    </Callout>
   );
 }
 
@@ -381,7 +391,7 @@ function MyStorageBlock() {
           </div>
         </div>
       )}
-      <p className="mt-2 text-xs text-muted">{t("settings.storage.mine.hint")}</p>
+      <p className={`mt-2 ${NOTE_TEXT_CLASS}`}>{t("settings.storage.mine.hint")}</p>
     </SettingsBlock>
   );
 }
@@ -444,7 +454,7 @@ function CacheHolds({ holds }: { holds: readonly CacheHoldDto[] }) {
   return (
     <div className="mt-3 rounded-md border border-line p-3" data-testid="cache-holds">
       <p className="text-sm font-medium">{t("settings.storage.cache.holds.title")}</p>
-      <p className="mt-1 text-xs text-muted">{t("settings.storage.cache.holds.intro")}</p>
+      <p className={`mt-1 ${NOTE_TEXT_CLASS}`}>{t("settings.storage.cache.holds.intro")}</p>
       <ul className="mt-2 flex flex-col divide-y divide-line">
         {holds.map((hold) => (
           <li key={hold.assetId} className="flex flex-wrap items-center gap-2 py-2 text-sm" data-testid="cache-hold">
@@ -463,6 +473,7 @@ function CacheHolds({ holds }: { holds: readonly CacheHoldDto[] }) {
                 label={t("settings.storage.cache.holds.keep")}
                 message={t("settings.storage.cache.holds.keepConfirm", { fileName: hold.fileName })}
                 variant="danger"
+                confirmLabel={t("settings.storage.cache.holds.keep")}
                 disabled={settle.isPending}
                 testId={`cache-hold-keep-${hold.assetId}`}
                 onConfirm={() => settle.mutate({ assetId: hold.assetId, action: "keep" })}
@@ -549,10 +560,9 @@ function CacheLocationBlock() {
             {cacheUsageText(data, instance.data, t)}
           </p>
           {data.available ? null : (
-            <div className="mt-2 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert" data-testid="cache-unavailable">
-              <p className="font-medium text-danger">{t("settings.storage.cache.unavailable")}</p>
-              <p className="mt-1">{t("settings.storage.cache.unavailableHint")}</p>
-            </div>
+            <Callout tone="error" className="mt-2" title={t("settings.storage.cache.unavailable")} testId="cache-unavailable">
+              {t("settings.storage.cache.unavailableHint")}
+            </Callout>
           )}
           {data.holds.length === 0 ? null : <CacheHolds holds={data.holds} />}
           {data.migration?.phase === "copying" ? (
@@ -624,9 +634,9 @@ function BurnOutputsBlock() {
   const items = outputs.data ?? [];
   return (
     <SettingsBlock title={t("settings.storage.burnOutputs.title")} intro={t("settings.storage.burnOutputs.intro")}>
-      {outputs.isPending ? <Loading /> : null}
+      {outputs.isPending ? <SkeletonRows count={2} rowHeight={28} /> : null}
       <RequestError error={outputs.error} />
-      {outputs.data !== undefined && items.length === 0 ? <p className="text-sm text-muted">{t("settings.storage.burnOutputs.empty")}</p> : null}
+      {outputs.data !== undefined && items.length === 0 ? <InlineNote>{t("settings.storage.burnOutputs.empty")}</InlineNote> : null}
       {items.length === 0 ? null : (
         <ul className="flex flex-col divide-y divide-line" data-testid="burn-outputs">
           {items.map((item) => {
@@ -648,6 +658,7 @@ function BurnOutputsBlock() {
                 <ConfirmButton
                   label={t("common.action.delete")}
                   variant="danger"
+                  confirmLabel={t("common.action.delete")}
                   disabled={save.isPending || remove.isPending}
                   message={t("settings.storage.burnOutputs.deleteConfirm", { title })}
                   onConfirm={() => remove.mutate(item.assetId)}
@@ -658,11 +669,13 @@ function BurnOutputsBlock() {
         </ul>
       )}
       {notice === undefined ? null : (
-        <p className="mt-2 flex items-center gap-2 text-xs text-ok" role="status" data-testid="burn-output-saved">
+        <p className="mt-2 flex items-center gap-2 text-note text-ok" role="status" data-testid="burn-output-saved">
           <span className="min-w-0 break-all">{notice}</span>
-          <button type="button" className="shrink-0 rounded p-0.5 text-muted hover:bg-sunken" aria-label={t("common.action.close")} onClick={() => setNotice(undefined)}>
-            <X size={12} />
-          </button>
+          <Tooltip content={t("common.action.close")}>
+            <button type="button" className="shrink-0 rounded p-0.5 text-muted hover:bg-sunken" aria-label={t("common.action.close")} onClick={() => setNotice(undefined)}>
+              <X size={12} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </p>
       )}
       {save.error === null ? null : (

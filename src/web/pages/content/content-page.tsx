@@ -56,9 +56,11 @@ import { ResumeNotice } from "../../player/resume-notice.tsx";
 import { rememberedPosition, usePlaybackResume } from "../../player/use-playback-resume.ts";
 import type { SubtitleTrackModel } from "../../player/subtitle-overlay.tsx";
 import { HighlightsBelowPlayer, Timeline } from "../../player/timeline.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { Callout, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
 import { Splitter } from "../../ui/splitter.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import type { BoxRect } from "../../ui/use-floating-box.ts";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
 import { useDocumentTitle } from "../../use-document-title.ts";
@@ -544,16 +546,17 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   );
   const gap = middleCollapsed ? (
     <aside data-testid="middle-collapsed" className={`flex w-9 shrink-0 flex-col items-center border-line pt-2 ${swapped ? "border-l" : "border-r"}`}>
-      <button
-        type="button"
-        aria-label={t("contentView.toolbar.expandMiddle")}
-        title={t("contentView.toolbar.expandMiddle")}
-        onClick={() => setMiddleCollapsed(false)}
-        className="rounded-md p-1.5 text-muted hover:bg-sunken hover:text-ink"
-        data-testid="expand-middle"
-      >
-        {swapped ? <PanelRightOpen size={16} /> : <PanelLeftOpen size={16} />}
-      </button>
+      <Tooltip content={t("contentView.toolbar.expandMiddle")} side={swapped ? "left" : "right"}>
+        <button
+          type="button"
+          aria-label={t("contentView.toolbar.expandMiddle")}
+          onClick={() => setMiddleCollapsed(false)}
+          className={`rounded-md p-1.5 text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+          data-testid="expand-middle"
+        >
+          {swapped ? <PanelRightOpen size={16} aria-hidden="true" /> : <PanelLeftOpen size={16} aria-hidden="true" />}
+        </button>
+      </Tooltip>
     </aside>
   ) : (
     splitter
@@ -774,7 +777,7 @@ function MenuLabel(props: { label: string; note: string | undefined }) {
   return (
     <span className="flex min-w-0 flex-col">
       <span>{props.label}</span>
-      {props.note === undefined ? null : <span className="max-w-64 break-all text-xs text-muted">{props.note}</span>}
+      {props.note === undefined ? null : <span className="max-w-64 break-all text-note text-muted">{props.note}</span>}
     </span>
   );
 }
@@ -938,11 +941,13 @@ function SaveCacheStatus(props: { save: SaveCache }) {
   return (
     <>
       {mutation.data === undefined || mutation.data === null ? null : (
-        <p className="flex items-center gap-2 text-xs text-ok" role="status" data-testid="save-cache-saved">
+        <p className="flex items-center gap-2 text-note text-ok" role="status" data-testid="save-cache-saved">
           <span className="min-w-0 break-all">{t("contentView.saveCache.saved", { path: mutation.data.savedPath })}</span>
-          <button type="button" className="shrink-0 rounded p-0.5 text-muted hover:bg-sunken" aria-label={t("common.action.close")} onClick={() => mutation.reset()}>
-            <X size={12} />
-          </button>
+          <Tooltip content={t("common.action.close")}>
+            <button type="button" className={`shrink-0 rounded p-0.5 text-muted hover:bg-sunken ${FOCUS_RING}`} aria-label={t("common.action.close")} onClick={() => mutation.reset()}>
+              <X size={12} aria-hidden="true" />
+            </button>
+          </Tooltip>
         </p>
       )}
       {mutation.error === null ? null : (
@@ -1014,11 +1019,13 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
   return (
     <>
       <DropdownMenu.Root>
-        <DropdownMenu.Trigger asChild>
-          <Button size="sm" variant="ghost" aria-label={t("contentView.toolbar.more")} data-testid="content-menu">
-            <MoreHorizontal size={16} />
-          </Button>
-        </DropdownMenu.Trigger>
+        <Tooltip content={t("contentView.toolbar.more")}>
+          <DropdownMenu.Trigger asChild>
+            <Button size="sm" variant="ghost" aria-label={t("contentView.toolbar.more")} data-testid="content-menu">
+              <MoreHorizontal size={16} aria-hidden="true" />
+            </Button>
+          </DropdownMenu.Trigger>
+        </Tooltip>
         <DropdownMenu.Portal>
           <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-md border border-line bg-surface p-1 text-sm shadow-lg">
             {props.overflow.map((item) => (
@@ -1126,7 +1133,7 @@ function MiddleColumn(props: {
               ) : (
                 <>
                   {source.kind === "bilibili" && capabilities.timeTracking === "unsupported" ? (
-                    <p className="mt-1 text-xs text-muted" data-testid="bili-hint">
+                    <p className="mt-1 text-note text-muted" data-testid="bili-hint">
                       {t("contentView.player.trackingUnavailable")}
                     </p>
                   ) : null}
@@ -1139,12 +1146,19 @@ function MiddleColumn(props: {
         </div>
       )}
       {playback.qualityNotice === undefined ? null : (
-        <p className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm" role="status" data-testid="player-quality-notice">
-          <span className="min-w-0 flex-1">{playback.qualityNotice}</span>
-          <Button size="sm" variant="ghost" onClick={playback.dismissQualityNotice}>
-            {t("common.action.close")}
-          </Button>
-        </p>
+        <Callout
+          tone="info"
+          density="compact"
+          announce="status"
+          testId="player-quality-notice"
+          actions={
+            <Button size="sm" variant="ghost" onClick={playback.dismissQualityNotice}>
+              {t("common.action.close")}
+            </Button>
+          }
+        >
+          {playback.qualityNotice}
+        </Callout>
       )}
       <TitleRow content={content} />
       <PlatformLoginExpired content={content} />
@@ -1154,12 +1168,19 @@ function MiddleColumn(props: {
         <TrackedTask key={playback.cacheTaskId} taskId={playback.cacheTaskId} onSucceeded={playback.cacheSucceeded} onClose={playback.clearCacheTask} />
       )}
       {playback.cachedAudioInstead ? (
-        <p className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm" role="status" data-testid="cache-audio-only">
-          <span className="min-w-0 flex-1">{t("contentView.cache.audioOnlyResult")}</span>
-          <Button size="sm" variant="ghost" onClick={playback.dismissCachedAudio}>
-            {t("common.action.close")}
-          </Button>
-        </p>
+        <Callout
+          tone="info"
+          density="compact"
+          announce="status"
+          testId="cache-audio-only"
+          actions={
+            <Button size="sm" variant="ghost" onClick={playback.dismissCachedAudio}>
+              {t("common.action.close")}
+            </Button>
+          }
+        >
+          {t("contentView.cache.audioOnlyResult")}
+        </Callout>
       ) : null}
       {props.chatFloating ? (
         <p className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-muted" data-testid="chat-floating-placeholder">
@@ -1188,16 +1209,17 @@ function TitleRow(props: { content: ContentDetailDto }) {
         <h1 className="text-base font-semibold" data-testid="content-title">
           {content.title ?? t("contentView.untitled")}
         </h1>
-        <button
-          type="button"
-          className="mt-0.5 shrink-0 rounded p-1 text-muted hover:bg-sunken hover:text-ink"
-          aria-label={t("library.rename.action")}
-          title={t("library.rename.action")}
-          onClick={() => setRenaming(true)}
-          data-testid="content-rename"
-        >
-          <Pencil size={14} />
-        </button>
+        <Tooltip content={t("library.rename.action")}>
+          <button
+            type="button"
+            className={`mt-0.5 shrink-0 rounded p-1 text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+            aria-label={t("library.rename.action")}
+            onClick={() => setRenaming(true)}
+            data-testid="content-rename"
+          >
+            <Pencil size={14} aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
       <RenameContentDialog contentId={renaming ? content.id : undefined} onOpenChange={setRenaming} />
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
@@ -1209,7 +1231,7 @@ function TitleRow(props: { content: ContentDetailDto }) {
         )}
         {content.durationMs === undefined ? null : <span>{formatDuration(content.durationMs)}</span>}
         {content.collections.map((collection) => (
-          <Link key={collection.id} to={`/collections/${collection.id}`} className="text-accent hover:underline">
+          <Link key={collection.id} to={`/collections/${collection.id}`} className={TEXT_ACTION_CLASS}>
             {collection.name}
           </Link>
         ))}
@@ -1233,12 +1255,19 @@ function PlatformLoginExpired(props: { content: ContentDetailDto }) {
     return null;
   }
   return (
-    <p className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-xs" role="alert" data-testid="platform-login-expired">
-      {t("contentView.platformExpired.message", { platform: t(`common.source.${kind}`) })}{" "}
-      <Link className="text-accent underline" to="/settings/platform-accounts">
-        {t("contentView.platformExpired.link")}
-      </Link>
-    </p>
+    // Something to deal with (log in again), present from the start: a caution, not a live region.
+    <Callout
+      tone="warn"
+      density="compact"
+      testId="platform-login-expired"
+      actions={
+        <Link className={`text-note ${TEXT_ACTION_CLASS}`} to="/settings/platform-accounts">
+          {t("contentView.platformExpired.link")}
+        </Link>
+      }
+    >
+      {t("contentView.platformExpired.message", { platform: t(`common.source.${kind}`) })}
+    </Callout>
   );
 }
 

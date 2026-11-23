@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, GripVertical } from "lucide-react";
+import { ChevronDown, GripVertical, Server } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -21,14 +21,18 @@ import { ModelSelect, type ModelSelectEntry } from "../../components/model-selec
 import { formatDateTime } from "../../format.ts";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
 import { LlmModelMark } from "../../models/model-mark.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { CONTROL_BASE, CONTROL_HEIGHT } from "../../ui/control.ts";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { FieldError, FieldHint, NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
 import { SuggestionInput } from "../../ui/suggestion-input.tsx";
+import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { VendorIcon } from "../../ui/vendor-icon.tsx";
 import { ProbeResult } from "./probe-result.tsx";
 import { ProfileEditor } from "./profile-editor.tsx";
-import { ConfirmButton, CredentialInput, Field, INPUT_CLASS, RequestError, SettingsBlock } from "./settings-ui.tsx";
+import { ConfirmButton, CredentialInput, describedBy, Field, fieldHintId, RequestError, SettingsBlock } from "./settings-ui.tsx";
 import { parseTokenCount } from "./token-count.tsx";
 
 type TriState = (typeof TRI_STATES)[number];
@@ -46,14 +50,19 @@ export function ModelsSection() {
   const items = providers.data?.items ?? [];
   return (
     <div>
-      <p className="mb-4 text-sm text-muted">{t("settings.models.intro")}</p>
+      <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.models.intro")}</p>
       {items.length === 0 ? (
         <SettingsBlock>
-          <EmptyState title={t("settings.models.wizardTitle")} hint={t("settings.models.wizardHint")}>
-            <Button variant="primary" onClick={() => setCreating(true)}>
-              {t("settings.models.addProfile")}
-            </Button>
-          </EmptyState>
+          <EmptyState
+            icon={<Server size={28} />}
+            title={t("settings.models.wizardTitle")}
+            hint={t("settings.models.wizardHint")}
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-first-profile">
+                {t("settings.models.addProfile")}
+              </Button>
+            }
+          />
         </SettingsBlock>
       ) : (
         <>
@@ -117,9 +126,9 @@ function DefaultModelBlock({ profiles }: { profiles: readonly ProviderProfileDto
           patch.mutate({ defaultModelRef: { providerProfileId, modelId } });
         }}
       />
-      <p id="default-model-hint" className="mt-2 text-xs text-muted" data-testid="default-model-hint">
+      <FieldHint id="default-model-hint" className="mt-1.5" testId="default-model-hint">
         {t("settings.models.defaultModelHint")}
-      </p>
+      </FieldHint>
       <RequestError error={patch.error} />
     </SettingsBlock>
   );
@@ -255,24 +264,27 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Pr
     <SettingsBlock
       title={
         <span className="flex min-w-0 items-center gap-1">
-          <button
-            type="button"
-            className="cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken"
-            aria-label={t("settings.models.dragProfile", { name: profile.name })}
-            title={t("settings.models.dragProfile", { name: profile.name })}
-            {...dragHandle}
-          >
-            <GripVertical size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="rounded p-1 text-muted hover:bg-sunken"
-            aria-expanded={!collapsed}
-            aria-label={t(collapsed ? "settings.models.expandProfile" : "settings.models.collapseProfile", { name: profile.name })}
-            onClick={onToggle}
-          >
-            <ChevronDown size={14} className={collapsed ? "-rotate-90" : ""} aria-hidden="true" />
-          </button>
+          <Tooltip content={t("settings.models.dragProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-label={t("settings.models.dragProfile", { name: profile.name })}
+              {...dragHandle}
+            >
+              <GripVertical size={14} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip content={t(collapsed ? "settings.models.expandProfile" : "settings.models.collapseProfile", { name: profile.name })}>
+            <button
+              type="button"
+              className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+              aria-expanded={!collapsed}
+              aria-label={t(collapsed ? "settings.models.expandProfile" : "settings.models.collapseProfile", { name: profile.name })}
+              onClick={onToggle}
+            >
+              <ChevronDown size={14} className={`transition-transform duration-150 motion-reduce:transition-none ${collapsed ? "-rotate-90" : ""}`} aria-hidden="true" />
+            </button>
+          </Tooltip>
           <VendorIcon presetId={profile.presetId} className="mr-1" />
           <span className="min-w-0 truncate" data-testid="profile-title">
             {profile.name}
@@ -288,6 +300,8 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Pr
           <ConfirmButton
             label={t("common.action.delete")}
             variant="danger"
+            confirmLabel={t("settings.models.deleteProfileConfirm")}
+            pending={remove.isPending}
             message={t("settings.models.deleteConfirm", { name: profile.name })}
             onConfirm={() => remove.mutate()}
           />
@@ -315,11 +329,17 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Pr
             ) : null}
           </p>
           <Field label={t("settings.models.keyLabel")} hint={t("settings.common.credential.writeOnly")} htmlFor={`key-${profile.id}`} aside={<CredentialState status={profile.credentialStatus} />}>
-            <CredentialInput id={`key-${profile.id}`} hasCredential={profile.hasCredential} pending={credential.isPending} onSubmit={(value) => credential.mutate(value)} />
+            <CredentialInput
+              id={`key-${profile.id}`}
+              hasCredential={profile.hasCredential}
+              pending={credential.isPending}
+              describedBy={fieldHintId(`key-${profile.id}`)}
+              onSubmit={(value) => credential.mutate(value)}
+            />
           </Field>
           <RequestError error={credential.error} />
           <h3 className="mt-4 mb-1 text-xs font-medium text-muted">{t("settings.models.modelsTitle")}</h3>
-          {profile.models.length === 0 ? <p className="text-sm text-muted">{t("settings.models.noModels")}</p> : null}
+          {profile.models.length === 0 ? <p className={NOTE_TEXT_CLASS}>{t("settings.models.noModels")}</p> : null}
           <ul className="divide-y divide-line">
             {profile.models.map((model) => (
               <ModelRow key={model.modelId} profile={profile} model={model} regionHint={regionHint} />
@@ -360,7 +380,7 @@ function ModelRow({ profile, model, regionHint }: { profile: ProviderProfileDto;
           <span className="min-w-0 truncate font-mono">{model.modelId}</span>
         </p>
         <div className="flex gap-2">
-          <Button size="sm" disabled={probe.isPending || !profile.hasCredential} title={t("settings.models.testHint")} onClick={() => probe.mutate()}>
+          <Button size="sm" loading={probe.isPending} disabled={!profile.hasCredential} title={t("settings.models.testHint")} onClick={() => probe.mutate()}>
             {probe.isPending ? t("settings.models.testing") : t("settings.models.testConnection")}
           </Button>
           <Button size="sm" onClick={() => setShowOverride(!showOverride)} aria-expanded={showOverride}>
@@ -432,14 +452,9 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
       <p className="mt-0.5 text-xs text-muted" data-testid="model-limits">
         {t("settings.models.contextWindow")} <span className="text-ink">{t("settings.models.limits.missing")}</span>
         <span aria-hidden="true"> · </span>
-        <button
-          type="button"
-          className="rounded px-0.5 font-medium text-accent-ink underline decoration-accent/60 underline-offset-2 hover:decoration-accent dark:text-accent"
-          aria-label={t("settings.models.limits.fillFor", { model: model.modelId })}
-          onClick={() => setFilling(true)}
-        >
+        <TextAction className="font-medium" aria-label={t("settings.models.limits.fillFor", { model: model.modelId })} onClick={() => setFilling(true)}>
           {t("settings.models.limits.fill")}
-        </button>
+        </TextAction>
         {maxPart}
       </p>
     );
@@ -476,8 +491,9 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
           spellCheck={false}
           placeholder={t("settings.models.tokenPlaceholder")}
           aria-invalid={invalid ? true : undefined}
+          aria-describedby={describedBy(invalid && `${inputId}-error`, `${inputId}-note`)}
           wrapperClassName="w-36"
-          className={`${INPUT_CLASS} h-7 text-xs`}
+          className={`w-full px-2 ${CONTROL_BASE} ${CONTROL_HEIGHT.sm}`}
           value={text}
           onValueChange={(value) => {
             setText(value);
@@ -490,15 +506,21 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
             }
           }}
         />
-        <Button type="submit" size="sm" variant="primary" disabled={setWindow.isPending || text.trim() === ""}>
+        <Button type="submit" size="sm" variant="primary" loading={setWindow.isPending} disabled={text.trim() === ""}>
           {t("common.action.save")}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setFilling(false)}>
           {t("common.action.cancel")}
         </Button>
       </div>
-      {invalid ? <p className="mt-1 text-xs text-danger">{t("settings.models.invalidNumber")}</p> : null}
-      <p className="mt-1 text-xs text-muted">{t("settings.models.contextWindowNote")}</p>
+      {invalid ? (
+        <FieldError id={`${inputId}-error`} className="mt-1.5">
+          {t("settings.models.invalidNumber")}
+        </FieldError>
+      ) : null}
+      <FieldHint id={`${inputId}-note`} className="mt-1.5">
+        {t("settings.models.contextWindowNote")}
+      </FieldHint>
       <RequestError error={setWindow.error} />
     </form>
   );
@@ -527,13 +549,13 @@ function OverrideEditor({ profile, model }: { profile: ProviderProfileDto; model
   });
   return (
     <div className="mt-3 rounded-md bg-panel p-3">
-      <p className="mb-2 text-xs text-muted">{t("settings.models.overrideHint")}</p>
+      <p className={`mb-2 ${NOTE_TEXT_CLASS}`}>{t("settings.models.overrideHint")}</p>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {CAPABILITY_KEYS.map((key) => (
           <label key={key} className="flex items-center justify-between gap-2 text-xs">
             <span>{t(`settings.models.capability.${key}`)}</span>
-            <select
-              className="h-7 rounded border border-line bg-surface px-1"
+            <NativeSelect
+              size="sm"
               value={flags[key] ?? ""}
               onChange={(event) => {
                 const value = event.target.value as TriState | "";
@@ -554,12 +576,12 @@ function OverrideEditor({ profile, model }: { profile: ProviderProfileDto; model
                   {t(`settings.models.tri.${state}`)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         ))}
       </div>
       <div className="mt-2 flex justify-end">
-        <Button size="sm" variant="primary" disabled={save.isPending} onClick={() => save.mutate()}>
+        <Button size="sm" variant="primary" loading={save.isPending} onClick={() => save.mutate()}>
           {t("common.action.save")}
         </Button>
       </div>

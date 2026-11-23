@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { PASSWORD_MIN_LEN } from "../../shared/defaults.ts";
 import { authMeDtoSchema, type AuthMeDto } from "../../shared/dto/system.ts";
@@ -8,9 +8,11 @@ import { useApi } from "../api/context.tsx";
 import { queryKeys } from "../api/queries.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { Button } from "../ui/button.tsx";
-import { PasswordField } from "../ui/password-input.tsx";
+import { Callout } from "../ui/notice.tsx";
+import { PasswordInput } from "../ui/password-input.tsx";
+import { AUTH_FORM, AUTH_PASSWORD_INPUT, AuthField } from "./auth-card.tsx";
 
-const INPUT = "h-9 w-full rounded-md border border-line bg-surface px-2 text-sm outline-none focus:border-accent";
+type PasswordFieldName = "current" | "next" | "confirm";
 
 /**
  * `POST /api/auth/change-password`. The server revokes the user's other
@@ -21,10 +23,12 @@ export function ChangePasswordForm(props: { currentPassword?: string; submitLabe
   const { t } = useTranslation();
   const client = useApi();
   const queryClient = useQueryClient();
+  const formId = useId();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [problem, setProblem] = useState<string | undefined>(undefined);
+  // A check made before sending, shown under the field it is about.
+  const [problem, setProblem] = useState<{ field: PasswordFieldName; message: string } | undefined>(undefined);
   const change = useMutation({
     mutationFn: () =>
       client.post("/api/auth/change-password", authMeDtoSchema, {
@@ -42,30 +46,54 @@ export function ChangePasswordForm(props: { currentPassword?: string; submitLabe
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     setProblem(undefined);
-    if ([...next].length < PASSWORD_MIN_LEN) return setProblem(t("auth.changePassword.tooShort", { min: PASSWORD_MIN_LEN }));
-    if (next !== confirm) return setProblem(t("auth.changePassword.mismatch"));
+    if ([...next].length < PASSWORD_MIN_LEN) return setProblem({ field: "next", message: t("auth.changePassword.tooShort", { min: PASSWORD_MIN_LEN }) });
+    if (next !== confirm) return setProblem({ field: "confirm", message: t("auth.changePassword.mismatch") });
     change.mutate();
   };
+  // The new password is checked above against the same rules the server applies, so an
+  // `invalid_request` here means the current password did not match.
+  const wrongCurrent = change.error instanceof ApiError && change.error.error.class === "invalid_request";
+  const askCurrent = props.currentPassword === undefined;
+  // A problem found on sending (here or by the server) shows while focus is still on the submit
+  // button, and a field error is not a live region: moving focus to the field at fault (once it
+  // is marked invalid and described by the error) is what makes a screen reader say why.
+  useEffect(() => {
+    if (problem !== undefined) document.getElementById(`${formId}-${problem.field}`)?.focus();
+  }, [problem, formId]);
+  const refusedField = wrongCurrent && askCurrent;
+  useEffect(() => {
+    if (refusedField) document.getElementById(`${formId}-current`)?.focus();
+  }, [refusedField, change.error, formId]);
+  const errorOf = (field: PasswordFieldName): { error: string } | Record<string, never> => {
+    if (problem?.field === field) return { error: problem.message };
+    return field === "current" && wrongCurrent ? { error: t("auth.changePassword.wrongCurrent") } : {};
+  };
+  const field = (name: PasswordFieldName, label: string, autoComplete: string, value: string, onChange: (value: string) => void) => (
+    <AuthField
+      id={`${formId}-${name}`}
+      label={label}
+      {...errorOf(name)}
+      control={(control) => (
+        <PasswordInput {...control} autoComplete={autoComplete} required value={value} onChange={(event) => onChange(event.target.value)} className={AUTH_PASSWORD_INPUT} />
+      )}
+    />
+  );
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3" data-testid="change-password-form">
-      {props.currentPassword === undefined ? (
-        <PasswordField label={t("auth.changePassword.currentPassword")} autoComplete="current-password" required value={current} onChange={(event) => setCurrent(event.target.value)} className={INPUT} />
-      ) : null}
-      <PasswordField label={t("auth.changePassword.newPassword")} autoComplete="new-password" required value={next} onChange={(event) => setNext(event.target.value)} className={INPUT} />
-      <PasswordField label={t("auth.changePassword.confirmPassword")} autoComplete="new-password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} className={INPUT} />
-      {problem === undefined ? null : <p className="text-sm text-danger">{problem}</p>}
-      {change.error instanceof ApiError ? (
-        // The new password is checked above against the same rules the server applies, so an
-        // `invalid_request` here means the current password did not match.
-        change.error.error.class === "invalid_request" ? (
-          <p role="alert" className="text-sm text-danger">
+    <form onSubmit={submit} className={AUTH_FORM} data-testid="change-password-form">
+      {askCurrent ? field("current", t("auth.changePassword.currentPassword"), "current-password", current, setCurrent) : null}
+      {field("next", t("auth.changePassword.newPassword"), "new-password", next, setNext)}
+      {field("confirm", t("auth.changePassword.confirmPassword"), "new-password", confirm, setConfirm)}
+      {change.error instanceof ApiError && !(wrongCurrent && askCurrent) ? (
+        wrongCurrent ? (
+          // The password the login step just verified was refused: there is no field to point at.
+          <Callout tone="error" density="compact" announce="alert">
             {t("auth.changePassword.wrongCurrent")}
-          </p>
+          </Callout>
         ) : (
           <ErrorView error={change.error.error} />
         )
       ) : null}
-      <Button type="submit" variant="primary" disabled={change.isPending}>
+      <Button type="submit" variant="primary" loading={change.isPending}>
         {props.submitLabel}
       </Button>
     </form>

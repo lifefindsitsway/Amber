@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -20,9 +20,12 @@ import { localTimeStamp, pickPackOriginalsDir } from "../../desktop/bridge.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime, formatDuration } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
+import { Checkbox, RadioCard } from "../../ui/checkbox.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { DANGER_HINT_CLASS, HINT_CLASS } from "./export-card.tsx";
-import { STICKY_FOOTER } from "./export-dialog.tsx";
+import { NativeSelect } from "../../ui/native-select.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS, TextAction } from "../../ui/notice.tsx";
+import { CHECK_BOX, CHECK_LABEL } from "./export-card.tsx";
+import { PackFooter } from "./export-dialog.tsx";
 import {
   blockingOverLimit,
   blockingProblems,
@@ -51,8 +54,8 @@ import { revisionTimeLabel } from "../content/labels.ts";
 import { TargetPicker } from "./target-picker.tsx";
 
 const SECTION_TITLE = "mb-1.5 text-xs font-medium text-muted";
-const CHECK_ROW = "flex items-start gap-2 text-sm";
-const SELECT = "h-8 max-w-56 rounded-md border border-line bg-surface px-2 text-sm";
+/** A check box in a small line under a revision or a speaker. */
+const SMALL_CHECK_LABEL = "gap-1.5! text-xs! mt-0.5";
 const BADGE: Record<string, string> = {
   new: "bg-accent-soft text-accent",
   existing: "bg-sunken text-muted",
@@ -184,17 +187,14 @@ export function ImportPreview(props: {
         </section>
       )}
 
-      {needsOriginalsDir(preview, drafts) && desktop ? <p className={HINT_CLASS}>{t("contentPack.import.originalsDir")}</p> : null}
-      {notice === undefined ? null : (
-        <p className="text-muted" role="status">
-          {notice}
-        </p>
-      )}
+      {needsOriginalsDir(preview, drafts) && desktop ? <InlineNote>{t("contentPack.import.originalsDir")}</InlineNote> : null}
+      {notice === undefined ? null : <InlineNote role="status">{notice}</InlineNote>}
       {commit.error === null ? null : <CommitError error={appErrorOf(commit.error)} />}
 
-      <div className={STICKY_FOOTER}>
-        <div className="min-w-0 text-xs" aria-live="polite" data-testid="pack-import-totals">
-          <p className="text-muted">
+      <PackFooter
+        status={
+          <div aria-live="polite" data-testid="pack-import-totals">
+            <p>
             {[
               sum.create > 0 ? t("contentPack.import.totals.create", { count: sum.create }) : "",
               sum.merge > 0 ? t("contentPack.import.totals.merge", { count: sum.merge }) : "",
@@ -203,21 +203,21 @@ export function ImportPreview(props: {
             ]
               .filter((part) => part !== "")
               .join(t("contentPack.separator"))}
-          </p>
-          {problems.choose > 0 ? <p className="text-danger">{t("contentPack.import.blocked.choose", { count: problems.choose })}</p> : null}
-          {problems.overLimit > 0 ? <p className="text-danger">{t("contentPack.import.blocked.overLimit", { count: problems.overLimit })}</p> : null}
-          {problems.sameTarget > 0 ? <p className="text-danger">{t("contentPack.import.blocked.sameTarget", { count: problems.sameTarget })}</p> : null}
-          {problems.nothing ? <p className="text-danger">{t("contentPack.import.blocked.nothing")}</p> : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button disabled={props.discarding || commit.isPending} onClick={props.onDiscard} data-testid="pack-import-discard">
-            {t("contentPack.import.cancelImport")}
-          </Button>
-          <Button variant="primary" disabled={!canStart(problems) || commit.isPending} onClick={() => commit.mutate()} data-testid="pack-import-start">
-            {t("contentPack.import.start")}
-          </Button>
-        </div>
-      </div>
+            </p>
+            {problems.choose > 0 ? <p className="text-danger">{t("contentPack.import.blocked.choose", { count: problems.choose })}</p> : null}
+            {problems.overLimit > 0 ? <p className="text-danger">{t("contentPack.import.blocked.overLimit", { count: problems.overLimit })}</p> : null}
+            {problems.sameTarget > 0 ? <p className="text-danger">{t("contentPack.import.blocked.sameTarget", { count: problems.sameTarget })}</p> : null}
+            {problems.nothing ? <p className="text-danger">{t("contentPack.import.blocked.nothing")}</p> : null}
+          </div>
+        }
+      >
+        <Button loading={props.discarding} disabled={commit.isPending} onClick={props.onDiscard} data-testid="pack-import-discard">
+          {t("contentPack.import.cancelImport")}
+        </Button>
+        <Button variant="primary" loading={commit.isPending} disabled={!canStart(problems)} onClick={() => commit.mutate()} data-testid="pack-import-start">
+          {t("contentPack.import.start")}
+        </Button>
+      </PackFooter>
     </div>
   );
 }
@@ -226,9 +226,9 @@ function CommitError(props: { error: AppError }) {
   const { t } = useTranslation();
   if (props.error.code === "conflict.pack_job_active") {
     return (
-      <p className={DANGER_HINT_CLASS} role="alert">
+      <Callout tone="warn" announce="alert">
         {t("contentPack.import.jobBusy")}
-      </p>
+      </Callout>
     );
   }
   return <ErrorView error={props.error} />;
@@ -322,7 +322,7 @@ function ContentRow(props: {
             {trashed ? (
               <>
                 {" "}
-                <Link to="/trash" className="text-xs font-normal text-accent underline">
+                <Link to="/trash" className={`text-note font-normal ${TEXT_ACTION_CLASS}`}>
                   {t("contentPack.import.trashLink")}
                 </Link>
               </>
@@ -334,19 +334,20 @@ function ContentRow(props: {
             </p>
           ) : null}
           {props.shared !== undefined && !trashed && draft.action === undefined ? (
-            <p className={`mt-1.5 ${HINT_CLASS}`} data-testid="pack-import-shared">
+            <InlineNote className="mt-1.5" testId="pack-import-shared">
               {t("contentPack.import.shared", { others: props.shared.others, title: titleOf(props.shared.title, t) })}
-            </p>
+            </InlineNote>
           ) : null}
           {props.clash !== undefined ? (
-            <p className={`mt-1.5 ${DANGER_HINT_CLASS}`} role="alert" data-testid="pack-import-same-target">
+            <Callout tone="error" density="compact" announce="alert" className="mt-1.5" testId="pack-import-same-target">
               {t("contentPack.import.sameTarget", { others: props.clash.others, title: targetTitle(item, draft, t) })}
-            </p>
+            </Callout>
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <select
-            className={SELECT}
+          <NativeSelect
+            size="md"
+            className="max-w-56"
             aria-label={t("contentPack.import.action.label", { title })}
             value={trashed ? "skip" : value}
             disabled={trashed}
@@ -368,11 +369,11 @@ function ContentRow(props: {
             {item.match === "new" && draft.manualTarget === true ? <option value="merge">{t("contentPack.import.action.merge")}</option> : null}
             {asNew ? <option value="import">{t("contentPack.import.action.importAsNew")}</option> : null}
             <option value="skip">{t("contentPack.import.action.skip")}</option>
-          </select>
+          </NativeSelect>
           {trashed ? null : (
             <button
               type="button"
-              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-sunken"
+              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               aria-expanded={props.open}
               aria-controls={detailsId}
               aria-label={props.open ? t("contentPack.import.hideDetails", { title }) : t("contentPack.import.showDetails", { title })}
@@ -451,8 +452,9 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
   const suggested = props.candidates.find((candidate) => candidate.contentId === item.diff.targetContentId);
   const durationWarning = (localMs: number | undefined): ReactNode =>
     durationsDiffer(item.durationMs, localMs, CONTENT_PACK_MERGE_DURATION_WARN_MS) ? (
-      <span className="block text-xs text-danger">
-        {t("contentPack.import.mergeOther.durationWarning", { pack: formatDuration(item.durationMs ?? 0), local: formatDuration(localMs ?? 0) })}
+      <span className="flex items-start gap-1 text-note text-warn">
+        <TriangleAlert size={14} className="mt-[3px] shrink-0" aria-hidden="true" />
+        <span className="min-w-0">{t("contentPack.import.mergeOther.durationWarning", { pack: formatDuration(item.durationMs ?? 0), local: formatDuration(localMs ?? 0) })}</span>
       </span>
     ) : null;
   return (
@@ -463,43 +465,41 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
           <ul className="flex flex-col gap-1.5">
             {decidingCandidates(item).map((candidate) => (
               <li key={candidate.contentId}>
-                <label className={`${CHECK_ROW} ${candidate.trashed ? "cursor-not-allowed text-muted" : ""}`}>
-                  <input
-                    type="radio"
-                    className="mt-1"
-                    name={name}
-                    disabled={candidate.trashed || pendingTarget !== undefined}
-                    checked={pendingTarget !== undefined ? pendingTarget === candidate.contentId : draft.action === "merge" && draft.targetContentId === candidate.contentId && draft.manualTarget !== true}
-                    onChange={() => pick(candidate.contentId)}
-                  />
-                  <span className="min-w-0">
-                    <span className="block break-words">{titleOf(candidate.title, t)}</span>
-                    <span className="block text-xs text-muted">
+                <RadioCard
+                  name={name}
+                  cardClassName="p-2.5"
+                  disabled={candidate.trashed || pendingTarget !== undefined}
+                  checked={pendingTarget !== undefined ? pendingTarget === candidate.contentId : draft.action === "merge" && draft.targetContentId === candidate.contentId && draft.manualTarget !== true}
+                  onChange={() => pick(candidate.contentId)}
+                  title={<span className="font-normal break-words">{titleOf(candidate.title, t)}</span>}
+                  description={
+                    <>
                       {t(`contentPack.import.reason.${candidate.reason}`)}
                       {candidate.durationMs === undefined ? null : `${t("contentPack.separator")}${t("contentPack.import.candidates.duration", { duration: formatDuration(candidate.durationMs) })}`}
                       {candidate.trashed ? `${t("contentPack.separator")}${t("contentPack.import.candidates.trashed")}` : null}
-                    </span>
-                    {candidate.trashed ? null : durationWarning(candidate.durationMs)}
-                  </span>
-                </label>
+                    </>
+                  }
+                >
+                  {candidate.trashed ? null : durationWarning(candidate.durationMs)}
+                </RadioCard>
               </li>
             ))}
           </ul>
         </fieldset>
       ) : null}
       {!several && suggested !== undefined && draft.manualTarget !== true && draft.action === "merge" ? (
-        <p className="text-xs text-muted" data-testid="pack-import-match-reason">
+        <p className={NOTE_TEXT_CLASS} data-testid="pack-import-match-reason">
           {t(`contentPack.import.reason.${suggested.reason}`)}
           {suggested.durationMs === undefined ? null : `${t("contentPack.separator")}${t("contentPack.import.candidates.duration", { duration: formatDuration(suggested.durationMs) })}`}
         </p>
       ) : null}
       {draft.manualTarget === true ? (
-        <div className={HINT_CLASS} data-testid="pack-import-manual-target">
+        <div className="text-sm" data-testid="pack-import-manual-target">
           <span className="font-medium">{t("contentPack.import.conclusion.mergeOther", { title: draft.targetTitle ?? t("contentPack.untitled") })}</span>
-          {durationWarning(draft.targetDurationMs)}
-          <button type="button" className="ml-2 text-accent underline" onClick={() => props.onChange(initialDraft(item))}>
+          <TextAction className="ml-2" onClick={() => props.onChange(initialDraft(item))}>
             {t("contentPack.import.mergeOther.reset")}
-          </button>
+          </TextAction>
+          {durationWarning(draft.targetDurationMs)}
         </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -565,10 +565,9 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
       {diff.revisions.length === 0 ? null : (
         <fieldset className="min-w-0" data-testid="pack-import-revisions">
           <legend className="sr-only">{t("contentPack.import.category.revisions")}</legend>
-          <label className={`${CHECK_ROW} font-medium`}>
-            <input type="checkbox" className="mt-1" checked={draft.revisions} onChange={(event) => onChange({ ...draft, revisions: event.target.checked })} data-testid="pack-import-category-revisions" />
+          <Checkbox labelClassName={`${CHECK_LABEL} font-medium`} className={CHECK_BOX} checked={draft.revisions} onChange={(event) => onChange({ ...draft, revisions: event.target.checked })} data-testid="pack-import-category-revisions">
             {t("contentPack.import.category.revisions")}
-          </label>
+          </Checkbox>
           <ul className={`mt-1.5 flex flex-col gap-1.5 pl-6 ${draft.revisions ? "" : "opacity-60"}`}>
             {diff.revisions.map((revision) => {
               const importable = revision.state === "new" && revision.rejected === undefined;
@@ -576,30 +575,29 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
               const included = draft.revisions && importable && !excluded.has(revision.key);
               return (
                 <li key={revision.key} data-testid="pack-import-revision" data-state={revision.rejected === undefined ? revision.state : "rejected"}>
-                  <div className={CHECK_ROW}>
+                  <div className="flex items-start gap-2 text-sm">
                     {importable ? (
-                      <input
-                        type="checkbox"
-                        className="mt-1"
+                      <Checkbox
+                        className={CHECK_BOX}
                         aria-label={label}
                         checked={included}
                         disabled={!draft.revisions}
                         onChange={(event) => onChange({ ...draft, excludeRevisionKeys: toggle(draft.excludeRevisionKeys, revision.key, !event.target.checked) })}
                       />
                     ) : (
-                      <span className="w-[13px] shrink-0" aria-hidden="true" />
+                      <span className="w-4 shrink-0" aria-hidden="true" />
                     )}
                     <span className="min-w-0">
                       <span className="break-words">{label}</span>
                       {revision.rejected === undefined ? <StateBadge state={revision.state === "differs" ? "conflict" : revision.state} /> : <StateBadge state="conflict" />}
                       {revision.archived ? <StateBadge state="existing">{t("contentPack.import.revision.archived")}</StateBadge> : null}
-                      {revision.rejected === undefined ? null : <span className="block text-xs text-danger">{t("contentPack.import.revision.rejected")}</span>}
-                      {revision.state === "differs" ? <span className="block text-xs text-muted">{t("contentPack.import.revision.differs")}</span> : null}
+                      {revision.rejected === undefined ? null : <span className="block text-note text-danger">{t("contentPack.import.revision.rejected")}</span>}
+                      {revision.state === "differs" ? <span className="block text-note text-muted">{t("contentPack.import.revision.differs")}</span> : null}
                       {revision.standalone && importable ? (
-                        <span className="block text-xs text-muted">{t("contentPack.import.revision.standalone", { kind: t(`contentView.revisionKind.${revision.originalKind}`) })}</span>
+                        <span className="block text-note text-muted">{t("contentPack.import.revision.standalone", { kind: t(`contentView.revisionKind.${revision.originalKind}`) })}</span>
                       ) : null}
                       {revision.sameTextAs === undefined || !importable ? null : (
-                        <span className="block text-xs text-muted" data-testid="pack-import-same-text">
+                        <span className="block text-note text-muted" data-testid="pack-import-same-text">
                           {revision.sameTextAsRevision === undefined
                             ? t("contentPack.import.revision.sameTextUnknown")
                             : t("contentPack.import.revision.sameText", { label: describedRevisionLabel(revision.sameTextAsRevision, t, i18n) })}
@@ -607,23 +605,22 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
                       )}
                       {included && revision.kind === "translated" ? (
                         revision.becomesCurrentTranslation ? (
-                          <span className="block text-xs text-muted">{t("contentPack.import.revision.becomesCurrent")}</span>
+                          <span className="block text-note text-muted">{t("contentPack.import.revision.becomesCurrent")}</span>
                         ) : (
-                          <label className="mt-0.5 flex items-center gap-1.5 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={draft.currentTranslationKeys.includes(revision.key)}
-                              onChange={(event) => onChange({ ...draft, currentTranslationKeys: toggle(draft.currentTranslationKeys, revision.key, event.target.checked) })}
-                            />
+                          <Checkbox
+                            labelClassName={`flex! ${SMALL_CHECK_LABEL}`}
+                            checked={draft.currentTranslationKeys.includes(revision.key)}
+                            onChange={(event) => onChange({ ...draft, currentTranslationKeys: toggle(draft.currentTranslationKeys, revision.key, event.target.checked) })}
+                          >
                             {t("contentPack.import.revision.setCurrentTranslation")}
-                          </label>
+                          </Checkbox>
                         )
                       ) : null}
                       {included && merging && revision.kind !== "translated" ? (
-                        <label className="mt-0.5 flex items-center gap-1.5 text-xs" title={t("contentPack.import.revision.setPrimaryHint")}>
-                          <input
-                            type="checkbox"
-                            checked={draft.setPrimaryRevisionKey === revision.key}
+                        <Checkbox
+                          labelClassName={`flex! ${SMALL_CHECK_LABEL}`}
+                          title={t("contentPack.import.revision.setPrimaryHint")}
+                          checked={draft.setPrimaryRevisionKey === revision.key}
                             onChange={(event) => {
                               if (!event.target.checked) {
                                 const { setPrimaryRevisionKey: _cleared, ...rest } = draft;
@@ -632,10 +629,10 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
                                 setConfirmingPrimary(revision);
                               }
                             }}
-                            data-testid="pack-import-set-primary"
-                          />
+                          data-testid="pack-import-set-primary"
+                        >
                           {t("contentPack.import.revision.setPrimary")}
-                        </label>
+                        </Checkbox>
                       ) : null}
                     </span>
                   </div>
@@ -644,9 +641,9 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
             })}
           </ul>
           {speakersOver !== undefined && draft.revisions ? (
-            <p className={`mt-2 ${DANGER_HINT_CLASS}`} role="alert" data-testid="pack-import-over-speakers">
+            <Callout tone="error" density="compact" announce="alert" className="mt-2" testId="pack-import-over-speakers">
               {t("contentPack.import.overLimit.speakers", { over: speakersOver.over, limit: speakersOver.limit })}
-            </p>
+            </Callout>
           ) : null}
         </fieldset>
       )}
@@ -671,20 +668,20 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
                     <StateBadge state="new" />
                   </p>
                   {speaker.sameNameCandidates.map((candidate) => (
-                    <label key={candidate.speakerId} className="mt-0.5 flex items-center gap-1.5 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={draft.sameSpeakers[speaker.key] === candidate.speakerId}
+                    <Checkbox
+                      key={candidate.speakerId}
+                      labelClassName={`flex! ${SMALL_CHECK_LABEL}`}
+                      checked={draft.sameSpeakers[speaker.key] === candidate.speakerId}
                         onChange={(event) => {
                           const next = { ...draft.sameSpeakers };
                           if (event.target.checked) next[speaker.key] = candidate.speakerId;
                           else delete next[speaker.key];
                           onChange({ ...draft, sameSpeakers: next });
                         }}
-                        data-testid="pack-import-same-speaker"
-                      />
+                      data-testid="pack-import-same-speaker"
+                    >
                       {t("contentPack.import.speakers.sameName", { name: candidate.name })}
-                    </label>
+                    </Checkbox>
                   ))}
                 </li>
               );
@@ -695,50 +692,47 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
 
       {diff.figures.new + diff.figures.existing + diff.figures.differs + diff.figures.deletedHere === 0 ? null : (
         <section data-testid="pack-import-figures">
-          <label className={`${CHECK_ROW} font-medium`}>
-            <input type="checkbox" className="mt-1" checked={draft.figures} onChange={(event) => onChange({ ...draft, figures: event.target.checked })} data-testid="pack-import-category-figures" />
+          <Checkbox labelClassName={`${CHECK_LABEL} font-medium`} className={CHECK_BOX} checked={draft.figures} onChange={(event) => onChange({ ...draft, figures: event.target.checked })} data-testid="pack-import-category-figures">
             {t("contentPack.import.category.figures")}
-          </label>
-          <div className={`pl-6 text-xs text-muted ${draft.figures ? "" : "opacity-60"}`}>
+          </Checkbox>
+          <div className={`pl-6 ${NOTE_TEXT_CLASS} ${draft.figures ? "" : "opacity-60"}`}>
             <p>{t("contentPack.import.figures.counts", diff.figures)}</p>
             {diff.figures.placedByTime > 0 ? <p>{t("contentPack.import.figures.placedByTime", { count: diff.figures.placedByTime })}</p> : null}
             {diff.figures.deletedHere > 0 ? <p>{t("contentPack.import.figures.deletedHere", { count: diff.figures.deletedHere })}</p> : null}
           </div>
           {figuresOver !== undefined && draft.figures ? (
-            <p className={`mt-1.5 ml-6 ${DANGER_HINT_CLASS}`} role="alert" data-testid="pack-import-over-figures">
+            <Callout tone="error" density="compact" announce="alert" className="mt-1.5 ml-6" testId="pack-import-over-figures">
               {t("contentPack.import.overLimit.figures", { over: figuresOver.over, limit: figuresOver.limit })}
-            </p>
+            </Callout>
           ) : null}
         </section>
       )}
 
       {diff.notes.new + diff.notes.existing + diff.notes.differs + diff.notes.unplaceable === 0 ? null : (
         <section data-testid="pack-import-notes">
-          <label className={`${CHECK_ROW} font-medium`}>
-            <input type="checkbox" className="mt-1" checked={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.checked })} data-testid="pack-import-category-notes" />
+          <Checkbox labelClassName={`${CHECK_LABEL} font-medium`} className={CHECK_BOX} checked={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.checked })} data-testid="pack-import-category-notes">
             {t("contentPack.import.category.notes")}
-          </label>
-          <div className={`pl-6 text-xs text-muted ${draft.notes ? "" : "opacity-60"}`}>
+          </Checkbox>
+          <div className={`pl-6 ${NOTE_TEXT_CLASS} ${draft.notes ? "" : "opacity-60"}`}>
             <p>{t("contentPack.import.notes.counts", diff.notes)}</p>
             {diff.notes.unplaceable > 0 ? <p>{t("contentPack.import.notes.unplaceable", { count: diff.notes.unplaceable })}</p> : null}
           </div>
           {notesOver !== undefined && draft.notes ? (
-            <p className={`mt-1.5 ml-6 ${DANGER_HINT_CLASS}`} role="alert" data-testid="pack-import-over-notes">
+            <Callout tone="error" density="compact" announce="alert" className="mt-1.5 ml-6" testId="pack-import-over-notes">
               {t("contentPack.import.overLimit.notes", { over: notesOver.over, limit: notesOver.limit })}
-            </p>
+            </Callout>
           ) : null}
         </section>
       )}
 
       {adoptable === 0 ? null : (
-        <section className={HINT_CLASS} data-testid="pack-import-adopt">
-          <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={draft.adoptPack} onChange={(event) => onChange({ ...draft, adoptPack: event.target.checked })} data-testid="pack-import-adopt-toggle" />
-            <span>{t("contentPack.import.adopt.label", { items: adoptItems.join(t("contentPack.listSeparator")) })}</span>
-          </label>
-          <p className="mt-1 pl-6 text-xs text-muted">{t("contentPack.import.adopt.hint")}</p>
+        <section data-testid="pack-import-adopt">
+          <Checkbox labelClassName={CHECK_LABEL} className={CHECK_BOX} checked={draft.adoptPack} onChange={(event) => onChange({ ...draft, adoptPack: event.target.checked })} data-testid="pack-import-adopt-toggle">
+            {t("contentPack.import.adopt.label", { items: adoptItems.join(t("contentPack.listSeparator")) })}
+          </Checkbox>
+          <p className={`mt-1.5 pl-6 ${NOTE_TEXT_CLASS}`}>{t("contentPack.import.adopt.hint")}</p>
           {adoptTimes.length === 0 ? null : (
-            <div className="mt-1 pl-6 text-xs text-muted" data-testid="pack-import-adopt-times">
+            <div className={`mt-1 pl-6 ${NOTE_TEXT_CLASS}`} data-testid="pack-import-adopt-times">
               {adoptTimes.map((line) => (
                 <p key={line}>{line}</p>
               ))}
@@ -748,7 +742,7 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
         </section>
       )}
 
-      {diff.platformChapters === "none" ? null : <p className="text-xs text-muted">{t(`contentPack.import.chapters.${diff.platformChapters}`)}</p>}
+      {diff.platformChapters === "none" ? null : <p className={NOTE_TEXT_CLASS}>{t(`contentPack.import.chapters.${diff.platformChapters}`)}</p>}
 
       {diff.media.length === 0 ? null : (
         <section data-testid="pack-import-media">
@@ -758,17 +752,15 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
               const choosable = media.state === "new" || media.state === "fill";
               return (
                 <li key={media.key}>
-                  <label className={`${CHECK_ROW} ${choosable ? "" : "cursor-default"}`}>
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={choosable && draft.mediaKeys.includes(media.key)}
-                      disabled={!choosable}
-                      onChange={(event) => onChange({ ...draft, mediaKeys: toggle(draft.mediaKeys, media.key, event.target.checked) })}
-                      data-testid="pack-import-media-item"
-                    />
-                    <span className="min-w-0">
-                      <span>
+                  <Checkbox
+                    labelClassName={CHECK_LABEL}
+                    className={CHECK_BOX}
+                    checked={choosable && draft.mediaKeys.includes(media.key)}
+                    disabled={!choosable}
+                    onChange={(event) => onChange({ ...draft, mediaKeys: toggle(draft.mediaKeys, media.key, event.target.checked) })}
+                    data-testid="pack-import-media-item"
+                  >
+                    <span>
                         {t(`contentPack.export.mediaKind.${media.kind}`)}
                         {media.quality === undefined ? null : `${t("contentPack.separator")}${media.quality}`}
                         {media.displayName === undefined ? null : (
@@ -778,11 +770,10 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
                           </>
                         )}
                       </span>
-                      <span className="ml-2 font-mono text-xs text-muted">{bytesLabel(media.sizeBytes)}</span>
-                      <StateBadge state={media.state} />
-                      {media.state === "conflict" ? <span className="block text-xs text-muted">{t("contentPack.import.media.conflict")}</span> : null}
-                    </span>
-                  </label>
+                    <span className="ml-2 font-mono text-xs text-muted">{bytesLabel(media.sizeBytes)}</span>
+                    <StateBadge state={media.state} />
+                    {media.state === "conflict" ? <span className="block text-note text-muted">{t("contentPack.import.media.conflict")}</span> : null}
+                  </Checkbox>
                 </li>
               );
             })}
@@ -790,24 +781,32 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
         </section>
       )}
 
-      <Modal open={confirmingPrimary !== undefined} onOpenChange={(open) => (open ? undefined : setConfirmingPrimary(undefined))} title={t("contentPack.import.revision.confirmPrimaryTitle")}>
+      <Modal
+        open={confirmingPrimary !== undefined}
+        onOpenChange={(open) => (open ? undefined : setConfirmingPrimary(undefined))}
+        title={t("contentPack.import.revision.confirmPrimaryTitle")}
+        footer={
+          <>
+            <Button onClick={() => setConfirmingPrimary(undefined)}>{t("common.action.cancel")}</Button>
+            <Button
+              variant="primary"
+              disabled={confirmingPrimary === undefined}
+              onClick={() => {
+                if (confirmingPrimary === undefined) return;
+                onChange({ ...draft, setPrimaryRevisionKey: confirmingPrimary.key });
+                setConfirmingPrimary(undefined);
+              }}
+              data-testid="pack-import-confirm-primary-ok"
+            >
+              {t("contentPack.import.revision.confirmPrimaryAction")}
+            </Button>
+          </>
+        }
+      >
         {confirmingPrimary === undefined ? null : (
-          <div className="flex flex-col gap-4 text-sm" data-testid="pack-import-confirm-primary">
-            <p>{t("contentPack.import.revision.confirmPrimary", { title: targetTitle(item, draft, t), label: packRevisionLabel(confirmingPrimary, t, i18n) })}</p>
-            <div className="flex justify-end gap-2">
-              <Button onClick={() => setConfirmingPrimary(undefined)}>{t("common.action.cancel")}</Button>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  onChange({ ...draft, setPrimaryRevisionKey: confirmingPrimary.key });
-                  setConfirmingPrimary(undefined);
-                }}
-                data-testid="pack-import-confirm-primary-ok"
-              >
-                {t("contentPack.import.revision.confirmPrimaryAction")}
-              </Button>
-            </div>
-          </div>
+          <p className="text-sm" data-testid="pack-import-confirm-primary">
+            {t("contentPack.import.revision.confirmPrimary", { title: targetTitle(item, draft, t), label: packRevisionLabel(confirmingPrimary, t, i18n) })}
+          </p>
         )}
       </Modal>
     </>
@@ -831,10 +830,11 @@ function CollectionRow(props: { collection: PackPreviewCollection; draft: Collec
         <p className="font-medium break-words">{collection.name}</p>
         <p className="text-xs text-muted">{t("contentPack.import.collection.contains", { count: collection.contentKeys.length })}</p>
         <p className="mt-1 text-sm">{props.usable ? status : <span className="text-muted">{t("contentPack.import.collection.allSkipped")}</span>}</p>
-        {props.usable && value.startsWith("join:") ? <p className="text-xs text-muted">{t("contentPack.import.collection.keepsName")}</p> : null}
+        {props.usable && value.startsWith("join:") ? <p className={NOTE_TEXT_CLASS}>{t("contentPack.import.collection.keepsName")}</p> : null}
       </div>
-      <select
-        className={SELECT}
+      <NativeSelect
+        size="md"
+        className="max-w-56"
         aria-label={t("contentPack.import.collection.label", { name: collection.name })}
         value={value}
         disabled={!props.usable}
@@ -852,7 +852,7 @@ function CollectionRow(props: { collection: PackPreviewCollection; draft: Collec
           </option>
         ))}
         <option value="skip">{t("contentPack.import.collection.skip")}</option>
-      </select>
+      </NativeSelect>
     </li>
   );
 }

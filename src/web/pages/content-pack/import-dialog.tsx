@@ -14,9 +14,8 @@ import { useDesktop } from "../../desktop/use-desktop.ts";
 import { Button } from "../../ui/button.tsx";
 import { FilePicker } from "../../ui/file-picker.tsx";
 import { Loading, Spinner } from "../../ui/feedback.tsx";
-import { Modal } from "../../ui/modal.tsx";
-import { DANGER_HINT_CLASS } from "./export-card.tsx";
-import { STICKY_FOOTER } from "./export-dialog.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
+import { PackFooter, PackModal } from "./export-dialog.tsx";
 import { ImportPreview } from "./import-preview.tsx";
 import { resultSummary } from "./import-model.ts";
 import {
@@ -45,7 +44,7 @@ export function ImportPackDialog(props: { open: boolean; onClose: () => void; re
   const { t } = useTranslation();
   const beforeClose = useRef<(() => void) | undefined>(undefined);
   return (
-    <Modal
+    <PackModal
       open={props.open}
       onOpenChange={(open) => {
         if (open) return;
@@ -53,7 +52,6 @@ export function ImportPackDialog(props: { open: boolean; onClose: () => void; re
         props.onClose();
       }}
       title={t("contentPack.import.title")}
-      wide
     >
       {props.open ? (
         <ImportFlow
@@ -65,7 +63,7 @@ export function ImportPackDialog(props: { open: boolean; onClose: () => void; re
           }}
         />
       ) : null}
-    </Modal>
+    </PackModal>
   );
 }
 
@@ -173,30 +171,29 @@ function ImportFlow(props: { resumeJobId: string | undefined; beforeClose: Mutab
       <div className="flex flex-col gap-4 text-sm" data-testid="pack-import-pick">
         <p className="text-muted">{t("contentPack.import.intro")}</p>
         {runningExport !== undefined ? (
-          <p className={DANGER_HINT_CLASS} role="status">
+          <Callout tone="warn" announce="status">
             {t("contentPack.import.jobBusy")}
-          </p>
+          </Callout>
         ) : desktop ? (
           <div>
-            <Button variant="primary" disabled={pickDesktop.isPending} onClick={() => pickDesktop.mutate()} data-testid="pack-import-pick-desktop">
+            <Button variant="primary" loading={pickDesktop.isPending} onClick={() => pickDesktop.mutate()} data-testid="pack-import-pick-desktop">
               {t("contentPack.import.pick")}
             </Button>
           </div>
         ) : (
           <FilePicker accept={`.${CONTENT_PACK_FILE_EXTENSION},application/octet-stream`} fileName={undefined} onFile={startUpload} label={t("contentPack.import.fileLabel")} testId="pack-import-file" />
         )}
-        {notice === undefined ? null : (
-          <p className="text-muted" role="status">
-            {notice}
-          </p>
-        )}
+        {notice === undefined ? null : <InlineNote role="status">{notice}</InlineNote>}
         {error === undefined ? null : error.code === "conflict.pack_job_active" ? (
-          <p className={DANGER_HINT_CLASS} role="alert">
+          <Callout tone="warn" announce="alert">
             {t("contentPack.import.jobBusy")}
-          </p>
+          </Callout>
         ) : (
           <ErrorView error={error} />
         )}
+        <PackFooter>
+          <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
+        </PackFooter>
       </div>
     );
   }
@@ -209,26 +206,26 @@ function ImportFlow(props: { resumeJobId: string | undefined; beforeClose: Mutab
           <progress className="h-1.5 w-full" max={Math.max(1, local.total)} value={Math.min(local.loaded, local.total)} aria-label={t("contentPack.phase.import.upload")} />
           <p className="mt-1 text-xs text-muted">{t("contentPack.progressBytes", { done: bytesLabel(local.loaded), total: bytesLabel(local.total) })}</p>
         </div>
-        <div className="flex justify-end">
+        <PackFooter>
           <Button onClick={() => upload.current?.abort()} data-testid="pack-import-cancel-upload">
             {t("contentPack.import.cancelUpload")}
           </Button>
-        </div>
+        </PackFooter>
       </div>
     );
   }
 
   if (job.isError) {
     return (
-      <div className="flex flex-col gap-3">
+      <>
         <ErrorView error={appErrorOf(job.error)} />
-        <div className="flex justify-end gap-2">
+        <PackFooter>
           <Button onClick={again}>{t("contentPack.import.pickAgain")}</Button>
-        </div>
-      </div>
+        </PackFooter>
+      </>
     );
   }
-  if (job.data === undefined) return <Loading />;
+  if (job.data === undefined) return <LoadingStep onClose={props.onClose} />;
   return (
     <JobView
       job={job.data}
@@ -240,6 +237,19 @@ function ImportFlow(props: { resumeJobId: string | undefined; beforeClose: Mutab
         props.onClose();
       }}
     />
+  );
+}
+
+/** A step still reading, with the way out the footer always offers. */
+function LoadingStep(props: { onClose: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <Loading />
+      <PackFooter>
+        <Button onClick={props.onClose}>{t("contentPack.import.close")}</Button>
+      </PackFooter>
+    </>
   );
 }
 
@@ -265,24 +275,21 @@ function JobView(props: { job: ContentPackImportJobDto; onAgain: () => void; onC
     case "importing":
       return <Progress job={job} cancelling={cancel.isPending} onCancel={() => cancel.mutate()} error={cancel.error} />;
     case "awaiting_decisions":
-      return job.preview === undefined ? <Loading /> : <ImportPreview job={job} preview={job.preview} onDiscard={() => discard.mutate()} discarding={discard.isPending} onCommitted={set} />;
+      return job.preview === undefined ? <LoadingStep onClose={props.onClose} /> : <ImportPreview job={job} preview={job.preview} onDiscard={() => discard.mutate()} discarding={discard.isPending} onCommitted={set} />;
     case "finished":
-      return job.result === undefined ? <Loading /> : <ImportResult job={job} onClose={props.onClose} />;
+      return job.result === undefined ? <LoadingStep onClose={props.onClose} /> : <ImportResult job={job} onClose={props.onClose} />;
     case "failed":
       return (
         <div className="flex flex-col gap-3 text-sm" data-testid="pack-import-failed">
           <p className="font-medium">{t("contentPack.import.failed")}</p>
           {job.error === undefined ? null : <ErrorView error={job.error} />}
           {job.result === undefined ? null : <ImportResult job={job} onClose={props.onClose} embedded />}
-          <div className={STICKY_FOOTER}>
-            <span />
-            <div className="flex gap-2">
-              <Button onClick={props.onAgain}>{t("contentPack.import.pickAgain")}</Button>
-              <Button variant="primary" onClick={props.onClose}>
-                {t("contentPack.import.close")}
-              </Button>
-            </div>
-          </div>
+          <PackFooter>
+            <Button onClick={props.onAgain}>{t("contentPack.import.pickAgain")}</Button>
+            <Button variant="primary" onClick={props.onClose}>
+              {t("contentPack.import.close")}
+            </Button>
+          </PackFooter>
         </div>
       );
     case "cancelled": {
@@ -292,15 +299,12 @@ function JobView(props: { job: ContentPackImportJobDto; onAgain: () => void; onC
         <div className="flex flex-col gap-3 text-sm" data-testid="pack-import-cancelled" data-expired={expired ? "true" : undefined}>
           <p role="status">{expired ? t("contentPack.import.expired") : t("contentPack.import.cancelled")}</p>
           {job.result === undefined ? null : <ImportResult job={job} onClose={props.onClose} embedded />}
-          <div className={STICKY_FOOTER}>
-            <span />
-            <div className="flex gap-2">
-              <Button onClick={props.onAgain}>{t("contentPack.import.pickAgain")}</Button>
-              <Button variant="primary" onClick={props.onClose}>
-                {t("contentPack.import.close")}
-              </Button>
-            </div>
-          </div>
+          <PackFooter>
+            <Button onClick={props.onAgain}>{t("contentPack.import.pickAgain")}</Button>
+            <Button variant="primary" onClick={props.onClose}>
+              {t("contentPack.import.close")}
+            </Button>
+          </PackFooter>
         </div>
       );
     }
@@ -327,11 +331,11 @@ function Progress(props: { job: ContentPackImportJobDto; cancelling: boolean; on
         ) : null}
       </div>
       {props.error === null ? null : <ErrorView error={appErrorOf(props.error)} />}
-      <div className="flex justify-end">
-        <Button disabled={props.cancelling} onClick={props.onCancel} data-testid="pack-import-cancel">
+      <PackFooter>
+        <Button loading={props.cancelling} onClick={props.onCancel} data-testid="pack-import-cancel">
           {t("contentPack.import.cancelImport")}
         </Button>
-      </div>
+      </PackFooter>
     </div>
   );
 }
@@ -364,7 +368,7 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
           <p className={`font-medium ${summary.allOk ? "text-ok" : "text-danger"}`} data-testid="pack-import-result-title">
             {summary.allOk ? t("contentPack.import.result.allOk") : t("contentPack.import.result.partial")}
           </p>
-          <p className="text-xs text-muted">{t("contentPack.import.result.summary", { imported: summary.imported, merged: summary.merged, skipped: summary.skipped, failed: summary.failed })}</p>
+          <p className={NOTE_TEXT_CLASS}>{t("contentPack.import.result.summary", { imported: summary.imported, merged: summary.merged, skipped: summary.skipped, failed: summary.failed })}</p>
         </div>
       )}
       <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
@@ -392,7 +396,7 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
                 )}
               </div>
               {item.contentId === undefined || item.status === "failed" || item.status === "skipped" ? null : (
-                <Link to={`/contents/${encodeURIComponent(item.contentId)}`} className="shrink-0 text-sm text-accent underline" onClick={props.onClose}>
+                <Link to={`/contents/${encodeURIComponent(item.contentId)}`} className={`shrink-0 text-sm ${TEXT_ACTION_CLASS}`} onClick={props.onClose}>
                   {t("contentPack.import.result.open")}
                 </Link>
               )}
@@ -418,7 +422,7 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
                   )}
                 </div>
                 {item.collectionId === undefined || item.status === "failed" || item.status === "skipped" ? null : (
-                  <Link to={`/collections/${encodeURIComponent(item.collectionId)}`} className="shrink-0 text-sm text-accent underline" onClick={props.onClose}>
+                  <Link to={`/collections/${encodeURIComponent(item.collectionId)}`} className={`shrink-0 text-sm ${TEXT_ACTION_CLASS}`} onClick={props.onClose}>
                     {t("contentPack.import.result.open")}
                   </Link>
                 )}
@@ -427,7 +431,7 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
           </ul>
           {summary.collectionsFailed > 0 && props.job.status === "finished" ? (
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button size="sm" disabled={retry.isPending} onClick={() => retry.mutate()} data-testid="pack-import-retry-collections">
+              <Button size="sm" loading={retry.isPending} onClick={() => retry.mutate()} data-testid="pack-import-retry-collections">
                 {retry.isPending ? t("contentPack.import.result.retrying") : t("contentPack.import.result.retryCollections")}
               </Button>
               {retry.error === null ? null : <ErrorView error={appErrorOf(retry.error)} />}
@@ -435,14 +439,13 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
           ) : null}
         </section>
       )}
-      {summary.failed > 0 ? <p className="text-xs text-muted">{t("contentPack.import.result.reimportHint")}</p> : null}
+      {summary.failed > 0 ? <InlineNote>{t("contentPack.import.result.reimportHint")}</InlineNote> : null}
       {props.embedded === true ? null : (
-        <div className={STICKY_FOOTER}>
-          <span />
+        <PackFooter>
           <Button variant="primary" onClick={props.onClose} data-testid="pack-import-close">
             {t("contentPack.import.close")}
           </Button>
-        </div>
+        </PackFooter>
       )}
     </div>
   );

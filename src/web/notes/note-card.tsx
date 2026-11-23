@@ -7,6 +7,8 @@ import { NOTE_COLORS, NOTE_MARKS, type NoteColor, type NoteMark } from "../../sh
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { formatDateTime, formatDuration } from "../format.ts";
 import { Button } from "../ui/button.tsx";
+import { Callout, InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
+import { TextArea } from "../ui/text-field.tsx";
 import { rememberColor, swatchClass } from "./note-colors.ts";
 import { useOptionalNotesUi, type CommentDraft } from "./note-ui-context.tsx";
 import { useDeleteNote, usePatchNote } from "./queries.ts";
@@ -99,9 +101,8 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
   };
 
   const commentButton = (
-    <button
-      type="button"
-      className="shrink-0 text-xs text-accent hover:underline disabled:opacity-50"
+    <TextAction
+      className="shrink-0 text-xs disabled:opacity-50"
       disabled={busy}
       onClick={() => {
         patch.reset();
@@ -110,7 +111,7 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
       data-testid="note-comment-edit"
     >
       {note.comment === undefined ? t("notes.popover.addComment") : t("notes.popover.editComment")}
-    </button>
+    </TextAction>
   );
   // The notes page lists what the user wrote; mark and colour change in the transcript's popover,
   // one 「定位原文」 away, and the comment action joins that link on the card's foot.
@@ -120,7 +121,7 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
     <article className="flex flex-col gap-2 text-sm" data-testid="note-card" data-note-id={note.id}>
       {page ? (
         <div className="flex items-start gap-2">
-          <span className="shrink-0 font-mono text-xs text-accent">{formatDuration(note.startMs)}</span>
+          <span className="shrink-0 font-mono text-xs text-muted tabular-nums">{formatDuration(note.startMs)}</span>
           <blockquote className="line-clamp-3 min-w-0 flex-1 border-l-2 border-line pl-2 text-muted" title={note.quote}>
             {note.quote}
           </blockquote>
@@ -141,12 +142,16 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
         />
       )}
       {props.variant === "popover" && note.view?.exact === false ? (
-        <p className="flex flex-wrap items-center gap-2 text-xs text-muted" data-testid="note-approximate">
-          <span>{t("notes.popover.approximate")}</span>
-          <button type="button" className="text-accent underline" disabled={busy} onClick={() => props.onOpenAnchor?.(note)} data-testid="note-open-anchor">
-            {t("notes.popover.openAnchor")}
-          </button>
-        </p>
+        <InlineNote
+          testId="note-approximate"
+          action={
+            <TextAction className="disabled:opacity-50" disabled={busy} onClick={() => props.onOpenAnchor?.(note)} data-testid="note-open-anchor">
+              {t("notes.popover.openAnchor")}
+            </TextAction>
+          }
+        >
+          {t("notes.popover.approximate")}
+        </InlineNote>
       ) : null}
       {draft === undefined ? (
         page && note.comment === undefined ? null : (
@@ -161,8 +166,9 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
         )
       ) : (
         <div className="flex flex-col gap-1">
-          <textarea
-            className="min-h-16 w-full resize-y rounded border border-line bg-surface p-1.5 text-sm"
+          <TextArea
+            size="md"
+            className="min-h-16 w-full resize-y"
             value={draft.text}
             maxLength={NOTE_COMMENT_MAX_CHARS}
             placeholder={t("notes.popover.commentPlaceholder")}
@@ -175,9 +181,9 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
             data-testid="note-comment-input"
           />
           {patch.isError ? (
-            <p className="text-xs text-danger" role="alert">
+            <Callout tone="error" density="compact" announce="alert">
               {noteErrorText(patch.error, t("notes.popover.saveFailed"))}
-            </p>
+            </Callout>
           ) : null}
           <div className="flex justify-end gap-2">
             <Button
@@ -205,19 +211,19 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
         </div>
       )}
       {patch.isError && draft === undefined ? (
-        <p className="text-xs text-danger" role="alert">
+        <Callout tone="error" density="compact" announce="alert">
           {noteErrorText(patch.error, t("notes.popover.saveFailed"))}
-        </p>
+        </Callout>
       ) : null}
       {remove.isError ? (
-        <p className="text-xs text-danger" role="alert">
+        <Callout tone="error" density="compact" announce="alert">
           {noteErrorText(remove.error, t("notes.popover.deleteFailed"))}
-        </p>
+        </Callout>
       ) : null}
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
         <span data-testid="note-created">{t("notes.popover.createdAt", { time: formatDateTime(note.createdAt, i18n.language) })}</span>
         {page ? (
-          <Link className="text-accent hover:underline" to={noteLocation(note)} data-testid="note-locate">
+          <Link className={TEXT_ACTION_CLASS} to={noteLocation(note)} data-testid="note-locate">
             {t("notes.page.locate")}
           </Link>
         ) : null}
@@ -228,7 +234,7 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
                 {t("notes.popover.cancel")}
               </Button>
-              <Button size="sm" variant="danger" disabled={busy} onClick={() => remove.mutate(note.id)} data-testid="note-delete-confirm">
+              <Button size="sm" variant="danger-solid" disabled={busy} onClick={() => remove.mutate(note.id)} data-testid="note-delete-confirm">
                 {t("notes.popover.confirmDelete")}
               </Button>
             </>

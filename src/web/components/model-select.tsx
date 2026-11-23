@@ -44,6 +44,8 @@ export function ModelSelect(props: {
   id?: string | undefined;
   ariaLabel?: string | undefined;
   describedBy?: string | undefined;
+  /** Draws the danger border and sets `aria-invalid`; name the error in `describedBy`. */
+  invalid?: boolean | undefined;
   testId?: string | undefined;
   disabled?: boolean | undefined;
   size?: SelectSize | undefined;
@@ -104,6 +106,7 @@ export function ModelSelect(props: {
       disabled={props.disabled}
       ariaLabel={props.ariaLabel}
       describedBy={props.describedBy}
+      invalid={props.invalid}
       testId={props.testId}
       size={props.size}
       width={props.width}

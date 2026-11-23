@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, NotebookPen } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
@@ -9,8 +9,11 @@ import { formatDateTime } from "../format.ts";
 import { NoteCard } from "../notes/note-card.tsx";
 import { useContentNotes, useNoteGroups } from "../notes/queries.ts";
 import { Button } from "../ui/button.tsx";
-import { EmptyState, Loading, PageHeader } from "../ui/feedback.tsx";
+import { FOCUS_RING } from "../ui/button.tsx";
+import { EmptyState, PageHeader, SkeletonRows } from "../ui/feedback.tsx";
+import { TEXT_ACTION_CLASS } from "../ui/notice.tsx";
 import { Pagination, useListPosition, usePagination } from "../ui/pagination.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { useContentDetail } from "./content/content-data.ts";
 
 /** Notes grouped by Content (`/notes`); `?contentId=` narrows it to one Content. */
@@ -69,9 +72,18 @@ function AllNotes() {
         ) : total === undefined || groups.isPlaceholderData || (items.length === 0 && total > 0) ? (
           // An empty page of a non-empty list is past the end (groups went meanwhile): the
           // pager moves to the last page once it knows the total.
-          <Loading />
+          <GroupSkeleton count={5} />
         ) : items.length === 0 ? (
-          <EmptyState title={t("notes.page.empty")} hint={t("notes.page.emptyHint")} />
+          <EmptyState
+            icon={<NotebookPen size={28} />}
+            title={t("notes.page.empty")}
+            hint={t("notes.page.emptyHint")}
+            action={
+              <Link to="/library" className={`text-sm ${TEXT_ACTION_CLASS}`}>
+                {t("notes.page.emptyAction")}
+              </Link>
+            }
+          />
         ) : (
           <>
             <p className="mb-3 text-sm text-muted" data-testid="notes-summary">
@@ -118,15 +130,19 @@ function ContentNotes(props: { contentId: string; onViewAll: () => void }) {
         {detail.isError ? (
           <ErrorView error={appErrorOf(detail.error)} />
         ) : detail.isPending || notes.isPending ? (
-          <Loading />
+          <GroupSkeleton count={1} />
         ) : notes.isError ? (
           <ErrorView error={appErrorOf(notes.error)} />
         ) : items.length === 0 ? (
-          <EmptyState title={t("notes.page.contentEmpty")}>
-            <Link to={`/contents/${encodeURIComponent(props.contentId)}`} className="text-sm text-accent underline">
-              {detail.data.title ?? t("library.untitled")}
-            </Link>
-          </EmptyState>
+          <EmptyState
+            icon={<NotebookPen size={28} />}
+            title={t("notes.page.contentEmpty")}
+            action={
+              <Link to={`/contents/${encodeURIComponent(props.contentId)}`} className={`text-sm ${TEXT_ACTION_CLASS}`}>
+                {detail.data.title ?? t("library.untitled")}
+              </Link>
+            }
+          />
         ) : (
           <ul className="flex flex-col gap-3">
             <NoteGroup
@@ -144,6 +160,11 @@ function ContentNotes(props: { contentId: string; onViewAll: () => void }) {
   );
 }
 
+/** Placeholders the height of a collapsed group, so the groups replace them in place. */
+function GroupSkeleton(props: { count: number }) {
+  return <SkeletonRows count={props.count} rowHeight={54} gap={12} testId="notes-loading" />;
+}
+
 /** A group's "latest" is when its newest note was created, as the server orders groups. */
 function latestCreatedAt(items: readonly NoteDto[]): number {
   return items.reduce((latest, note) => Math.max(latest, note.createdAt), 0);
@@ -155,17 +176,18 @@ function NoteGroup(props: { contentId: string; title: string; count: number; lat
   return (
     <li className="rounded-lg border border-line" data-testid="notes-group" data-content-id={props.contentId}>
       <div className="flex items-center gap-3 p-3">
-        <button
-          type="button"
-          className="rounded p-1 text-muted hover:bg-sunken hover:text-ink"
-          aria-expanded={props.open}
-          aria-label={toggleLabel}
-          title={toggleLabel}
-          onClick={props.onToggle}
-          data-testid="notes-group-toggle"
-        >
-          {props.open ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
-        </button>
+        <Tooltip content={toggleLabel}>
+          <button
+            type="button"
+            className={`rounded p-1 text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+            aria-expanded={props.open}
+            aria-label={toggleLabel}
+            onClick={props.onToggle}
+            data-testid="notes-group-toggle"
+          >
+            {props.open ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
+          </button>
+        </Tooltip>
         <Link to={`/contents/${encodeURIComponent(props.contentId)}`} className="min-w-0 flex-1 truncate font-medium hover:underline">
           {props.title}
         </Link>
@@ -186,7 +208,7 @@ function GroupNotes(props: { contentId: string }) {
   return (
     <div className="border-t border-line p-3">
       {notes.isPending ? (
-        <Loading />
+        <SkeletonRows count={2} rowHeight={40} gap={8} />
       ) : notes.isError ? (
         <ErrorView error={appErrorOf(notes.error)} />
       ) : (

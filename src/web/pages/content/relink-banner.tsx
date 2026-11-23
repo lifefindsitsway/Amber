@@ -9,6 +9,7 @@ import { pickRelinkFile } from "../../desktop/bridge.ts";
 import { ErrorView } from "../../components/error-view.tsx";
 import { Button } from "../../ui/button.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
+import { Callout } from "../../ui/notice.tsx";
 
 /** The local original whose file is gone, if any: Amber never deletes an `external_local` file and marks the asset `missing` when it is gone. */
 export function missingOriginal(content: Pick<ContentDetailDto, "media">): MediaAssetDto | undefined {
@@ -36,16 +37,22 @@ export function RelinkBanner(props: { content: ContentDetailDto }) {
   });
   if (missing === undefined) return null;
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-sm" role="alert" data-testid="relink-banner">
-      <span className="min-w-0 flex-1">{t("contentView.relink.missing", { name: missing.displayName ?? t("contentView.relink.unnamed") })}</span>
-      <Button size="sm" disabled={relink.isPending} onClick={() => relink.mutate(missing.id)} data-testid="relink-pick">
-        {t("contentView.relink.action")}
-      </Button>
-      {relink.error === null ? null : (
-        <div className="w-full">
-          <ErrorView error={appErrorOf(relink.error)} />
-        </div>
-      )}
-    </div>
+    // A problem the user has to deal with before playing from the original: a boxed notice
+    // holding the fix. Present from the start, so not a live region.
+    <Callout
+      tone="error"
+      density="compact"
+      testId="relink-banner"
+      actions={
+        <Button size="sm" loading={relink.isPending} onClick={() => relink.mutate(missing.id)} data-testid="relink-pick">
+          {t("contentView.relink.action")}
+        </Button>
+      }
+    >
+      <div className="flex flex-col gap-2">
+        <p className="max-w-[70ch]">{t("contentView.relink.missing", { name: missing.displayName ?? t("contentView.relink.unnamed") })}</p>
+        {relink.error === null ? null : <ErrorView error={appErrorOf(relink.error)} />}
+      </div>
+    </Callout>
   );
 }

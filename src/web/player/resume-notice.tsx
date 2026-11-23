@@ -2,16 +2,18 @@ import { useEffect, useState, useSyncExternalStore, type FocusEvent, type Keyboa
 import { useTranslation } from "react-i18next";
 import { PLAYBACK_RESUME_NOTICE_MS } from "../../shared/defaults.ts";
 import { formatDuration } from "../format.ts";
+import { TextAction } from "../ui/notice.tsx";
 import { usePlayerController } from "./player-controller.tsx";
 
-/** How long the fade-out takes before the card leaves the page. */
-const FADE_MS = 300;
+/** How long the fade-out takes before the card leaves the page; the class below matches it. */
+const FADE_MS = 150;
 
 /**
  * 「已从 12:34 继续播放 · 从头播放」, laid over the top-left of the player (the controls sit at the
  * bottom) after a remembered position was applied. It fades after `PLAYBACK_RESUME_NOTICE_MS`;
  * pointer or keyboard focus on it holds the timer and Escape closes it. Render it inside a
- * `relative` box that wraps the player.
+ * `relative` box that wraps the player. A quiet line of note text on a plain card: it only says what
+ * happened, so it carries no tone, and the card is there only to keep it legible over the picture.
  */
 export function ResumeNotice() {
   const { t } = useTranslation();
@@ -60,7 +62,7 @@ export function ResumeNotice() {
   return (
     <div
       role="status"
-      className={`absolute top-2 left-2 z-[2] flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-line bg-surface px-3 py-1.5 text-xs text-ink shadow-md motion-safe:transition-opacity motion-safe:duration-300 ${fading ? "opacity-0" : "opacity-100"}`}
+      className={`absolute top-2 left-2 z-[2] flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-line bg-surface px-3 py-1 text-note text-muted shadow-sm motion-safe:transition-opacity motion-safe:duration-150 ${fading ? "opacity-0" : "opacity-100"}`}
       data-testid="resume-notice"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -72,14 +74,9 @@ export function ResumeNotice() {
       <span aria-hidden="true" className="text-muted">
         ·
       </span>
-      <button
-        type="button"
-        className="shrink-0 rounded font-medium text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-accent"
-        onClick={() => controller.restart()}
-        data-testid="resume-restart"
-      >
+      <TextAction className="shrink-0 font-medium" onClick={() => controller.restart()} data-testid="resume-restart">
         {t("contentView.playbackResume.restart")}
-      </button>
+      </TextAction>
     </div>
   );
 }

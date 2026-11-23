@@ -5,6 +5,7 @@ import { DropdownMenu } from "radix-ui";
 import { useEffect, useId, useState, useSyncExternalStore, type KeyboardEvent, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { ContentDanmakuSummary } from "../../shared/dto/danmaku.ts";
+import { Checkbox } from "../ui/checkbox.tsx";
 import { useDanmakuFetch, useDanmakuSnapshot, type DanmakuFetchOutcome } from "./danmaku-data.ts";
 import { DANMAKU_PREF_RANGES, useDanmakuPrefs } from "./danmaku-prefs.ts";
 import type { PlayerExtensionContext } from "./player-extensions.ts";
@@ -241,16 +242,22 @@ export function DanmakuMenu(props: {
           <label className="flex cursor-pointer items-center justify-between gap-3">
             <span className="text-sm font-medium">{t("danmaku.show")}</span>
             <span className="relative inline-flex shrink-0">
-              <input
-                type="checkbox"
+              {/* Drawn as a switch for the dark popover over the picture; the box itself is hidden. */}
+              <Checkbox
                 role="switch"
                 className="peer sr-only"
                 checked={prefs.enabled}
                 onChange={(event) => setPrefs({ enabled: event.currentTarget.checked })}
                 data-testid="player-danmaku-toggle"
               />
-              <span aria-hidden="true" className="h-5 w-9 rounded-full bg-white/25 transition-colors peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-white/70" />
-              <span aria-hidden="true" className="pointer-events-none absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4" />
+              <span
+                aria-hidden="true"
+                className="h-5 w-9 rounded-full bg-white/25 transition-colors duration-150 motion-reduce:transition-none peer-checked:bg-accent peer-focus-visible:ring-2 peer-focus-visible:ring-white/70"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow transition-transform duration-150 motion-reduce:transition-none peer-checked:translate-x-4"
+              />
             </span>
           </label>
 
@@ -311,7 +318,7 @@ export function DanmakuMenu(props: {
             />
           </div>
           {reducedMotion ? (
-            <p className="text-white/60" data-testid="player-danmaku-reduced-motion">
+            <p className="text-note text-white/60" data-testid="player-danmaku-reduced-motion">
               {t("danmaku.reducedMotion")}
             </p>
           ) : null}

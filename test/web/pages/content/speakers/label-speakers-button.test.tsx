@@ -4,12 +4,13 @@ import { LabelSpeakersButton } from "../../../../../src/web/pages/content/speake
 import { renderApp } from "../../../../fixtures/web/render.tsx";
 
 describe("LabelSpeakersButton", () => {
-  it("is an icon button named and titled 「标注发言人」 that calls back when pressed", () => {
+  it("is an icon button named 「标注发言人」, with the same words as its tooltip, that calls back when pressed", async () => {
     const onClick = vi.fn();
     renderApp(<LabelSpeakersButton onClick={onClick} />);
     const button = screen.getByRole("button", { name: "标注发言人" });
-    expect(button.getAttribute("title")).toBe("标注发言人");
     expect(button.textContent).toBe("");
+    fireEvent.focus(button);
+    expect((await screen.findByRole("tooltip")).textContent).toBe("标注发言人");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });

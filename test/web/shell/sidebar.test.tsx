@@ -130,7 +130,7 @@ describe("Sidebar", () => {
     expect(within(more.parentElement as HTMLElement).getByRole("link", { name: /Demo/u }).getAttribute("href")).toBe("/contents/c9");
     fireEvent.keyDown(more, { key: "Enter" });
     const items = await screen.findAllByRole("menuitem");
-    expect(items.map((item) => item.textContent)).toEqual(["复制来源链接", "重命名", "置顶", "删除", "合集归属"]);
+    expect(items.map((item) => item.textContent)).toEqual(["复制来源链接", "重命名", "置顶", "合集归属", "删除"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "合集归属" }));
     const dialog = await screen.findByRole("dialog", { name: "管理合集" });
     await waitFor(() => expect((within(dialog).getByRole("checkbox", { name: "Test" }) as HTMLInputElement).checked).toBe(false));
@@ -192,6 +192,7 @@ describe("Sidebar", () => {
       "GET /api/contents": { body: { items: [content("c9", { title: "Demo" })], total: 1 } },
       "GET /api/contents/c9": { body: { ...content("c9", { title: "Demo" }), media: [] } },
       "DELETE /api/contents/c9": { status: 204 },
+      "POST /api/contents/trash-plan": { body: { items: [{ contentId: "c9", title: "Demo", state: "ready" }] } },
     });
     renderApp(
       <>
@@ -204,6 +205,8 @@ describe("Sidebar", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "删除" }));
     const dialog = await screen.findByRole("dialog");
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    // The confirmation waits for the pre-check.
+    await waitFor(() => expect(within(dialog).getByRole<HTMLButtonElement>("button", { name: "删除" }).disabled).toBe(false));
     fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/library"));
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c9"]);
@@ -218,7 +221,7 @@ describe("Sidebar", () => {
     renderApp(<Sidebar onOpenOmnibox={() => undefined} onOpenTasks={() => undefined} />, { route: "/collections/k1" });
     const row = await screen.findByTestId("collection-item-row");
     fireEvent.keyDown(within(row).getByRole("button"), { key: "Enter" });
-    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["重命名", "置顶", "删除", "合集归属"]);
+    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["重命名", "置顶", "合集归属", "删除"]);
   });
 
   it("opens a recent row's right-click menu with open, the source link and the row actions", async () => {
@@ -235,7 +238,7 @@ describe("Sidebar", () => {
       { route: "/library" },
     );
     rightClick(await screen.findByText("Demo"));
-    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "复制来源链接", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "复制来源链接", "重命名", "置顶", "合集归属", "删除"]);
     fireEvent.click(screen.getByTestId("context-menu-item-open"));
     expect(screen.getByTestId("where").textContent).toBe("/contents/c9");
     rightClick(screen.getByText("Demo"));
@@ -257,7 +260,7 @@ describe("Sidebar", () => {
     );
     const row = await screen.findByTestId("collection-item-row");
     rightClick(within(row).getByText("第 1 讲"));
-    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "合集归属", "删除"]);
   });
 
   it("opens a collection row's right-click menu: open, edit (dialog), batch add, export, delete; no summarize", async () => {

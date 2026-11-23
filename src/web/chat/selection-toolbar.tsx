@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { CHAT_MESSAGE_MAX_CHARS } from "../../shared/defaults.ts";
 import type { SegmentId } from "../../shared/ids.ts";
+import { FOCUS_RING } from "../ui/button.tsx";
 import { copyText } from "../ui/clipboard.ts";
 import { coveredSentences, elementOf, selectionBounds, type SelectionBounds } from "../ui/dom-selection.ts";
 import { selectionSourceFor, type RegionSelection } from "../ui/selection-source.ts";
@@ -404,7 +405,7 @@ export function SelectionToolbar(props: { actions?: (snapshot: SelectionSnapshot
       ) : null}
       <button
         type="button"
-        className="flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-sunken"
+        className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken ${FOCUS_RING}`}
         data-testid="selection-explain"
         onClick={() => {
           composer.explain(picked.quote, explainSelectionQuestion(t, picked.text));
@@ -412,12 +413,12 @@ export function SelectionToolbar(props: { actions?: (snapshot: SelectionSnapshot
           close();
         }}
       >
-        <MessageCircleQuestion size={14} />
+        <MessageCircleQuestion size={14} aria-hidden="true" />
         {t("chat.toolbar.explain")}
       </button>
       <button
         type="button"
-        className="flex items-center gap-1 rounded px-2 py-1 text-xs hover:bg-sunken"
+        className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken ${FOCUS_RING}`}
         data-testid="selection-copy"
         onClick={() => {
           // Copying keeps the selection: only the toolbar goes away.
@@ -425,7 +426,7 @@ export function SelectionToolbar(props: { actions?: (snapshot: SelectionSnapshot
           close();
         }}
       >
-        <Copy size={14} />
+        <Copy size={14} aria-hidden="true" />
         {t("chat.toolbar.copy")}
       </button>
       {props.actions === undefined ? null : <Fragment key={picked.seq}>{props.actions(picked, close)}</Fragment>}

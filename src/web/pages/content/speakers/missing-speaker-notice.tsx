@@ -1,5 +1,6 @@
-import { TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Button } from "../../../ui/button.tsx";
+import { Banner } from "../../../ui/notice.tsx";
 
 /**
  * Over the editor while sentences of the draft name a speaker that no longer exists (deleted in
@@ -10,18 +11,18 @@ export function MissingSpeakerNotice(props: { count: number; onUnassign: () => v
   const { t } = useTranslation();
   if (props.count <= 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent-soft px-4 py-1.5 text-xs" role="status" data-testid="missing-speaker-notice">
-      <TriangleAlert size={13} className="shrink-0 text-accent" aria-hidden="true" />
+    // A problem of the whole draft to deal with before committing: a strip across the editor.
+    <Banner
+      tone="warn"
+      announce="status"
+      testId="missing-speaker-notice"
+      actions={
+        <Button size="sm" disabled={props.disabled === true} onClick={props.onUnassign} data-testid="missing-speaker-unassign">
+          {t("speakerEditor.missing.unassign")}
+        </Button>
+      }
+    >
       <span className="tabular-nums">{t("speakerEditor.missing.message", { count: props.count })}</span>
-      <button
-        type="button"
-        className="ml-auto rounded px-1.5 py-0.5 font-medium hover:bg-sunken focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
-        disabled={props.disabled === true}
-        onClick={props.onUnassign}
-        data-testid="missing-speaker-unassign"
-      >
-        {t("speakerEditor.missing.unassign")}
-      </button>
-    </div>
+    </Banner>
   );
 }

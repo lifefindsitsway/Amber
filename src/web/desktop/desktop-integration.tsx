@@ -10,6 +10,7 @@ import { formatBytes } from "../../shared/units.ts";
 import { requestOpenTasks } from "../shell/task-panel.tsx";
 import { Button } from "../ui/button.tsx";
 import { Modal } from "../ui/modal.tsx";
+import { Banner, Callout, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
 import { EVENT_SIDECAR_FAILED, EVENT_SIDECAR_RESTARTED, onShellEvent } from "./bridge.ts";
 import { parseUpdateNotes } from "./update-notes.ts";
 import { UpdateProvider, useBackupBusy, useUpdater, type UpdateController } from "./updater.ts";
@@ -128,9 +129,9 @@ export function useNativeFullscreen(enabled: boolean): void {
 function SidecarFailedBanner() {
   const { t } = useTranslation();
   return (
-    <div className="fixed inset-x-0 top-0 z-[60] bg-danger px-4 py-2 text-center text-sm text-white" role="alert" data-testid="sidecar-failed">
+    <Banner tone="error" announce="alert" className="fixed inset-x-0 top-0 z-[60]" testId="sidecar-failed">
       {t("shell.desktop.sidecarFailed")}
-    </div>
+    </Banner>
   );
 }
 
@@ -167,23 +168,29 @@ function UpdatePrompt() {
           </div>
           {update.notes === undefined || update.notes.trim() === "" ? null : <UpdateNotes notes={update.notes} />}
           <div className="flex flex-col gap-2.5 border-t border-line bg-panel px-5 py-3">
-            <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted">
+            <p className="flex items-start gap-1.5 text-note text-muted">
               <ShieldCheck aria-hidden="true" size={13} className="mt-[0.2em] shrink-0 text-ok" />
               <span>{t("shell.desktop.updateBackupHint")}</span>
             </p>
             <UpdateProgressLine />
-            {update.status === "ready_to_install" ? <p className="text-xs text-muted">{t("shell.desktop.updateDownloaded")}</p> : null}
-            {update.status === "installing" ? <p className="text-xs text-muted">{t("shell.desktop.updateInstalling")}</p> : null}
+            {update.status === "ready_to_install" ? <p className="text-note text-muted">{t("shell.desktop.updateDownloaded")}</p> : null}
+            {update.status === "installing" ? <p className="text-note text-muted">{t("shell.desktop.updateInstalling")}</p> : null}
             {update.status === "failed" && update.error !== undefined ? (
-              <p className="text-xs text-danger" role="alert">
-                {t("shell.desktop.updateFailed", { reason: update.error.message })}{" "}
-                <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" data-testid="update-manual-download">
-                  {t("shell.about.update.manualDownload")}
-                </a>
-              </p>
+              <Callout
+                tone="error"
+                density="compact"
+                announce="alert"
+                actions={
+                  <a href={RELEASES_PAGE_URL} target="_blank" rel="noopener noreferrer" className={TEXT_ACTION_CLASS} data-testid="update-manual-download">
+                    {t("shell.about.update.manualDownload")}
+                  </a>
+                }
+              >
+                {t("shell.desktop.updateFailed", { reason: update.error.message })}
+              </Callout>
             ) : null}
             <div className="flex flex-wrap justify-end gap-2">
-              <Link to="/settings/backup" className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-accent hover:bg-sunken" data-testid="update-backup-first">
+              <Link to="/settings/backup" className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-link hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" data-testid="update-backup-first">
                 {t("shell.desktop.updateBackupFirst")}
               </Link>
               {update.status === "available" ? (
@@ -302,37 +309,43 @@ export function UpdateBlockedDialog() {
   const blocked = update.blocked;
   const tasks = blocked?.some((code) => code === "conflict.tasks_unfinished" || code === "conflict.tasks_still_running") === true;
   return (
-    <Modal open={blocked !== undefined} onOpenChange={(open) => (open ? undefined : controller.dismissBlocked())} title={t("shell.desktop.updateBlockedTitle")}>
+    <Modal
+      open={blocked !== undefined}
+      onOpenChange={(open) => (open ? undefined : controller.dismissBlocked())}
+      title={t("shell.desktop.updateBlockedTitle")}
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              controller.dismissBlocked();
+              controller.later();
+            }}
+          >
+            {t("shell.desktop.updateBlockedAbandon")}
+          </Button>
+          {tasks ? (
+            <Button
+              onClick={() => {
+                controller.dismissBlocked();
+                requestOpenTasks();
+              }}
+            >
+              {t("shell.desktop.updateBlockedCancelTasks")}
+            </Button>
+          ) : null}
+          <Button variant="primary" onClick={() => controller.dismissBlocked()}>
+            {t("shell.desktop.updateBlockedWait")}
+          </Button>
+        </>
+      }
+    >
       <p className="mb-2 text-sm">{t("shell.desktop.updateBlockedIntro")}</p>
-      <ul className="mb-4 list-disc pl-5 text-sm" data-testid="update-blocked-reasons">
+      <ul className="list-disc pl-5 text-sm" data-testid="update-blocked-reasons">
         {(blocked ?? []).map((code) => (
           <li key={code}>{isBlockedReason(code) ? t(`shell.desktop.updateBlockedReason.${code}`) : t("shell.desktop.updateBlockedReason.other", { code })}</li>
         ))}
       </ul>
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button
-          variant="ghost"
-          onClick={() => {
-            controller.dismissBlocked();
-            controller.later();
-          }}
-        >
-          {t("shell.desktop.updateBlockedAbandon")}
-        </Button>
-        {tasks ? (
-          <Button
-            onClick={() => {
-              controller.dismissBlocked();
-              requestOpenTasks();
-            }}
-          >
-            {t("shell.desktop.updateBlockedCancelTasks")}
-          </Button>
-        ) : null}
-        <Button variant="primary" onClick={() => controller.dismissBlocked()}>
-          {t("shell.desktop.updateBlockedWait")}
-        </Button>
-      </div>
     </Modal>
   );
 }

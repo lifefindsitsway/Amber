@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TERMINOLOGY_MAX_ENTRIES } from "../../shared/defaults.ts";
 import { terminologyDtoSchema, type PutTerminologyRequest, type TerminologyDto } from "../../shared/dto/terminology.ts";
@@ -7,7 +7,10 @@ import { ApiError } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
 import { queryString } from "../api/queries.ts";
 import { Button } from "../ui/button.tsx";
+import { Checkbox } from "../ui/checkbox.tsx";
 import { Loading } from "../ui/feedback.tsx";
+import { FieldError, InlineNote } from "../ui/notice.tsx";
+import { TextInput } from "../ui/text-field.tsx";
 import { ErrorView } from "./error-view.tsx";
 
 type Entry = PutTerminologyRequest["entries"][number];
@@ -32,8 +35,6 @@ function entriesOf(rows: readonly Row[]): Entry[] {
     }));
 }
 
-const INPUT = "h-8 w-full rounded border border-line bg-surface px-2 text-sm outline-none focus:border-accent";
-
 /**
  * Edits one terminology scope (`global`, `collection:<id>`, `content:<id>`) as a whole
  * table: saving replaces every entry, order included. Limits and duplicate
@@ -43,6 +44,7 @@ export function TerminologyEditor({ scope }: { scope: string }) {
   const { t } = useTranslation();
   const client = useApi();
   const queryClient = useQueryClient();
+  const errorId = useId();
   const key = ["terminology", scope] as const;
   const path = `/api/terminology${queryString({ scope })}`;
   const loaded = useQuery({ queryKey: key, queryFn: () => client.get(path, terminologyDtoSchema) });
@@ -65,7 +67,7 @@ export function TerminologyEditor({ scope }: { scope: string }) {
   const tooMany = shown.length > TERMINOLOGY_MAX_ENTRIES;
   return (
     <div data-terminology-scope={scope}>
-      {shown.length === 0 ? <p className="mb-2 text-sm text-muted">{t("settings.terminology.empty")}</p> : null}
+      {shown.length === 0 ? <InlineNote className="mb-2">{t("settings.terminology.empty")}</InlineNote> : null}
       {shown.length === 0 ? null : (
         <table className="mb-2 w-full text-sm">
           <thead>
@@ -80,19 +82,19 @@ export function TerminologyEditor({ scope }: { scope: string }) {
             {shown.map((row, index) => (
               <tr key={index}>
                 <td className="pr-2 pb-1">
-                  <input aria-label={t("settings.terminology.term")} className={INPUT} value={row.term} onChange={(event) => update(index, { term: event.target.value })} />
+                  <TextInput size="md" aria-label={t("settings.terminology.term")} className="w-full" value={row.term} onChange={(event) => update(index, { term: event.target.value })} />
                 </td>
                 <td className="pr-2 pb-1">
-                  <input
+                  <TextInput
+                    size="md"
                     aria-label={t("settings.terminology.translation")}
-                    className={INPUT}
+                    className="w-full"
                     value={row.translation}
                     onChange={(event) => update(index, { translation: event.target.value })}
                   />
                 </td>
                 <td className="pr-2 pb-1 text-center">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     aria-label={t("settings.terminology.ruleKeepOriginal")}
                     checked={row.keepOriginal}
                     onChange={(event) => update(index, { keepOriginal: event.target.checked })}
@@ -112,13 +114,24 @@ export function TerminologyEditor({ scope }: { scope: string }) {
         <Button size="sm" disabled={shown.length >= TERMINOLOGY_MAX_ENTRIES} onClick={() => setRows([...shown, { term: "", translation: "", keepOriginal: false }])}>
           {t("settings.terminology.add")}
         </Button>
-        <Button size="sm" variant="primary" disabled={rows === undefined || tooMany || save.isPending} onClick={() => save.mutate(entriesOf(shown))}>
+        <Button
+          size="sm"
+          variant="primary"
+          loading={save.isPending}
+          disabled={rows === undefined || tooMany}
+          aria-describedby={tooMany ? errorId : undefined}
+          onClick={() => save.mutate(entriesOf(shown))}
+        >
           {t("common.action.save")}
         </Button>
-        <span className={`text-xs ${tooMany ? "text-danger" : "text-muted"}`}>
-          {t("settings.terminology.count", { count: shown.length, max: TERMINOLOGY_MAX_ENTRIES })}
-        </span>
+        <span className={`text-xs ${tooMany ? "text-danger" : "text-muted"}`}>{t("settings.terminology.count", { count: shown.length, max: TERMINOLOGY_MAX_ENTRIES })}</span>
       </div>
+      {/* Only a set saved before the limit was lowered can be over it: adding stops at the limit. */}
+      {tooMany ? (
+        <FieldError id={errorId} className="mt-1.5" testId="terminology-too-many">
+          {t("settings.terminology.tooMany", { max: TERMINOLOGY_MAX_ENTRIES })}
+        </FieldError>
+      ) : null}
       {save.error instanceof ApiError ? (
         <div className="mt-2">
           <ErrorView error={save.error.error} />

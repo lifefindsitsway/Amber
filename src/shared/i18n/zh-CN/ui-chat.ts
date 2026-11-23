@@ -89,6 +89,7 @@ export const chat = {
     cancel: "取消",
     confirmTitle: "删除所选轮次",
     confirm: "删除所选的 {{count}} 轮问答？删除后它们不再显示，也不再进入之后的对话。",
+    confirmAction: "删除 {{count}} 轮",
   },
   turn: {
     copy: "复制回答",
