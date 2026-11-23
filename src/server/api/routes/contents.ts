@@ -103,8 +103,8 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
     });
 
     app.post("/api/contents/inspect", async (request, reply) => {
-      const { url } = parseInput(inspectRequestSchema, request.body, "body");
-      return sendValidated(reply, 200, inspectResponseSchema, await importContent.inspect(principalOf(request), url, requestSignal(reply)));
+      const body = parseInput(inspectRequestSchema, request.body, "body");
+      return sendValidated(reply, 200, inspectResponseSchema, await importContent.inspect(principalOf(request), body, requestSignal(reply)));
     });
   }
 

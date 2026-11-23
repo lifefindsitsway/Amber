@@ -10,10 +10,13 @@ import {
   inspectVideo,
   languageTag,
   listVideoQualities,
+  mapConcurrent,
   moveFile,
   parseFormatLine,
   pickTierFormat,
+  playlistItemsUpTo,
   secondsToMs,
+  trustedImageUrl,
   videoFormat,
 } from "../../../../src/server/adapters/platform/shared.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
@@ -627,5 +630,54 @@ describe("listVideoQualities", () => {
     const io = scriptedYtDlp(() => ({ exitCode: 1, stderr: "ERROR: [BiliBili] unable to download JSON metadata" }));
     const failure = await listVideoQualities(io.ytDlp, { url: URL, extractors: ["bilibili"], signal: signal() }).catch((error: unknown) => error);
     expect(isAmberError(failure)).toBe(true);
+  });
+});
+
+describe("trustedImageUrl", () => {
+  it("passes https URLs on the listed domains and their subdomains only", () => {
+    const domains = ["hdslb.com"];
+    expect(trustedImageUrl("https://i0.hdslb.com/bfs/a.jpg", domains)).toBe("https://i0.hdslb.com/bfs/a.jpg");
+    expect(trustedImageUrl("https://hdslb.com/a.jpg", domains)).toBe("https://hdslb.com/a.jpg");
+    for (const url of ["http://i0.hdslb.com/a.jpg", "https://evilhdslb.com/a.jpg", "https://hdslb.com.evil.example/a.jpg", "https://u:p@i0.hdslb.com/a.jpg", "https://i0.hdslb.com:8443/a.jpg", "javascript:alert(1)", "not a url", 42, undefined]) {
+      expect(trustedImageUrl(url, domains)).toBeUndefined();
+    }
+  });
+});
+
+describe("playlistItemsUpTo", () => {
+  it("asks for one entry past the limit", () => {
+    expect(playlistItemsUpTo(50)).toBe("1:51");
+  });
+});
+
+describe("mapConcurrent", () => {
+  it("keeps the input order with at most `limit` calls in flight", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const results = await mapConcurrent([30, 10, 20, 5, 1], 2, async (delay) => {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      inFlight -= 1;
+      return delay * 2;
+    });
+    expect(results).toEqual([60, 20, 40, 10, 2]);
+    expect(most).toBe(2);
+    expect(await mapConcurrent([], 3, async () => 1)).toEqual([]);
+  });
+
+  it("starts nothing after a failure, waits for the calls in flight and throws the first error", async () => {
+    const started: number[] = [];
+    let settled = 0;
+    const failure = mapConcurrent([1, 2, 3, 4, 5], 2, async (n) => {
+      started.push(n);
+      await new Promise((resolve) => setTimeout(resolve, n === 1 ? 1 : 20));
+      settled += 1;
+      if (n === 1) throw new Error("first");
+      return n;
+    });
+    await expect(failure).rejects.toThrow("first");
+    expect(started).toEqual([1, 2]);
+    expect(settled).toBe(2);
   });
 });

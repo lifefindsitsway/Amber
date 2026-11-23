@@ -604,3 +604,59 @@ export async function moveFile(from: string, to: string): Promise<void> {
     await rm(from, { force: true });
   }
 }
+
+/**
+ * `url` when it is an https URL without credentials whose host is one of `domains` or a
+ * subdomain of one; otherwise `undefined`. A collection preview loads covers straight from
+ * the user's browser, so only the platform's own image hosts are passed on.
+ */
+export function trustedImageUrl(url: unknown, domains: readonly string[]): string | undefined {
+  if (typeof url !== "string") {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.port !== "") {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return domains.some((domain) => host === domain || host.endsWith(`.${domain}`)) ? parsed.toString() : undefined;
+}
+
+/**
+ * yt-dlp `--playlist-items` for listing the first `limit` entries of a collection plus one:
+ * the extra entry tells that more exist without listing them.
+ */
+export function playlistItemsUpTo(limit: number): string {
+  return `1:${limit + 1}`;
+}
+
+/**
+ * `work` over `items` with at most `limit` calls in flight; results keep the order of
+ * `items`. After a failure nothing new starts, the calls in flight are awaited (so none is
+ * left running behind the caller) and the first error is thrown.
+ */
+export async function mapConcurrent<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array<R>(items.length);
+  let next = 0;
+  let failure: { error: unknown } | undefined;
+  const worker = async (): Promise<void> => {
+    while (failure === undefined && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await work(items[index] as T);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  if (failure !== undefined) {
+    throw failure.error;
+  }
+  return results;
+}

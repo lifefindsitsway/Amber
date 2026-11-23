@@ -11,6 +11,7 @@ import { canonicalPlatformCookies } from "../../src/server/domain/platform-cooki
 import { selectSubtitleTrack } from "../../src/server/domain/platform-subtitle.ts";
 import type { PlatformCredential, PlatformMetadata } from "../../src/server/ports/platform-source.ts";
 import { childProcessEnv } from "../../src/server/ports/process-runner.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX } from "../../src/shared/defaults.ts";
 import { toolsBinDir } from "../fixtures/tools.ts";
 
 /**
@@ -104,8 +105,9 @@ describe.skipIf(!enabled)("real platforms", () => {
 
     let url = process.env["AMBER_E2E_BILIBILI_URL"];
     if (url === undefined || url === "") {
-      const collection = await adapter.fetchCollection(A11_COLLECTION, auth, signal());
-      url = collection.items.find((item) => LECTURE_3_TITLE.test(item.title ?? ""))?.canonicalUrl;
+      const listing = await adapter.listCollection(A11_COLLECTION, auth, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+      const items = await adapter.resolveCollectionEntries(A11_COLLECTION, listing.entries, auth, signal());
+      url = items.find((item) => [item.title, item.displayTitle].some((title) => LECTURE_3_TITLE.test(title ?? "")))?.canonicalUrl;
     }
     const parsed = adapter.parse(url ?? "");
     expect(parsed?.platformContentId).toBeDefined();

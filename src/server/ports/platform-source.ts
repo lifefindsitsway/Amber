@@ -106,17 +106,53 @@ export interface VideoQuality {
   height: number;
 }
 
-export interface PlatformCollectionItem {
+/** Why a listed entry cannot be imported, as far as the platform's listing tells. */
+export type PlatformEntryUnavailableReason = "private" | "removed" | "unknown";
+
+/**
+ * One entry of a listed platform collection, before anything per entry is asked of the
+ * platform. Whatever the listing itself carries is kept (YouTube lists titles, durations and
+ * covers; bilibili lists video ids only).
+ */
+export interface PlatformCollectionEntry {
+  /** 0-based position in the platform's order. */
+  index: number;
   platformContentId: string;
-  platformPartId?: string;
+  canonicalUrl: string;
   title?: string;
   durationMs?: number;
-  canonicalUrl: string;
+  /** Only on a trusted platform image host. */
+  coverUrl?: string;
+  unavailable?: PlatformEntryUnavailableReason;
 }
 
-export interface PlatformCollection {
+/** A platform collection listed cheaply, in the platform's order, up to the caller's limit. */
+export interface PlatformCollectionListing {
   title: string;
-  items: PlatformCollectionItem[];
+  entries: PlatformCollectionEntry[];
+  /** Entries the collection has in total; absent when the platform does not say and the listing stopped at the limit. */
+  totalCount?: number;
+  /** The collection has more entries than the limit, which were not listed. */
+  truncated: boolean;
+}
+
+/** A listed entry resolved to what importing it creates. */
+export interface PlatformCollectionItem {
+  platformContentId: string;
+  /** Part of the Content identity where the platform has parts (the first part of a multi-part submission). */
+  platformPartId?: string;
+  canonicalUrl: string;
+  /** The title a new Content starts with, until its source stage reads the platform's metadata. */
+  title?: string;
+  /** What a preview shows; `title` when absent. Never written into a Content. */
+  displayTitle?: string;
+  /** Of the imported part; a submission's total over several parts is never given here. */
+  durationMs?: number;
+  /** For the preview only, on a trusted platform image host. */
+  coverUrl?: string;
+  /** Parts of the submission, where the platform has parts. */
+  partCount?: number;
+  unavailable?: PlatformEntryUnavailableReason;
 }
 
 /**
@@ -160,7 +196,23 @@ export interface PlatformSourceAdapter {
    * works, `unknown` for network or transient platform errors (the old credential is kept).
    */
   checkCredential(auth: PlatformCredential, signal: AbortSignal): Promise<"valid" | "expired" | "unknown">;
-  fetchCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformCollection>;
+  /**
+   * Lists a collection's entries in the platform's order, at most `limit` of them, in as few
+   * requests as the platform allows and without asking anything per entry.
+   */
+  listCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal, limit: number): Promise<PlatformCollectionListing>;
+  /**
+   * Resolves listed entries of the collection to what importing them creates, one result per
+   * entry in the given order. What only decorates a preview (titles, covers) is best effort: a
+   * failure to get it leaves the entry as the listing had it. What the Content identity needs
+   * fails the whole call when the platform does not answer.
+   */
+  resolveCollectionEntries(
+    platformCollectionId: string,
+    entries: readonly PlatformCollectionEntry[],
+    auth: PlatformCredential | undefined,
+    signal: AbortSignal,
+  ): Promise<PlatformCollectionItem[]>;
   /**
    * Downloads the best audio-only stream (yt-dlp `ba/b`) to `output.path`; normalizing it
    * is `LocalMediaIngest.extractAudio`'s job. `maxBytes` is the caller's budget (an audio

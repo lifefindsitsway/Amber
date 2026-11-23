@@ -1,0 +1,45 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://space.bilibili.com/504934876/lists/7985436",
+    "license": "未核实许可；仅作结构样本",
+    "attribution": "B 站合集 7985436（UP 主 UID 504934876）“【周易精讲】细读百家之祖，万法之源”",
+    "recordedAt": "2026-11-23",
+    "recordedWith": "yt-dlp 2026.08.19 as a guest, --dump-single-json --flat-playlist; fields the adapter reads"
+  },
+  "playlist": {
+    "id": "504934876_7985436",
+    "title": "合集·【周易精讲】细读百家之祖，万法之源",
+    "playlist_count": 7,
+    "entries": [
+      {
+        "id": "BV1WRo9BeErN",
+        "url": "https://www.bilibili.com/video/BV1WRo9BeErN"
+      },
+      {
+        "id": "BV1GPG86KEpq",
+        "url": "https://www.bilibili.com/video/BV1GPG86KEpq"
+      },
+      {
+        "id": "BV1jnjA65E3g",
+        "url": "https://www.bilibili.com/video/BV1jnjA65E3g"
+      },
+      {
+        "id": "BV1qyNo6TEws",
+        "url": "https://www.bilibili.com/video/BV1qyNo6TEws"
+      },
+      {
+        "id": "BV1zPgA6YEtb",
+        "url": "https://www.bilibili.com/video/BV1zPgA6YEtb"
+      },
+      {
+        "id": "BV1XBY26BEfD",
+        "url": "https://www.bilibili.com/video/BV1XBY26BEfD"
+      },
+      {
+        "id": "BV1keWQ65ECm",
+        "url": "https://www.bilibili.com/video/BV1keWQ65ECm"
+      }
+    ]
+  }
+}

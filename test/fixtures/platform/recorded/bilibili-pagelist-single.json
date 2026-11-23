@@ -1,0 +1,22 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://api.bilibili.com/x/player/pagelist?bvid=BV1WRo9BeErN",
+    "license": "未核实许可；仅作结构样本",
+    "attribution": "B 站合集 7985436（UP 主 UID 504934876）的第 1 个稿件",
+    "recordedAt": "2026-11-23",
+    "recordedWith": "a guest GET with a browser User-Agent and the bilibili Referer; pages reduced to the fields the adapter reads"
+  },
+  "answer": {
+    "code": 0,
+    "message": "OK",
+    "data": [
+      {
+        "cid": 37820172367,
+        "page": 1,
+        "part": "【天规地道】正职与副手的\"进、退、荣、枯\"有哪些阶段和铁律？",
+        "duration": 6236
+      }
+    ]
+  }
+}

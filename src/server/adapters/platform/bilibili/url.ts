@@ -22,6 +22,12 @@ export function collectionUrl(platformCollectionId: string): string | null {
   return `https://space.bilibili.com/${mid}/lists/${sid}${series === undefined ? "" : "?type=series"}`;
 }
 
+/** The space and season of a 合集 id; `null` for a 列表 (series) or anything else. */
+export function seasonOf(platformCollectionId: string): { mid: string; seasonId: string } | null {
+  const match = /^(\d+)_(\d+)$/.exec(platformCollectionId);
+  return match === null ? null : { mid: match[1] as string, seasonId: match[2] as string };
+}
+
 function parseUrl(url: string): URL | null {
   try {
     const parsed = new URL(url.trim());

@@ -6,7 +6,9 @@ import type { Platform } from "../../../src/server/domain/platform.ts";
 import type {
   CanonicalSubtitle,
   ParsedPlatformUrl,
-  PlatformCollection,
+  PlatformCollectionEntry,
+  PlatformCollectionItem,
+  PlatformCollectionListing,
   PlatformContentRef,
   PlatformCredential,
   PlatformDescription,
@@ -30,6 +32,16 @@ export interface FakeVideo {
   descriptionError?: Error;
 }
 
+/**
+ * A scripted collection: its entries as resolving them would give, in the platform's order.
+ * `unavailable` ones are listed as such; `totalCount` is what the platform would report.
+ */
+export interface FakeCollection {
+  title: string;
+  items: PlatformCollectionItem[];
+  totalCount?: number;
+}
+
 export interface FakeCall {
   method: string;
   target: string;
@@ -47,7 +59,9 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
   readonly cookieDomains: readonly string[];
   readonly calls: FakeCall[] = [];
   readonly videos = new Map<string, FakeVideo>();
-  readonly collections = new Map<string, PlatformCollection>();
+  readonly collections = new Map<string, FakeCollection>();
+  /** The video ids of each `resolveCollectionEntries` call, in call order. */
+  readonly resolvedEntries: string[][] = [];
   readonly shortLinks = new Map<string, string>();
   credentialStatus: "valid" | "expired" | "unknown" = "valid";
   declare resolveParts?: NonNullable<PlatformSourceAdapter["resolveParts"]>;
@@ -116,13 +130,37 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
     return this.credentialStatus;
   }
 
-  async fetchCollection(platformCollectionId: string, auth: PlatformCredential | undefined): Promise<PlatformCollection> {
-    this.log("fetchCollection", platformCollectionId, auth);
-    const collection = this.collections.get(platformCollectionId);
-    if (collection === undefined) {
-      throw amberError("source_unreachable", "no scripted collection");
-    }
-    return collection;
+  async listCollection(platformCollectionId: string, auth: PlatformCredential | undefined, _signal: AbortSignal, limit: number): Promise<PlatformCollectionListing> {
+    this.log("listCollection", platformCollectionId, auth);
+    const collection = this.scripted(platformCollectionId);
+    const truncated = collection.items.length > limit;
+    const entries = collection.items.slice(0, limit).map(
+      (item, index): PlatformCollectionEntry => ({
+        index,
+        platformContentId: item.platformContentId,
+        canonicalUrl: item.canonicalUrl,
+        ...(item.unavailable === undefined ? {} : { unavailable: item.unavailable }),
+      }),
+    );
+    const totalCount = collection.totalCount ?? (truncated ? undefined : entries.length);
+    return { title: collection.title, entries, ...(totalCount === undefined ? {} : { totalCount }), truncated };
+  }
+
+  async resolveCollectionEntries(
+    platformCollectionId: string,
+    entries: readonly PlatformCollectionEntry[],
+    auth: PlatformCredential | undefined,
+  ): Promise<PlatformCollectionItem[]> {
+    this.log("resolveCollectionEntries", platformCollectionId, auth);
+    this.resolvedEntries.push(entries.map((entry) => entry.platformContentId));
+    const collection = this.scripted(platformCollectionId);
+    return entries.map((entry) => {
+      const item = collection.items.find((candidate) => candidate.platformContentId === entry.platformContentId);
+      if (item === undefined) {
+        throw amberError("source_unreachable", "no scripted entry");
+      }
+      return item;
+    });
   }
 
   async fetchAudio(
@@ -137,6 +175,14 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
     await writeFile(output.path, bytes);
     onProgress(1);
     return { sizeBytes: bytes.length };
+  }
+
+  private scripted(platformCollectionId: string): FakeCollection {
+    const collection = this.collections.get(platformCollectionId);
+    if (collection === undefined) {
+      throw amberError("source_unreachable", "no scripted collection");
+    }
+    return collection;
   }
 
   callsOf(method: string): FakeCall[] {

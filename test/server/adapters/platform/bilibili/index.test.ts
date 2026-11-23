@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { BILIBILI_EXTRACTORS, BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY } from "../../../../../src/shared/defaults.ts";
 import { OutboundHttpError, type OutboundRequest } from "../../../../../src/server/ports/outbound-http.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import {
@@ -24,7 +25,7 @@ const PAGES = [
   { cid: 1002, page: 2, part: "Lecture 2", duration: 5880 },
 ];
 
-type Route = (request: OutboundRequest, url: URL) => ScriptedResponse | Error | undefined;
+type Route = (request: OutboundRequest, url: URL) => ScriptedResponse | Error | Promise<ScriptedResponse> | undefined;
 
 function setup(options: { routes?: Route; process?: ProcessHandler } = {}) {
   const { ytDlp, runner, dataDir } = scriptedYtDlp(options.process);
@@ -330,34 +331,246 @@ describe("BilibiliAdapter.checkCredential", () => {
   });
 });
 
-describe("BilibiliAdapter.fetchCollection", () => {
-  it("lists entries flat and takes the first part of each", async () => {
-    const { adapter, runner, http } = setup({
-      process: () => ({
-        stdout: JSON.stringify({
-          title: "Course",
-          entries: [{ url: `https://www.bilibili.com/video/${BV}` }, { id: "BV1aa411c7mD" }, { title: "no id" }],
-        }),
-      }),
+describe("BilibiliAdapter collections", () => {
+  const recorded = <T>(name: string): T => JSON.parse(readFileSync(new URL(`../../../../fixtures/platform/recorded/${name}`, import.meta.url), "utf8")) as T;
+  const FLAT = recorded<{ playlist: { title: string; entries: Array<{ id: string; url: string }> } }>("bilibili-collection-flat.json").playlist;
+  const SEASON = recorded<{ answer: { code: number; data: { archives: Array<{ bvid: string; title: string; duration: number; pic: string }>; page: { total: number } } } }>(
+    "bilibili-season-archives.json",
+  ).answer;
+  const PAGELIST = recorded<{ answer: { code: number; data: Array<{ cid: number; page: number; part: string; duration: number }> } }>("bilibili-pagelist-single.json").answer;
+  const COLLECTION = "504934876_7985436";
+  const IDS = FLAT.entries.map((entry) => entry.id);
+  const SEASON_PATH = "/x/polymer/web-space/seasons_archives_list";
+  /** The recorded part list for the recorded submission; every other one is a single part named after its id. */
+  const partsOf = (bvid: string) => (bvid === "BV1WRo9BeErN" ? PAGELIST.data : [{ cid: 7000 + IDS.indexOf(bvid), page: 1, part: `part of ${bvid}`, duration: 600 }]);
+
+  function recordedSetup(options: { season?: (url: URL) => ScriptedResponse | Error; pages?: (bvid: string) => ScriptedResponse | Error | Promise<ScriptedResponse> } = {}) {
+    return setup({
+      process: () => ({ stdout: JSON.stringify(FLAT) }),
+      routes: (_, url) => {
+        if (url.pathname === SEASON_PATH) {
+          return options.season?.(url) ?? { body: SEASON };
+        }
+        if (url.pathname === "/x/player/pagelist") {
+          const bvid = url.searchParams.get("bvid") as string;
+          return options.pages?.(bvid) ?? { body: { code: 0, data: partsOf(bvid) } };
+        }
+        return undefined;
+      },
     });
-    expect(await adapter.fetchCollection("202224425_8942017", LOGIN, signal())).toEqual({
-      title: "Course",
-      items: [
-        { platformContentId: BV, platformPartId: "1001", title: "Lecture 1", durationMs: 6_000_000, canonicalUrl: `https://www.bilibili.com/video/${BV}?p=1` },
-        { platformContentId: "BV1aa411c7mD", platformPartId: "9", title: "Only", durationMs: 60_000, canonicalUrl: "https://www.bilibili.com/video/BV1aa411c7mD" },
-      ],
+  }
+
+  async function listAll(adapter: BilibiliAdapter, auth = LOGIN) {
+    const listing = await adapter.listCollection(COLLECTION, auth, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    return { listing, items: await adapter.resolveCollectionEntries(COLLECTION, listing.entries, auth, signal()) };
+  }
+
+  it("lists the recorded collection flat, one past the limit, with the login", async () => {
+    const { adapter, runner, http } = recordedSetup();
+    const listing = await adapter.listCollection(COLLECTION, LOGIN, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect(listing).toEqual({
+      title: FLAT.title,
+      entries: IDS.map((id, index) => ({ index, platformContentId: id, canonicalUrl: `https://www.bilibili.com/video/${id}` })),
+      totalCount: IDS.length,
+      truncated: false,
     });
     const args = runner.specs[0]?.args ?? [];
-    expect(args.slice(-3)).toEqual(["--dump-single-json", "--flat-playlist", "https://space.bilibili.com/202224425/lists/8942017"]);
+    expect(args.slice(-5)).toEqual(["--dump-single-json", "--flat-playlist", "--playlist-items", `1:${COLLECTION_PREVIEW_ITEMS_MAX + 1}`, "https://space.bilibili.com/504934876/lists/7985436"]);
     expect(args).toContain("--cookies");
-    expect(http.to("/x/player/pagelist")).toHaveLength(2);
+    // Listing asks nothing per entry.
+    expect(http.requests).toEqual([]);
   });
 
-  it("uses the series URL and the id as a fallback title, and refuses ids it does not issue", async () => {
-    const { adapter, runner } = setup({ process: () => ({ stdout: JSON.stringify({ entries: [] }) }) });
-    expect(await adapter.fetchCollection("1_series_2", undefined, signal())).toEqual({ title: "1_series_2", items: [] });
-    expect(runner.specs[0]?.args.at(-1)).toBe("https://space.bilibili.com/1/lists/2?type=series");
-    await expect(adapter.fetchCollection("PLabc", undefined, signal())).rejects.toBeInstanceOf(TypeError);
+  it("resolves entries with the submission's title and cover from the season list, matched by video id, and the first part's duration", async () => {
+    const { adapter, http } = recordedSetup();
+    const { items } = await listAll(adapter);
+    expect(items.map((item) => item.platformContentId)).toEqual(IDS);
+    const [first] = items;
+    expect(first).toEqual({
+      platformContentId: "BV1WRo9BeErN",
+      platformPartId: String(PAGELIST.data[0]?.cid),
+      canonicalUrl: "https://www.bilibili.com/video/BV1WRo9BeErN",
+      title: SEASON.data.archives[0]?.title,
+      durationMs: (PAGELIST.data[0]?.duration ?? 0) * 1000,
+      // The archive list answers http; the cover is passed on as https.
+      coverUrl: SEASON.data.archives[0]?.pic.replace(/^http:/, "https:"),
+      partCount: 1,
+    });
+    for (const [index, item] of items.entries()) {
+      const archive = SEASON.data.archives.find((candidate) => candidate.bvid === item.platformContentId);
+      // A single part takes the submission's own title.
+      expect(item).toMatchObject({ title: archive?.title, partCount: 1, coverUrl: expect.stringMatching(/^https:\/\/i\d\.hdslb\.com\//) });
+      expect(item.displayTitle).toBeUndefined();
+      expect(index).toBe(IDS.indexOf(item.platformContentId));
+    }
+    expect(http.to(SEASON_PATH).map((request) => Object.fromEntries(new URL(request.url).searchParams))).toEqual([
+      { mid: "504934876", season_id: "7985436", page_num: "1", page_size: "100" },
+    ]);
+    expect(http.to("/x/player/pagelist")).toHaveLength(IDS.length);
+  });
+
+  it("keeps a multi-part submission's first part title for the Content and shows the submission's; its total duration is never used", async () => {
+    const { adapter } = recordedSetup({ pages: (bvid) => ({ body: { code: 0, data: bvid === IDS[1] ? PAGES : partsOf(bvid) } }) });
+    const { items } = await listAll(adapter);
+    const archive = SEASON.data.archives.find((candidate) => candidate.bvid === IDS[1]);
+    expect(items[1]).toEqual({
+      platformContentId: IDS[1],
+      platformPartId: "1001",
+      canonicalUrl: `https://www.bilibili.com/video/${IDS[1]}?p=1`,
+      title: "Lecture 1",
+      displayTitle: archive?.title,
+      durationMs: 6_000_000,
+      coverUrl: archive?.pic.replace(/^http:/, "https:"),
+      partCount: 2,
+    });
+    expect(items.map((item) => item.durationMs)).not.toContain((archive?.duration ?? 0) * 1000);
+  });
+
+  it("falls back to the part titles without covers when the season list fails, answers an error code or is malformed, keeping members and order", async () => {
+    for (const season of [() => ({ status: 500 }), () => ({ body: { code: -352 } }), () => ({ body: "<html>" }), () => new OutboundHttpError("before_send", "network")]) {
+      const { adapter } = recordedSetup({ season });
+      const { items } = await listAll(adapter);
+      expect(items.map((item) => item.platformContentId)).toEqual(IDS);
+      expect(items[0]).toMatchObject({ title: PAGELIST.data[0]?.part, partCount: 1 });
+      expect(items.every((item) => item.coverUrl === undefined && item.displayTitle === undefined)).toBe(true);
+      expect(items[2]?.title).toBe(`part of ${IDS[2]}`);
+    }
+  });
+
+  it("matches a partial, reordered or foreign answer by video id only", async () => {
+    const shuffled = [...SEASON.data.archives].reverse().filter((archive) => archive.bvid !== IDS[3]);
+    const foreign = { bvid: "BV1aa411c7mD", title: "not in this collection", pic: "https://i0.hdslb.com/x.jpg", duration: 1 };
+    const { adapter } = recordedSetup({ season: () => ({ body: { code: 0, data: { archives: [foreign, ...shuffled], page: { total: 99 } } } }) });
+    const { items } = await listAll(adapter);
+    expect(items.map((item) => item.platformContentId)).toEqual(IDS);
+    for (const item of items) {
+      const archive = SEASON.data.archives.find((candidate) => candidate.bvid === item.platformContentId);
+      expect(item.title).toBe(item.platformContentId === IDS[3] ? `part of ${IDS[3]}` : archive?.title);
+    }
+    expect(items[3]?.coverUrl).toBeUndefined();
+  });
+
+  it("passes on covers only from bilibili's image hosts", async () => {
+    const pics = ["https://evil.example/a.jpg", "https://hdslb.com.evil.example/b.jpg", "https://user:pw@i0.hdslb.com/c.jpg", "ftp://i0.hdslb.com/d.jpg", "https://archive.biliimg.com/e.jpg", "//i1.hdslb.com/f.jpg"];
+    const archives = SEASON.data.archives.slice(0, pics.length).map((archive, index) => ({ ...archive, pic: pics[index] }));
+    const { adapter } = recordedSetup({ season: () => ({ body: { code: 0, data: { archives } } }) });
+    const { items } = await listAll(adapter);
+    expect(items.slice(0, pics.length).map((item) => item.coverUrl)).toEqual([undefined, undefined, undefined, undefined, "https://archive.biliimg.com/e.jpg", "https://i1.hdslb.com/f.jpg"]);
+  });
+
+  it(`resolves parts ${PLATFORM_COLLECTION_RESOLVE_CONCURRENCY} at a time and fails as a whole when one part list fails`, async () => {
+    let inFlight = 0;
+    let most = 0;
+    const slow = async (bvid: string): Promise<ScriptedResponse> => {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { body: { code: 0, data: partsOf(bvid) } };
+    };
+    const { adapter } = recordedSetup({ pages: slow });
+    await listAll(adapter);
+    expect(most).toBe(PLATFORM_COLLECTION_RESOLVE_CONCURRENCY);
+
+    const failing = recordedSetup({ pages: (bvid) => (bvid === IDS[4] ? { body: { code: -352 } } : slow(bvid)) });
+    const listing = await failing.adapter.listCollection(COLLECTION, undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect((await errorOf(failing.adapter.resolveCollectionEntries(COLLECTION, listing.entries, undefined, signal()))).class).toBe("platform_blocked");
+    // Nothing is left running behind the failure, and nothing starts after it.
+    expect(inFlight).toBe(0);
+    expect(failing.http.to("/x/player/pagelist").length).toBeLessThan(IDS.length);
+  });
+
+  it("marks a removed (-404) or closed (-403) submission unavailable without a title, duration or cover of its own, and resolves the rest", async () => {
+    // Constructed answers: the recorded season list still names both submissions, which must not show.
+    const { adapter } = recordedSetup({
+      pages: (bvid) => (bvid === IDS[1] ? { body: { code: -404, message: "啥都木有" } } : bvid === IDS[3] ? { body: { code: -403, message: "访问权限不足" } } : { body: { code: 0, data: partsOf(bvid) } }),
+    });
+    const { items } = await listAll(adapter);
+    expect(items.map((item) => item.platformContentId)).toEqual(IDS);
+    expect(items[1]).toEqual({ platformContentId: IDS[1], canonicalUrl: `https://www.bilibili.com/video/${IDS[1]}`, unavailable: "removed" });
+    expect(items[3]).toEqual({ platformContentId: IDS[3], canonicalUrl: `https://www.bilibili.com/video/${IDS[3]}`, unavailable: "private" });
+    expect(items.filter((item) => item.unavailable === undefined)).toHaveLength(IDS.length - 2);
+    expect(items[0]).toMatchObject({ platformPartId: String(PAGELIST.data[0]?.cid), title: SEASON.data.archives[0]?.title });
+  });
+
+  it("still fails the whole resolution on risk control, login, unknown codes, an empty part list and network errors", async () => {
+    // Codes the adapter has no evidence for (62002 here) are not taken as unavailable.
+    const failures: Array<[ScriptedResponse | Error, string]> = [
+      [{ body: { code: -412 } }, "platform_blocked"],
+      [{ status: 429 }, "platform_blocked"],
+      [{ body: { code: -101 } }, "auth_required"],
+      [{ body: { code: 62002 } }, "source_unreachable"],
+      [{ body: { code: 0, data: [] } }, "source_unreachable"],
+      [{ status: 500 }, "source_unreachable"],
+      [new OutboundHttpError("before_send", "network"), "source_unreachable"],
+    ];
+    for (const [answer, expected] of failures) {
+      const { adapter } = recordedSetup({ pages: (bvid) => (bvid === IDS[2] ? answer : { body: { code: 0, data: partsOf(bvid) } }) });
+      const listing = await adapter.listCollection(COLLECTION, undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+      expect((await errorOf(adapter.resolveCollectionEntries(COLLECTION, listing.entries, undefined, signal()))).class, expected).toBe(expected);
+    }
+  });
+
+  it("keeps a single submission's -403 and -404 as errors outside a collection", async () => {
+    for (const [code, expected] of [
+      [-403, "auth_required"],
+      [-404, "source_unreachable"],
+    ] as const) {
+      const { adapter } = setup({ routes: () => ({ body: { code } }) });
+      expect((await errorOf(adapter.resolveParts({ platformContentId: BV }, undefined, signal()))).class).toBe(expected);
+    }
+  });
+
+  it("resolves only the entries asked for, reading the season list pages that hold them", async () => {
+    const { adapter, http } = recordedSetup();
+    const entries = [
+      { index: 0, platformContentId: IDS[0] as string, canonicalUrl: "x" },
+      { index: 150, platformContentId: IDS[1] as string, canonicalUrl: "x" },
+      { index: 199, platformContentId: IDS[2] as string, canonicalUrl: "x" },
+    ];
+    const items = await adapter.resolveCollectionEntries(COLLECTION, entries, undefined, signal());
+    expect(items.map((item) => item.platformContentId)).toEqual(IDS.slice(0, 3));
+    expect(http.to(SEASON_PATH).map((request) => new URL(request.url).searchParams.get("page_num"))).toEqual(["1", "2"]);
+    expect(http.to("/x/player/pagelist").map((request) => new URL(request.url).searchParams.get("bvid"))).toEqual(IDS.slice(0, 3));
+  });
+
+  it("reports truncation past the limit with the season list's total, and leaves a series' total unknown", async () => {
+    const { adapter, http } = recordedSetup();
+    const listing = await adapter.listCollection(COLLECTION, undefined, signal(), 3);
+    expect(listing).toMatchObject({ truncated: true, totalCount: SEASON.data.page.total });
+    expect(listing.entries.map((entry) => entry.platformContentId)).toEqual(IDS.slice(0, 3));
+    expect(http.to(SEASON_PATH)).toHaveLength(1);
+
+    const failing = recordedSetup({ season: () => ({ status: 500 }) });
+    const unknown = await failing.adapter.listCollection(COLLECTION, undefined, signal(), 3);
+    expect(unknown.truncated).toBe(true);
+    expect(unknown.totalCount).toBeUndefined();
+
+    const series = recordedSetup();
+    const listed = await series.adapter.listCollection("504934876_series_7985436", undefined, signal(), 3);
+    expect(listed).toMatchObject({ truncated: true });
+    expect(listed.totalCount).toBeUndefined();
+    expect(series.runner.specs[0]?.args.at(-1)).toBe("https://space.bilibili.com/504934876/lists/7985436?type=series");
+    await series.adapter.resolveCollectionEntries("504934876_series_7985436", listed.entries, undefined, signal());
+    expect(series.http.to(SEASON_PATH)).toEqual([]);
+  });
+
+  it("skips entries without a usable id and repeats, uses the id as a fallback title, and refuses ids it does not issue", async () => {
+    const { adapter } = setup({
+      process: () => ({ stdout: JSON.stringify({ entries: [{ url: `https://www.bilibili.com/video/${BV}` }, { id: "BV1aa411c7mD" }, { title: "no id" }, { id: "../x" }, { id: BV }] }) }),
+    });
+    const listing = await adapter.listCollection("1_series_2", undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect(listing).toEqual({
+      title: "1_series_2",
+      entries: [
+        { index: 0, platformContentId: BV, canonicalUrl: `https://www.bilibili.com/video/${BV}` },
+        { index: 1, platformContentId: "BV1aa411c7mD", canonicalUrl: "https://www.bilibili.com/video/BV1aa411c7mD" },
+      ],
+      totalCount: 2,
+      truncated: false,
+    });
+    await expect(adapter.listCollection("PLabc", undefined, signal(), 1)).rejects.toBeInstanceOf(TypeError);
+    await expect(adapter.resolveCollectionEntries("PLabc", [], undefined, signal())).rejects.toBeInstanceOf(TypeError);
   });
 });
 

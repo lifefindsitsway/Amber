@@ -1,10 +1,11 @@
 import { monotonicFactory } from "ulid";
-import { IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
-import type { ImportItem, ImportRequest, ImportResponse, InspectResponse } from "../../shared/dto/import.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
+import type { CollectionEntryState, ImportItem, ImportRequest, ImportResponse, InspectRequest, InspectResponse } from "../../shared/dto/import.ts";
 import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import { BYTES_PER_MB } from "../../shared/units.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Collection } from "../domain/collection.ts";
+import { mergeCollectionOrder } from "../domain/collection-merge.ts";
 import { platformContentKey, trashPurgeAt, type Content, type ContentSource } from "../domain/content.ts";
 import type { AsrModelRef, PromptRef } from "../domain/model-ref.ts";
 import { promptIdsOf } from "../domain/prompts.ts";
@@ -16,8 +17,16 @@ import {
   type ProcessContentRequest,
   type RegenerateSummaryRequest,
 } from "../domain/task-request.ts";
+import type { Platform } from "../domain/platform.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
-import type { PlatformCredential, PlatformPart, PlatformSourceAdapter } from "../ports/platform-source.ts";
+import type {
+  ParsedPlatformUrl,
+  PlatformCollectionEntry,
+  PlatformCollectionItem,
+  PlatformCredential,
+  PlatformPart,
+  PlatformSourceAdapter,
+} from "../ports/platform-source.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
 import { diskLowError, type DiskUsageProbe } from "../pipeline/disk-watermark.ts";
 import type { TaskEventBus } from "../pipeline/events.ts";
@@ -29,6 +38,7 @@ import { type Outbox, transact } from "../pipeline/publish.ts";
 import { modelRefProblem } from "../pipeline/requirements.ts";
 import type { InstanceSettingsSource } from "../pipeline/scheduler.ts";
 import { createTask } from "../pipeline/task-state.ts";
+import { CollectionPreviewCache, type CollectionPreview, type CollectionPreviewBinding } from "./collection-preview-cache.ts";
 import { freezePromptRefs } from "./prompts.ts";
 import { freezeSpeakerContext } from "./speaker-context.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
@@ -94,6 +104,8 @@ export interface ImportContentServiceOptions {
   heavy?: Pick<FairSemaphore, "run">;
   /** The ASR providers' descriptors, for checking a speaker identification request against the chosen model; the shared presets by default. */
   asrDescriptors?: AsrDescriptorSource;
+  /** Listed collections kept between a preview's pages and its import; a fresh one per service by default. */
+  previews?: CollectionPreviewCache;
   now?: () => number;
   newId?: () => string;
 }
@@ -105,15 +117,45 @@ export interface ImportContentServiceOptions {
  */
 interface ResolvedItem {
   origin: "direct" | "expanded";
+  /** Whether the request named it first inside a collection; decides the ImportBatch's source type. */
+  firstExpanded: boolean;
   source: ContentSource;
   title?: string;
   durationMs?: number;
-  platformCollection?: { platformCollectionId: string; title: string };
+  /** Every platform collection of the request that lists it, in request order. */
+  platformCollections: string[];
   initialSubtitle?: InitialSubtitle;
 }
 
+/** A platform collection the request expanded, with its whole listed order for placing new members. */
+interface ExpandedCollection {
+  kind: Platform;
+  platformCollectionId: string;
+  title: string;
+  /** Video ids in the platform's order, as far as listed. */
+  sequence: string[];
+}
+
+interface Recognized {
+  adapter: PlatformSourceAdapter;
+  auth: PlatformCredential | undefined;
+  parsed: ParsedPlatformUrl;
+}
+
+/** Unfinished Tasks of these kinds mean importing the Content again reuses them. */
+const PROCESSING_KINDS: ReadonlySet<string> = new Set(["process_content", "regenerate_summary"]);
+
 function invalid(detail: string, message = `invalid ${detail}`): AmberError {
   return amberError("invalid_request", message, { params: { detail } });
+}
+
+/** A chosen collection entry the platform marks unavailable; a preview never offers it. */
+function unavailableChosen(index: number): AmberError {
+  return invalid(`items[${index}].entries`, "an entry is unavailable on the platform");
+}
+
+function previewStale(): AmberError {
+  return amberError("conflict", "the collection preview expired or no longer lists a chosen entry", { code: "conflict.collection_preview_stale" });
 }
 
 function batchTooLarge(itemCount: number): AmberError {
@@ -185,16 +227,25 @@ function summaryRequestJson(scope: RepositoryScope, content: Content, requestJso
  * `process_content`. With a primary, `autoProofread` and `asrModelRef` take no part in
  * either comparison.
  * An idempotent replay answers what the first request did and never restores anything.
+ *
+ * A collection is listed whole (up to `COLLECTION_PREVIEW_ITEMS_MAX` entries) and resolved
+ * entry by entry only where needed: one page at a time for a preview, the chosen entries for
+ * an import. A preview's listing is cached so its later pages and its import do not list again.
+ * New members of a platform collection take their place in the platform's order among the
+ * members already there, whose own order never changes; Tasks are created in the order the
+ * request names the entries.
  */
 export class ImportContentService {
   private readonly options: ImportContentServiceOptions;
   private readonly now: () => number;
   private readonly newId: () => string;
+  private readonly previews: CollectionPreviewCache;
 
   constructor(options: ImportContentServiceOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
+    this.previews = options.previews ?? new CollectionPreviewCache({ now: this.now });
   }
 
   async import(
@@ -209,19 +260,23 @@ export class ImportContentService {
     const replay = this.options.repository.withTransaction((scope) =>
       idempotencyKey === undefined ? undefined : scope.idempotency.get(owner, IMPORT_ROUTE, idempotencyKey),
     );
-    let resolved: ResolvedItem[] = [];
+    let resolved: { items: ResolvedItem[]; collections: ExpandedCollection[] } = { items: [], collections: [] };
     if (replay === undefined) {
       if (body.items.length > IMPORT_BATCH_MAX) {
         throw batchTooLarge(body.items.length);
+      }
+      const chosen = body.items.find((item) => (item.entries?.length ?? 0) > IMPORT_BATCH_MAX);
+      if (chosen !== undefined) {
+        throw batchTooLarge(chosen.entries?.length ?? 0);
       }
       const low = await diskLowError(this.options.disk, this.options.settings.effective());
       if (low !== undefined) {
         throw new AmberError(low, "disk below the low-water mark");
       }
-      resolved = await this.resolveItems(owner, body.items, signal);
+      resolved = await this.resolveItems(owner, body, signal);
     }
     const result = transact(this.options.repository, this.options.bus, (scope, outbox) =>
-      runIdempotent(scope, context, this.now(), () => this.create(scope, outbox, owner, body, resolved)),
+      runIdempotent(scope, context, this.now(), () => this.create(scope, outbox, owner, body, resolved.items, resolved.collections)),
     );
     if (!result.replayed) {
       this.options.control.kick();
@@ -229,20 +284,13 @@ export class ImportContentService {
     return result;
   }
 
-  /** What `url` would import, for the new-content page's part and batch prompts; creates nothing. */
-  async inspect(principal: RequestPrincipal, url: string, signal: AbortSignal = new AbortController().signal): Promise<InspectResponse> {
+  /** What `url` would import, for the new-content page's part, batch and collection prompts; creates nothing. */
+  async inspect(principal: RequestPrincipal, request: InspectRequest, signal: AbortSignal = new AbortController().signal): Promise<InspectResponse> {
     const owner = principal.userId;
-    const { adapter, auth, parsed } = await this.recognize(owner, url, signal);
+    const recognized = await this.recognize(owner, request.url, signal);
+    const { adapter, auth, parsed } = recognized;
     if (parsed.platformContentId === undefined) {
-      const platformCollectionId = parsed.platformCollectionId as string;
-      const collection = await this.heavyJob(owner, signal, () => adapter.fetchCollection(platformCollectionId, auth, signal));
-      return {
-        kind: "collection",
-        canonicalUrl: parsed.canonicalUrl,
-        title: collection.title,
-        itemCount: collection.items.length,
-        items: collection.items,
-      };
+      return this.inspectCollection(owner, request, recognized, signal);
     }
     if (adapter.resolveParts === undefined) {
       return { kind: "single", canonicalUrl: parsed.canonicalUrl };
@@ -266,6 +314,87 @@ export class ImportContentService {
   }
 
   /**
+   * One page of a collection preview. Without `previewId` the collection is listed again (a
+   * retry never reuses a cached listing) and cached once its first page is resolved; with
+   * it the cached listing serves the page, and one that is gone or not this user's is
+   * `conflict.collection_preview_stale`. Each entry's state is read from the library as it
+   * is now, against `collectionId` or else the local collection of this platform collection.
+   */
+  private async inspectCollection(owner: string, request: InspectRequest, recognized: Recognized, signal: AbortSignal): Promise<InspectResponse> {
+    const { adapter, auth, parsed } = recognized;
+    const platformCollectionId = parsed.platformCollectionId as string;
+    const binding: CollectionPreviewBinding = { ownerUserId: owner, platform: adapter.kind, platformCollectionId, withLogin: auth !== undefined };
+    if (request.collectionId !== undefined) {
+      const collectionId = request.collectionId;
+      // Checked before going online: comparing against another user's collection is not_found.
+      if (this.options.repository.withTransaction((scope) => scope.collections.get(owner, collectionId)) === undefined) {
+        throw amberError("not_found", "collection not found");
+      }
+    }
+    let preview: Omit<CollectionPreview, "id" | "storedAt"> & { id?: string };
+    if (request.previewId === undefined) {
+      const listing = await this.heavyJob(owner, signal, () => adapter.listCollection(platformCollectionId, auth, signal, COLLECTION_PREVIEW_ITEMS_MAX));
+      preview = { ...binding, ...listing, resolved: new Map() };
+    } else {
+      const cached = this.previews.find(request.previewId, binding);
+      if (cached === undefined) {
+        throw previewStale();
+      }
+      preview = cached;
+    }
+    const offset = request.offset ?? 0;
+    if (offset > 0 && offset >= preview.entries.length) {
+      throw invalid("offset", "the preview has no entries from this offset");
+    }
+    const page = preview.entries.slice(offset, offset + COLLECTION_PREVIEW_PAGE_SIZE);
+    await this.resolveEntries(owner, adapter, auth, platformCollectionId, page, preview.resolved, signal);
+    const previewId = preview.id ?? this.previews.store(preview).id;
+    const nextOffset = offset + page.length;
+    return this.options.repository.withTransaction((scope) => {
+      const local =
+        request.collectionId === undefined ? scope.collections.findByPlatformCollectionId(owner, platformCollectionId) : scope.collections.get(owner, request.collectionId);
+      const members = new Set(local === undefined ? [] : scope.collections.listItems(owner, local.id).map((item) => item.contentId));
+      return {
+        kind: "collection" as const,
+        canonicalUrl: parsed.canonicalUrl,
+        title: preview.title,
+        itemCount: preview.entries.length,
+        items: page.map((entry) => previewItem(scope, owner, adapter.kind, entry, preview.resolved.get(entry.platformContentId) as PlatformCollectionItem, members)),
+        previewId,
+        ...(preview.totalCount === undefined ? {} : { totalCount: preview.totalCount }),
+        ...(preview.truncated ? { truncated: true } : {}),
+        offset,
+        ...(nextOffset < preview.entries.length ? { nextOffset } : {}),
+        ...(local === undefined ? {} : { localCollection: { id: local.id, name: local.name } }),
+      };
+    });
+  }
+
+  /** Resolves the entries `resolved` lacks, in one heavy job, into `resolved`; nothing goes online when it has them all. */
+  private async resolveEntries(
+    owner: string,
+    adapter: PlatformSourceAdapter,
+    auth: PlatformCredential | undefined,
+    platformCollectionId: string,
+    entries: readonly PlatformCollectionEntry[],
+    resolved: Map<string, PlatformCollectionItem>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const missing = entries.filter((entry) => !resolved.has(entry.platformContentId));
+    if (missing.length === 0) {
+      return;
+    }
+    const items = await this.heavyJob(owner, signal, () => adapter.resolveCollectionEntries(platformCollectionId, missing, auth, signal));
+    missing.forEach((entry, index) => {
+      const item = items[index];
+      if (item === undefined || item.platformContentId !== entry.platformContentId) {
+        throw new TypeError("the adapter resolved entries out of order");
+      }
+      resolved.set(entry.platformContentId, item);
+    });
+  }
+
+  /**
    * Import parsing is the same kind of platform work as the pipeline's metadata steps, so it
    * counts against the same heavy-job capacity, in the user's foreground group.
    * Every adapter goes through it alike: the service never decides by platform.
@@ -276,7 +405,7 @@ export class ImportContentService {
   }
 
   /** The adapter for `url` and the owner's login, set to record a login the platform refuses. */
-  private async recognize(owner: string, url: string, signal: AbortSignal) {
+  private async recognize(owner: string, url: string, signal: AbortSignal): Promise<Recognized> {
     const { adapter, parsed } = await this.options.platforms.recognize(url, signal);
     const kind = adapter.kind;
     const auth = this.options.credentials.credentialFor(owner, kind);
@@ -288,66 +417,170 @@ export class ImportContentService {
     };
   }
 
-  private async resolveItems(owner: string, items: readonly ImportItem[], signal: AbortSignal): Promise<ResolvedItem[]> {
+  /**
+   * Recognizes every link first (short links expanded), so a request that must confirm its
+   * collections is refused before anything is listed; then resolves the links in order. The
+   * same video named twice becomes one item in its first place, belonging to every platform
+   * collection that listed it.
+   */
+  private async resolveItems(owner: string, body: ImportRequest, signal: AbortSignal): Promise<{ items: ResolvedItem[]; collections: ExpandedCollection[] }> {
+    const { items } = body;
     const subtitles = items.map((item, index) => parseInitialSubtitle(item, index));
+    const recognized: Recognized[] = [];
+    for (const [index, item] of items.entries()) {
+      const link = await this.recognize(owner, item.url, signal);
+      if (link.parsed.platformContentId === undefined) {
+        if (item.parts !== undefined || subtitles[index] !== undefined) {
+          throw invalid(`items[${index}]`, "parts and initial subtitles apply to single videos only");
+        }
+        if (item.previewId !== undefined && item.entries === undefined) {
+          throw invalid(`items[${index}].previewId`, "a preview id comes with the entries chosen from it");
+        }
+      } else if (item.entries !== undefined || item.previewId !== undefined) {
+        throw invalid(`items[${index}].entries`, "entries apply to collection links only");
+      }
+      recognized.push(link);
+    }
+    if (body.confirmCollections === true) {
+      const urls = items.filter((item, index) => recognized[index]?.parsed.platformContentId === undefined && item.entries === undefined).map((item) => item.url);
+      if (urls.length > 0) {
+        throw amberError("invalid_request", "choose the entries of every collection first", { code: "invalid_request.collection_choice_required", details: { urls } });
+      }
+    }
+
     const resolved: ResolvedItem[] = [];
+    const collections = new Map<string, ExpandedCollection>();
     const seen = new Map<string, ResolvedItem>();
     for (const [index, item] of items.entries()) {
-      for (const candidate of await this.resolveItem(owner, item, index, subtitles[index], signal)) {
+      const link = recognized[index] as Recognized;
+      let candidates: ResolvedItem[];
+      if (link.parsed.platformContentId === undefined) {
+        const expanded = await this.expandCollection(owner, link, item, index, signal);
+        if (!collections.has(expanded.collection.platformCollectionId)) {
+          collections.set(expanded.collection.platformCollectionId, expanded.collection);
+        }
+        candidates = expanded.items;
+      } else {
+        candidates = await this.resolveLink(owner, link, item, index, subtitles[index], signal);
+      }
+      for (const candidate of candidates) {
         const key = platformContentKey(owner, candidate.source) as string;
         const first = seen.get(key);
         if (first === undefined) {
           seen.set(key, candidate);
           resolved.push(candidate);
-        } else if (candidate.origin === "direct") {
+          continue;
+        }
+        if (candidate.origin === "direct") {
           // Named on its own as well as inside a collection: the user asked for it directly.
           first.origin = "direct";
+        }
+        for (const platformCollectionId of candidate.platformCollections) {
+          if (!first.platformCollections.includes(platformCollectionId)) {
+            first.platformCollections.push(platformCollectionId);
+          }
         }
       }
     }
     if (resolved.length > IMPORT_BATCH_MAX) {
       throw batchTooLarge(resolved.length);
     }
-    return resolved;
+    return { items: resolved, collections: [...collections.values()] };
   }
 
-  private async resolveItem(
+  /**
+   * The entries a collection link imports: every listed entry in the platform's order, or the
+   * chosen `entries` in the order given. A collection over `IMPORT_BATCH_MAX` without a
+   * choice is refused right after listing, before any entry is resolved. Chosen entries come
+   * from the preview's cached listing while it is alive; otherwise the collection is listed
+   * again and every chosen entry must still be in it.
+   */
+  private async expandCollection(
     owner: string,
+    link: Recognized,
+    item: ImportItem,
+    index: number,
+    signal: AbortSignal,
+  ): Promise<{ items: ResolvedItem[]; collection: ExpandedCollection }> {
+    const { adapter, auth, parsed } = link;
+    const kind = adapter.kind;
+    const platformCollectionId = parsed.platformCollectionId as string;
+    const binding: CollectionPreviewBinding = { ownerUserId: owner, platform: kind, platformCollectionId, withLogin: auth !== undefined };
+    const cached = item.previewId === undefined ? undefined : this.previews.find(item.previewId, binding);
+    const listing =
+      cached ?? (await this.heavyJob(owner, signal, () => adapter.listCollection(platformCollectionId, auth, signal, COLLECTION_PREVIEW_ITEMS_MAX)));
+    const resolved = cached?.resolved ?? new Map<string, PlatformCollectionItem>();
+    const listed = new Map(listing.entries.map((entry) => [entry.platformContentId, entry]));
+    let chosen: PlatformCollectionEntry[];
+    if (item.entries === undefined) {
+      const count = listing.truncated ? Math.max(listing.totalCount ?? 0, listing.entries.length + 1) : listing.entries.length;
+      if (count > IMPORT_BATCH_MAX) {
+        throw batchTooLarge(count);
+      }
+      chosen = [...listing.entries];
+    } else {
+      if (item.entries.some((id) => !listed.has(id))) {
+        // A preview that expired may have listed what the collection no longer has.
+        throw item.previewId !== undefined && cached === undefined ? previewStale() : invalid(`items[${index}].entries`, "an entry is not in the collection");
+      }
+      chosen = item.entries.map((id) => listed.get(id) as PlatformCollectionEntry);
+      if (chosen.some((entry) => entry.unavailable !== undefined)) {
+        throw unavailableChosen(index);
+      }
+    }
+    await this.resolveEntries(owner, adapter, auth, platformCollectionId, chosen, resolved, signal);
+    if (chosen.some((entry) => entry.unavailable === undefined && resolved.get(entry.platformContentId)?.unavailable !== undefined)) {
+      // Found unavailable only by resolving it. Chosen: the preview showed it as not
+      // selectable. Not chosen: the collection fails as a whole, as resolving one did before
+      // entries could be marked unavailable; entries the listing itself marks keep going
+      // through as they always have.
+      throw item.entries === undefined ? amberError("source_unreachable", "an entry of the collection is unavailable on the platform") : unavailableChosen(index);
+    }
+    return {
+      collection: { kind, platformCollectionId, title: listing.title, sequence: listing.entries.map((entry) => entry.platformContentId) },
+      items: chosen.map((entry) => {
+        const resolvedEntry = resolved.get(entry.platformContentId) as PlatformCollectionItem;
+        return {
+          origin: "expanded" as const,
+          firstExpanded: true,
+          source: {
+            kind,
+            sourceUrl: resolvedEntry.canonicalUrl,
+            platformContentId: resolvedEntry.platformContentId,
+            ...(resolvedEntry.platformPartId === undefined ? {} : { platformPartId: resolvedEntry.platformPartId }),
+            platformCollectionId,
+          },
+          ...(resolvedEntry.title === undefined ? {} : { title: resolvedEntry.title }),
+          ...(resolvedEntry.durationMs === undefined ? {} : { durationMs: resolvedEntry.durationMs }),
+          platformCollections: [platformCollectionId],
+        };
+      }),
+    };
+  }
+
+  private async resolveLink(
+    owner: string,
+    link: Recognized,
     item: ImportItem,
     index: number,
     initialSubtitle: InitialSubtitle | undefined,
     signal: AbortSignal,
   ): Promise<ResolvedItem[]> {
-    const { adapter, auth, parsed } = await this.recognize(owner, item.url, signal);
+    const { adapter, auth, parsed } = link;
     const kind = adapter.kind;
-    if (parsed.platformContentId === undefined) {
-      if (item.parts !== undefined || initialSubtitle !== undefined) {
-        throw invalid(`items[${index}]`, "parts and initial subtitles apply to single videos only");
-      }
-      const platformCollectionId = parsed.platformCollectionId as string;
-      const collection = await this.heavyJob(owner, signal, () => adapter.fetchCollection(platformCollectionId, auth, signal));
-      return collection.items.map((entry) => ({
-        origin: "expanded" as const,
-        source: {
-          kind,
-          sourceUrl: entry.canonicalUrl,
-          platformContentId: entry.platformContentId,
-          ...(entry.platformPartId === undefined ? {} : { platformPartId: entry.platformPartId }),
-          platformCollectionId,
-        },
-        ...(entry.title === undefined ? {} : { title: entry.title }),
-        ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-        platformCollection: { platformCollectionId, title: collection.title },
-      }));
-    }
-
-    const platformContentId = parsed.platformContentId;
+    const platformContentId = parsed.platformContentId as string;
     if (adapter.resolveParts === undefined) {
       if (item.parts !== undefined) {
         throw invalid(`items[${index}].parts`, "this link has no parts to choose from");
       }
       return [
-        { origin: "direct", source: { kind, sourceUrl: parsed.canonicalUrl, platformContentId }, ...(initialSubtitle === undefined ? {} : { initialSubtitle }) },
+        {
+          origin: "direct",
+          firstExpanded: false,
+          source: { kind, sourceUrl: parsed.canonicalUrl, platformContentId },
+          platformCollections: [],
+          ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
+        },
       ];
     }
     const resolveParts = adapter.resolveParts.bind(adapter);
@@ -359,9 +592,11 @@ export class ImportContentService {
     const multipart = parts.length > 1;
     return chosen.map((part) => ({
       origin: "direct" as const,
+      firstExpanded: false,
       source: { kind, sourceUrl: part.canonicalUrl, platformContentId, platformPartId: part.platformPartId },
       ...(multipart && part.title !== "" ? { title: part.title } : {}),
       ...(part.durationMs > 0 ? { durationMs: part.durationMs } : {}),
+      platformCollections: [],
       ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
     }));
   }
@@ -399,7 +634,14 @@ export class ImportContentService {
     });
   }
 
-  private create(scope: RepositoryScope, outbox: Outbox, owner: string, body: ImportRequest, resolved: readonly ResolvedItem[]) {
+  private create(
+    scope: RepositoryScope,
+    outbox: Outbox,
+    owner: string,
+    body: ImportRequest,
+    resolved: readonly ResolvedItem[],
+    collections: readonly ExpandedCollection[],
+  ) {
     const { settings } = body;
     if (settings.modelRef !== undefined && modelRefProblem(scope, owner, settings.modelRef) !== undefined) {
       throw amberError("invalid_request", "modelRef does not name an owned model", { params: { detail: "settings.modelRef" } });
@@ -417,7 +659,7 @@ export class ImportContentService {
     }
     const now = this.now();
     const batchId = this.newId();
-    const fromCollections = resolved.length > 0 && resolved.every((item) => item.platformCollection !== undefined);
+    const fromCollections = resolved.length > 0 && resolved.every((item) => item.firstExpanded);
     // Contents in the trash: a direct item restores its Content in this
     // transaction; one found by expanding a collection, or one whose retention has run out,
     // is left where it is and only reported.
@@ -441,8 +683,9 @@ export class ImportContentService {
     const created: string[] = [batchId];
     const taskIds: string[] = [];
     const contentIds: string[] = [];
-    const members = new Map<string, string[]>();
-    const enroll = (collectionId: string, contentId: string) => members.set(collectionId, [...(members.get(collectionId) ?? []), contentId]);
+    // Members each platform collection gains from this batch, in batch order.
+    const joining = new Map<string, Array<{ contentId: string; platformContentId: string }>>();
+    const targetMembers: string[] = [];
 
     let named: Collection | undefined;
     if (target !== undefined && "name" in target) {
@@ -451,44 +694,57 @@ export class ImportContentService {
       scope.search.syncCollection(owner, named.id);
       created.push(named.id);
     }
-    const platformCollections = new Map<string, Collection>();
 
+    // Tasks are created in item order: one creation time and ascending ids, which is the order the scheduler admits them in.
     for (const item of processed) {
       const { content, task, createdIds } = this.createOrReuse(scope, outbox, owner, { ...frozen(settings, asrModelRef, diarization), templateRef }, batchId, item, now);
       created.push(...createdIds);
       contentIds.push(content.id);
       taskIds.push(task.id);
-      if (item.platformCollection !== undefined) {
-        const { platformCollectionId, title } = item.platformCollection;
-        let collection = platformCollections.get(platformCollectionId) ?? scope.collections.findByPlatformCollectionId(owner, platformCollectionId);
-        if (collection === undefined) {
-          collection = { id: this.newId(), userId: owner, name: title, platformCollectionId, createdAt: now, updatedAt: now };
-          scope.collections.insert(collection);
-          scope.search.syncCollection(owner, collection.id);
-          created.push(collection.id);
-        }
-        platformCollections.set(platformCollectionId, collection);
-        enroll(collection.id, content.id);
+      for (const platformCollectionId of item.platformCollections) {
+        const members = joining.get(platformCollectionId) ?? [];
+        members.push({ contentId: content.id, platformContentId: item.source.platformContentId as string });
+        joining.set(platformCollectionId, members);
       }
-      if (target !== undefined) {
-        enroll("id" in target ? target.id : (named as Collection).id, content.id);
-      }
+      targetMembers.push(content.id);
     }
-    for (const [collectionId, contents] of members) {
-      const items = scope.collections.listItems(owner, collectionId);
+
+    const collectionIds: string[] = [];
+    for (const expanded of collections) {
+      const members = joining.get(expanded.platformCollectionId);
+      if (members === undefined) {
+        continue;
+      }
+      let collection = scope.collections.findByPlatformCollectionId(owner, expanded.platformCollectionId);
+      if (collection === undefined) {
+        collection = { id: this.newId(), userId: owner, name: expanded.title, platformCollectionId: expanded.platformCollectionId, createdAt: now, updatedAt: now };
+        scope.collections.insert(collection);
+        scope.search.syncCollection(owner, collection.id);
+        created.push(collection.id);
+      }
+      if (placeInPlatformOrder(scope, owner, collection.id, expanded, members, now)) {
+        scope.collections.touch(owner, collection.id, now);
+      }
+      collectionIds.push(collection.id);
+    }
+    if (target !== undefined) {
+      // The chosen collection takes the batch at its end; members a platform collection placed already stay where they are.
+      const targetId = "id" in target ? target.id : (named as Collection).id;
+      const items = scope.collections.listItems(owner, targetId);
       const present = new Set(items.map((item) => item.contentId));
       let position = items.reduce((max, item) => Math.max(max, item.position), -1);
       let joined = false;
-      for (const contentId of contents) {
+      for (const contentId of targetMembers) {
         if (!present.has(contentId)) {
           present.add(contentId);
-          scope.collections.addItem(owner, { id: this.newId(), collectionId, contentId, position: ++position, addedAt: now });
+          scope.collections.addItem(owner, { id: this.newId(), collectionId: targetId, contentId, position: ++position, addedAt: now });
           joined = true;
         }
       }
-      if (joined) scope.collections.touch(owner, collectionId, now);
+      if (joined) scope.collections.touch(owner, targetId, now);
+      if (!collectionIds.includes(targetId)) collectionIds.push(targetId);
     }
-    return { status: 202, body: { importBatchId: batchId, taskIds, contentIds, skippedTrashedContentIds }, resourceRefs: created };
+    return { status: 202, body: { importBatchId: batchId, taskIds, contentIds, skippedTrashedContentIds, collectionIds }, resourceRefs: created };
   }
 
   private createOrReuse(
@@ -607,4 +863,102 @@ export class ImportContentService {
 function frozen(settings: ImportRequest["settings"], asrModelRef: AsrModelRef | undefined, diarization: DiarizationRequest): ImportRequest["settings"] {
   const { asrModelRef: _requested, diarization: _asked, ...rest } = settings;
   return { ...rest, ...(asrModelRef === undefined ? {} : { asrModelRef }), diarization };
+}
+
+/**
+ * Adds `members` to a platform collection in the platform's order without moving anyone
+ * already there: the platform's listed order, cut down to the members already present and
+ * the batch's, merged into the present order by `mergeCollectionOrder`. Present members are
+ * matched to the listing by their video id, so no member is ever removed for the platform no
+ * longer listing it. Returns whether anything was added; nothing is rewritten otherwise.
+ */
+function placeInPlatformOrder(
+  scope: RepositoryScope,
+  owner: string,
+  collectionId: string,
+  expanded: ExpandedCollection,
+  members: ReadonlyArray<{ contentId: string; platformContentId: string }>,
+  now: number,
+): boolean {
+  const local = scope.collections.listItems(owner, collectionId).map((item) => item.contentId);
+  const present = new Set(local);
+  if (members.every((member) => present.has(member.contentId))) {
+    return false;
+  }
+  // The batch's own Content first: another part of the same video already present keeps its place.
+  const byVideo = new Map<string, string>();
+  for (const member of members) {
+    if (!byVideo.has(member.platformContentId)) byVideo.set(member.platformContentId, member.contentId);
+  }
+  for (const contentId of local) {
+    const source = scope.contents.getIncludingTrashed(owner, contentId)?.source;
+    if (source?.kind === expanded.kind && source.platformContentId !== undefined && !byVideo.has(source.platformContentId)) {
+      byVideo.set(source.platformContentId, contentId);
+    }
+  }
+  const order: string[] = [];
+  const placed = new Set<string>();
+  const place = (contentId: string | undefined) => {
+    if (contentId !== undefined && !placed.has(contentId)) {
+      placed.add(contentId);
+      order.push(contentId);
+    }
+  };
+  for (const platformContentId of expanded.sequence) place(byVideo.get(platformContentId));
+  for (const member of members) place(member.contentId);
+  scope.collections.renumber(owner, collectionId, mergeCollectionOrder(local, order), now);
+  return true;
+}
+
+/**
+ * One entry of a collection preview page as the library stands: the most binding state
+ * first, then the existing Content it concerns. An entry the platform marks unavailable
+ * shows no title, duration or cover of its own.
+ */
+function previewItem(
+  scope: RepositoryScope,
+  owner: string,
+  kind: Platform,
+  entry: PlatformCollectionEntry,
+  item: PlatformCollectionItem,
+  members: ReadonlySet<string>,
+): NonNullable<InspectResponse["items"]>[number] {
+  const unavailable = entry.unavailable ?? item.unavailable;
+  const identity = {
+    platformContentId: item.platformContentId,
+    ...(item.platformPartId === undefined ? {} : { platformPartId: item.platformPartId }),
+    canonicalUrl: item.canonicalUrl,
+    index: entry.index,
+    ...(item.partCount === undefined ? {} : { partCount: item.partCount }),
+  };
+  if (unavailable !== undefined) {
+    return { ...identity, state: "unavailable", unavailableReason: unavailable };
+  }
+  const title = item.displayTitle ?? item.title;
+  const shown = {
+    ...identity,
+    ...(title === undefined ? {} : { title }),
+    ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
+    ...(item.coverUrl === undefined ? {} : { coverUrl: item.coverUrl }),
+  };
+  const content = scope.contents.findByPlatformIdentity(owner, {
+    kind,
+    sourceUrl: item.canonicalUrl,
+    platformContentId: item.platformContentId,
+    ...(item.platformPartId === undefined ? {} : { platformPartId: item.platformPartId }),
+  });
+  if (content === undefined) {
+    return { ...shown, state: "new" };
+  }
+  let state: CollectionEntryState;
+  if (content.trashedAt !== undefined) {
+    state = "trashed";
+  } else if (members.has(content.id)) {
+    state = "in_collection";
+  } else if (scope.tasks.listByContent(owner, content.id).some((task) => PROCESSING_KINDS.has(task.kind) && !isTerminalProjection(task.statusProjection))) {
+    state = "processing";
+  } else {
+    state = "in_library";
+  }
+  return { ...shown, state, contentId: content.id };
 }

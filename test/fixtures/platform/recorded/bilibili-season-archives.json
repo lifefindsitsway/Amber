@@ -1,0 +1,85 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list?mid=504934876&season_id=7985436&page_num=1&page_size=100",
+    "license": "未核实许可；仅作结构样本",
+    "attribution": "B 站合集 7985436（UP 主 UID 504934876）“【周易精讲】细读百家之祖，万法之源”",
+    "recordedAt": "2026-11-23",
+    "recordedWith": "a guest GET with a browser User-Agent and the bilibili Referer; archives reduced to the fields the adapter reads"
+  },
+  "answer": {
+    "code": 0,
+    "message": "OK",
+    "data": {
+      "archives": [
+        {
+          "aid": 116465571205458,
+          "bvid": "BV1WRo9BeErN",
+          "title": "【天规地道】正职与副手的\"进、退、荣、枯\"有哪些阶段和铁律？",
+          "duration": 6236,
+          "pic": "http://i0.hdslb.com/bfs/archive/350045dca4fc50a08633d24afc7814953363d10c.jpg",
+          "state": 0
+        },
+        {
+          "aid": 116618764030331,
+          "bvid": "BV1GPG86KEpq",
+          "title": "【硬核】从草创到上岸，有哪些天坑和人祸？为什么要尽全力避免打官司？【屯、蒙、需、讼】",
+          "duration": 7367,
+          "pic": "http://i2.hdslb.com/bfs/archive/a7a30cf106f93f7b2f5a59440d310b174a7a972e.jpg",
+          "state": 0
+        },
+        {
+          "aid": 116771201815619,
+          "bvid": "BV1jnjA65E3g",
+          "title": "【硬核】正果的皈依信号，虎狼的善终之道【师、比、小畜】",
+          "duration": 6537,
+          "pic": "http://i2.hdslb.com/bfs/archive/698a938c8aea7f2804a1b86fac4330e966db4f80.jpg",
+          "state": 0
+        },
+        {
+          "aid": 116936188894815,
+          "bvid": "BV1qyNo6TEws",
+          "title": "【硬核】否极怎样泰来？砸碎阶层固化的旧世界，拢共分几步？【履、泰、否、同人】",
+          "duration": 7490,
+          "pic": "http://i1.hdslb.com/bfs/archive/06ecea2d375ec5e7becf6e2bc1bb238015d2555a.jpg",
+          "state": 0
+        },
+        {
+          "aid": 117091864678761,
+          "bvid": "BV1zPgA6YEtb",
+          "title": "【硬核】大决战前夜，西柏坡与林彪、粟裕长达8个月的\"电报风云\"【大有、谦】",
+          "duration": 6574,
+          "pic": "http://i1.hdslb.com/bfs/archive/6da7f98efae79373fddab516b5321d4a9156bd16.jpg",
+          "state": 0
+        },
+        {
+          "aid": 117252909177380,
+          "bvid": "BV1XBY26BEfD",
+          "title": "【硬核】\"介石中正\"的改名改命？\"半世贞吉半世空\"的南柯一梦【豫、随、蛊】",
+          "duration": 8040,
+          "pic": "http://i2.hdslb.com/bfs/archive/d5c7c7795493babe6dc0b833710dc2bedbefd3c5.jpg",
+          "state": 0
+        },
+        {
+          "aid": 117600885480173,
+          "bvid": "BV1keWQ65ECm",
+          "title": "【硬核】为什么经济上行期的时候，恰恰没有\"神\"？【临、观、噬嗑、贲】",
+          "duration": 8202,
+          "pic": "http://i0.hdslb.com/bfs/archive/f20f0522d5b6b69c0cea2b102a0163b08f3286d9.jpg",
+          "state": 0
+        }
+      ],
+      "meta": {
+        "season_id": 7985436,
+        "mid": 504934876,
+        "title": "【周易精讲】细读百家之祖，万法之源",
+        "total": 7
+      },
+      "page": {
+        "page_num": 1,
+        "page_size": 100,
+        "total": 7
+      }
+    }
+  }
+}

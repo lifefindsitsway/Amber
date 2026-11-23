@@ -3,7 +3,8 @@ import { ImportContentService } from "../../../src/server/application/import-con
 import { resolveSpeakerContext } from "../../../src/server/application/speaker-context.ts";
 import { PlatformRegistry } from "../../../src/server/application/platforms.ts";
 import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
-import { IMPORT_BATCH_MAX } from "../../../src/shared/defaults.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, COLLECTION_PREVIEW_TTL_MS, IMPORT_BATCH_MAX } from "../../../src/shared/defaults.ts";
+import { importRequestSchema } from "../../../src/shared/dto/import.ts";
 import { platformTranscript } from "../../../src/server/domain/platform-subtitle.ts";
 import { TRASH_RETENTION_MS } from "../../../src/server/domain/content.ts";
 import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
@@ -470,21 +471,24 @@ describe("initial subtitles", () => {
 describe("inspecting a link", () => {
   it("describes single, multi-part and collection links without writing anything", async () => {
     const h = harness();
-    expect(await h.importContent.inspect(LOCAL, WATCH)).toEqual({ kind: "single", canonicalUrl: WATCH });
+    expect(await h.importContent.inspect(LOCAL, { url: WATCH })).toEqual({ kind: "single", canonicalUrl: WATCH });
     threeParts(h);
-    expect(await h.importContent.inspect(LOCAL, LINK)).toEqual({
+    expect(await h.importContent.inspect(LOCAL, { url: LINK })).toEqual({
       kind: "multipart",
       canonicalUrl: LINK,
       parts: [1, 2, 3].map((index) => ({ platformPartId: `c${index}`, index, title: `Lecture ${index}`, durationMs: 600_000 })),
     });
-    expect(await h.importContent.inspect(LOCAL, `${LINK}?p=3`)).toEqual({ kind: "single", canonicalUrl: `${LINK}?p=3`, title: "Lecture 3" });
+    expect(await h.importContent.inspect(LOCAL, { url: `${LINK}?p=3` })).toEqual({ kind: "single", canonicalUrl: `${LINK}?p=3`, title: "Lecture 3" });
     h.platforms.youtube.collections.set("PLabcdefghij", { title: "Playlist", items: [{ platformContentId: "dQw4w9WgXcQ", canonicalUrl: WATCH }] });
-    expect(await h.importContent.inspect(LOCAL, "https://www.youtube.com/playlist?list=PLabcdefghij")).toEqual({
+    expect(await h.importContent.inspect(LOCAL, { url: "https://www.youtube.com/playlist?list=PLabcdefghij" })).toEqual({
       kind: "collection",
       canonicalUrl: "https://www.youtube.com/playlist?list=PLabcdefghij",
       title: "Playlist",
       itemCount: 1,
-      items: [{ platformContentId: "dQw4w9WgXcQ", canonicalUrl: WATCH }],
+      items: [{ platformContentId: "dQw4w9WgXcQ", canonicalUrl: WATCH, index: 0, state: "new" }],
+      previewId: expect.any(String),
+      totalCount: 1,
+      offset: 0,
     });
     expect(countRows(h.db, "content")).toBe(0);
   });
@@ -492,10 +496,10 @@ describe("inspecting a link", () => {
   it("records a login the platform turns away as expired, and only a login", async () => {
     const h = harness();
     h.platforms.bilibili.resolveParts = async () => Promise.reject(amberError("auth_required", "scripted"));
-    await expect(h.importContent.inspect(LOCAL, LINK)).rejects.toThrow();
+    await expect(h.importContent.inspect(LOCAL, { url: LINK })).rejects.toThrow();
     expect(h.repository.withTransaction((scope) => scope.platformAccounts.get(LOCAL.userId, "bilibili"))).toBeUndefined();
     h.platformAccounts.putCookies(LOCAL, "bilibili", "bili_session=<placeholder>");
-    await expect(h.importContent.inspect(LOCAL, LINK)).rejects.toThrow();
+    await expect(h.importContent.inspect(LOCAL, { url: LINK })).rejects.toThrow();
     expect(h.repository.withTransaction((scope) => scope.platformAccounts.get(LOCAL.userId, "bilibili"))?.status).toBe("expired");
   });
 });
@@ -555,17 +559,20 @@ describe("heavy-job governor", () => {
     const { service, slots } = governed(h, new FairSemaphore(() => 1));
 
     await service.import(LOCAL, { items: [{ url: LINK, parts: "first" }, { url: PLAYLIST }, { url: "https://space.bilibili.com/1/lists/2?type=season" }], settings: { autoProofread: true } });
-    await service.inspect(BOB, LINK);
-    await service.inspect(BOB, PLAYLIST);
+    await service.inspect(BOB, { url: LINK });
+    await service.inspect(BOB, { url: PLAYLIST });
 
     const local = `foreground:${LOCAL.userId}`;
     const bob = `foreground:${BOB.userId}`;
     expect(slots).toEqual([
       { group: local, calls: ["resolveParts"] },
-      { group: local, calls: ["fetchCollection"] },
-      { group: local, calls: ["fetchCollection"] },
+      { group: local, calls: ["listCollection"] },
+      { group: local, calls: ["resolveCollectionEntries"] },
+      { group: local, calls: ["listCollection"] },
+      { group: local, calls: ["resolveCollectionEntries"] },
       { group: bob, calls: ["resolveParts"] },
-      { group: bob, calls: ["fetchCollection"] },
+      { group: bob, calls: ["listCollection"] },
+      { group: bob, calls: ["resolveCollectionEntries"] },
     ]);
   });
 });
@@ -870,5 +877,470 @@ describe("importing what is in the trash", () => {
     const expired = await h.importContent.import(LOCAL, request({ modelRef }));
     expect(expired.body).toMatchObject({ taskIds: [], contentIds: [], skippedTrashedContentIds: [contentId] });
     expect(trashedIds(h)).toEqual([contentId]);
+  });
+});
+
+describe("collection previews and chosen entries", () => {
+  const SPACE = "https://space.bilibili.com/1/lists/2";
+  const OTHER_SPACE = "https://space.bilibili.com/1/lists/3";
+  const T0 = 1_800_000_000_000;
+  const video = (n: number) => `https://www.bilibili.com/video/${bvid(n)}`;
+
+  /** Scripts bilibili collection `1_<sid>` with the given video numbers in platform order. */
+  function script(h: Harness, numbers: readonly number[], options: { sid?: number; unavailable?: readonly number[]; totalCount?: number } = {}): void {
+    h.platforms.bilibili.collections.set(`1_${options.sid ?? 2}`, {
+      title: `Course ${options.sid ?? 2}`,
+      items: numbers.map((n) => ({
+        platformContentId: bvid(n),
+        platformPartId: `${bvid(n)}-cid`,
+        title: `Lecture ${n}`,
+        durationMs: 60_000,
+        canonicalUrl: video(n),
+        ...(options.unavailable?.includes(n) === true ? { unavailable: "private" as const } : {}),
+      })),
+      ...(options.totalCount === undefined ? {} : { totalCount: options.totalCount }),
+    });
+  }
+
+  const range = (count: number, from = 0) => Array.from({ length: count }, (_, i) => from + i);
+
+  /** The harness's import service again, on a clock the test moves. */
+  function clocked(h: Harness) {
+    const clock = { now: T0 };
+    const service = new ImportContentService({
+      repository: h.repository,
+      bus: h.bus,
+      control: { kick: () => undefined },
+      platforms: new PlatformRegistry([h.platforms.bilibili, h.platforms.youtube]),
+      credentials: h.platformAccounts,
+      disk: h.disk,
+      settings: h.settings,
+      newId: h.newId,
+      now: () => clock.now,
+    });
+    return { service, clock };
+  }
+
+  const chosen = (url: string, numbers: readonly number[], previewId?: string) => ({
+    url,
+    entries: numbers.map(bvid),
+    ...(previewId === undefined ? {} : { previewId }),
+  });
+  const importOf = (items: Array<{ url: string; entries?: string[]; previewId?: string }>, extra: Record<string, unknown> = {}) => ({
+    items,
+    settings: { autoProofread: true },
+    ...extra,
+  });
+
+  function platformCollection(h: Harness, sid = 2) {
+    return h.repository.withTransaction((scope) => scope.collections.findByPlatformCollectionId(LOCAL.userId, `1_${sid}`));
+  }
+
+  /** The members' video numbers in position order. */
+  function orderOf(h: Harness, collectionId: string): number[] {
+    return h.repository.withTransaction((scope) =>
+      scope.collections
+        .listItems(LOCAL.userId, collectionId)
+        .map((item) => Number((scope.contents.getIncludingTrashed(LOCAL.userId, item.contentId)?.source.platformContentId ?? "").slice(-3))),
+    );
+  }
+
+  const videoOf = (h: Harness, contentId: string | undefined) => Number(contentOf(h, contentId)?.source.platformContentId?.slice(-3));
+  const listings = (h: Harness) => h.platforms.bilibili.callsOf("listCollection").length;
+
+  describe("importing chosen entries", () => {
+    it("imports only the chosen entries, creating their Tasks in the chosen order, and places them in the platform's order", async () => {
+      const h = harness();
+      script(h, range(6));
+      const { status, body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [4, 1, 3])]));
+      expect(status).toBe(202);
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([4, 1, 3]);
+      // One creation time and ascending ids: the scheduler admits them in this order.
+      expect([...body.taskIds].sort()).toEqual(body.taskIds);
+      const createdAt = new Set(body.taskIds.map((id) => taskOf(h, id).createdAt));
+      expect(createdAt.size).toBe(1);
+      const collection = platformCollection(h);
+      expect(orderOf(h, collection?.id as string)).toEqual([1, 3, 4]);
+      expect(body.collectionIds).toEqual([collection?.id]);
+      // Only the chosen entries were resolved.
+      expect(h.platforms.bilibili.resolvedEntries).toEqual([[bvid(4), bvid(1), bvid(3)]]);
+      expect(contentOf(h, body.contentIds[0])).toMatchObject({ title: "Lecture 4", durationMs: 60_000, source: { platformCollectionId: "1_2" } });
+    });
+
+    it("refuses entries that are not in the collection, entries on a single video, a preview id without entries and repeated entries", async () => {
+      const h = harness();
+      script(h, range(3));
+      const notListed = await errorOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, [1, 9])])));
+      expect(notListed).toMatchObject({ code: "invalid_request" });
+      expect(notListed?.userMessage).toContain("items[0].entries");
+      expect(await codeOf(() => h.importContent.import(LOCAL, importOf([{ url: video(1), entries: [bvid(1)] }])))).toBe("invalid_request");
+      expect(await codeOf(() => h.importContent.import(LOCAL, importOf([{ url: SPACE, previewId: "p" }])))).toBe("invalid_request");
+      expect(importRequestSchema.safeParse(importOf([chosen(SPACE, [1, 1])])).success).toBe(false);
+      expect(importRequestSchema.safeParse(importOf([{ url: SPACE, entries: [] }])).success).toBe(false);
+      expect(countRows(h.db, "content")).toBe(0);
+      expect(countRows(h.db, "import_batch")).toBe(0);
+    });
+
+    it("refuses a chosen entry the platform marks unavailable, and fails a whole-collection import on one found unavailable only when resolved", async () => {
+      const h = harness();
+      script(h, range(3), { unavailable: [1] });
+      const listed = await errorOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 1])])));
+      expect(listed).toMatchObject({ code: "invalid_request" });
+      expect(listed?.userMessage).toContain("items[0].entries");
+      // Refused from the listing alone, before resolving anything.
+      expect(h.platforms.bilibili.callsOf("resolveCollectionEntries")).toEqual([]);
+
+      // The listing knows nothing; the part list of entry 2 says the submission is gone.
+      script(h, range(3));
+      const fake = h.platforms.bilibili;
+      const resolve = fake.resolveCollectionEntries.bind(fake);
+      fake.resolveCollectionEntries = async (...args) =>
+        (await resolve(...args)).map((item) =>
+          item.platformContentId === bvid(2) ? { platformContentId: item.platformContentId, canonicalUrl: item.canonicalUrl, unavailable: "removed" as const } : item,
+        );
+      const resolved = await errorOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 2])])));
+      expect(resolved).toMatchObject({ code: "invalid_request" });
+      expect(resolved?.userMessage).toContain("items[0].entries");
+      expect(await codeOf(() => h.importContent.import(LOCAL, importOf([{ url: SPACE }])))).toBe("source_unreachable");
+      const preview = await h.importContent.inspect(LOCAL, { url: SPACE });
+      expect(preview.items?.[2]).toMatchObject({ state: "unavailable", unavailableReason: "removed" });
+      expect(await codeOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, [2], preview.previewId)])))).toBe("invalid_request");
+      expect(countRows(h.db, "content")).toBe(0);
+      expect(countRows(h.db, "import_batch")).toBe(0);
+    });
+
+    it("orders several collections by the order of their links, then by each one's chosen order", async () => {
+      const h = harness();
+      script(h, range(4));
+      script(h, range(3, 10), { sid: 3 });
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(OTHER_SPACE, [12, 10]), chosen(SPACE, [3, 0])]));
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([12, 10, 3, 0]);
+      expect([...body.taskIds].sort()).toEqual(body.taskIds);
+      expect(body.collectionIds).toEqual([platformCollection(h, 3)?.id, platformCollection(h, 2)?.id]);
+    });
+
+    it("refuses a collection over IMPORT_BATCH_MAX without a choice before resolving any entry, and too many chosen entries before going online", async () => {
+      const h = harness();
+      script(h, range(IMPORT_BATCH_MAX + 1));
+      const whole = await errorOf(() => h.importContent.import(LOCAL, importOf([{ url: SPACE }])));
+      expect(whole).toMatchObject({ code: "invalid_request.batch_too_large", details: { itemCount: IMPORT_BATCH_MAX + 1 } });
+      expect(h.platforms.bilibili.callsOf("resolveCollectionEntries")).toEqual([]);
+      const tooMany = await errorOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, range(IMPORT_BATCH_MAX + 1))])));
+      expect(tooMany).toMatchObject({ code: "invalid_request.batch_too_large", details: { itemCount: IMPORT_BATCH_MAX + 1 } });
+      expect(listings(h)).toBe(1);
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [IMPORT_BATCH_MAX, 0])]));
+      expect(body.contentIds).toHaveLength(2);
+    });
+  });
+
+  describe("one video in several collections", () => {
+    it("is one Content with one Task in every collection that lists it, its own collection field left as first imported", async () => {
+      const h = harness();
+      script(h, [0, 1, 2]);
+      script(h, [2, 3], { sid: 3 });
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [2, 0]), chosen(OTHER_SPACE, [3, 2]), { url: video(2) }]));
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([2, 0, 3]);
+      expect(body.taskIds).toHaveLength(3);
+      expect(countRows(h.db, "content")).toBe(3);
+      expect(countRows(h.db, "task")).toBe(3);
+      const [first, second] = [platformCollection(h, 2), platformCollection(h, 3)];
+      expect(orderOf(h, first?.id as string)).toEqual([0, 2]);
+      expect(orderOf(h, second?.id as string)).toEqual([2, 3]);
+      expect(contentOf(h, body.contentIds[0])?.source).toEqual({
+        kind: "bilibili",
+        sourceUrl: video(2),
+        platformContentId: bvid(2),
+        platformPartId: `${bvid(2)}-cid`,
+        platformCollectionId: "1_2",
+      });
+      expect(body.collectionIds).toEqual([first?.id, second?.id]);
+    });
+
+    it("joins the collection when the video was named on its own first, without the collection field", async () => {
+      const h = harness();
+      script(h, [0, 1]);
+      const { body } = await h.importContent.import(LOCAL, importOf([{ url: video(1) }, { url: SPACE }]));
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([1, 0]);
+      expect(orderOf(h, platformCollection(h)?.id as string)).toEqual([0, 1]);
+      expect(contentOf(h, body.contentIds[0])?.source.platformCollectionId).toBeUndefined();
+      // Named first as a link, as before: the batch is a batch of links.
+      expect(h.repository.withTransaction((scope) => scope.importBatches.get(LOCAL.userId, body.importBatchId))?.sourceType).toBe("links");
+    });
+  });
+
+  describe("member positions", () => {
+    it("puts later members back in the platform's order and keeps a hand-made order", async () => {
+      const h = harness();
+      script(h, range(5));
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 2, 4])]));
+      const collectionId = platformCollection(h)?.id as string;
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [1])]));
+      expect(orderOf(h, collectionId)).toEqual([0, 1, 2, 4]);
+      // The user moves 4 to the front; the members already there keep that order.
+      h.repository.withTransaction((scope) => {
+        const items = scope.collections.listItems(LOCAL.userId, collectionId);
+        scope.collections.reorder(LOCAL.userId, collectionId, [items[3], items[0], items[1], items[2]].map((item) => item?.id as string));
+      });
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [3])]));
+      expect(orderOf(h, collectionId)).toEqual([4, 0, 1, 2, 3]);
+    });
+
+    it("rewrites nothing and leaves the collection's time alone when no member is new", async () => {
+      const h = harness();
+      script(h, range(3));
+      const { service, clock } = clocked(h);
+      await service.import(LOCAL, importOf([chosen(SPACE, [0, 2])]));
+      const collectionId = platformCollection(h)?.id as string;
+      const before = h.repository.withTransaction((scope) => ({ items: scope.collections.listItems(LOCAL.userId, collectionId), collection: scope.collections.get(LOCAL.userId, collectionId) }));
+      clock.now += 60_000;
+      await service.import(LOCAL, importOf([chosen(SPACE, [2, 0])]));
+      await service.import(LOCAL, importOf([{ url: video(0) }]));
+      const after = h.repository.withTransaction((scope) => ({ items: scope.collections.listItems(LOCAL.userId, collectionId), collection: scope.collections.get(LOCAL.userId, collectionId) }));
+      expect(after).toEqual(before);
+      expect(after.collection?.updatedAt).toBe(T0);
+    });
+
+    it("keeps members the platform no longer lists, and places new ones after the nearest listed member", async () => {
+      const h = harness();
+      script(h, [0, 1, 2]);
+      await h.importContent.import(LOCAL, request({}, SPACE));
+      script(h, [1, 5, 2, 3]);
+      await h.importContent.import(LOCAL, request({}, SPACE));
+      expect(orderOf(h, platformCollection(h)?.id as string)).toEqual([0, 1, 5, 2, 3]);
+    });
+
+    it("keeps trashed members in their slots", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      script(h, [0, 1, 2]);
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 2])], { settings: { autoProofread: true, modelRef } }));
+      await drain(h);
+      await h.scheduler.stop();
+      h.trash.trash(LOCAL, body.contentIds[0] as string);
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [1])]));
+      expect(orderOf(h, platformCollection(h)?.id as string)).toEqual([0, 1, 2]);
+    });
+
+    it("merges once in the platform's order when the chosen collection is the platform collection, appending the rest", async () => {
+      const h = harness();
+      script(h, range(4));
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 3])]));
+      const collectionId = platformCollection(h)?.id as string;
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [2, 1]), { url: video(9) }], { collection: { id: collectionId } }));
+      expect(orderOf(h, collectionId)).toEqual([0, 1, 2, 3, 9]);
+      expect(body.collectionIds).toEqual([collectionId]);
+    });
+
+    it("appends to another chosen collection in the batch's order, after the platform collections in the answer", async () => {
+      const h = harness();
+      script(h, range(4));
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [3, 1])], { collection: { name: "Mine" } }));
+      const mine = h.collections.list(LOCAL).items.find((collection) => collection.name === "Mine")?.id as string;
+      expect(orderOf(h, mine)).toEqual([3, 1]);
+      expect(body.collectionIds).toEqual([platformCollection(h)?.id, mine]);
+    });
+  });
+
+  describe("re-importing chosen entries", () => {
+    it("reuses or creates Tasks as before for finished, unfinished and trashed Contents", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      script(h, range(4));
+      const first = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [0, 1])], { settings: { autoProofread: true, modelRef } }));
+      await drain(h);
+      await h.scheduler.stop();
+      h.trash.trash(LOCAL, first.body.contentIds[1] as string);
+      const running = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [2])], { settings: { autoProofread: true, modelRef } }));
+      const again = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [2, 1, 0, 3])], { settings: { autoProofread: true, modelRef } }));
+      expect(again.body.skippedTrashedContentIds).toEqual([first.body.contentIds[1]]);
+      expect(again.body.contentIds.map((id) => videoOf(h, id))).toEqual([2, 0, 3]);
+      // The unfinished Task and the succeeded one with the same intent are reused; only 3 is new.
+      expect(again.body.taskIds.slice(0, 2)).toEqual([running.body.taskIds[0], first.body.taskIds[0]]);
+      expect(countRows(h.db, "task")).toBe(4);
+    });
+  });
+
+  describe("confirmCollections", () => {
+    it("refuses collection links without entries, a short link's included, before listing anything", async () => {
+      const h = harness();
+      script(h, range(2));
+      h.platforms.bilibili.shortLinks.set("https://b23.tv/abc", SPACE);
+      const error = await errorOf(() =>
+        h.importContent.import(LOCAL, importOf([{ url: video(7) }, { url: "https://b23.tv/abc" }, { url: SPACE }, chosen(SPACE, [1])], { confirmCollections: true })),
+      );
+      expect(error).toMatchObject({ code: "invalid_request.collection_choice_required", details: { urls: ["https://b23.tv/abc", SPACE] } });
+      expect(listings(h)).toBe(0);
+      expect(h.platforms.bilibili.callsOf("resolveParts")).toEqual([]);
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen("https://b23.tv/abc", [1]), { url: video(7) }], { confirmCollections: true }));
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([1, 7]);
+    });
+
+    it("leaves a request without the new fields as it was", async () => {
+      const h = harness();
+      script(h, range(3));
+      const { body } = await h.importContent.import(LOCAL, request({}, SPACE));
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([0, 1, 2]);
+      expect(Object.keys(body).sort()).toEqual(["collectionIds", "contentIds", "importBatchId", "skippedTrashedContentIds", "taskIds"]);
+      expect(h.platforms.bilibili.resolvedEntries).toEqual([[bvid(0), bvid(1), bvid(2)]]);
+    });
+  });
+
+  describe("previews", () => {
+    it("lists once and resolves one page at a time, later pages from the cached listing", async () => {
+      const h = harness();
+      script(h, range(120));
+      const first = await h.importContent.inspect(LOCAL, { url: SPACE });
+      expect(first).toMatchObject({ kind: "collection", title: "Course 2", itemCount: 120, totalCount: 120, offset: 0, nextOffset: COLLECTION_PREVIEW_PAGE_SIZE });
+      expect(first.truncated).toBeUndefined();
+      expect(first.items?.map((item) => item.index)).toEqual(range(COLLECTION_PREVIEW_PAGE_SIZE));
+      expect(first.items?.[0]).toEqual({
+        platformContentId: bvid(0),
+        platformPartId: `${bvid(0)}-cid`,
+        title: "Lecture 0",
+        durationMs: 60_000,
+        canonicalUrl: video(0),
+        index: 0,
+        state: "new",
+      });
+      const second = await h.importContent.inspect(LOCAL, { url: SPACE, previewId: first.previewId as string, offset: 50 });
+      expect(second).toMatchObject({ previewId: first.previewId, offset: 50, nextOffset: 100 });
+      const last = await h.importContent.inspect(LOCAL, { url: SPACE, previewId: first.previewId as string, offset: 100 });
+      expect(last.items).toHaveLength(20);
+      expect(last.nextOffset).toBeUndefined();
+      expect(listings(h)).toBe(1);
+      expect(h.platforms.bilibili.resolvedEntries).toEqual([range(50).map(bvid), range(50, 50).map(bvid), range(20, 100).map(bvid)]);
+      // Asking for a page again resolves nothing.
+      await h.importContent.inspect(LOCAL, { url: SPACE, previewId: first.previewId as string, offset: 50 });
+      expect(h.platforms.bilibili.resolvedEntries).toHaveLength(3);
+      expect(await codeOf(() => h.importContent.inspect(LOCAL, { url: SPACE, previewId: first.previewId as string, offset: 120 }))).toBe("invalid_request");
+    });
+
+    it("imports from a live preview without listing again, resolving only chosen entries it had not resolved", async () => {
+      const h = harness();
+      script(h, range(120));
+      const preview = await h.importContent.inspect(LOCAL, { url: SPACE });
+      const { body } = await h.importContent.import(LOCAL, importOf([chosen(SPACE, [70, 3, 71], preview.previewId)]));
+      expect(listings(h)).toBe(1);
+      expect(h.platforms.bilibili.resolvedEntries.at(-1)).toEqual([bvid(70), bvid(71)]);
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([70, 3, 71]);
+      expect(orderOf(h, platformCollection(h)?.id as string)).toEqual([3, 70, 71]);
+      // An entry the live listing does not have is the request's mistake, not a stale preview.
+      expect(await codeOf(() => h.importContent.import(LOCAL, importOf([chosen(SPACE, [500], preview.previewId)])))).toBe("invalid_request");
+    });
+
+    it("lists the first COLLECTION_PREVIEW_ITEMS_MAX entries of a larger collection, with its total", async () => {
+      const h = harness();
+      script(h, range(COLLECTION_PREVIEW_ITEMS_MAX + 5), { totalCount: COLLECTION_PREVIEW_ITEMS_MAX + 5 });
+      const preview = await h.importContent.inspect(LOCAL, { url: SPACE });
+      expect(preview).toMatchObject({ itemCount: COLLECTION_PREVIEW_ITEMS_MAX, truncated: true, totalCount: COLLECTION_PREVIEW_ITEMS_MAX + 5 });
+      const error = await errorOf(() => h.importContent.import(LOCAL, request({}, SPACE)));
+      expect(error).toMatchObject({ code: "invalid_request.batch_too_large", details: { itemCount: COLLECTION_PREVIEW_ITEMS_MAX + 5 } });
+    });
+
+    it("lists again after the preview expires, keeping the user's choice and order when the platform reordered or added entries", async () => {
+      const h = harness();
+      script(h, range(4));
+      const { service, clock } = clocked(h);
+      const preview = await service.inspect(LOCAL, { url: SPACE });
+      clock.now += COLLECTION_PREVIEW_TTL_MS;
+      script(h, [3, 9, 2, 1, 0]);
+      expect(await codeOf(() => service.inspect(LOCAL, { url: SPACE, previewId: preview.previewId as string, offset: 0 }))).toBe("conflict.collection_preview_stale");
+      const { body } = await service.import(LOCAL, importOf([chosen(SPACE, [1, 3], preview.previewId)]));
+      expect(listings(h)).toBe(2);
+      expect(body.contentIds.map((id) => videoOf(h, id))).toEqual([1, 3]);
+      expect(orderOf(h, platformCollection(h)?.id as string)).toEqual([3, 1]);
+    });
+
+    it("answers a stale preview when an expired preview's chosen entry is gone", async () => {
+      const h = harness();
+      script(h, range(4));
+      const { service, clock } = clocked(h);
+      const preview = await service.inspect(LOCAL, { url: SPACE });
+      clock.now += COLLECTION_PREVIEW_TTL_MS;
+      script(h, [0, 1, 3]);
+      expect(await codeOf(() => service.import(LOCAL, importOf([chosen(SPACE, [1, 2], preview.previewId)])))).toBe("conflict.collection_preview_stale");
+      expect(countRows(h.db, "content")).toBe(0);
+    });
+
+    it("never serves another user's preview, nor one of another collection or login state", async () => {
+      const h = harness();
+      script(h, range(3));
+      script(h, range(3), { sid: 3 });
+      const mine = await h.importContent.inspect(LOCAL, { url: SPACE });
+      const previewId = mine.previewId as string;
+      expect(await codeOf(() => h.importContent.inspect(BOB, { url: SPACE, previewId }))).toBe("conflict.collection_preview_stale");
+      expect(await codeOf(() => h.importContent.inspect(LOCAL, { url: OTHER_SPACE, previewId }))).toBe("conflict.collection_preview_stale");
+      // Bob's import lists the collection itself.
+      await h.importContent.import(BOB, importOf([chosen(SPACE, [1], previewId)]));
+      expect(listings(h)).toBe(2);
+      h.platformAccounts.putCookies(LOCAL, "bilibili", "bili_session=<placeholder>");
+      expect(await codeOf(() => h.importContent.inspect(LOCAL, { url: SPACE, previewId }))).toBe("conflict.collection_preview_stale");
+    });
+
+    it("tells each entry's state against the platform collection's local collection or the one asked for", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      script(h, range(6), { unavailable: [5] });
+      await h.importContent.import(LOCAL, importOf([chosen(SPACE, [3]), { url: video(1) }, { url: video(4) }], { collection: { name: "Mine" }, settings: { autoProofread: true, modelRef } }));
+      await drain(h);
+      await h.scheduler.stop();
+      const contentId = (n: number) => h.repository.withTransaction((scope) => scope.contents.findByPlatformIdentity(LOCAL.userId, { kind: "bilibili", platformContentId: bvid(n), platformPartId: `${bvid(n)}-cid` }))?.id;
+      h.trash.trash(LOCAL, contentId(4) as string);
+      await h.importContent.import(LOCAL, request({}, video(2)));
+      const states = (preview: Awaited<ReturnType<Harness["importContent"]["inspect"]>>) =>
+        preview.items?.map((item) => [item.index, item.state, item.contentId, item.title, item.unavailableReason]);
+
+      const platform = await h.importContent.inspect(LOCAL, { url: SPACE });
+      expect(platform.localCollection).toEqual({ id: platformCollection(h)?.id, name: "Course 2" });
+      expect(states(platform)).toEqual([
+        [0, "new", undefined, "Lecture 0", undefined],
+        [1, "in_library", contentId(1), "Lecture 1", undefined],
+        [2, "processing", contentId(2), "Lecture 2", undefined],
+        [3, "in_collection", contentId(3), "Lecture 3", undefined],
+        [4, "trashed", contentId(4), "Lecture 4", undefined],
+        [5, "unavailable", undefined, undefined, "private"],
+      ]);
+      expect(platform.items?.[5]?.durationMs).toBeUndefined();
+
+      const mine = h.collections.list(LOCAL).items.find((collection) => collection.name === "Mine");
+      const asked = await h.importContent.inspect(LOCAL, { url: SPACE, collectionId: mine?.id as string });
+      expect(asked.localCollection).toEqual({ id: mine?.id, name: "Mine" });
+      expect(states(asked)?.map(([index, state]) => [index, state])).toEqual([
+        [0, "new"],
+        [1, "in_collection"],
+        [2, "processing"],
+        [3, "in_collection"],
+        [4, "trashed"],
+        [5, "unavailable"],
+      ]);
+      expect(await codeOf(() => h.importContent.inspect(BOB, { url: SPACE, collectionId: mine?.id as string }))).toBe("not_found");
+      // The import and the two previews; the refused one never went online.
+      expect(listings(h)).toBe(3);
+      expect(countRows(h.db, "content")).toBe(4);
+    });
+  });
+
+  describe("Idempotency-Key with chosen entries", () => {
+    it("replays the first answer without going online or creating Tasks; another preview id is another request", async () => {
+      const h = harness();
+      script(h, range(3));
+      const preview = await h.importContent.inspect(LOCAL, { url: SPACE });
+      const body = importOf([chosen(SPACE, [2, 0], preview.previewId)], { confirmCollections: true });
+      const first = await h.importContent.import(LOCAL, body, "confirm-1");
+      const calls = h.platforms.bilibili.calls.length;
+      const replay = await h.importContent.import(LOCAL, body, "confirm-1");
+      expect(replay).toEqual({ ...first, replayed: true });
+      expect(h.platforms.bilibili.calls).toHaveLength(calls);
+      expect(countRows(h.db, "task")).toBe(2);
+      expect(countRows(h.db, "import_batch")).toBe(1);
+      const reread = await h.importContent.inspect(LOCAL, { url: SPACE });
+      const changed = importOf([chosen(SPACE, [2, 0], reread.previewId)], { confirmCollections: true });
+      expect(await codeOf(() => h.importContent.import(LOCAL, changed, "confirm-1"))).toBe("idempotency_conflict");
+      const fresh = await h.importContent.import(LOCAL, changed, "confirm-2");
+      expect(fresh.replayed).toBe(false);
+      // The unfinished Tasks are reused: a new confirmation of the same entries starts nothing new.
+      expect(fresh.body.taskIds).toEqual(first.body.taskIds);
+      expect(countRows(h.db, "task")).toBe(2);
+    });
   });
 });

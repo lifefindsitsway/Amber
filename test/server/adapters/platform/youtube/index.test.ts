@@ -7,6 +7,7 @@ import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { selectSubtitleTrack } from "../../../../../src/server/domain/platform-subtitle.ts";
 import { OutboundHttpError } from "../../../../../src/server/ports/outbound-http.ts";
 import type { ProcessSpec } from "../../../../../src/server/ports/process-runner.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX } from "../../../../../src/shared/defaults.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import { argAfter, cookieLine, credential, ScriptedHttp, scriptedYtDlp, signal, type ProcessHandler, type ScriptedProcess } from "../../../../fixtures/platform/scripted-io.ts";
 
@@ -398,20 +399,82 @@ describe("YoutubeAdapter.importBrowserCookies", () => {
   });
 });
 
-describe("YoutubeAdapter.fetchCollection", () => {
-  it("lists a playlist flat as a guest first", async () => {
-    const { adapter, runner } = setup(() => ({
-      stdout: JSON.stringify({ title: "Course", entries: [{ id: ID, title: "One", duration: 61.2 }, { id: "aaaaaaaaaaa" }, { title: "private" }, { id: "" }] }),
-    }));
-    expect(await adapter.fetchCollection("PLabcdefghij", LOGIN, signal())).toEqual({
-      title: "Course",
-      items: [
-        { platformContentId: ID, title: "One", durationMs: 61_200, canonicalUrl: WATCH },
-        { platformContentId: "aaaaaaaaaaa", canonicalUrl: "https://www.youtube.com/watch?v=aaaaaaaaaaa" },
-      ],
-    });
-    expect(runner.specs[0]?.args.slice(-3)).toEqual(["--dump-single-json", "--flat-playlist", "https://www.youtube.com/playlist?list=PLabcdefghij"]);
-    expect(runner.specs[0]?.args).not.toContain("--cookies");
+describe("YoutubeAdapter collections", () => {
+  const RECORDED = (
+    JSON.parse(readFileSync(new URL("../../../../fixtures/platform/recorded/youtube-playlist-flat.json", import.meta.url), "utf8")) as {
+      playlist: { id: string; title: string; playlist_count: number; entries: Array<{ id: string; title: string; duration: number; thumbnails: Array<{ url: string; width: number }> }> };
+    }
+  ).playlist;
+
+  it("lists the recorded playlist flat as a guest first, one past the limit, with titles, durations and the widest cover", async () => {
+    const { adapter, runner } = setup(() => ({ stdout: JSON.stringify(RECORDED) }));
+    const listing = await adapter.listCollection(RECORDED.id, LOGIN, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect(listing.title).toBe(RECORDED.title);
+    expect(listing).toMatchObject({ totalCount: RECORDED.entries.length, truncated: false });
+    expect(listing.entries).toEqual(
+      RECORDED.entries.map((entry, index) => ({
+        index,
+        platformContentId: entry.id,
+        canonicalUrl: `https://www.youtube.com/watch?v=${entry.id}`,
+        title: entry.title,
+        durationMs: entry.duration * 1000,
+        coverUrl: [...entry.thumbnails].sort((a, b) => b.width - a.width)[0]?.url,
+      })),
+    );
+    expect(listing.entries[0]?.coverUrl).toMatch(/^https:\/\/i\.ytimg\.com\/vi\/l07K2cdLofM\//);
+    const args = runner.specs[0]?.args ?? [];
+    expect(args.slice(-5)).toEqual(["--dump-single-json", "--flat-playlist", "--playlist-items", `1:${COLLECTION_PREVIEW_ITEMS_MAX + 1}`, `https://www.youtube.com/playlist?list=${RECORDED.id}`]);
+    expect(args).not.toContain("--cookies");
+  });
+
+  it("resolves entries from the listing alone, without a request", async () => {
+    const { adapter, runner } = setup(() => ({ stdout: JSON.stringify(RECORDED) }));
+    const listing = await adapter.listCollection(RECORDED.id, undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    const items = await adapter.resolveCollectionEntries(RECORDED.id, listing.entries);
+    expect(runner.specs).toHaveLength(1);
+    expect(items).toEqual(listing.entries.map(({ index: _index, ...entry }) => entry));
+  });
+
+  it("reports the playlist's own total when the listing stops at the limit", async () => {
+    const { adapter } = setup(() => ({ stdout: JSON.stringify({ ...RECORDED, entries: RECORDED.entries.slice(0, 4) }) }));
+    const listing = await adapter.listCollection(RECORDED.id, undefined, signal(), 3);
+    expect(listing).toMatchObject({ truncated: true, totalCount: RECORDED.playlist_count });
+    expect(listing.entries).toHaveLength(3);
+    const silent = setup(() => ({ stdout: JSON.stringify({ title: "t", entries: RECORDED.entries.slice(0, 4) }) }));
+    const unknown = await silent.adapter.listCollection(RECORDED.id, undefined, signal(), 3);
+    expect(unknown.truncated).toBe(true);
+    expect(unknown.totalCount).toBeUndefined();
+  });
+
+  it("marks private, deleted and unavailable entries, keeps covers off foreign hosts, and skips entries without an id or repeated", async () => {
+    const base = RECORDED.entries[0] as (typeof RECORDED.entries)[number];
+    const entries = [
+      { id: "aaaaaaaaaaa", title: "[Private video]", duration: null, availability: null, thumbnails: [] },
+      { id: "bbbbbbbbbbb", title: "Members", availability: "private", thumbnails: base.thumbnails },
+      { id: "ccccccccccc", title: "[Deleted video]", duration: null },
+      { id: "ddddddddddd", title: "[Unavailable video]" },
+      { id: "eeeeeeeeeee", title: "Elsewhere", thumbnails: [{ url: "https://evil.example/x.jpg", width: 900 }, { url: "http://i.ytimg.com/vi/e/1.jpg", width: 800 }, { url: "https://i9.ytimg.com/vi/e/2.jpg", width: 10 }] },
+      { title: "no id" },
+      { id: "" },
+      { id: "aaaaaaaaaaa", title: "repeat" },
+    ];
+    const { adapter } = setup(() => ({ stdout: JSON.stringify({ title: "Course", entries }) }));
+    const listing = await adapter.listCollection("PLabcdefghij", undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect(listing.entries.map(({ platformContentId, unavailable, coverUrl }) => ({ platformContentId, unavailable, coverUrl }))).toEqual([
+      { platformContentId: "aaaaaaaaaaa", unavailable: "private", coverUrl: undefined },
+      { platformContentId: "bbbbbbbbbbb", unavailable: "private", coverUrl: expect.stringMatching(/^https:\/\/i\.ytimg\.com\//) },
+      { platformContentId: "ccccccccccc", unavailable: "removed", coverUrl: undefined },
+      { platformContentId: "ddddddddddd", unavailable: "unknown", coverUrl: undefined },
+      { platformContentId: "eeeeeeeeeee", unavailable: undefined, coverUrl: "https://i9.ytimg.com/vi/e/2.jpg" },
+    ]);
+    expect(listing.totalCount).toBe(5);
+  });
+
+  it("retries the listing once with the login when YouTube asks for it", async () => {
+    const { adapter, runner } = setup(sequence(BOT_CHECK, { stdout: JSON.stringify(RECORDED) }));
+    const listing = await adapter.listCollection(RECORDED.id, LOGIN, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+    expect(listing.entries).toHaveLength(RECORDED.entries.length);
+    expect(runner.specs.map((spec) => spec.args.includes("--cookies"))).toEqual([false, true]);
   });
 });
 

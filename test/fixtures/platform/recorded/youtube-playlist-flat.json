@@ -1,0 +1,220 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://www.youtube.com/playlist?list=PLDrJO3v_iAZY",
+    "license": "未核实许可；仅作结构样本，不含简介",
+    "attribution": "Stanford Online，YouTube 频道 UCBa5G_ESCn8Yd4vw5U-gIcg，播放列表 “Stanford CS193T Thinking with AI | Autumn 2026”",
+    "recordedAt": "2026-11-23",
+    "recordedWith": "yt-dlp 2026.08.19 as a guest, --dump-single-json --flat-playlist; fields the adapter reads, thumbnail URLs cut at the query string"
+  },
+  "playlist": {
+    "id": "PLDrJO3v_iAZY",
+    "title": "Stanford CS193T Thinking with AI | Autumn 2026",
+    "playlist_count": 7,
+    "entries": [
+      {
+        "id": "l07K2cdLofM",
+        "title": "AI Costs: Tokens, Energy, Model Choice & API Keys | Stanford CS193T Lecture 7 with Cynthia Bailey",
+        "duration": 2940,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=l07K2cdLofM",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/l07K2cdLofM/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/l07K2cdLofM/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/l07K2cdLofM/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/l07K2cdLofM/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "0Uk4uLjuEeY",
+        "title": "Vibe Coding, AI Risk & AI Evaluation | Stanford CS193T Lecture 6 with Cynthia Bailey",
+        "duration": 4168,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=0Uk4uLjuEeY",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/0Uk4uLjuEeY/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/0Uk4uLjuEeY/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/0Uk4uLjuEeY/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/0Uk4uLjuEeY/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "ho00IesajkY",
+        "title": "How AI Agents Work: Connectors, MCP & Agent Safety | Stanford CS193T Lecture 5 with Cynthia Bailey",
+        "duration": 3533,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=ho00IesajkY",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/ho00IesajkY/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/ho00IesajkY/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/ho00IesajkY/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/ho00IesajkY/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "PeRJkvzIEts",
+        "title": "Using AI in Research | Stanford CS193T Guest Panel with Mark Algee-Hewitt, Megan Ma & Markus Covert",
+        "duration": 4282,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=PeRJkvzIEts",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/PeRJkvzIEts/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/PeRJkvzIEts/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/PeRJkvzIEts/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/PeRJkvzIEts/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "8Ok6ZYILp2Q",
+        "title": "AI Memory, RAG & Prompt Injection Explained | Stanford CS193T Lecture 3 with Cynthia Bailey",
+        "duration": 3800,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=8Ok6ZYILp2Q",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/8Ok6ZYILp2Q/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/8Ok6ZYILp2Q/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/8Ok6ZYILp2Q/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/8Ok6ZYILp2Q/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "Qhf1mp74tbk",
+        "title": "How to Prompt AI Well: Trust, Evidence & Context Rot | Stanford CS193T Lecture 2 with Cynthia Bailey",
+        "duration": 4577,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=Qhf1mp74tbk",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/Qhf1mp74tbk/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/Qhf1mp74tbk/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/Qhf1mp74tbk/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/Qhf1mp74tbk/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      },
+      {
+        "id": "I7zvCSGMkoc",
+        "title": "How AI Chatbots Work: LLMs, Tokens & Hallucination | Stanford CS193T Lecture 1 with Cynthia Bailey",
+        "duration": 4362,
+        "availability": null,
+        "url": "https://www.youtube.com/watch?v=I7zvCSGMkoc",
+        "thumbnails": [
+          {
+            "url": "https://i.ytimg.com/vi/I7zvCSGMkoc/hqdefault.jpg",
+            "width": 168,
+            "height": 94
+          },
+          {
+            "url": "https://i.ytimg.com/vi/I7zvCSGMkoc/hqdefault.jpg",
+            "width": 196,
+            "height": 110
+          },
+          {
+            "url": "https://i.ytimg.com/vi/I7zvCSGMkoc/hqdefault.jpg",
+            "width": 246,
+            "height": 138
+          },
+          {
+            "url": "https://i.ytimg.com/vi/I7zvCSGMkoc/hqdefault.jpg",
+            "width": 336,
+            "height": 188
+          }
+        ]
+      }
+    ]
+  }
+}

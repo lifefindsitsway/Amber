@@ -1,4 +1,4 @@
-import { PLATFORM_METADATA_TIMEOUT_MS, SHORTLINK_MAX_HOPS } from "../../../../shared/defaults.ts";
+import { PLATFORM_COLLECTION_RESOLVE_CONCURRENCY, PLATFORM_METADATA_TIMEOUT_MS, SHORTLINK_MAX_HOPS } from "../../../../shared/defaults.ts";
 import { classifyPlatformDescription } from "../../../domain/content-description.ts";
 import { amberError } from "../../../domain/errors.ts";
 import { cookieHeaderFor, parseNetscapeCookies } from "../../../domain/platform-cookie.ts";
@@ -6,10 +6,13 @@ import type { OutboundHttpClient } from "../../../ports/outbound-http.ts";
 import type {
   CanonicalSubtitle,
   ParsedPlatformUrl,
-  PlatformCollection,
+  PlatformCollectionEntry,
+  PlatformCollectionItem,
+  PlatformCollectionListing,
   PlatformContentRef,
   PlatformCredential,
   PlatformDescription,
+  PlatformEntryUnavailableReason,
   PlatformMetadata,
   PlatformPart,
   PlatformSourceAdapter,
@@ -19,10 +22,23 @@ import type {
 } from "../../../ports/platform-source.ts";
 import type { DanmakuItem } from "../../../../shared/dto/danmaku.ts";
 import { platformGet, platformGetJson } from "../http.ts";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoQualities, secondsToMs, videoTargetOf, type YtDlpChapter } from "../shared.ts";
+import {
+  downloadAudio,
+  downloadVideo,
+  inspectAudio,
+  inspectVideo,
+  languageTag,
+  listVideoQualities,
+  mapConcurrent,
+  playlistItemsUpTo,
+  secondsToMs,
+  trustedImageUrl,
+  videoTargetOf,
+  type YtDlpChapter,
+} from "../shared.ts";
 import type { YtDlp } from "../yt-dlp.ts";
 import { fetchBilibiliDanmaku } from "./danmaku.ts";
-import { collectionUrl, isShortLink, parseBilibiliUrl, videoUrl } from "./url.ts";
+import { collectionUrl, isShortLink, parseBilibiliUrl, seasonOf, videoUrl } from "./url.ts";
 
 /** IE_NAMEs of the pinned yt-dlp that handle the URLs `parse` accepts. */
 export const BILIBILI_EXTRACTORS = ["bilibili", "bilibilicollectionlist", "bilibiliserieslist"] as const;
@@ -30,6 +46,10 @@ const API = "https://api.bilibili.com";
 /** Where a bilibili login lives; cookies of other sites never enter its Secret. */
 export const BILIBILI_COOKIE_DOMAINS = ["bilibili.com"] as const;
 const REFERER = { Referer: "https://www.bilibili.com/" };
+/** Hosts bilibili serves covers from (`i0.hdslb.com` and the like, `archive.biliimg.com`), subdomains included. */
+export const BILIBILI_IMAGE_DOMAINS = ["hdslb.com", "biliimg.com"] as const;
+/** Submissions per page asked of the season archive list. */
+const SEASON_PAGE_SIZE = 100;
 /** What bilibili shows (and yt-dlp passes on) for a video whose uploader wrote no description. */
 const EMPTY_DESCRIPTIONS = ["-"] as const;
 
@@ -77,6 +97,32 @@ interface FlatPlaylist {
   entries?: Array<{ id?: string; url?: string }>;
 }
 
+/** One submission of a 合集 as its archive list gives it; `duration` is the whole submission's and is not read. */
+interface SeasonArchive {
+  bvid?: string;
+  title?: string;
+  pic?: string;
+}
+
+interface SeasonArchives {
+  archives?: SeasonArchive[];
+  page?: { total?: number };
+}
+
+/** One page of a 合集's archive list: the season's submissions with their titles and covers, guest-readable. */
+function seasonArchivesPath(season: { mid: string; seasonId: string }, page: number): string {
+  return `/x/polymer/web-space/seasons_archives_list?mid=${season.mid}&season_id=${season.seasonId}&page_num=${page}&page_size=${SEASON_PAGE_SIZE}`;
+}
+
+/**
+ * What a collection entry's part list answering one of these codes means: the submission is
+ * gone (-404) or not open to this viewer (-403). Any other code fails the whole resolution.
+ */
+const UNAVAILABLE_PART_LIST_CODES: ReadonlyMap<number, PlatformEntryUnavailableReason> = new Map([
+  [-404, "removed"],
+  [-403, "private"],
+]);
+
 /** An API error code: -101 not logged in, -352 / -412 risk control, -404 gone, -403 no access. */
 export function apiError(code: number): Error {
   if (code === -412 || code === -352 || code === -509) {
@@ -86,6 +132,25 @@ export function apiError(code: number): Error {
     return amberError("auth_required", `bilibili api code ${code}`);
   }
   return amberError("source_unreachable", `bilibili api code ${code}`);
+}
+
+function pageListPath(bvid: string): string {
+  return `/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`;
+}
+
+/** A submission's parts from its part list; a list without parts is a failure. */
+function partsOf(bvid: string, data: PageEntry[] | undefined): PlatformPart[] {
+  const pages = data ?? [];
+  if (pages.length === 0) {
+    throw amberError("source_unreachable", "bilibili returned no parts");
+  }
+  return pages.map((page) => ({
+    platformPartId: String(page.cid),
+    index: page.page,
+    title: (page.part ?? "").trim(),
+    durationMs: secondsToMs(page.duration ?? 0),
+    canonicalUrl: videoUrl(bvid, pages.length > 1 ? page.page : undefined),
+  }));
 }
 
 function https(url: string): string {
@@ -137,18 +202,11 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
   }
 
   async resolveParts(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart[]> {
-    const envelope = await this.api<PageEntry[]>(`/x/player/pagelist?bvid=${encodeURIComponent(ref.platformContentId)}`, auth, signal);
-    const pages = envelope ?? [];
-    if (pages.length === 0) {
-      throw amberError("source_unreachable", "bilibili returned no parts");
+    const envelope = await this.envelope<PageEntry[]>(pageListPath(ref.platformContentId), auth, signal);
+    if (envelope.code !== 0) {
+      throw apiError(envelope.code);
     }
-    return pages.map((page) => ({
-      platformPartId: String(page.cid),
-      index: page.page,
-      title: (page.part ?? "").trim(),
-      durationMs: secondsToMs(page.duration ?? 0),
-      canonicalUrl: videoUrl(ref.platformContentId, pages.length > 1 ? page.page : undefined),
-    }));
+    return partsOf(ref.platformContentId, envelope.data);
   }
 
   async fetchMetadata(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformMetadata> {
@@ -262,40 +320,92 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     }
   }
 
-  async fetchCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformCollection> {
+  /**
+   * The collection's video ids in order, from one flat yt-dlp listing stopped one entry past
+   * `limit`. That listing carries no total, so a truncated 合集 asks the season archive list
+   * for it; a 列表 (series) leaves it unknown.
+   */
+  async listCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal, limit: number): Promise<PlatformCollectionListing> {
     const url = collectionUrl(platformCollectionId);
     if (url === null) {
       throw new TypeError("not a bilibili collection id");
     }
     const cookies = await auth?.cookies();
     const playlist = await this.options.ytDlp.json<FlatPlaylist>({
-      args: ["--dump-single-json", "--flat-playlist", url],
+      args: ["--dump-single-json", "--flat-playlist", "--playlist-items", playlistItemsUpTo(limit), url],
       extractors: BILIBILI_EXTRACTORS,
       ...(cookies === undefined ? {} : { cookies }),
       signal,
       timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
     });
-    const items = [];
+    const listed: string[] = [];
     for (const entry of playlist.entries ?? []) {
       const bvid = this.parse(entry.url ?? "")?.platformContentId ?? entry.id;
-      if (bvid === undefined) {
-        continue;
+      // Only an id that makes a URL `parse` accepts is passed on; a repeat keeps its first place.
+      if (bvid !== undefined && this.parse(videoUrl(bvid))?.platformContentId === bvid && !listed.includes(bvid)) {
+        listed.push(bvid);
       }
-      // A multi-part submission inside a collection contributes its first part only:
-      // importing every part would start paid work nobody chose.
-      const [first] = await this.resolveParts({ platformContentId: bvid }, auth, signal);
-      if (first === undefined) {
-        continue;
-      }
-      items.push({
-        platformContentId: bvid,
-        platformPartId: first.platformPartId,
-        ...(first.title === "" ? {} : { title: first.title }),
-        durationMs: first.durationMs,
-        canonicalUrl: first.canonicalUrl,
-      });
     }
-    return { title: playlist.title ?? platformCollectionId, items };
+    const truncated = listed.length > limit;
+    const entries = listed.slice(0, limit).map((bvid, index) => ({ index, platformContentId: bvid, canonicalUrl: videoUrl(bvid) }));
+    const totalCount = truncated ? await this.seasonTotal(platformCollectionId, auth, signal) : entries.length;
+    return { title: playlist.title ?? platformCollectionId, entries, ...(totalCount === undefined ? {} : { totalCount }), truncated };
+  }
+
+  /**
+   * The first part of each entry, from its part list, a few entries at a time: the part id is
+   * the Content identity. A multi-part submission contributes its first part only, since
+   * importing every part would start paid work nobody chose. The season archive list adds
+   * each submission's own title and cover, matched by video id because its paging need not
+   * line up with the listing; whatever it does not give falls back to the first part.
+   * A submission's total duration is never used: only its first part is imported. An entry
+   * whose part list says the submission is gone or closed comes back `unavailable`, with
+   * neither part, title nor duration.
+   */
+  async resolveCollectionEntries(
+    platformCollectionId: string,
+    entries: readonly PlatformCollectionEntry[],
+    auth: PlatformCredential | undefined,
+    signal: AbortSignal,
+  ): Promise<PlatformCollectionItem[]> {
+    if (collectionUrl(platformCollectionId) === null) {
+      throw new TypeError("not a bilibili collection id");
+    }
+    const archives = this.seasonArchives(platformCollectionId, entries, auth, signal);
+    let parts: Array<PlatformPart[] | PlatformEntryUnavailableReason>;
+    try {
+      parts = await mapConcurrent(entries, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY, (entry) => this.entryParts(entry.platformContentId, auth, signal));
+    } catch (error) {
+      await archives;
+      throw error;
+    }
+    const byBvid = await archives;
+    return entries.map((entry, index) => {
+      const submission = parts[index] as PlatformPart[] | PlatformEntryUnavailableReason;
+      if (typeof submission === "string") {
+        // Nothing of its own is shown for an entry that cannot be imported, not even what the season list may still say.
+        return { platformContentId: entry.platformContentId, canonicalUrl: videoUrl(entry.platformContentId), unavailable: submission };
+      }
+      const first = submission[0] as PlatformPart;
+      const archive = byBvid.get(entry.platformContentId);
+      const archiveTitle = archive?.title?.trim() || undefined;
+      const partTitle = first.title === "" ? undefined : first.title;
+      // A single part is the submission itself, so it takes the submission's title; one part of
+      // several keeps its own until the source stage reads the platform's metadata.
+      const title = submission.length === 1 ? (archiveTitle ?? partTitle) : partTitle;
+      const displayTitle = archiveTitle ?? partTitle;
+      const coverUrl = typeof archive?.pic === "string" ? trustedImageUrl(https(archive.pic), BILIBILI_IMAGE_DOMAINS) : undefined;
+      return {
+        platformContentId: entry.platformContentId,
+        platformPartId: first.platformPartId,
+        canonicalUrl: first.canonicalUrl,
+        ...(title === undefined ? {} : { title }),
+        ...(displayTitle === undefined || displayTitle === title ? {} : { displayTitle }),
+        durationMs: first.durationMs,
+        ...(coverUrl === undefined ? {} : { coverUrl }),
+        partCount: submission.length,
+      };
+    });
   }
 
   async fetchAudio(
@@ -386,6 +496,23 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     return fetchBilibiliDanmaku(this.options.http, ref.platformPartId, signal);
   }
 
+  /**
+   * One collection entry's parts, or why the platform will not give them: a submission that
+   * is gone or closed to this viewer is one unavailable entry, not a failed collection.
+   * Network errors, risk control and every other code still fail the whole resolution.
+   */
+  private async entryParts(bvid: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart[] | PlatformEntryUnavailableReason> {
+    const envelope = await this.envelope<PageEntry[]>(pageListPath(bvid), auth, signal);
+    const unavailable = UNAVAILABLE_PART_LIST_CODES.get(envelope.code);
+    if (unavailable !== undefined) {
+      return unavailable;
+    }
+    if (envelope.code !== 0) {
+      throw apiError(envelope.code);
+    }
+    return partsOf(bvid, envelope.data);
+  }
+
   /** The part a Content refers to, located by cid because part numbers shift when parts are reordered. */
   private async part(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart> {
     const parts = await this.resolveParts(ref, auth, signal);
@@ -396,16 +523,72 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     return part;
   }
 
+  /**
+   * Submissions of the season archive list pages that hold `entries`, by video id; empty for
+   * a 列表 (series). Never fails: a page that does not answer only leaves its entries
+   * without the submission's title and cover.
+   */
+  private async seasonArchives(
+    platformCollectionId: string,
+    entries: readonly PlatformCollectionEntry[],
+    auth: PlatformCredential | undefined,
+    signal: AbortSignal,
+  ): Promise<Map<string, SeasonArchive>> {
+    const byBvid = new Map<string, SeasonArchive>();
+    const season = seasonOf(platformCollectionId);
+    if (season === null) {
+      return byBvid;
+    }
+    const pages = [...new Set(entries.map((entry) => Math.floor(entry.index / SEASON_PAGE_SIZE) + 1))];
+    for (const page of pages) {
+      if (signal.aborted) {
+        break;
+      }
+      try {
+        const data = await this.api<SeasonArchives>(seasonArchivesPath(season, page), auth, signal);
+        for (const archive of data?.archives ?? []) {
+          if (typeof archive.bvid === "string" && !byBvid.has(archive.bvid)) {
+            byBvid.set(archive.bvid, archive);
+          }
+        }
+      } catch {
+        // Decoration only: the entries keep what their part lists said.
+      }
+    }
+    return byBvid;
+  }
+
+  /** How many entries a 合集 has, from the first page of its archive list; `undefined` when unknown. */
+  private async seasonTotal(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<number | undefined> {
+    const season = seasonOf(platformCollectionId);
+    if (season === null) {
+      return undefined;
+    }
+    try {
+      const total = (await this.api<SeasonArchives>(seasonArchivesPath(season, 1), auth, signal))?.page?.total;
+      return typeof total === "number" && Number.isInteger(total) && total >= 0 ? total : undefined;
+    } catch (error) {
+      if (signal.aborted) {
+        throw error;
+      }
+      return undefined;
+    }
+  }
+
   private async api<T>(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<T | undefined> {
-    const envelope = await platformGetJson<ApiEnvelope<T>>(this.options.http, {
-      url: `${API}${path}`,
-      headers: { ...REFERER, ...(auth === undefined ? {} : await this.cookieHeader(auth, "api.bilibili.com")) },
-      signal,
-    });
+    const envelope = await this.envelope<T>(path, auth, signal);
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
     return envelope.data;
+  }
+
+  private async envelope<T>(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<ApiEnvelope<T>> {
+    return platformGetJson<ApiEnvelope<T>>(this.options.http, {
+      url: `${API}${path}`,
+      headers: { ...REFERER, ...(auth === undefined ? {} : await this.cookieHeader(auth, "api.bilibili.com")) },
+      signal,
+    });
   }
 
   private async cookieHeader(auth: PlatformCredential, host: string): Promise<Record<string, string>> {

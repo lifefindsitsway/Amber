@@ -11,10 +11,13 @@ import type { OutboundHttpClient } from "../../../ports/outbound-http.ts";
 import type {
   CanonicalSubtitle,
   ParsedPlatformUrl,
-  PlatformCollection,
+  PlatformCollectionEntry,
+  PlatformCollectionItem,
+  PlatformCollectionListing,
   PlatformContentRef,
   PlatformCredential,
   PlatformDescription,
+  PlatformEntryUnavailableReason,
   PlatformMetadata,
   PlatformSourceAdapter,
   SubtitleTrackRef,
@@ -22,7 +25,19 @@ import type {
   VideoTarget,
 } from "../../../ports/platform-source.ts";
 import { platformGet } from "../http.ts";
-import { downloadAudio, downloadVideo, inspectAudio, inspectVideo, languageTag, listVideoQualities, secondsToMs, videoTargetOf, type YtDlpChapter } from "../shared.ts";
+import {
+  downloadAudio,
+  downloadVideo,
+  inspectAudio,
+  inspectVideo,
+  languageTag,
+  listVideoQualities,
+  playlistItemsUpTo,
+  secondsToMs,
+  trustedImageUrl,
+  videoTargetOf,
+  type YtDlpChapter,
+} from "../shared.ts";
 import { PLATFORM_SCRATCH_DIR, type YtDlp } from "../yt-dlp.ts";
 import { collapseRollingCaptions } from "./captions.ts";
 import { parseYoutubeUrl, playlistUrl, watchUrl } from "./url.ts";
@@ -84,9 +99,64 @@ interface VideoInfo {
   description?: unknown;
 }
 
+interface FlatEntry {
+  id?: string;
+  title?: string;
+  duration?: number | null;
+  availability?: string | null;
+  thumbnails?: Array<{ url?: string; width?: number }> | null;
+}
+
 interface FlatPlaylist {
   title?: string;
-  entries?: Array<{ id?: string; title?: string; duration?: number }>;
+  playlist_count?: number;
+  entries?: FlatEntry[];
+}
+
+/** Hosts YouTube serves video thumbnails from (`i.ytimg.com`, `i9.ytimg.com`, ...). */
+export const YOUTUBE_IMAGE_DOMAINS = ["ytimg.com"] as const;
+
+/**
+ * Why an entry of a playlist cannot be watched. yt-dlp passes on YouTube's own placeholder
+ * titles for entries the playlist shows only as unavailable, and marks a private one in
+ * `availability`.
+ */
+function unavailableReason(entry: FlatEntry): PlatformEntryUnavailableReason | undefined {
+  if (entry.availability === "private" || entry.title === "[Private video]") {
+    return "private";
+  }
+  if (entry.title === "[Deleted video]") {
+    return "removed";
+  }
+  return entry.title === "[Unavailable video]" ? "unknown" : undefined;
+}
+
+/** The widest thumbnail on a YouTube image host. */
+function coverOf(entry: FlatEntry): string | undefined {
+  let best: { url: string; width: number } | undefined;
+  for (const thumbnail of entry.thumbnails ?? []) {
+    const url = trustedImageUrl(thumbnail.url, YOUTUBE_IMAGE_DOMAINS);
+    const width = typeof thumbnail.width === "number" ? thumbnail.width : 0;
+    if (url !== undefined && (best === undefined || width > best.width)) {
+      best = { url, width };
+    }
+  }
+  return best?.url;
+}
+
+function listedEntry(entry: FlatEntry, index: number): PlatformCollectionEntry {
+  const id = entry.id as string;
+  const unavailable = unavailableReason(entry);
+  const cover = coverOf(entry);
+  return {
+    index,
+    platformContentId: id,
+    canonicalUrl: watchUrl(id),
+    ...(entry.title === undefined ? {} : { title: entry.title }),
+    ...(typeof entry.duration === "number" ? { durationMs: secondsToMs(entry.duration) } : {}),
+    ...(cover === undefined ? {} : { coverUrl: cover }),
+    ...(unavailable === undefined ? {} : { unavailable }),
+  };
 }
 
 interface TrackLocator {
@@ -279,25 +349,39 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
     return this.options.ytDlp.dumpBrowserCookies({ browser, extractors: YOUTUBE_EXTRACTORS, signal, timeoutMs: PLATFORM_METADATA_TIMEOUT_MS });
   }
 
-  async fetchCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformCollection> {
+  /**
+   * One flat yt-dlp listing stopped one entry past `limit`, guest first. YouTube's listing
+   * already carries each entry's title, duration, cover and availability, and its total even
+   * when stopped early.
+   */
+  async listCollection(platformCollectionId: string, auth: PlatformCredential | undefined, signal: AbortSignal, limit: number): Promise<PlatformCollectionListing> {
     const { value: playlist } = await this.guestFirst(auth, (cookies) =>
       this.options.ytDlp.json<FlatPlaylist>({
-        args: ["--dump-single-json", "--flat-playlist", playlistUrl(platformCollectionId)],
+        args: ["--dump-single-json", "--flat-playlist", "--playlist-items", playlistItemsUpTo(limit), playlistUrl(platformCollectionId)],
         extractors: YOUTUBE_EXTRACTORS,
         ...(cookies === undefined ? {} : { cookies }),
         signal,
         timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
       }),
     );
-    const items = (playlist.entries ?? [])
-      .filter((entry): entry is typeof entry & { id: string } => typeof entry.id === "string" && entry.id !== "")
-      .map((entry) => ({
-        platformContentId: entry.id,
-        ...(entry.title === undefined ? {} : { title: entry.title }),
-        ...(typeof entry.duration === "number" ? { durationMs: secondsToMs(entry.duration) } : {}),
-        canonicalUrl: watchUrl(entry.id),
-      }));
-    return { title: playlist.title ?? platformCollectionId, items };
+    const listed: FlatEntry[] = [];
+    const seen = new Set<string>();
+    for (const entry of playlist.entries ?? []) {
+      if (typeof entry.id === "string" && entry.id !== "" && !seen.has(entry.id)) {
+        seen.add(entry.id);
+        listed.push(entry);
+      }
+    }
+    const truncated = listed.length > limit;
+    const entries = listed.slice(0, limit).map((entry, index) => listedEntry(entry, index));
+    const reported = playlist.playlist_count;
+    const totalCount = !truncated ? entries.length : typeof reported === "number" && Number.isInteger(reported) && reported > limit ? reported : undefined;
+    return { title: playlist.title ?? platformCollectionId, entries, ...(totalCount === undefined ? {} : { totalCount }), truncated };
+  }
+
+  /** Everything is in the listing already: no request is made. */
+  async resolveCollectionEntries(_platformCollectionId: string, entries: readonly PlatformCollectionEntry[]): Promise<PlatformCollectionItem[]> {
+    return entries.map(({ index: _index, ...entry }) => entry);
   }
 
   async fetchAudio(

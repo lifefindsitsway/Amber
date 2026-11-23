@@ -39,7 +39,8 @@ describe("POST /api/contents/import", () => {
     const response = await app.inject({ method: "POST", url: "/api/contents/import", headers: auth, payload: { items: [{ url: LINK }] } });
     expect(response.statusCode).toBe(202);
     const body = response.json() as { importBatchId: string; taskIds: string[]; contentIds: string[] };
-    expect(Object.keys(body).sort()).toEqual(["contentIds", "importBatchId", "skippedTrashedContentIds", "taskIds"]);
+    expect(Object.keys(body).sort()).toEqual(["collectionIds", "contentIds", "importBatchId", "skippedTrashedContentIds", "taskIds"]);
+    expect(response.json().collectionIds).toEqual([]);
     expect(response.json().skippedTrashedContentIds).toEqual([]);
     expect(body.taskIds).toHaveLength(1);
     expect(isUlid(body.taskIds[0] as string)).toBe(true);
@@ -86,6 +87,28 @@ describe("POST /api/contents/inspect", () => {
     const malformed = await app.inject({ method: "POST", url: "/api/contents/inspect", headers: auth, payload: { url: LINK, extra: 1 } });
     expect(malformed.statusCode).toBe(400);
     expect(countRows(h.db, "content")).toBe(0);
+  });
+
+  it("passes the preview fields through: later pages of a cached listing, and a stale preview as a conflict", async () => {
+    const { h, app } = await setup();
+    const SPACE = "https://space.bilibili.com/1/lists/2";
+    const ids = Array.from({ length: 60 }, (_, i) => `BV1xx411c${String(i).padStart(3, "0")}`);
+    h.platforms.bilibili.collections.set("1_2", {
+      title: "Course",
+      items: ids.map((id) => ({ platformContentId: id, platformPartId: `${id}-cid`, canonicalUrl: `https://www.bilibili.com/video/${id}` })),
+    });
+    const inspect = (payload: object) => app.inject({ method: "POST", url: "/api/contents/inspect", headers: auth, payload });
+    const first = await inspect({ url: SPACE });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ kind: "collection", itemCount: 60, offset: 0, nextOffset: 50 });
+    const next = await inspect({ url: SPACE, previewId: first.json().previewId, offset: 50 });
+    expect(next.json()).toMatchObject({ offset: 50, previewId: first.json().previewId });
+    expect(next.json().items).toHaveLength(10);
+    expect(h.platforms.bilibili.callsOf("listCollection")).toHaveLength(1);
+    const stale = await inspect({ url: SPACE, previewId: "gone", offset: 50 });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error.code).toBe("conflict.collection_preview_stale");
+    expect((await inspect({ url: SPACE, offset: -1 })).statusCode).toBe(400);
   });
 });
 
