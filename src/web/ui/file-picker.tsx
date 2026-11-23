@@ -14,6 +14,10 @@ export function FilePicker(props: {
   labelledBy?: string;
   /** For pickers without a visible label. */
   label?: string;
+  /** The ids of a hint or error explaining the field, read after the button. */
+  describedBy?: string | undefined;
+  /** Marks the field as failing validation, e.g. no file chosen yet. */
+  invalid?: boolean | undefined;
   testId?: string;
 }) {
   const { t } = useTranslation();
@@ -34,6 +38,8 @@ export function FilePicker(props: {
         id={buttonId}
         {...(props.labelledBy === undefined ? {} : { "aria-labelledby": `${props.labelledBy} ${buttonId}` })}
         {...(props.label === undefined ? {} : { "aria-label": `${props.label} ${t("common.file.choose")}` })}
+        aria-describedby={props.describedBy}
+        aria-invalid={props.invalid === true ? true : undefined}
         onClick={() => input.current?.click()}
       >
         {t("common.file.choose")}

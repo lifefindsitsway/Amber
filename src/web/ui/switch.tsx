@@ -18,21 +18,28 @@ export function Switch(props: {
   testId?: string;
 }) {
   return (
-    <label className={`inline-flex items-center gap-1.5 ${props.disabled === true ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${props.className ?? ""}`} title={props.title}>
-      <input
-        type="checkbox"
-        role="switch"
-        className="peer sr-only"
-        checked={props.checked}
-        disabled={props.disabled}
-        aria-describedby={props.describedBy}
-        onChange={(event) => props.onChange(event.target.checked)}
-        data-testid={props.testId}
-      />
-      <span
-        aria-hidden="true"
-        className="relative h-4 w-7 shrink-0 rounded-full bg-muted/40 transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-3 after:rounded-full after:bg-surface after:shadow-sm after:transition-transform after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-3 peer-focus-visible:ring-2 peer-focus-visible:ring-accent peer-focus-visible:ring-offset-1 motion-reduce:transition-none motion-reduce:after:transition-none"
-      />
+    <label
+      className={`inline-flex items-center gap-1.5 ${props.disabled === true ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${props.className ?? ""}`}
+      title={props.title}
+    >
+      {/* The visually hidden input is positioned inside the track, so a click aimed at it (or its
+          focus ring) lands on the switch whatever the label's layout. */}
+      <span className="relative inline-flex shrink-0">
+        <input
+          type="checkbox"
+          role="switch"
+          className="peer sr-only"
+          checked={props.checked}
+          disabled={props.disabled}
+          aria-describedby={props.describedBy}
+          onChange={(event) => props.onChange(event.target.checked)}
+          data-testid={props.testId}
+        />
+        <span
+          aria-hidden="true"
+          className="relative h-4 w-7 shrink-0 rounded-full bg-muted/40 transition-colors after:absolute after:top-0.5 after:left-0.5 after:size-3 after:rounded-full after:bg-surface after:shadow-sm after:transition-transform after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-3 peer-focus-visible:ring-2 peer-focus-visible:ring-accent peer-focus-visible:ring-offset-1 motion-reduce:transition-none motion-reduce:after:transition-none"
+        />
+      </span>
       <span>{props.children}</span>
     </label>
   );

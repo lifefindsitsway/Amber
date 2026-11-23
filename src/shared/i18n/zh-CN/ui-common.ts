@@ -66,6 +66,11 @@ export const common = {
     jumpPlaceholder: "页码",
     jump: "跳转",
   },
+  /** Transient "done" notices in the bottom-right corner. */
+  toast: {
+    region: "通知",
+    dismiss: "关闭通知",
+  },
   state: {
     loading: "加载中…",
     empty: "暂无内容",
@@ -146,5 +151,9 @@ export const common = {
   error: {
     upstream: "上游原文",
     unknownStage: "未知阶段",
+  },
+  /** Field errors shown under a form control. */
+  validation: {
+    required: "{{field}}不能为空",
   },
 } as const;

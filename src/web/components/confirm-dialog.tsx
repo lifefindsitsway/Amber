@@ -8,7 +8,8 @@ import { Modal } from "../ui/modal.tsx";
 
 /**
  * Explicit confirmation before a destructive or paid action. The action's failure stays
- * in the dialog as an AppError so the user sees why nothing happened.
+ * in the dialog as an AppError so the user sees why nothing happened. `danger` gives the confirm
+ * button the filled destructive look, reserved for this final step.
  */
 export function ConfirmDialog(props: {
   open: boolean;
@@ -42,14 +43,21 @@ export function ConfirmDialog(props: {
     }
   };
   return (
-    <Modal open={props.open} onOpenChange={close} title={props.title} {...(props.description === undefined ? {} : { description: props.description })}>
-      {error === undefined ? null : <div className="mb-3">{props.renderError?.(error) ?? <ErrorView error={error} />}</div>}
-      <div className="flex justify-end gap-2">
-        <Button onClick={() => close(false)}>{t("common.action.cancel")}</Button>
-        <Button variant={props.danger === true ? "danger" : "primary"} disabled={busy} onClick={() => void confirm()}>
-          {props.confirmLabel ?? t("common.action.confirm")}
-        </Button>
-      </div>
+    <Modal
+      open={props.open}
+      onOpenChange={close}
+      title={props.title}
+      {...(props.description === undefined ? {} : { description: props.description })}
+      footer={
+        <>
+          <Button onClick={() => close(false)}>{t("common.action.cancel")}</Button>
+          <Button variant={props.danger === true ? "danger-solid" : "primary"} loading={busy} onClick={() => void confirm()}>
+            {props.confirmLabel ?? t("common.action.confirm")}
+          </Button>
+        </>
+      }
+    >
+      {error === undefined ? null : props.renderError?.(error) ?? <ErrorView error={error} />}
     </Modal>
   );
 }

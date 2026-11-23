@@ -109,7 +109,8 @@ test("model readiness on the content page: one notice for the model, one fill fr
   // An invalid entry is refused in place, without a request.
   await field.fill("12.5");
   await summaryNotice.getByRole("button", { name: "保存" }).click();
-  await expect(summaryNotice.getByRole("alert")).toHaveText("请填写正整数，例如 128000 或 128K");
+  await expect(field).toHaveAttribute("aria-invalid", "true");
+  await expect(field).toHaveAccessibleDescription(/请填写正整数，例如 128000 或 128K/);
   expect(overrides).toEqual([]);
 
   await field.fill("200K");

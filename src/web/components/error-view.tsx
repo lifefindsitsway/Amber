@@ -4,6 +4,7 @@ import type { StageEngineDto } from "../../shared/dto/task.ts";
 import type { StageId } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { useAsrProfiles, useProviders } from "../api/queries.ts";
+import { Callout, TextAction } from "../ui/notice.tsx";
 import { useAsrModelLabel } from "./asr-model-select.tsx";
 
 /**
@@ -31,6 +32,7 @@ export function useEngineLabel(engine: StageEngineDto | undefined): string | und
 /**
  * The three layers of a failure: stage + engine, the plain-language
  * explanation, and the redacted upstream text behind a toggle. Actions go below.
+ * An error notice announced as an alert: it appears in response to something that just failed.
  */
 export function ErrorView(props: { error: AppError; stage?: StageId; engine?: StageEngineDto; children?: ReactNode }) {
   const { t } = useTranslation();
@@ -38,23 +40,30 @@ export function ErrorView(props: { error: AppError; stage?: StageId; engine?: St
   const engineLabel = useEngineLabel(props.engine);
   const message = props.error.userMessage !== "" ? props.error.userMessage : t(`errors.${props.error.class}`);
   return (
-    <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert">
-      {props.stage === undefined ? null : (
-        <p className="text-xs font-medium text-danger">
-          {t(`common.stage.${props.stage}`)}
-          {engineLabel === undefined ? null : ` · ${engineLabel}`}
-        </p>
-      )}
-      <p className="mt-1">{message}</p>
+    <Callout
+      tone="error"
+      announce="alert"
+      {...(props.stage === undefined
+        ? {}
+        : {
+            title: (
+              <>
+                {t(`common.stage.${props.stage}`)}
+                {engineLabel === undefined ? null : <span className="font-normal text-muted">{` · ${engineLabel}`}</span>}
+              </>
+            ),
+          })}
+      {...(props.children === undefined ? {} : { actions: props.children })}
+    >
+      <p>{message}</p>
       {props.error.upstreamMessage === undefined ? null : (
-        <div className="mt-2">
-          <button type="button" className="text-xs text-muted underline" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <div className="mt-1.5">
+          <TextAction className="text-note" onClick={() => setOpen(!open)} aria-expanded={open}>
             {open ? t("common.action.hideDetail") : t("common.error.upstream")}
-          </button>
-          {open ? <pre className="mt-1 max-h-40 overflow-auto rounded bg-sunken p-2 text-xs whitespace-pre-wrap">{props.error.upstreamMessage}</pre> : null}
+          </TextAction>
+          {open ? <pre className="mt-1 max-h-40 overflow-auto rounded bg-surface/70 p-2 text-xs whitespace-pre-wrap">{props.error.upstreamMessage}</pre> : null}
         </div>
       )}
-      {props.children === undefined ? null : <div className="mt-2 flex flex-wrap gap-2">{props.children}</div>}
-    </div>
+    </Callout>
   );
 }

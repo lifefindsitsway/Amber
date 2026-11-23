@@ -66,6 +66,28 @@ describe("Tooltip", () => {
     await waitFor(() => expect(screen.queryByTestId("tip")).toBeNull());
   });
 
+  it("does not open when focus is handed back right after Escape or a click, but does on Tab", async () => {
+    render(
+      <TooltipProvider>
+        <Tooltip content="restored" testId="tip">
+          <button type="button">trigger</button>
+        </Tooltip>
+      </TooltipProvider>,
+    );
+    const trigger = screen.getByRole("button", { name: "trigger" });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.focus(trigger);
+    fireEvent.blur(trigger);
+    fireEvent.pointerDown(document.body);
+    fireEvent.focus(trigger);
+    fireEvent.blur(trigger);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByTestId("tip")).toBeNull();
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    fireEvent.focus(trigger);
+    expect(await screen.findByTestId("tip")).toBeTruthy();
+  });
+
   it("still works outside the app's provider", async () => {
     render(
       <Tooltip content="alone" open testId="tip">

@@ -51,10 +51,18 @@ describe("ContextWindowNotice", () => {
     await screen.findByTestId("context-window-notice");
     for (const value of ["0", "-5", "12.5", "abc"]) {
       fireEvent.change(input(), { target: { value } });
+      save().focus();
       fireEvent.click(save());
       expect((await screen.findByTestId("context-window-notice-error")).textContent).toBe("请填写正整数，例如 128000 或 128K");
       expect(input().getAttribute("aria-invalid")).toBe("true");
+      // Focus moves back to the field, which reads out the reason.
+      await waitFor(() => expect(document.activeElement).toBe(input()));
+      expect(input().getAttribute("aria-describedby")).toBe(screen.getByTestId("context-window-notice-error").id);
     }
+    // Refused again without an edit in between: focus still moves back.
+    save().focus();
+    fireEvent.click(save());
+    await waitFor(() => expect(document.activeElement).toBe(input()));
     // Typing again clears the complaint.
     fireEvent.change(input(), { target: { value: "1" } });
     expect(screen.queryByTestId("context-window-notice-error")).toBeNull();
@@ -109,6 +117,26 @@ describe("ContextWindowNotice", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始" }).disabled).toBe(true);
   });
 
+  it("moves focus back to the field when the server refuses the save, so the reason is read out", async () => {
+    const { routes } = windowRoutes([providerWithoutWindow("p1", "我的服务", ["m1"])]);
+    mockApi({
+      ...routes,
+      "PUT /api/providers/p1/models/m1/override": {
+        status: 400,
+        body: { error: { class: "invalid_request", code: "invalid_request", retryDisposition: "never", userMessage: "上下文窗口超出允许范围" } },
+      },
+    });
+    renderApp(<Entry modelRef={BARE} />);
+    await screen.findByTestId("context-window-notice");
+    fireEvent.change(input(), { target: { value: "64000" } });
+    save().focus();
+    fireEvent.click(save());
+    await waitFor(() => expect(document.activeElement).toBe(input()));
+    expect(input().getAttribute("aria-invalid")).toBe("true");
+    const described = (input().getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "");
+    expect(described.join(" ")).toContain("上下文窗口超出允许范围");
+  });
+
   it("without the model in the list, only points to the settings", async () => {
     mockApi({ "GET /api/providers": { body: { items: [] } } });
     renderApp(<ContextWindowNotice modelRef={{ providerProfileId: "gone", modelId: "old" }} />);
@@ -137,8 +165,9 @@ describe("ContextWindowNotice variants", () => {
     mockApi(windowRoutes([providerWithoutWindow("p1", "我的服务", ["m1"])]).routes);
     renderApp(<ContextWindowNotice modelRef={BARE} />);
     const link = await screen.findByTestId("context-window-notice-settings");
-    expect(link.className).toContain("text-accent-ink");
-    expect(link.className).toContain("dark:text-accent");
+    // The link colour clears 4.5:1 on the caution ground in every theme (test/guards/styles-contrast.test.ts).
+    expect(link.className).toContain("text-link");
+    expect(screen.getByTestId("context-window-notice").className).toContain("bg-warn-soft");
   });
 
   it("a deferring notice only points to a full one for the same model, whose field it focuses", async () => {

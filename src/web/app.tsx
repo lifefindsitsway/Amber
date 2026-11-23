@@ -7,6 +7,7 @@ import { useDesktop } from "./desktop/use-desktop.ts";
 import { AppShell } from "./shell/app-shell.tsx";
 import { ContextMenuHost } from "./ui/context-menu.tsx";
 import { EmptyState, Loading } from "./ui/feedback.tsx";
+import { ToastProvider } from "./ui/toast.tsx";
 
 // Pages load on first visit so the initial bundle carries only the shell.
 const NewPage = lazy(async () => ({ default: (await import("./pages/new-page.tsx")).NewPage }));
@@ -73,10 +74,13 @@ function ContextMenus(props: { children: ReactNode }) {
 export function App() {
   return (
     <BrowserRouter>
-      <DesktopIntegration />
-      <ContextMenus>
-        <AppRoutes />
-      </ContextMenus>
+      {/* Inside the router, so a toast's action can navigate. */}
+      <ToastProvider>
+        <DesktopIntegration />
+        <ContextMenus>
+          <AppRoutes />
+        </ContextMenus>
+      </ToastProvider>
     </BrowserRouter>
   );
 }

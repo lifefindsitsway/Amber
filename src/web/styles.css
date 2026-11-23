@@ -16,7 +16,32 @@
   --color-accent-soft: #fbf0dc;
   --color-danger: #b42318;
   --color-ok: #2f7d4f;
+  --color-link: #2c5fa8;
+  --color-warn: #7a5c00;
+  --color-warn-soft: #fbf5cf;
+  --color-danger-soft: #fdeceb;
+  --color-ok-soft: #eef8f1;
+  /* Explanatory text: 13 px on a 20 px line, between body (14) and metadata (12). */
+  --text-note: 0.8125rem;
+  --text-note--line-height: 1.25rem;
   --font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+}
+
+/*
+ * Roles of the colours added beside the accent. The accent marks only the primary action, the
+ * selection and work in progress; links and inline text actions take `link` (4.5:1 on surface,
+ * panel and sunken); cautions take `warn` on `warn-soft`, kept apart from the accent so a
+ * reminder never reads as the main action; `danger-soft` and `ok-soft` are the grounds of error
+ * and success notices. Body text (`ink`) clears 4.5:1 on every soft ground. The stylesheet is
+ * checked by a contrast test, so a new value has to pass it.
+ *
+ * `color-scheme` lets scrollbars, native dropdown lists and form controls follow the theme.
+ * `--select-chevron` is the native select's arrow, drawn in the theme's muted colour: an image
+ * cannot read a CSS variable, so each theme carries its own.
+ */
+:root {
+  color-scheme: light;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b6760' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* Glow around filled accent surfaces; stronger on the dark theme, where it reads as light. */
@@ -37,6 +62,13 @@
   --color-accent-soft: #3a2f1c;
   --color-danger: #f97066;
   --color-ok: #6cc28f;
+  --color-link: #86aee8;
+  --color-warn: #dcc25a;
+  --color-warn-soft: #302c14;
+  --color-danger-soft: #3b201d;
+  --color-ok-soft: #1c3326;
+  color-scheme: dark;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a19d95' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /* Eye-care palettes. Both are light themes, so `.dark` stays off and the light
@@ -52,8 +84,14 @@ html[data-theme="bean-green"] {
   --color-accent: #9a5a06;
   --color-accent-ink: #3b1f05;
   --color-accent-soft: #e2efc0;
-  --color-danger: #b42318;
+  --color-danger: #a51f15;
   --color-ok: #246b3f;
+  --color-link: #1c4b8a;
+  --color-warn: #6a5000;
+  --color-warn-soft: #eee9b9;
+  --color-danger-soft: #f2d9d2;
+  --color-ok-soft: #e2f4e4;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23445c4a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 html[data-theme="parchment"] {
@@ -68,6 +106,12 @@ html[data-theme="parchment"] {
   --color-accent-soft: #f1ddb0;
   --color-danger: #b42318;
   --color-ok: #246b3f;
+  --color-link: #244e8c;
+  --color-warn: #6a5000;
+  --color-warn-soft: #f2e8a6;
+  --color-danger-soft: #f4dccf;
+  --color-ok-soft: #e0ecd0;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b5b45' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 /*
@@ -198,6 +242,26 @@ html[data-theme="parchment"] {
 @utility bg-accent-glow {
   background-image: linear-gradient(180deg, #ffd36e 0%, #f5b23a 48%, #e0870f 100%);
   box-shadow: var(--accent-glow);
+}
+
+/*
+ * The native select of ui/native-select.tsx: the platform arrow is replaced by the theme's
+ * chevron at the spot where the menu-style Select draws its own, so both read as one control.
+ */
+@utility select-chevron {
+  appearance: none;
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 14px 14px;
+}
+
+/* A transient notice (ui/toast.tsx) rises into place; reduced motion shows it at once. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
 }
 
 html,

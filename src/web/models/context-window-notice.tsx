@@ -5,13 +5,11 @@ import { Link } from "react-router";
 import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
 import { useProviders, useSetContextWindow } from "../api/queries.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Callout, FieldError, InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 import { SuggestionInput } from "../ui/suggestion-input.tsx";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS, CONTEXT_WINDOW_SUGGESTIONS, parseTokenCount } from "./context-window.ts";
 import { findModel } from "./use-model-readiness.ts";
-
-/** Links on the notice's tinted ground: the accent itself is too light there in the light themes. */
-const LINK = "text-accent-ink underline-offset-2 hover:underline dark:text-accent";
 
 /**
  * The full notices on screen, by model: a deferring notice for the same model (the chat beside
@@ -67,7 +65,8 @@ export function ContextWindowNotice(props: {
   const providers = useProviders();
   const save = useSetContextWindow();
   const [text, setText] = useState("");
-  const [invalid, setInvalid] = useState(false);
+  // Counts the refused attempts since the last edit (0: none), so every refusal moves focus anew.
+  const [invalid, setInvalid] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const found = findModel(providers.data?.items ?? [], props.modelRef);
   const testId = props.testId ?? "context-window-notice";
@@ -96,16 +95,22 @@ export function ContextWindowNotice(props: {
     };
   }, [defer, fillable, key]);
   useSyncExternalStore(subscribe, () => shownVersion);
+  // A refused value or save is reported under the field, which is not a live region, while focus
+  // may still be on 「保存」: moving focus back to the field (by then marked invalid and described
+  // by the error) is what makes a screen reader say why nothing was saved.
+  useEffect(() => {
+    if (save.error !== null || invalid !== 0) inputRef.current?.focus();
+  }, [save.error, invalid]);
   const elsewhere = defer ? fullNoticeFor(props.modelRef) : undefined;
 
   const submit = (): void => {
     if (found === undefined || save.isPending) return;
     const tokens = parseTokenCount(text);
     if (tokens === undefined) {
-      setInvalid(true);
+      setInvalid((count) => count + 1);
       return;
     }
-    setInvalid(false);
+    setInvalid(0);
     const onSaved = props.onSaved;
     // Awaited rather than a per-call callback: those do not run once this notice has unmounted,
     // which a successful save usually causes before it answers.
@@ -126,103 +131,122 @@ export function ContextWindowNotice(props: {
     event.preventDefault();
     submit();
   };
-  const problem = invalid ? t("modelReadiness.invalid") : failure === undefined ? undefined : failure.userMessage !== "" ? failure.userMessage : t(`errors.${failure.class}`);
-  const box = `rounded-md border border-accent/40 bg-accent-soft ${compact ? "px-2.5 py-2 text-xs" : "px-3 py-2.5 text-sm"} ${props.className ?? ""}`;
-
+  const problem = invalid !== 0 ? t("modelReadiness.invalid") : failure === undefined ? undefined : failure.userMessage !== "" ? failure.userMessage : t(`errors.${failure.class}`);
   if (elsewhere !== undefined) {
+    // Only a pointer to the notice beside it: the quietest form, a sentence and a text action.
     return (
-      <p data-testid={testId} data-variant="pointer" className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${box}`}>
-        <Info size={compact ? 13 : 14} className="shrink-0 text-accent" aria-hidden="true" />
-        <span>{t("modelReadiness.elsewhere", { model: modelLabel })}</span>
-        <button type="button" className={`font-medium ${LINK}`} onClick={elsewhere} data-testid={`${testId}-goto`}>
-          {t("modelReadiness.gotoFill")}
-        </button>
-      </p>
+      <InlineNote
+        testId={testId}
+        data-variant="pointer"
+        {...(props.className === undefined ? {} : { className: props.className })}
+        icon={<Info size={14} className="text-warn" aria-hidden="true" />}
+        action={
+          <TextAction className="font-medium" onClick={elsewhere} data-testid={`${testId}-goto`}>
+            {t("modelReadiness.gotoFill")}
+          </TextAction>
+        }
+      >
+        {t("modelReadiness.elsewhere", { model: modelLabel })}
+      </InlineNote>
     );
   }
 
+  // Must be dealt with before the feature can run, so a boxed caution rather than a quiet note.
   return (
-    <div role="group" aria-labelledby={`${id}-text`} data-testid={testId} data-variant={minimal ? "minimal" : "full"} className={`flex flex-col gap-2 ${box}`}>
-      <p id={`${id}-text`} className="flex items-start gap-1.5">
-        <Info size={compact ? 13 : 14} className={`shrink-0 text-accent ${compact ? "mt-px" : "mt-0.5"}`} aria-hidden="true" />
-        <span>{t("modelReadiness.notice", { model: modelLabel })}</span>
-      </p>
-      {found === undefined ? null : (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-          <label htmlFor={`${id}-input`} className="sr-only">
-            {t("modelReadiness.inputLabel")}
-          </label>
-          <span className="inline-flex h-7 items-center rounded-md border border-line bg-surface focus-within:border-accent">
-            <SuggestionInput
-              ref={inputRef}
-              id={`${id}-input`}
-              suggestions={minimal ? CONTEXT_WINDOW_SUGGESTION_LABELS : []}
-              listLabel={t("modelReadiness.suggestions")}
-              toggle={false}
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              spellCheck={false}
-              value={text}
-              placeholder={t("modelReadiness.placeholder")}
-              aria-invalid={problem === undefined ? undefined : true}
-              aria-describedby={problem === undefined ? undefined : `${id}-problem`}
-              data-testid={`${testId}-input`}
-              wrapperClassName="h-full"
-              className="h-full w-28 min-w-0 bg-transparent px-2 font-mono text-xs outline-none"
-              onValueChange={(value) => {
-                setText(value);
-                setInvalid(false);
-                if (save.isError) save.reset();
-              }}
-              onKeyDown={onKeyDown}
-            />
-            <span className="pr-2 text-xs text-muted" aria-hidden="true">
-              {t("modelReadiness.unit")}
-            </span>
-          </span>
-          <Button size="sm" variant="primary" disabled={save.isPending || text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
-            {save.isPending ? t("modelReadiness.saving") : t("modelReadiness.save")}
-          </Button>
-          {minimal ? null : (
-            <span role="group" aria-label={t("modelReadiness.suggestions")} className="flex flex-wrap items-center gap-0.5">
-              {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
-                <button
-                  key={suggestion.label}
-                  type="button"
-                  aria-label={t("modelReadiness.suggestionFill", {
-                    label: suggestion.label,
-                    value: suggestion.tokens.toLocaleString(i18n.language),
-                  })}
-                  className="h-6 rounded px-1.5 text-xs text-muted transition hover:bg-surface hover:text-ink focus-visible:bg-surface focus-visible:text-ink"
-                  onClick={() => {
-                    setText(suggestion.label);
-                    setInvalid(false);
-                    if (save.isError) save.reset();
-                  }}
-                >
-                  {suggestion.label}
-                </button>
-              ))}
-            </span>
-          )}
-          {minimal ? null : (
-            <Link to="/settings/models" className={`ml-auto text-xs ${LINK}`} data-testid={`${testId}-settings`}>
-              {t("modelReadiness.settings")}
-            </Link>
-          )}
-        </div>
-      )}
-      {found === undefined ? (
-        <Link to="/settings/models" className={`self-start text-xs ${LINK}`} data-testid={`${testId}-settings`}>
-          {t("modelReadiness.settings")}
-        </Link>
-      ) : null}
-      {problem === undefined ? null : (
-        <p id={`${id}-problem`} role="alert" className="text-xs text-danger" data-testid={`${testId}-error`}>
-          {problem}
+    <Callout
+      tone="warn"
+      density={compact ? "compact" : "regular"}
+      role="group"
+      aria-labelledby={`${id}-text`}
+      testId={testId}
+      data-variant={minimal ? "minimal" : "full"}
+      {...(props.className === undefined ? {} : { className: props.className })}
+    >
+      <div className="flex flex-col gap-2">
+        <p id={`${id}-text`} className="max-w-[70ch]">
+          {t("modelReadiness.notice", { model: modelLabel })}
         </p>
-      )}
-    </div>
+        {found === undefined ? null : (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <label htmlFor={`${id}-input`} className="sr-only">
+              {t("modelReadiness.inputLabel")}
+            </label>
+            <span
+              className={`inline-flex h-7 items-center rounded-md border bg-surface transition duration-150 focus-within:ring-1 motion-reduce:transition-none ${
+                problem === undefined ? "border-line focus-within:border-accent focus-within:ring-accent/40" : "border-danger focus-within:ring-danger/40"
+              }`}
+            >
+              <SuggestionInput
+                ref={inputRef}
+                id={`${id}-input`}
+                suggestions={minimal ? CONTEXT_WINDOW_SUGGESTION_LABELS : []}
+                listLabel={t("modelReadiness.suggestions")}
+                toggle={false}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                spellCheck={false}
+                value={text}
+                placeholder={t("modelReadiness.placeholder")}
+                aria-invalid={problem === undefined ? undefined : true}
+                aria-describedby={problem === undefined ? undefined : `${id}-problem`}
+                data-testid={`${testId}-input`}
+                wrapperClassName="h-full"
+                className="h-full w-28 min-w-0 bg-transparent px-2 font-mono text-xs outline-none placeholder:text-muted"
+                onValueChange={(value) => {
+                  setText(value);
+                  setInvalid(0);
+                  if (save.isError) save.reset();
+                }}
+                onKeyDown={onKeyDown}
+              />
+              <span className="pr-2 text-xs text-muted" aria-hidden="true">
+                {t("modelReadiness.unit")}
+              </span>
+            </span>
+            <Button size="sm" variant="primary" disabled={save.isPending || text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
+              {save.isPending ? t("modelReadiness.saving") : t("modelReadiness.save")}
+            </Button>
+            {minimal ? null : (
+              <span role="group" aria-label={t("modelReadiness.suggestions")} className="flex flex-wrap items-center gap-0.5">
+                {CONTEXT_WINDOW_SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion.label}
+                    type="button"
+                    aria-label={t("modelReadiness.suggestionFill", {
+                      label: suggestion.label,
+                      value: suggestion.tokens.toLocaleString(i18n.language),
+                    })}
+                    className={`h-6 rounded px-1.5 text-xs text-muted transition hover:bg-surface hover:text-ink focus-visible:bg-surface focus-visible:text-ink ${FOCUS_RING}`}
+                    onClick={() => {
+                      setText(suggestion.label);
+                      setInvalid(0);
+                      if (save.isError) save.reset();
+                    }}
+                  >
+                    {suggestion.label}
+                  </button>
+                ))}
+              </span>
+            )}
+            {minimal ? null : (
+              <Link to="/settings/models" className={`ml-auto text-note ${TEXT_ACTION_CLASS}`} data-testid={`${testId}-settings`}>
+                {t("modelReadiness.settings")}
+              </Link>
+            )}
+          </div>
+        )}
+        {found === undefined ? (
+          <Link to="/settings/models" className={`self-start text-note ${TEXT_ACTION_CLASS}`} data-testid={`${testId}-settings`}>
+            {t("modelReadiness.settings")}
+          </Link>
+        ) : null}
+        {problem === undefined ? null : (
+          <FieldError id={`${id}-problem`} testId={`${testId}-error`}>
+            {problem}
+          </FieldError>
+        )}
+      </div>
+    </Callout>
   );
 }
