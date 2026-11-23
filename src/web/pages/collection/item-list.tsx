@@ -3,33 +3,50 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams } from "react-router";
 import type { CollectionItemDto } from "../../../shared/dto/collection.ts";
+import { ContentRowMenu } from "../../components/content-row-menu.tsx";
 import { actionTarget, type ContentActions } from "../../components/use-content-actions.tsx";
 import { formatDateTime, formatDuration } from "../../format.ts";
 import { listLoopState } from "../../player/list-loop.ts";
 import { HitSnippet } from "../../search/hit-snippet.tsx";
 import type { ContentSideHit } from "../../search/search.ts";
-import { COLUMN, COMPACT_UP, Cover, NARROW, StatusBadge, WIDE_ONLY } from "../library-page.tsx";
+import { COLUMN, COMPACT_UP, Cover, NARROW, StatusBadge, WIDE_ONLY } from "../library/columns.tsx";
+import { Checkbox } from "../../ui/checkbox.tsx";
 import { useContextMenuTarget } from "../../ui/context-menu.tsx";
 import { useDragOrder } from "../../ui/use-drag-order.ts";
+import { ROW_INTERACTIVE } from "./selection-bar.tsx";
+
+/**
+ * The selection mode of the member table: picked Contents (by Content id, across pages) and how
+ * the header box stands for the rows shown.
+ */
+export interface ItemSelection {
+  picked: ReadonlySet<string>;
+  /** How much of the shown rows is picked (`some` shows the header box as mixed). */
+  page: "none" | "some" | "all";
+  toggle: (contentId: string, on: boolean) => void;
+  /** The header box: a fully picked page is unpicked, otherwise every shown row is picked. */
+  togglePage: () => void;
+}
 
 /**
  * Members of one page in collection order. `startIndex` is the position of the first row
  * in the whole collection, so a member keeps its number on every page. Nothing here
- * moves: reordering happens in `ReorderList`, which always shows every member. A right
- * click on a row offers the Content's actions; leaving the collection goes through their
- * collection membership dialog, so a row has no removal control of its own.
+ * moves: reordering happens in `ReorderList`, which always shows every member. A row's 「⋯」
+ * and its right click offer the Content's actions; leaving the collection goes through their
+ * collection membership dialog or the selection bar, so a row has no removal control of its own.
  */
 export function ItemList(props: {
   items: readonly CollectionItemDto[];
   startIndex: number;
   /** The Content actions of the page, which renders their dialogs. */
   actions: ContentActions;
+  selection?: ItemSelection | undefined;
 }) {
   const menuRef = useItemMenu(props.items, props.actions);
   return (
-    <ItemTable bodyRef={menuRef}>
+    <ItemTable bodyRef={menuRef} withMenu selection={props.selection}>
       {props.items.map((item, index) => (
-        <ItemRow key={item.id} item={item} number={props.startIndex + index + 1} />
+        <ItemRow key={item.id} item={item} number={props.startIndex + index + 1} actions={props.actions} selection={props.selection} />
       ))}
     </ItemTable>
   );
@@ -89,25 +106,46 @@ export function ReorderList(props: {
  * list's widths. The container query measures this table's own box, so the folding follows
  * the collection page's column rather than the window.
  */
-export function ItemTable(props: { bodyRef: (element: HTMLTableSectionElement | null) => void; withHandle?: boolean; children: ReactNode }) {
+export function ItemTable(props: {
+  bodyRef: (element: HTMLTableSectionElement | null) => void;
+  withHandle?: boolean;
+  /** Rows end with their 「⋯」 menu. */
+  withMenu?: boolean;
+  selection?: ItemSelection | undefined;
+  children: ReactNode;
+}) {
   const { t } = useTranslation();
+  const { selection } = props;
   return (
     <div className="@container overflow-hidden rounded-lg border border-line" data-testid="collection-items">
       <table className="w-full text-sm">
         <thead className="bg-panel text-left text-xs text-muted">
           <tr>
+            {selection === undefined ? null : (
+              <th className={`${NARROW} pl-3`}>
+                <Checkbox
+                  className="align-middle"
+                  aria-label={t("contentPack.select.pageLabel")}
+                  checked={selection.page === "all"}
+                  indeterminate={selection.page === "some"}
+                  onChange={selection.togglePage}
+                  data-testid="collection-select-page"
+                />
+              </th>
+            )}
             {props.withHandle === true ? (
               <th className={`${NARROW} pl-2`}>
                 <span className="sr-only">{t("library.collection.dragHandle")}</span>
               </th>
             ) : null}
-            <th className={`${NARROW} ${props.withHandle === true ? "pl-1" : "pl-3"} pr-2`}>{t("library.column.position")}</th>
+            <th className={`${NARROW} ${props.withHandle === true || selection !== undefined ? "pl-1" : "pl-3"} pr-2`}>{t("library.column.position")}</th>
             <th className={`${COMPACT_UP} ${NARROW} px-2`}>{t("library.column.cover")}</th>
             <th className="w-full px-2 py-2 font-medium @5xl:w-[45%]">{t("library.column.title")}</th>
             <th className={`${WIDE_ONLY} ${COLUMN} w-[10%]`}>{t("library.column.source")}</th>
             <th className={`${WIDE_ONLY} ${COLUMN} w-[8%]`}>{t("library.column.duration")}</th>
             <th className={`${COLUMN} w-px whitespace-nowrap @5xl:w-[10%]`}>{t("library.column.status")}</th>
-            <th className={`${WIDE_ONLY} ${COLUMN} w-[15%] pr-3 whitespace-nowrap`}>{t("library.column.updatedAt")}</th>
+            <th className={`${WIDE_ONLY} ${COLUMN} w-[15%] whitespace-nowrap ${props.withMenu === true ? "" : "pr-3"}`}>{t("library.column.updatedAt")}</th>
+            {props.withMenu === true ? <th className={`${NARROW} pr-3 pl-2 text-center`}>{t("library.column.actions")}</th> : null}
           </tr>
         </thead>
         <tbody ref={props.bodyRef}>{props.children}</tbody>
@@ -122,12 +160,20 @@ export function useItemMenu(items: readonly CollectionItemDto[], actions: Conten
     const itemId = hit.target.closest<HTMLElement>("[data-item-id]")?.dataset["itemId"];
     const item = items.find((candidate) => candidate.id === itemId);
     if (item === undefined) return undefined;
-    const target = actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl });
-    return actions.menu(target, hit);
+    return actions.menu(targetOf(item), hit);
   });
 }
 
-/** One member in the table's columns; a search hit adds its excerpt under the title. */
+/** The target the Content actions of a member row act on. */
+function targetOf(item: CollectionItemDto) {
+  return actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl });
+}
+
+/**
+ * One member in the table's columns; a search hit adds its excerpt under the title. With
+ * `actions` the row ends with its 「⋯」 menu; with `selection` it starts with a check box, and a
+ * click on its plain area picks it.
+ */
 export function ItemRow(props: {
   item: CollectionItemDto;
   /** 1-based position in the whole collection. */
@@ -137,6 +183,8 @@ export function ItemRow(props: {
   dragging?: boolean;
   hit?: { entry: ContentSideHit; query: string };
   testId?: string;
+  actions?: ContentActions;
+  selection?: ItemSelection | undefined;
 }) {
   const { t, i18n } = useTranslation();
   // The collection page's own id: a member opened from here loops through this collection.
@@ -145,15 +193,36 @@ export function ItemRow(props: {
   const duration = item.durationMs === undefined ? undefined : formatDuration(item.durationMs);
   const updatedAt = formatDateTime(item.updatedAt, i18n.language);
   const source = t(`common.source.${item.source.kind}`);
+  const title = item.title ?? t("library.untitled");
+  const { selection } = props;
+  const picked = selection?.picked.has(item.contentId) === true;
   return (
     <tr
       ref={props.rowRef}
-      className={`border-b border-line last:border-b-0 ${props.dragging === true ? "bg-accent-soft" : "bg-surface hover:bg-panel"}`}
+      className={`border-b border-line last:border-b-0 ${props.dragging === true || picked ? "bg-accent-soft" : "bg-surface hover:bg-panel"}`}
       data-testid={props.testId ?? "collection-item"}
       data-item-id={item.id}
+      data-content-id={item.contentId}
+      {...(selection === undefined ? {} : { "aria-selected": picked })}
+      onClick={(event) => {
+        // A click on the row's plain area picks it; links, buttons and fields keep their own action.
+        if (selection === undefined || (event.target as Element).closest(ROW_INTERACTIVE) !== null) return;
+        selection.toggle(item.contentId, !picked);
+      }}
     >
+      {selection === undefined ? null : (
+        <td className="w-px py-2 pl-3">
+          <Checkbox
+            className="align-middle"
+            aria-label={t("contentPack.select.rowLabel", { title })}
+            checked={picked}
+            onChange={(event) => selection.toggle(item.contentId, event.target.checked)}
+            data-testid="collection-select-row"
+          />
+        </td>
+      )}
       {props.handle === undefined ? null : <td className="w-px py-2 pl-2">{props.handle}</td>}
-      <td className={`py-2 ${props.handle === undefined ? "pl-3" : "pl-1"} pr-2 text-xs whitespace-nowrap text-muted`}>
+      <td className={`py-2 ${props.handle === undefined && selection === undefined ? "pl-3" : "pl-1"} pr-2 text-xs whitespace-nowrap text-muted`}>
         {t("library.collection.lecture", { n: props.number })}
       </td>
       <td className={`${COMPACT_UP} px-2 py-2`}>
@@ -165,7 +234,7 @@ export function ItemRow(props: {
           state={listLoopState(collectionId === undefined ? {} : { collectionId })}
           className="line-clamp-2 font-medium hover:underline"
         >
-          {item.title ?? t("library.untitled")}
+          {title}
         </Link>
         {/* The folded columns, shown only while their own cells are hidden. */}
         <p className="mt-0.5 text-xs text-muted @5xl:hidden" data-testid="collection-item-meta">
@@ -180,7 +249,14 @@ export function ItemRow(props: {
       <td className="px-2 py-2 whitespace-nowrap">
         <StatusBadge status={item.processingStatus} />
       </td>
-      <td className={`${WIDE_ONLY} py-2 pr-3 pl-2 text-xs whitespace-nowrap text-muted`}>{updatedAt}</td>
+      <td className={`${WIDE_ONLY} py-2 pl-2 text-xs whitespace-nowrap text-muted ${props.actions === undefined ? "pr-3" : "pr-2"}`}>{updatedAt}</td>
+      {props.actions === undefined ? null : (
+        <td className="py-2 pr-3 pl-2 text-center whitespace-nowrap">
+          <div className="flex justify-end">
+            <ContentRowMenu actions={props.actions} content={targetOf(item)} label={title} surface="row" alwaysShown />
+          </div>
+        </td>
+      )}
     </tr>
   );
 }

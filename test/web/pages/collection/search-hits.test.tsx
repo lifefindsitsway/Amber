@@ -80,7 +80,7 @@ describe("SearchHits", () => {
       return <SearchHits items={ITEMS} search={RANKED} actions={actions} />;
     }
     renderApp(<Ranked />, { route: "/collections/k1" });
-    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["序号", "封面", "标题", "来源", "时长", "状态", "更新时间"]);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["序号", "封面", "标题", "来源", "时长", "状态", "更新时间", "操作"]);
     const rows = screen.getAllByTestId("collection-hit");
     expect(rows.map((row) => row.dataset["itemId"])).toEqual(["i2", "i1"]);
     expect(rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent)).toEqual(["第 2 项", "第 1 项"]);
@@ -99,7 +99,7 @@ describe("SearchHits", () => {
     const [snippet] = screen.getAllByTestId("search-snippet") as HTMLElement[];
     if (snippet === undefined) throw new Error("no excerpt");
     rightClick(snippet);
-    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "合集归属", "删除"]);
     fireEvent.click(screen.getByTestId("context-menu-item-open"));
     expect(screen.getByTestId("where").textContent).toBe(snippet.getAttribute("href"));
     rightClick(screen.getByText("第 1 项"));

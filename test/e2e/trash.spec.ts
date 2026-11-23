@@ -33,7 +33,9 @@ test("deleting moves a content to the trash, restoring brings it back", async ({
 
   const row = libraryRow(page, BILIBILI_CONTENT);
   await expect(row).toBeVisible();
-  await row.getByRole("button", { name: "删除" }).click();
+  // Deleting lives in the row's 「⋯」 menu, never on the row itself.
+  await row.getByTestId("content-row-menu").click();
+  await page.getByRole("menuitem", { name: "删除" }).click();
   const dialog = page.getByRole("dialog");
   // The dialog says where the content goes and for how long.
   await expect(dialog).toContainText("回收站");
@@ -135,4 +137,37 @@ test("an expired item waits for the sweep and cannot be restored", async ({ page
   // It can still be purged by hand.
   await expect(expired.getByTestId("trash-purge")).toBeEnabled();
   expect(backend.mutations).toEqual([]);
+});
+
+test("picked entries are restored together; the expired one is reported and stays picked", async ({ page }) => {
+  const backend = await installMockBackend(page);
+  backend.trash.seedExpired();
+  backend.trash.seed(BILIBILI_CONTENT);
+  await page.goto("/trash");
+
+  await expect(page.getByTestId("trash-row")).toHaveCount(2);
+  await page.getByTestId("trash-select-mode").click();
+  await page.getByTestId("trash-select-page").check();
+  await expect(page.getByTestId("trash-selection-count")).toHaveText("已选 2 项");
+  await page.getByTestId("trash-restore-selected").click();
+
+  const report = page.getByTestId("trash-restore-report");
+  await expect(report).toBeVisible();
+  await expect(report).toContainText("已恢复 1 项，1 项未能恢复");
+  const failed = report.getByTestId("trash-restore-report-item");
+  await expect(failed).toHaveCount(1);
+  await expect(failed).toContainText(EXPIRED_TRASH_TITLE);
+  await expect(failed).toContainText("已到期，不能再恢复");
+  expect(backend.mutations.filter((mutation) => mutation.path === "/api/trash/restore").map((mutation) => mutation.body)).toEqual([
+    { contentIds: [BILIBILI_CONTENT, EXPIRED_TRASH_CONTENT] },
+  ]);
+  expect(backend.trash.ids()).toEqual([EXPIRED_TRASH_CONTENT]);
+
+  await report.getByTestId("trash-restore-report-close").click();
+  await expect(report).toBeHidden();
+  await expect(trashRow(page, BILIBILI_CONTENT)).toHaveCount(0);
+  await expect(page.getByTestId("trash-selection-count")).toHaveText("已选 1 项");
+
+  await page.getByRole("link", { name: "全部内容", exact: true }).click();
+  await expect(libraryRow(page, BILIBILI_CONTENT)).toBeVisible();
 });

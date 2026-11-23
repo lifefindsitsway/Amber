@@ -1,7 +1,7 @@
 import { FileDown, FolderOpen, ListPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { matchPath, useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import type { AppError } from "../../../shared/errors.ts";
 import { useSaveCollectionExport } from "../../export/export-data.ts";
 import { appErrorOf } from "../confirm-dialog.tsx";
@@ -51,14 +51,12 @@ export function useCollectionActions(
 } {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const [editing, setEditing] = useState(false);
   const [batchAdd, setBatchAdd] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const exportMarkdown = useSaveCollectionExport(collection.id);
   const ownPage = options.ownPage === true;
   const exportError = exportMarkdown.error === null ? undefined : appErrorOf(exportMarkdown.error);
-  const viewing = matchPath("/collections/:id", pathname)?.params.id === collection.id;
   const { id, name } = collection;
   const { inlineEdit, summarize } = options;
 
@@ -119,20 +117,16 @@ export function useCollectionActions(
     <>
       <EditCollectionDialog collection={editing ? collection : undefined} onOpenChange={setEditing} />
       <BatchAddDialog open={batchAdd} onOpenChange={setBatchAdd} collectionId={id} />
-      <DeleteCollectionDialog
-        collection={deleting ? { id, name } : undefined}
-        onOpenChange={setDeleting}
-        onDeleted={() => {
-          // Its page would only show "not found" now.
-          if (viewing) void navigate("/collections");
-        }}
-      />
+      {/* The dialog leaves the collection's own page once it is gone. */}
+      <DeleteCollectionDialog collection={deleting ? { id, name } : undefined} onOpenChange={setDeleting} />
       {ownPage ? null : (
-        <Modal open={exportError !== undefined} onOpenChange={(open) => (open ? undefined : exportMarkdown.reset())} title={t("library.collection.exportFailed")}>
+        <Modal
+          open={exportError !== undefined}
+          onOpenChange={(open) => (open ? undefined : exportMarkdown.reset())}
+          title={t("library.collection.exportFailed")}
+          footer={<Button onClick={() => exportMarkdown.reset()}>{t("common.action.close")}</Button>}
+        >
           {exportError === undefined ? null : <ErrorView error={exportError} />}
-          <div className="mt-3 flex justify-end">
-            <Button onClick={() => exportMarkdown.reset()}>{t("common.action.close")}</Button>
-          </div>
         </Modal>
       )}
     </>

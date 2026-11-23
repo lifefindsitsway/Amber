@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs } from "radix-ui";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useMemo, useState, type FormEvent } from "react";
+import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router";
 import { UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
@@ -18,7 +18,11 @@ import { queryKeys, useAsrProfiles, useCollections, useProviders, useSettings, u
 import { ErrorView } from "../components/error-view.tsx";
 import { diarizationNoteKey, diarizationOffer } from "../components/asr-diarization.ts";
 import { AsrModelSelect, initialAsrModelRef } from "../components/asr-model-select.tsx";
-import { LinkScopeHint } from "../components/link-scope-hint.tsx";
+import { CollectionPreviewDialog } from "../components/collection-preview/collection-preview-dialog.tsx";
+import { choiceRequiredUrls, importIntent, itemsWithChoices, outcomeUnknown, type ImportIntent } from "../components/collection-preview/import-intent.ts";
+import type { CollectionChoice } from "../components/collection-preview/state.ts";
+import { useCollectionPreview } from "../components/collection-preview/use-collection-preview.ts";
+import { LinkRecognition } from "../components/link-scope-hint.tsx";
 import { ModelSelect, type ModelSelectEntry } from "../components/model-select.tsx";
 import { pickLocalFile, type PickedFile } from "../desktop/bridge.ts";
 import { buildSubtitleImportOptions, importBlockers, plainImportPossible } from "./content/subtitle-import-choice.ts";
@@ -32,8 +36,13 @@ import { useModelReadiness } from "../models/use-model-readiness.ts";
 import { linesOf, parseLinkText, recognizeLink } from "../links.ts";
 import { useLinkPasteField, type NewPagePrefill } from "../shell/paste-guard.ts";
 import { requestOpenTasks } from "../shell/task-panel.tsx";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Checkbox, Radio } from "../ui/checkbox.tsx";
 import { FilePicker } from "../ui/file-picker.tsx";
+import { NativeSelect } from "../ui/native-select.tsx";
+import { Callout, FieldError, FieldHint, InlineNote, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { Select, type SelectOption } from "../ui/select.tsx";
+import { TextArea, TextInput } from "../ui/text-field.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { PageHeader } from "../ui/feedback.tsx";
 import { ImportPackButton, PackActiveNotice } from "./content-pack/pack-entry.tsx";
@@ -41,6 +50,8 @@ import { ImportPackButton, PackActiveNotice } from "./content-pack/pack-entry.ts
 /** Builtin template id used when the user has not chosen a default. */
 const FALLBACK_TEMPLATE_ID = "summary.core";
 const NEW_COLLECTION = "\u0000new";
+/** The menu's value for "no collection": the menu cannot hold an empty value. */
+const NO_COLLECTION = "\u0000none";
 
 type Tab = "link" | "upload" | "local" | "subtitle";
 type PartChoice = "first" | "all";
@@ -51,17 +62,26 @@ interface PartPrompt {
   count: number;
 }
 
-const FIELD = "h-9 rounded-md border border-line bg-surface px-2 text-sm";
+/** The control a validation message belongs to; the message shows right under it. */
+type ProblemField = "links" | "subtitleUrl" | "subtitleFile" | "subtitleLanguage" | "subtitlePreview" | "uploadFile" | "localFile" | "collectionName";
+
+interface Problem {
+  field: ProblemField;
+  message: string;
+}
+
 /** Timed subtitles a new Content can carry; plain text cannot be imported with new media. */
 const SUBTITLE_ACCEPT = ".srt,.vtt,.ass,.ambersub,text/vtt,application/x-subrip";
 /**
- * The file and subtitle tabs put each label beside its control, labels sharing one column; a narrow
- * form stacks them. Rows without a label of their own (hints, errors) sit under the controls.
+ * The file and subtitle tabs put each label beside its field, labels sharing one column; a
+ * narrow form stacks them. A field's explanation and error sit in its own cell under the
+ * control, 6 px from it; rows without a label of their own start in the second column.
  */
-const FORM_GRID = "mt-5 grid grid-cols-1 gap-y-2 @lg:grid-cols-[max-content_1fr] @lg:items-center @lg:gap-x-6 @lg:gap-y-5";
-const FORM_LABEL = "text-sm";
-const FORM_HINT = "text-xs text-muted @lg:col-start-2 @lg:-mt-3";
+const FORM_GRID = "mt-5 grid grid-cols-1 gap-y-1.5 @lg:grid-cols-[max-content_1fr] @lg:items-start @lg:gap-x-6 @lg:gap-y-5";
+const FORM_LABEL = "mt-3.5 text-sm first:mt-0 @lg:mt-0 @lg:flex @lg:min-h-9 @lg:items-center";
+const FORM_CELL = "flex min-w-0 flex-col gap-1.5";
 const FORM_FULL = "@lg:col-span-2";
+const FORM_SECOND = "min-w-0 @lg:col-start-2";
 
 function encodeModel(ref: ModelRefDto): string {
   return JSON.stringify([ref.providerProfileId, ref.modelId]);
@@ -90,10 +110,11 @@ function expired(file: PickedFile): boolean {
 }
 
 /**
- * Where to go after an import: one Content → its page; a platform list or a
- * named collection → that collection; several items into a chosen collection → it; loose
+ * Where to go after an import: entries chosen from a platform collection → that collection (the
+ * first the answer names); one Content → its page; a named collection → that collection; loose
  * items → the library filtered to this batch, with the task panel open. Never creates a
- * collection on its own.
+ * collection on its own. Answers of older servers without `collectionIds` are resolved through
+ * the first Content's collections.
  */
 export async function routeAfterImport(input: {
   api: ApiClient;
@@ -101,9 +122,19 @@ export async function routeAfterImport(input: {
   /** The links sent, as sent. */
   urls: readonly string[];
   collection: { id: string } | { name: string } | undefined;
+  /** Some item carried entries chosen from a platform collection. */
+  collectionImport?: boolean;
 }): Promise<{ path: string; openTasks: boolean }> {
   const { response, collection } = input;
-  const scattered = { path: `/library?importBatchId=${encodeURIComponent(response.importBatchId)}`, openTasks: true };
+  const scattered = {
+    path: `/library?importBatchId=${encodeURIComponent(response.importBatchId)}`,
+    openTasks: true,
+  };
+  const joined = response.collectionIds;
+  const platformCollection = joined?.[0];
+  if (input.collectionImport === true && platformCollection !== undefined) {
+    return { path: `/collections/${platformCollection}`, openTasks: false };
+  }
   const firstId = response.contentIds[0];
   if (response.contentIds.length === 1 && firstId !== undefined) {
     return { path: `/contents/${firstId}`, openTasks: false };
@@ -111,14 +142,21 @@ export async function routeAfterImport(input: {
   if (collection !== undefined && "id" in collection) {
     return { path: `/collections/${collection.id}`, openTasks: false };
   }
+  // The chosen target comes last in the answer's collections.
+  const named = collection === undefined ? undefined : joined?.at(-1);
+  if (named !== undefined) {
+    return { path: `/collections/${named}`, openTasks: false };
+  }
   const platformList = input.urls.length === 1 && recognizeLink(input.urls[0] ?? "")?.kind === "collection";
+  if (platformList && platformCollection !== undefined) {
+    return { path: `/collections/${platformCollection}`, openTasks: false };
+  }
   if (firstId === undefined || (collection === undefined && !platformList)) {
     return scattered;
   }
   try {
     const content = await input.api.get(`/api/contents/${encodeURIComponent(firstId)}`, contentDetailDtoSchema);
-    const target =
-      collection !== undefined ? [...content.collections].reverse().find((item) => item.name === collection.name) : content.collections[0];
+    const target = collection !== undefined ? [...content.collections].reverse().find((item) => item.name === collection.name) : content.collections[0];
     return target === undefined ? scattered : { path: `/collections/${target.id}`, openTasks: false };
   } catch {
     return scattered;
@@ -149,8 +187,17 @@ export function NewPage() {
   const [prefill] = useState(() => location.state as NewPagePrefill | null);
   const [text, setText] = useState(prefill?.prefill ?? "");
   const [subtitleUrl, setSubtitleUrl] = useState("");
-  const linkField = useLinkPasteField<HTMLTextAreaElement>({ value: text, onValue: setText, multiline: true, initialNote: prefill?.pasteNote });
-  const subtitleField = useLinkPasteField<HTMLInputElement>({ value: subtitleUrl, onValue: setSubtitleUrl, multiline: false });
+  const linkField = useLinkPasteField<HTMLTextAreaElement>({
+    value: text,
+    onValue: setText,
+    multiline: true,
+    initialNote: prefill?.pasteNote,
+  });
+  const subtitleField = useLinkPasteField<HTMLInputElement>({
+    value: subtitleUrl,
+    onValue: setSubtitleUrl,
+    multiline: false,
+  });
   const [subtitle, setSubtitle] = useState<File | undefined>(undefined);
   const [subtitleLanguage, setSubtitleLanguage] = useState("");
   const [uploadFile, setUploadFile] = useState<File | undefined>(undefined);
@@ -171,14 +218,23 @@ export function NewPage() {
   const [autoProofreadChoice, setAutoProofreadChoice] = useState<boolean | undefined>(undefined);
   const [partPrompts, setPartPrompts] = useState<PartPrompt[]>([]);
   const [partChoices, setPartChoices] = useState<Record<string, PartChoice>>({});
-  const [problem, setProblem] = useState<string | undefined>(undefined);
+  const [problem, setProblem] = useState<Problem | undefined>(undefined);
   const [error, setError] = useState<AppError | undefined>(undefined);
   // Items skipped because their Content is in the trash; the page stays so the user sees why.
   const [skipped, setSkipped] = useState<{ count: number; next?: { path: string; openTasks: boolean } } | undefined>(undefined);
+  // Links the server found to be collections (short links), to be chosen from like the others.
+  const [extraPreviewUrls, setExtraPreviewUrls] = useState<readonly string[]>([]);
+  // What the preview's last 「开始处理」 chose; a later submit reuses it instead of asking again.
+  const [confirmed, setConfirmed] = useState<{ urls: readonly string[]; choices: CollectionChoice[] } | undefined>(undefined);
+  // The link import being sent: its frozen body and Idempotency-Key, kept for a retry after a network failure.
+  const intent = useRef<ImportIntent | undefined>(undefined);
 
   const modelOptions: ModelSelectEntry[] = (providers.data?.items ?? []).flatMap((profile) =>
     profile.models.map((model) => ({
-      value: encodeModel({ providerProfileId: profile.id, modelId: model.modelId }),
+      value: encodeModel({
+        providerProfileId: profile.id,
+        modelId: model.modelId,
+      }),
       profileName: profile.name,
       profileKey: profile.id,
       modelId: model.modelId,
@@ -218,26 +274,37 @@ export function NewPage() {
   // as written (more than one link is refused before sending).
   const subtitleTarget = subtitleParsed.all.length === 1 && subtitleParsed.links[0] !== undefined ? subtitleParsed.links[0].url : subtitleUrl.trim();
   const urls = tab === "subtitle" ? (subtitleTarget === "" ? [] : [subtitleTarget]) : linkUrls;
-  // Something besides the supported links is in the box: say what will be processed.
-  const scopeShown = tab === "link" && parsed.links.length > 0 && (parsed.unsupported.length > 0 || parsed.ignoredLines > 0 || parsed.otherText);
-  const scopeId = `${formId}-scope`;
+  // Collection links are chosen from in the preview first: those recognizable here, and short
+  // links the server reported as collections.
+  const previewUrls = tab === "link" ? linkUrls.filter((url) => recognizeLink(url)?.kind === "collection" || extraPreviewUrls.includes(url)) : [];
+  const preview = useCollectionPreview({
+    reserved: linkUrls.length - previewUrls.length,
+  });
+  const recognitionId = `${formId}-recognition`;
   // A choice of parts belongs to the link it was made for; an edited link asks again.
   const shownPartPrompts = partPrompts.filter((prompt) => urls.includes(prompt.url));
 
   // The subtitle of the open tab is previewed under its file; only that one is imported.
   const uploadSource = useMemo<SubtitlePreviewSource | undefined>(() => (uploadSubtitle === undefined ? undefined : { kind: "text", file: uploadSubtitle }), [uploadSubtitle]);
   const localSource = useMemo<SubtitlePreviewSource | undefined>(
-    () => (localSubtitle === undefined ? undefined : { kind: "local", path: localSubtitle.path, grant: localSubtitle.grant }),
+    () =>
+      localSubtitle === undefined
+        ? undefined
+        : {
+            kind: "local",
+            path: localSubtitle.path,
+            grant: localSubtitle.grant,
+          },
     [localSubtitle],
   );
   const linkSource = useMemo<SubtitlePreviewSource | undefined>(() => (subtitle === undefined ? undefined : { kind: "text", file: subtitle }), [subtitle]);
   const subtitleSource = tab === "upload" ? uploadSource : tab === "local" ? localSource : tab === "subtitle" ? linkSource : undefined;
   const previewState = useSubtitlePreview(subtitleSource);
-  const preview = previewState.status === "ready" ? previewState.preview : undefined;
-  const [subtitleChoice, setSubtitleChoice] = useSubtitleImportChoice(preview);
+  const subtitlePreview = previewState.status === "ready" ? previewState.preview : undefined;
+  const [subtitleChoice, setSubtitleChoice] = useSubtitleImportChoice(subtitlePreview);
   const hasSubtitle = subtitleSource !== undefined;
   // A package names its own language; every other subtitle needs one chosen.
-  const packageLanguage = preview?.package?.language;
+  const packageLanguage = subtitlePreview?.package?.language;
   const effectiveSubtitleLanguage = packageLanguage ?? subtitleLanguage;
   // A subtitle already gives the text, so it is not rewritten by AI unless the user asks for it.
   const autoProofread = autoProofreadChoice ?? !hasSubtitle;
@@ -249,19 +316,41 @@ export function NewPage() {
     if (!hasSubtitle) return undefined;
     if (previewState.status === "loading" || previewState.status === "idle") return t("subtitleImport.newPage.pending");
     if (previewState.status === "failed" && !plainImportPossible(previewState.error.code)) return t("subtitleImport.newPage.blocked");
-    if (preview !== undefined && subtitleChoice !== undefined && importBlockers(preview, subtitleChoice, effectiveSubtitleLanguage).length > 0) return t("subtitleImport.newPage.blocked");
+    if (subtitlePreview !== undefined && subtitleChoice !== undefined && importBlockers(subtitlePreview, subtitleChoice, effectiveSubtitleLanguage).length > 0)
+      return t("subtitleImport.newPage.blocked");
     return undefined;
   };
   /** The options of a previewed subtitle; a failed preview imports it as a plain subtitle. */
   const subtitleOptions = (): SubtitleImportOptions | undefined =>
-    preview === undefined || subtitleChoice === undefined ? undefined : buildSubtitleImportOptions(preview, subtitleChoice);
+    subtitlePreview === undefined || subtitleChoice === undefined ? undefined : buildSubtitleImportOptions(subtitlePreview, subtitleChoice);
   const noLlm = providers.data !== undefined && providers.data.items.length === 0;
+
+  /** The validation message of a field, its id for the control's description, and whether the control is invalid. */
+  const errorId = (field: ProblemField): string => `${formId}-problem-${field}`;
+  const invalid = (field: ProblemField): boolean => problem?.field === field;
+  const describedBy = (field: ProblemField, ...others: Array<string | undefined>): string | undefined => {
+    const ids = [...others, invalid(field) ? errorId(field) : undefined].filter((id): id is string => id !== undefined);
+    return ids.length === 0 ? undefined : ids.join(" ");
+  };
+  const fieldError = (field: ProblemField): ReactNode =>
+    problem?.field === field ? (
+      <FieldError id={errorId(field)} testId={`new-problem-${field}`}>
+        {problem.message}
+      </FieldError>
+    ) : null;
+  const fail = (field: ProblemField, message: string): void => {
+    setProblem({ field, message });
+    if (field === "collectionName") setShowSettings(true);
+  };
 
   /** Leaves for the import's result, unless some items were skipped for being in the trash. */
   const finishImport = (response: ImportResponse, next: { path: string; openTasks: boolean }): void => {
     const skippedCount = response.skippedTrashedContentIds?.length ?? 0;
     if (skippedCount > 0) {
-      setSkipped({ count: skippedCount, ...(response.contentIds.length === 0 ? {} : { next }) });
+      setSkipped({
+        count: skippedCount,
+        ...(response.contentIds.length === 0 ? {} : { next }),
+      });
       return;
     }
     void navigate(next.path);
@@ -277,7 +366,13 @@ export function NewPage() {
   const upload = useMutation({
     mutationFn: async (options: { allowDuplicate: boolean }): Promise<void> => {
       if (uploadFile === undefined) return;
-      const settings: ImportRequest["settings"] = { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting };
+      const settings: ImportRequest["settings"] = {
+        templateId,
+        outputLanguage,
+        autoProofread,
+        ...(modelRef === undefined ? {} : { modelRef }),
+        ...asrSetting,
+      };
       // Part order is fixed by the upload endpoint: the media file last.
       const form = new FormData();
       form.append("settings", JSON.stringify(settings));
@@ -291,9 +386,19 @@ export function NewPage() {
       form.append("file", uploadFile, uploadFile.name);
       const response = await api.upload("/api/contents/upload", form, importResponseSchema, { idempotent: true });
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.unfinishedTasks,
+      });
       void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-      finishImport(response, await routeAfterImport({ api, response, urls: [], collection: undefined }));
+      finishImport(
+        response,
+        await routeAfterImport({
+          api,
+          response,
+          urls: [],
+          collection: undefined,
+        }),
+      );
     },
     onError: (caught) => setError(caught instanceof ApiError ? caught.error : undefined),
   });
@@ -312,7 +417,12 @@ export function NewPage() {
 
   const localInitialSubtitle = (file: PickedFile): NonNullable<LocalFileRequest["initialSubtitle"]> => {
     const options = subtitleOptions();
-    return { path: file.path, grant: file.grant, language: effectiveSubtitleLanguage, ...(options === undefined ? {} : { options }) };
+    return {
+      path: file.path,
+      grant: file.grant,
+      language: effectiveSubtitleLanguage,
+      ...(options === undefined ? {} : { options }),
+    };
   };
 
   const localImport = useMutation({
@@ -321,15 +431,31 @@ export function NewPage() {
       const body: LocalFileRequest = {
         path: localFile.path,
         grant: localFile.grant,
-        settings: { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting },
+        settings: {
+          templateId,
+          outputLanguage,
+          autoProofread,
+          ...(modelRef === undefined ? {} : { modelRef }),
+          ...asrSetting,
+        },
         allowDuplicate: options.allowDuplicate,
         ...(localSubtitle === undefined ? {} : { initialSubtitle: localInitialSubtitle(localSubtitle) }),
       };
       const response = await api.post("/api/contents/local-file", importResponseSchema, { body, idempotent: true });
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.unfinishedTasks,
+      });
       void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-      finishImport(response, await routeAfterImport({ api, response, urls: [], collection: undefined }));
+      finishImport(
+        response,
+        await routeAfterImport({
+          api,
+          response,
+          urls: [],
+          collection: undefined,
+        }),
+      );
     },
     onError: (caught) => {
       if (caught instanceof ApiError && caught.error.code === "unauthenticated.file_grant") {
@@ -341,14 +467,22 @@ export function NewPage() {
     },
   });
 
+  /** Opens the preview of the collection links in the box; its 「开始处理」 is a new confirmation. */
+  const openPreview = (startUrl?: string, links: readonly string[] = previewUrls): void => {
+    setConfirmed(undefined);
+    setError(undefined);
+    preview.open(links, startUrl);
+  };
+
+  /** Sends the links (or the subtitle tab's one), with the entries chosen in the preview. */
   const submit = useMutation({
-    mutationFn: async (): Promise<void> => {
+    mutationFn: async (choices: readonly CollectionChoice[]): Promise<void> => {
       const collection = collectionTarget();
       let items: ImportItem[];
       if (tab === "subtitle" && subtitle !== undefined) {
         // The previewed text itself, so the digest the options carry is of what is sent.
         const subtitleText = previewState.status === "ready" && previewState.text !== undefined ? previewState.text : await subtitle.text();
-        const previewed = preview?.format;
+        const previewed = subtitlePreview?.format;
         const format = previewed !== undefined && previewed !== "txt" && previewed !== "md" ? previewed : subtitleFormat(subtitle.name);
         const options = subtitleOptions();
         items = [
@@ -363,35 +497,124 @@ export function NewPage() {
           },
         ];
       } else {
-        items = urls.map((url) => ({ url, ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }) }));
+        items = itemsWithChoices(urls, new Set(previewUrls), choices, (url) => ({
+          url,
+          ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }),
+        }));
       }
       const body: ImportRequest = {
         items,
-        settings: { templateId, outputLanguage, autoProofread, ...(modelRef === undefined ? {} : { modelRef }), ...asrSetting },
+        settings: {
+          templateId,
+          outputLanguage,
+          autoProofread,
+          ...(modelRef === undefined ? {} : { modelRef }),
+          ...asrSetting,
+        },
         ...(collection === undefined ? {} : { collection }),
+        confirmCollections: true,
       };
+      intent.current = importIntent(intent.current, body);
       try {
-        const response = await api.post("/api/contents/import", importResponseSchema, { body, idempotent: true });
+        const response = await api.post("/api/contents/import", importResponseSchema, { body: intent.current.body, idempotencyKey: intent.current.key });
+        intent.current = undefined;
+        // The page may stay (some items skipped): the links imported are read afresh next time,
+        // and the next 「开始处理」 asks again instead of resending this choice.
+        preview.close();
+        preview.reset(previewUrls);
+        setConfirmed(undefined);
         void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
         void queryClient.invalidateQueries({ queryKey: queryKeys.collections });
         // A direct link to a trashed Content restores it, back into its collections.
-        void queryClient.invalidateQueries({ queryKey: queryKeys.collectionDetails });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.unfinishedTasks });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.collectionDetails,
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.unfinishedTasks,
+        });
         void queryClient.invalidateQueries({ queryKey: queryKeys.trash });
-        finishImport(response, await routeAfterImport({ api, response, urls, collection }));
+        finishImport(
+          response,
+          await routeAfterImport({
+            api,
+            response,
+            urls,
+            collection,
+            collectionImport: items.some((item) => item.entries !== undefined),
+          }),
+        );
       } catch (caught) {
+        if (!outcomeUnknown(caught)) intent.current = undefined;
         if (caught instanceof ApiError && caught.error.code === "invalid_request.multipart_choice_required") {
-          const prompts = await inspectParts(api, items.filter((item) => item.parts === undefined).map((item) => item.url));
+          preview.close();
+          const prompts = await inspectParts(
+            api,
+            items.filter((item) => item.parts === undefined && item.entries === undefined).map((item) => item.url),
+          );
           if (prompts.length > 0) {
             setPartPrompts(prompts);
             return;
           }
+        }
+        if (caught instanceof ApiError && caught.error.code === "invalid_request.collection_choice_required") {
+          const asked = choiceRequiredUrls(caught.error).filter((url) => urls.includes(url));
+          if (asked.length > 0) {
+            const extra = [...new Set([...extraPreviewUrls, ...asked])];
+            setExtraPreviewUrls(extra);
+            openPreview(
+              asked[0],
+              linkUrls.filter((url) => recognizeLink(url)?.kind === "collection" || extra.includes(url)),
+            );
+            return;
+          }
+        }
+        if (caught instanceof ApiError && caught.error.code === "conflict.collection_preview_stale" && previewUrls.length > 0) {
+          // The collection changed under the preview: read it again, keeping what is still there.
+          openPreview(preview.urls[preview.step]);
+          preview.reread();
+          setError(caught.error);
+          return;
+        }
+        if (caught instanceof ApiError && caught.error.code === "source_unsupported_url" && !preview.isOpen) {
+          // A link the server cannot take is a problem with what was typed: say so under the box.
+          fail("links", caught.error.userMessage !== "" ? caught.error.userMessage : t(`errors.${caught.error.class}`));
+          return;
         }
         throw caught;
       }
     },
     onError: (caught) => setError(caught instanceof ApiError ? caught.error : undefined),
   });
+
+  /** The link and subtitle tabs' checks before anything is sent; the message goes under its field. */
+  const linkProblem = (): Problem | undefined => {
+    if (tab === "subtitle" && subtitleParsed.all.length > 1)
+      return {
+        field: "subtitleUrl",
+        message: t("shell.newPage.subtitleOneLink"),
+      };
+    if (urls.length === 0)
+      return {
+        field: tab === "subtitle" ? "subtitleUrl" : "links",
+        message: t("shell.newPage.needUrl"),
+      };
+    if (tab === "subtitle" && (subtitle === undefined || effectiveSubtitleLanguage === "")) {
+      return {
+        field: subtitle === undefined ? "subtitleFile" : "subtitleLanguage",
+        message: t("shell.newPage.needSubtitle"),
+      };
+    }
+    if (tab === "subtitle") {
+      const blocked = subtitleProblem();
+      if (blocked !== undefined) return { field: "subtitlePreview", message: blocked };
+    }
+    if (collectionChoice === NEW_COLLECTION && newCollectionName.trim() === "")
+      return {
+        field: "collectionName",
+        message: t("shell.newPage.needCollectionName"),
+      };
+    return undefined;
+  };
 
   const onSubmit = (event: FormEvent): void => {
     event.preventDefault();
@@ -400,35 +623,54 @@ export function NewPage() {
     setSkipped(undefined);
     if (windowMissing) return;
     if (tab === "upload") {
-      if (uploadFile === undefined) return setProblem(t("shell.newPage.needFile"));
-      if (uploadSubtitle !== undefined && effectiveSubtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
+      if (uploadFile === undefined) return fail("uploadFile", t("shell.newPage.needFile"));
+      if (uploadSubtitle !== undefined && effectiveSubtitleLanguage === "") return fail("subtitleLanguage", t("shell.newPage.needSubtitleLanguage"));
       const blocked = subtitleProblem();
-      if (blocked !== undefined) return setProblem(blocked);
+      if (blocked !== undefined) return fail("subtitlePreview", blocked);
       upload.mutate({ allowDuplicate: false });
       return;
     }
     if (tab === "local") {
-      if (localFile === undefined) return setProblem(t("shell.newPage.needLocalFile"));
-      if (localSubtitle !== undefined && effectiveSubtitleLanguage === "") return setProblem(t("shell.newPage.needSubtitleLanguage"));
+      if (localFile === undefined) return fail("localFile", t("shell.newPage.needLocalFile"));
+      if (localSubtitle !== undefined && effectiveSubtitleLanguage === "") return fail("subtitleLanguage", t("shell.newPage.needSubtitleLanguage"));
       if (expired(localFile) || (localSubtitle !== undefined && expired(localSubtitle))) {
         setLocalFile(undefined);
         setLocalSubtitle(undefined);
-        return setProblem(t("shell.newPage.pickAgain"));
+        return fail("localFile", t("shell.newPage.pickAgain"));
       }
       const blocked = subtitleProblem();
-      if (blocked !== undefined) return setProblem(blocked);
+      if (blocked !== undefined) return fail("subtitlePreview", blocked);
       localImport.mutate({ allowDuplicate: false });
       return;
     }
-    if (tab === "subtitle" && subtitleParsed.all.length > 1) return setProblem(t("shell.newPage.subtitleOneLink"));
-    if (urls.length === 0) return setProblem(t("shell.newPage.needUrl"));
-    if (tab === "subtitle" && (subtitle === undefined || effectiveSubtitleLanguage === "")) return setProblem(t("shell.newPage.needSubtitle"));
-    if (tab === "subtitle") {
-      const blocked = subtitleProblem();
-      if (blocked !== undefined) return setProblem(blocked);
+    const found = linkProblem();
+    if (found !== undefined) return fail(found.field, found.message);
+    if (previewUrls.length > 0) {
+      // Chosen in the preview already (the import then asked about parts): sent as chosen.
+      if (confirmed !== undefined && previewUrls.every((url) => confirmed.urls.includes(url))) {
+        submit.mutate(confirmed.choices);
+        return;
+      }
+      openPreview();
+      return;
     }
-    if (collectionChoice === NEW_COLLECTION && newCollectionName.trim() === "") return setProblem(t("shell.newPage.needCollectionName"));
-    submit.mutate();
+    submit.mutate([]);
+  };
+
+  /** The preview's 「开始处理」: checks the form, then sends with the choice. */
+  const onPreviewConfirm = (choices: CollectionChoice[]): void => {
+    setConfirmed({ urls: previewUrls, choices });
+    setError(undefined);
+    setProblem(undefined);
+    setSkipped(undefined);
+    const found = linkProblem();
+    // What is held back lives on the form: show it there; the choice is kept for the next submit.
+    if (found !== undefined || windowMissing) {
+      preview.close();
+      if (found !== undefined) fail(found.field, found.message);
+      return;
+    }
+    submit.mutate(choices);
   };
 
   const onSubtitleFile = (file: File | undefined): void => {
@@ -436,65 +678,99 @@ export function NewPage() {
     if (file === undefined) subtitleRemoved();
   };
 
+  const languageSelect = (id: string, testId: string | undefined) => (
+    <NativeSelect
+      id={id}
+      data-testid={testId}
+      value={subtitleLanguage}
+      onChange={(event) => setSubtitleLanguage(event.target.value)}
+      invalid={invalid("subtitleLanguage")}
+      aria-describedby={describedBy("subtitleLanguage")}
+    >
+      <option value="">{t("shell.newPage.chooseLanguage")}</option>
+      {Object.keys(languageNames).map((tag) => (
+        <option key={tag} value={tag}>
+          {languageLabel(tag)}
+        </option>
+      ))}
+    </NativeSelect>
+  );
+
   /** Under an attached subtitle: its preview, its language unless a package names it, and 「自动校对」 with why it starts off. */
   const subtitleDetails = (languageId: string, languageTestId: string) => (
     <>
-      <div className="min-w-0 @lg:col-start-2">
-        <SubtitleImportPreview state={previewState} choice={subtitleChoice} onChoice={setSubtitleChoice} onRefresh={previewState.refresh} originalLanguage={effectiveSubtitleLanguage} />
+      <div className={`${FORM_SECOND} ${FORM_CELL}`}>
+        <SubtitleImportPreview
+          state={previewState}
+          choice={subtitleChoice}
+          onChoice={setSubtitleChoice}
+          onRefresh={previewState.refresh}
+          originalLanguage={effectiveSubtitleLanguage}
+        />
+        {fieldError("subtitlePreview")}
       </div>
       {packageLanguage === undefined ? (
         <>
           <label htmlFor={languageId} className={FORM_LABEL}>
             {t("shell.newPage.subtitleLanguage")}
           </label>
-          <select id={languageId} data-testid={languageTestId} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
-            <option value="">{t("shell.newPage.chooseLanguage")}</option>
-            {Object.keys(languageNames).map((tag) => (
-              <option key={tag} value={tag}>
-                {languageLabel(tag)}
-              </option>
-            ))}
-          </select>
+          <div className={FORM_CELL}>
+            {languageSelect(languageId, languageTestId)}
+            {fieldError("subtitleLanguage")}
+          </div>
         </>
       ) : null}
-      <div className="flex flex-col gap-0.5 @lg:col-start-2" data-testid="subtitle-auto-proofread">
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)} aria-describedby={`${formId}-proofread-note`} />
+      <div className={`${FORM_SECOND} ${FORM_CELL}`} data-testid="subtitle-auto-proofread">
+        <Checkbox checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)} aria-describedby={`${formId}-proofread-note`}>
           {t("shell.newPage.autoProofread")}
-        </label>
-        <p id={`${formId}-proofread-note`} className="pl-6 text-xs text-muted">
-          {t("subtitleImport.newPage.autoProofreadNote")}
-        </p>
+        </Checkbox>
+        <FieldHint id={`${formId}-proofread-note`}>{t("subtitleImport.newPage.autoProofreadNote")}</FieldHint>
       </div>
     </>
   );
+
+  const collectionOptions: Array<SelectOption<string>> = [
+    {
+      value: NO_COLLECTION,
+      label: t("shell.newPage.collectionNone"),
+      dividerAfter: true,
+    },
+    ...(collections.data?.items ?? []).map((collection, index, all) => ({
+      value: collection.id,
+      label: collection.name,
+      ...(index === all.length - 1 ? { dividerAfter: true } : {}),
+    })),
+    { value: NEW_COLLECTION, label: t("shell.newPage.collectionNew") },
+  ];
+  const linkPending = submit.isPending;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader title={t("shell.newPage.title")} actions={<ImportPackButton variant="ghost" testId="new-pack-import" />} />
       <PackActiveNotice className="mx-auto mt-4 w-[calc(100%-3rem)] max-w-2xl" />
-      <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-4 px-6 py-8">
+      <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 py-8">
         {noLlm ? (
-          <div data-testid="no-llm-banner" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-soft px-3 py-2 text-sm">
-            <span>{t("shell.newPage.noLlmBanner")}</span>
-            <Link to="/settings/models" className="font-medium text-accent underline">
-              {t("shell.newPage.configureNow")}
-            </Link>
-          </div>
+          <Callout
+            tone="info"
+            testId="no-llm-banner"
+            actions={
+              <Link to="/settings/models" className={`text-sm font-medium ${TEXT_ACTION_CLASS}`}>
+                {t("shell.newPage.configureNow")}
+              </Link>
+            }
+          >
+            {t("shell.newPage.noLlmBanner")}
+          </Callout>
         ) : null}
         <Tabs.Root value={tab} onValueChange={(value) => setTab(value as Tab)}>
           <Tabs.List className="flex gap-1 border-b border-line">
             <TabTrigger value="link" label={t("shell.newPage.tabLink")} />
-            {server ? (
-              <TabTrigger value="upload" label={t("shell.newPage.tabUpload")} />
-            ) : (
-              <TabTrigger value="local" label={t("shell.newPage.tabLocal")} disabled={!desktop} />
-            )}
+            {server ? <TabTrigger value="upload" label={t("shell.newPage.tabUpload")} /> : <TabTrigger value="local" label={t("shell.newPage.tabLocal")} disabled={!desktop} />}
             <TabTrigger value="subtitle" label={t("shell.newPage.tabSubtitle")} />
           </Tabs.List>
-          {server || desktop ? null : <p className="mt-2 text-xs text-muted">{t("shell.newPage.localUnavailable")}</p>}
-          <Tabs.Content value="link" className="mt-3 flex flex-col gap-2">
-            <textarea
+          {server || desktop ? null : <InlineNote className="mt-2">{t("shell.newPage.localUnavailable")}</InlineNote>}
+          <Tabs.Content value="link" className="mt-3 flex flex-col gap-1.5">
+            <TextArea
               data-testid="new-url-input"
               aria-label={t("shell.newPage.tabLink")}
               ref={linkField.ref}
@@ -503,94 +779,98 @@ export function NewPage() {
               onPaste={linkField.onPaste}
               placeholder={t("shell.newPage.urlPlaceholder")}
               rows={6}
-              className="w-full rounded-md border border-line bg-surface p-3 font-mono text-sm"
+              invalid={invalid("links")}
+              aria-describedby={describedBy("links", recognitionId)}
+              className="w-full font-mono"
             />
-            {linkField.note === undefined ? null : (
-              <p className="text-xs text-muted" role="status" data-testid="new-paste-note">
-                {t("shell.newPage.pasteNote", { count: linkField.note })}
-              </p>
-            )}
-            {parsed.links.some((link) => link.kind === "collection") ? (
-              <p className="text-xs text-muted">{t("shell.newPage.collectionDetected")}</p>
-            ) : parsed.links.length > 1 ? (
-              <p className="text-xs text-muted">{t("shell.newPage.batchDetected", { count: parsed.links.length })}</p>
-            ) : null}
+            {fieldError("links")}
+            <LinkRecognition parsed={parsed} pasted={linkField.note} id={recognitionId} onPreview={() => openPreview()} />
           </Tabs.Content>
           {server ? (
             <Tabs.Content value="upload" className={FORM_GRID}>
               <span id={`${formId}-upload-file`} className={FORM_LABEL}>
                 {t("shell.newPage.uploadFile")}
               </span>
-              <FilePicker testId="upload-file" accept="audio/*,video/*" fileName={uploadFile?.name} onFile={setUploadFile} labelledBy={`${formId}-upload-file`} />
-              <span className={FORM_HINT}>{t("shell.newPage.uploadHint")}</span>
+              <div className={FORM_CELL}>
+                <FilePicker testId="upload-file" accept="audio/*,video/*" fileName={uploadFile?.name} onFile={setUploadFile} labelledBy={`${formId}-upload-file`} />
+                <FieldHint id={`${formId}-upload-hint`}>{t("shell.newPage.uploadHint")}</FieldHint>
+                {fieldError("uploadFile")}
+              </div>
               <span id={`${formId}-upload-subtitle`} className={FORM_LABEL}>
                 {t("shell.newPage.uploadSubtitle")}
               </span>
-              <div className="flex min-w-0 items-center gap-3">
-                <FilePicker
-                  key={uploadSubtitleRound}
-                  testId="upload-subtitle"
-                  accept={SUBTITLE_ACCEPT}
-                  fileName={uploadSubtitle?.name}
-                  onFile={(file) => {
-                    setUploadSubtitle(file);
-                    if (file === undefined) subtitleRemoved();
-                  }}
-                  labelledBy={`${formId}-upload-subtitle`}
-                />
-                {uploadSubtitle === undefined ? null : (
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setUploadSubtitle(undefined);
-                      setUploadSubtitleRound(uploadSubtitleRound + 1);
-                      subtitleRemoved();
+              <div className={FORM_CELL}>
+                <div className="flex min-w-0 items-center gap-3">
+                  <FilePicker
+                    key={uploadSubtitleRound}
+                    testId="upload-subtitle"
+                    accept={SUBTITLE_ACCEPT}
+                    fileName={uploadSubtitle?.name}
+                    onFile={(file) => {
+                      setUploadSubtitle(file);
+                      if (file === undefined) subtitleRemoved();
                     }}
-                    data-testid="upload-remove-subtitle"
-                  >
-                    {t("shell.newPage.removeSubtitle")}
-                  </Button>
-                )}
+                    labelledBy={`${formId}-upload-subtitle`}
+                  />
+                  {uploadSubtitle === undefined ? null : (
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setUploadSubtitle(undefined);
+                        setUploadSubtitleRound(uploadSubtitleRound + 1);
+                        subtitleRemoved();
+                      }}
+                      data-testid="upload-remove-subtitle"
+                    >
+                      {t("shell.newPage.removeSubtitle")}
+                    </Button>
+                  )}
+                </div>
+                <FieldHint id={`${formId}-upload-subtitle-hint`}>{t("subtitleImport.newPage.fileHint")}</FieldHint>
               </div>
-              <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
               {uploadSubtitle === undefined ? null : subtitleDetails(`${formId}-upload-language`, "upload-subtitle-language")}
             </Tabs.Content>
           ) : null}
           {desktop ? (
             <Tabs.Content value="local" className={FORM_GRID}>
               <span className={FORM_LABEL}>{t("shell.newPage.uploadFile")}</span>
-              <div className="flex min-w-0 items-center gap-3">
-                <Button disabled={pick.isPending} onClick={() => pick.mutate("media")} data-testid="local-pick">
-                  {t("shell.newPage.pickFile")}
-                </Button>
-                <span className="min-w-0 truncate text-sm" data-testid="local-file-name" title={localFile?.path}>
-                  {localFile === undefined ? t("shell.newPage.noFilePicked") : baseName(localFile.path)}
-                </span>
+              <div className={FORM_CELL}>
+                <div className="flex min-w-0 items-center gap-3">
+                  <Button disabled={pick.isPending} onClick={() => pick.mutate("media")} data-testid="local-pick">
+                    {t("shell.newPage.pickFile")}
+                  </Button>
+                  <span className="min-w-0 truncate text-sm" data-testid="local-file-name" title={localFile?.path}>
+                    {localFile === undefined ? t("shell.newPage.noFilePicked") : baseName(localFile.path)}
+                  </span>
+                </div>
+                <FieldHint id={`${formId}-local-hint`}>{t("shell.newPage.localHint")}</FieldHint>
+                {fieldError("localFile")}
               </div>
-              <span className={FORM_HINT}>{t("shell.newPage.localHint")}</span>
               <span className={FORM_LABEL}>{t("shell.newPage.uploadSubtitle")}</span>
-              <div className="flex min-w-0 items-center gap-3">
-                <Button disabled={pick.isPending} onClick={() => pick.mutate("subtitle")} data-testid="local-pick-subtitle">
-                  {t("shell.newPage.pickSubtitle")}
-                </Button>
-                {localSubtitle === undefined ? null : (
-                  <>
-                    <span className="min-w-0 truncate text-sm" data-testid="local-subtitle-name" title={localSubtitle.path}>
-                      {baseName(localSubtitle.path)}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      onClick={() => {
-                        setLocalSubtitle(undefined);
-                        subtitleRemoved();
-                      }}
-                    >
-                      {t("shell.newPage.removeSubtitle")}
-                    </Button>
-                  </>
-                )}
+              <div className={FORM_CELL}>
+                <div className="flex min-w-0 items-center gap-3">
+                  <Button disabled={pick.isPending} onClick={() => pick.mutate("subtitle")} data-testid="local-pick-subtitle">
+                    {t("shell.newPage.pickSubtitle")}
+                  </Button>
+                  {localSubtitle === undefined ? null : (
+                    <>
+                      <span className="min-w-0 truncate text-sm" data-testid="local-subtitle-name" title={localSubtitle.path}>
+                        {baseName(localSubtitle.path)}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setLocalSubtitle(undefined);
+                          subtitleRemoved();
+                        }}
+                      >
+                        {t("shell.newPage.removeSubtitle")}
+                      </Button>
+                    </>
+                  )}
+                </div>
+                <FieldHint id={`${formId}-local-subtitle-hint`}>{t("subtitleImport.newPage.fileHint")}</FieldHint>
               </div>
-              <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
               {localSubtitle === undefined ? null : subtitleDetails(`${formId}-local-language`, "local-subtitle-language")}
               {pick.error === null ? null : (
                 <div className={FORM_FULL}>
@@ -603,38 +883,41 @@ export function NewPage() {
             <label htmlFor={`${formId}-subtitle-url`} className={FORM_LABEL}>
               {t("shell.newPage.subtitleUrl")}
             </label>
-            <input
-              id={`${formId}-subtitle-url`}
-              ref={subtitleField.ref}
-              value={subtitleUrl}
-              onChange={(event) => subtitleField.onChange(event.target.value)}
-              onPaste={subtitleField.onPaste}
-              placeholder={t("shell.newPage.subtitleUrlPlaceholder")}
-              className={FIELD}
-            />
-            {subtitleField.note === undefined ? null : (
-              <span className={FORM_HINT} role="status" data-testid="subtitle-paste-note">
-                {t("shell.newPage.pasteNote", { count: subtitleField.note })}
-              </span>
-            )}
+            <div className={FORM_CELL}>
+              <TextInput
+                id={`${formId}-subtitle-url`}
+                ref={subtitleField.ref}
+                value={subtitleUrl}
+                onChange={(event) => subtitleField.onChange(event.target.value)}
+                onPaste={subtitleField.onPaste}
+                placeholder={t("shell.newPage.subtitleUrlPlaceholder")}
+                invalid={invalid("subtitleUrl")}
+                aria-describedby={describedBy("subtitleUrl", subtitleField.note === undefined ? undefined : `${formId}-subtitle-paste-note`)}
+              />
+              {fieldError("subtitleUrl")}
+              {subtitleField.note === undefined ? null : (
+                <FieldHint id={`${formId}-subtitle-paste-note`} testId="subtitle-paste-note">
+                  {t("shell.newPage.pasteNote", { count: subtitleField.note })}
+                </FieldHint>
+              )}
+            </div>
             <span id={`${formId}-subtitle-file`} className={FORM_LABEL}>
               {t("shell.newPage.subtitleFile")}
             </span>
-            <FilePicker testId="subtitle-file" accept={SUBTITLE_ACCEPT} fileName={subtitle?.name} onFile={onSubtitleFile} labelledBy={`${formId}-subtitle-file`} />
-            <span className={FORM_HINT}>{t("subtitleImport.newPage.fileHint")}</span>
+            <div className={FORM_CELL}>
+              <FilePicker testId="subtitle-file" accept={SUBTITLE_ACCEPT} fileName={subtitle?.name} onFile={onSubtitleFile} labelledBy={`${formId}-subtitle-file`} />
+              <FieldHint id={`${formId}-subtitle-file-hint`}>{t("subtitleImport.newPage.fileHint")}</FieldHint>
+              {fieldError("subtitleFile")}
+            </div>
             {subtitle === undefined ? (
               <>
                 <label htmlFor={`${formId}-subtitle-language`} className={FORM_LABEL}>
                   {t("shell.newPage.subtitleLanguage")}
                 </label>
-                <select id={`${formId}-subtitle-language`} value={subtitleLanguage} onChange={(event) => setSubtitleLanguage(event.target.value)} className={FIELD}>
-                  <option value="">{t("shell.newPage.chooseLanguage")}</option>
-                  {Object.keys(languageNames).map((tag) => (
-                    <option key={tag} value={tag}>
-                      {languageLabel(tag)}
-                    </option>
-                  ))}
-                </select>
+                <div className={FORM_CELL}>
+                  {languageSelect(`${formId}-subtitle-language`, undefined)}
+                  {fieldError("subtitleLanguage")}
+                </div>
               </>
             ) : (
               subtitleDetails(`${formId}-subtitle-language`, "subtitle-language")
@@ -643,43 +926,62 @@ export function NewPage() {
         </Tabs.Root>
 
         {shownPartPrompts.length === 0 ? null : (
-          <div data-testid="parts-choice" className="rounded-md border border-line p-3 text-sm">
-            <p className="font-medium">{t("shell.newPage.partsTitle")}</p>
-            {shownPartPrompts.map((prompt) => (
-              <fieldset key={prompt.url} className="mt-2">
-                <legend className="truncate text-xs text-muted">{prompt.title ?? prompt.url}</legend>
-                <label className="mr-4 inline-flex items-center gap-1">
-                  <input type="radio" name={prompt.url} checked={partChoices[prompt.url] === "first"} onChange={() => setPartChoices({ ...partChoices, [prompt.url]: "first" })} />
-                  {t("shell.newPage.partsFirst")}
-                </label>
-                <label className="inline-flex items-center gap-1">
-                  <input type="radio" name={prompt.url} checked={partChoices[prompt.url] === "all"} onChange={() => setPartChoices({ ...partChoices, [prompt.url]: "all" })} />
-                  {t("shell.newPage.partsAll", { count: prompt.count })}
-                </label>
-              </fieldset>
-            ))}
-            <p className="mt-2 text-xs text-muted">{t("shell.newPage.partsHint")}</p>
-          </div>
+          <Callout tone="info" title={t("shell.newPage.partsTitle")} testId="parts-choice">
+            <div className="flex flex-col gap-3">
+              {shownPartPrompts.map((prompt) => (
+                <fieldset key={prompt.url} className="flex min-w-0 flex-col gap-1.5">
+                  <legend className="mb-1.5 max-w-full truncate text-note text-muted">{prompt.title ?? prompt.url}</legend>
+                  <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                    <Radio
+                      name={prompt.url}
+                      checked={partChoices[prompt.url] === "first"}
+                      onChange={() =>
+                        setPartChoices({
+                          ...partChoices,
+                          [prompt.url]: "first",
+                        })
+                      }
+                    >
+                      {t("shell.newPage.partsFirst")}
+                    </Radio>
+                    <Radio name={prompt.url} checked={partChoices[prompt.url] === "all"} onChange={() => setPartChoices({ ...partChoices, [prompt.url]: "all" })}>
+                      {t("shell.newPage.partsAll", { count: prompt.count })}
+                    </Radio>
+                  </div>
+                </fieldset>
+              ))}
+              <p className="text-note text-muted">{t("shell.newPage.partsHint")}</p>
+            </div>
+          </Callout>
         )}
 
         <section className="rounded-md border border-line">
-          <button type="button" onClick={() => setShowSettings(!showSettings)} aria-expanded={showSettings} className="flex w-full items-center gap-1 px-3 py-2 text-sm font-medium">
-            {showSettings ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          <button
+            type="button"
+            onClick={() => setShowSettings(!showSettings)}
+            aria-expanded={showSettings}
+            className={`flex w-full items-center gap-1 rounded-md px-3 py-2 text-sm font-medium ${FOCUS_RING}`}
+          >
+            {showSettings ? <ChevronDown size={16} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
             {t("shell.newPage.settings")}
           </button>
           {showSettings ? (
-            <div className="grid grid-cols-1 gap-3 border-t border-line p-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm">
-                {t("shell.newPage.template")}
-                <select value={templateId} onChange={(event) => setTemplateChoice(event.target.value)} className={FIELD}>
-                  {(templates.data?.items ?? []).map((template) => (
-                    <option key={template.id} value={template.id}>
-                      {templateLabel(template)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="flex min-w-0 flex-col gap-1 text-sm">
+            <div className="grid grid-cols-1 gap-x-4 gap-y-5 border-t border-line p-4 sm:grid-cols-2">
+              <div className="flex min-w-0 flex-col gap-1.5 text-sm">
+                <label htmlFor={`${formId}-template`}>{t("shell.newPage.template")}</label>
+                <Select
+                  id={`${formId}-template`}
+                  value={templateId}
+                  options={(templates.data?.items ?? []).map((template) => ({
+                    value: template.id,
+                    label: templateLabel(template),
+                  }))}
+                  onChange={setTemplateChoice}
+                  placeholder={t("common.state.loading")}
+                  testId="new-template"
+                />
+              </div>
+              <div className="flex min-w-0 flex-col gap-1.5 text-sm">
                 <label htmlFor={`${formId}-model`}>{t("shell.newPage.model")}</label>
                 <ModelSelect
                   kind="llm"
@@ -694,97 +996,113 @@ export function NewPage() {
                 />
               </div>
               {asrOptions.length === 0 ? null : (
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="flex min-w-0 flex-col gap-1 text-sm">
-                    <label htmlFor={`${formId}-asr-model`}>{t("shell.newPage.asrModel")}</label>
-                    <AsrModelSelect
-                      id={`${formId}-asr-model`}
-                      profiles={asrOptions}
-                      value={asrModelRef}
-                      onChange={(ref) => setAsrChoice(ref ?? null)}
-                      label={t("shell.newPage.asrModel")}
-                      noneLabel={t("shell.newPage.noAsrModel")}
-                      testId="new-asr-model"
-                      size="lg"
-                      width="fill"
-                    />
-                  </div>
+                <div className="flex min-w-0 flex-col gap-1.5 text-sm">
+                  <label htmlFor={`${formId}-asr-model`}>{t("shell.newPage.asrModel")}</label>
+                  <AsrModelSelect
+                    id={`${formId}-asr-model`}
+                    profiles={asrOptions}
+                    value={asrModelRef}
+                    onChange={(ref) => setAsrChoice(ref ?? null)}
+                    label={t("shell.newPage.asrModel")}
+                    noneLabel={t("shell.newPage.noAsrModel")}
+                    testId="new-asr-model"
+                    size="lg"
+                    width="fill"
+                  />
                   {diarizationNote === undefined ? null : (
-                    <p className="text-xs text-muted" data-testid="new-diarization-note">
+                    <FieldHint id={`${formId}-diarization-note`} testId="new-diarization-note">
                       {t(`speakerTools.note.${diarizationNote}`)}
-                    </p>
+                    </FieldHint>
                   )}
                 </div>
               )}
-              <label className="flex flex-col gap-1 text-sm">
-                {t("shell.newPage.outputLanguage")}
-                <select value={outputLanguage} onChange={(event) => setLanguageChoice(event.target.value)} className={FIELD}>
-                  {languageOptions.map((tag) => (
-                    <option key={tag} value={tag}>
-                      {languageLabel(tag)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="flex min-w-0 flex-col gap-1.5 text-sm">
+                <label htmlFor={`${formId}-language`}>{t("shell.newPage.outputLanguage")}</label>
+                <Select
+                  id={`${formId}-language`}
+                  value={outputLanguage}
+                  options={languageOptions.map((tag) => ({
+                    value: tag,
+                    label: languageLabel(tag),
+                  }))}
+                  onChange={setLanguageChoice}
+                  placeholder={languageLabel(outputLanguage)}
+                  testId="new-output-language"
+                />
+              </div>
               {tab === "upload" || tab === "local" ? null : (
-              <label className="flex flex-col gap-1 text-sm">
-                {t("shell.newPage.collection")}
-                <select value={collectionChoice} onChange={(event) => setCollectionChoice(event.target.value)} className={FIELD}>
-                  <option value="">{t("shell.newPage.collectionNone")}</option>
-                  {(collections.data?.items ?? []).map((collection) => (
-                    <option key={collection.id} value={collection.id}>
-                      {collection.name}
-                    </option>
-                  ))}
-                  <option value={NEW_COLLECTION}>{t("shell.newPage.collectionNew")}</option>
-                </select>
-              </label>
+                <div className="flex min-w-0 flex-col gap-1.5 text-sm">
+                  <label htmlFor={`${formId}-collection`}>{t("shell.newPage.collection")}</label>
+                  <Select
+                    id={`${formId}-collection`}
+                    value={collectionChoice === "" ? NO_COLLECTION : collectionChoice}
+                    options={collectionOptions}
+                    onChange={(value) => setCollectionChoice(value === NO_COLLECTION ? "" : value)}
+                    placeholder={t("shell.newPage.collectionNone")}
+                    testId="new-collection"
+                  />
+                </div>
               )}
               {tab !== "upload" && tab !== "local" && collectionChoice === NEW_COLLECTION ? (
-                <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-                  {t("shell.newPage.collectionNewName")}
-                  <input value={newCollectionName} onChange={(event) => setNewCollectionName(event.target.value)} className={FIELD} />
-                </label>
+                <div className="flex min-w-0 flex-col gap-1.5 text-sm sm:col-span-2">
+                  <label htmlFor={`${formId}-collection-name`}>{t("shell.newPage.collectionNewName")}</label>
+                  <TextInput
+                    id={`${formId}-collection-name`}
+                    value={newCollectionName}
+                    onChange={(event) => setNewCollectionName(event.target.value)}
+                    invalid={invalid("collectionName")}
+                    aria-describedby={describedBy("collectionName")}
+                  />
+                  {fieldError("collectionName")}
+                </div>
               ) : null}
               {/* With a subtitle attached the checkbox sits under it instead, with why it starts off. */}
               {hasSubtitle ? null : (
-                <label className="flex items-center gap-2 text-sm sm:col-span-2">
-                  <input type="checkbox" checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)} />
-                  {t("shell.newPage.autoProofread")}
-                </label>
+                <div className="sm:col-span-2">
+                  <Checkbox checked={autoProofread} onChange={(event) => setAutoProofreadChoice(event.target.checked)}>
+                    {t("shell.newPage.autoProofread")}
+                  </Checkbox>
+                </div>
               )}
             </div>
           ) : null}
         </section>
 
-        {problem === undefined ? null : <p className="text-sm text-danger">{problem}</p>}
         {skipped === undefined ? null : (
-          <div data-testid="new-skipped-trashed" role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-accent/40 bg-accent-soft px-3 py-2 text-sm">
-            <span>{t("shell.newPage.skippedTrashed", { count: skipped.count })}</span>
-            <Link to="/trash" className="font-medium text-accent underline">
-              {t("shell.newPage.openTrash")}
-            </Link>
-            {skipped.next === undefined ? null : (
-              <Link
-                to={skipped.next.path}
-                className="font-medium text-accent underline"
-                onClick={() => {
-                  if (skipped.next?.openTasks === true) requestOpenTasks();
-                }}
-              >
-                {t("shell.newPage.viewImported")}
-              </Link>
-            )}
-          </div>
+          <Callout
+            tone="warn"
+            announce="status"
+            testId="new-skipped-trashed"
+            actions={
+              <>
+                <Link to="/trash" className={`text-sm font-medium ${TEXT_ACTION_CLASS}`}>
+                  {t("shell.newPage.openTrash")}
+                </Link>
+                {skipped.next === undefined ? null : (
+                  <Link
+                    to={skipped.next.path}
+                    className={`text-sm font-medium ${TEXT_ACTION_CLASS}`}
+                    onClick={() => {
+                      if (skipped.next?.openTasks === true) requestOpenTasks();
+                    }}
+                  >
+                    {t("shell.newPage.viewImported")}
+                  </Link>
+                )}
+              </>
+            }
+          >
+            {t("shell.newPage.skippedTrashed", { count: skipped.count })}
+          </Callout>
         )}
-        {error === undefined ? null : (
+        {error === undefined || preview.isOpen ? null : (
           <ErrorView error={error}>
             {error.code === "conflict.duplicate_file" && (tab === "upload" || tab === "local") ? (
               <>
                 {error.details?.["trashed"] === true ? (
                   <p data-testid="new-duplicate-in-trash" className="w-full text-sm">
                     {t("shell.newPage.duplicateInTrash")}{" "}
-                    <Link to="/trash" className="font-medium text-accent underline">
+                    <Link to="/trash" className={`font-medium ${TEXT_ACTION_CLASS}`}>
                       {t("shell.newPage.openTrash")}
                     </Link>
                   </p>
@@ -819,33 +1137,36 @@ export function NewPage() {
           </ErrorView>
         )}
         {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} onSaved={windowSaved} testId="new-context-window" /> : null}
-        {/* The scope sits beside the button; when both do not fit (a narrow window, a large zoom) it
-            wraps above it, so the button stays in view. */}
-        <div className="flex flex-wrap items-start justify-end gap-x-4 gap-y-2">
-          {scopeShown ? <LinkScopeHint parsed={parsed} id={scopeId} className="min-w-0 flex-1 basis-80" /> : null}
+        <div className="flex justify-end">
           <Button
             id={submitId}
             type="submit"
             variant="primary"
             data-testid="new-submit"
-            aria-describedby={scopeShown ? scopeId : undefined}
-            disabled={submit.isPending || upload.isPending || localImport.isPending || windowMissing}
+            loading={linkPending || upload.isPending || localImport.isPending}
+            disabled={windowMissing}
           >
-            {upload.isPending ? t("shell.newPage.uploading") : submit.isPending || localImport.isPending ? t("shell.newPage.submitting") : t("shell.newPage.submit")}
+            {upload.isPending ? t("shell.newPage.uploading") : linkPending || localImport.isPending ? t("shell.newPage.submitting") : t("shell.newPage.submit")}
           </Button>
         </div>
       </form>
+      <CollectionPreviewDialog
+        preview={preview}
+        onConfirm={onPreviewConfirm}
+        submitting={linkPending}
+        error={preview.isOpen ? error : undefined}
+        reserved={linkUrls.length - previewUrls.length}
+      />
     </div>
   );
 }
-
 
 function TabTrigger(props: { value: Tab; label: string; disabled?: boolean }) {
   return (
     <Tabs.Trigger
       value={props.value}
       disabled={props.disabled === true}
-      className="-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 data-[state=active]:border-accent data-[state=active]:text-ink"
+      className={`-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50 data-[state=active]:border-accent data-[state=active]:text-ink ${FOCUS_RING}`}
     >
       {props.label}
     </Tabs.Trigger>
@@ -863,7 +1184,11 @@ async function inspectParts(api: ApiClient, urls: readonly string[]): Promise<Pa
       try {
         const inspected = await api.post("/api/contents/inspect", inspectResponseSchema, { body: { url } });
         if (inspected.kind !== "multipart") return undefined;
-        return { url, count: inspected.parts?.length ?? 0, ...(inspected.title === undefined ? {} : { title: inspected.title }) };
+        return {
+          url,
+          count: inspected.parts?.length ?? 0,
+          ...(inspected.title === undefined ? {} : { title: inspected.title }),
+        };
       } catch {
         return undefined;
       }

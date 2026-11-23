@@ -5,7 +5,7 @@ import type { ContentActions } from "../../components/use-content-actions.tsx";
 import { hitsByContent, type useSearch } from "../../search/search.ts";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { appErrorOf } from "../../components/confirm-dialog.tsx";
-import { ItemRow, ItemTable, useItemMenu } from "./item-list.tsx";
+import { ItemRow, ItemTable, useItemMenu, type ItemSelection } from "./item-list.tsx";
 
 /**
  * The members a collection-scoped search hit, best first, each with one excerpt, in the
@@ -19,6 +19,8 @@ export function SearchHits(props: {
   search: ReturnType<typeof useSearch>;
   /** The Content actions of the page, which renders their dialogs. */
   actions: ContentActions;
+  /** The selection mode; the header box then picks every hit. */
+  selection?: (shownContentIds: readonly string[]) => ItemSelection | undefined;
 }) {
   const { t } = useTranslation();
   const { search } = props;
@@ -34,10 +36,11 @@ export function SearchHits(props: {
   if (hits.length === 0) {
     return <EmptyState title={t("search.empty")} hint={t("search.emptyHint")} />;
   }
+  const selection = props.selection?.(hits.map((hit) => hit.item.contentId));
   return (
-    <ItemTable bodyRef={menuRef}>
+    <ItemTable bodyRef={menuRef} withMenu selection={selection}>
       {hits.map(({ item, index, first }) => (
-        <ItemRow key={item.id} item={item} number={index + 1} hit={{ entry: first, query: search.query }} testId="collection-hit" />
+        <ItemRow key={item.id} item={item} number={index + 1} hit={{ entry: first, query: search.query }} testId="collection-hit" actions={props.actions} selection={selection} />
       ))}
     </ItemTable>
   );

@@ -10,6 +10,7 @@ import { FailedTaskNotice } from "../../components/failed-task-notice.tsx";
 import { RichText } from "../../components/rich-text.tsx";
 import { TaskFlow } from "../../components/task-flow.tsx";
 import { Button } from "../../ui/button.tsx";
+import { Callout } from "../../ui/notice.tsx";
 import { useStoredValue } from "../../use-stored-value.ts";
 
 /** Per collection, whether the user opened the summary card; it starts closed so the lectures stay in view. */
@@ -69,7 +70,7 @@ export function SummaryCard(props: {
   const changedMembers = summary.speakerContextChangedMembers;
   const speakerHint =
     changedMembers === undefined ? null : (
-      <p role="note" className="text-xs text-muted" data-testid="collection-summary-speaker-hint">
+      <p role="note" className="max-w-[70ch] text-note text-muted" data-testid="collection-summary-speaker-hint">
         {t("speakerContext.collectionChanged", { count: changedMembers })}
       </p>
     );
@@ -123,19 +124,19 @@ export function SummaryCard(props: {
       {summary.hiddenReason !== undefined ? (
         // The body is withheld while a summarised member is in the trash; saying "not
         // generated yet" here would invite summarising again for no reason.
-        <p className="rounded bg-sunken px-3 py-2 text-sm text-muted" role="status" data-testid="collection-summary-hidden">
+        <Callout tone="info" density="compact" role="status" testId="collection-summary-hidden">
           {t(`library.summary.hidden.${summary.hiddenReason}`)}
-        </p>
+        </Callout>
       ) : summary.stale && summary.staleReason !== undefined ? (
-        <p className="mb-3 rounded bg-accent-soft px-3 py-2 text-xs text-accent" role="status">
+        <Callout tone="warn" density="compact" role="status" className="mb-3">
           {t(`library.summary.stale.${summary.staleReason}`)}
-        </p>
+        </Callout>
       ) : null}
       {summary.hiddenReason !== undefined ? null : current === undefined ? (
         summary.activeTaskId === undefined ? (
           <div className="flex flex-col items-start gap-2">
             <p className="text-sm">{t("library.summary.notGenerated")}</p>
-            <p className="text-xs text-muted">{t("library.summary.notGeneratedHint")}</p>
+            <p className="max-w-[70ch] text-note text-muted">{t("library.summary.notGeneratedHint")}</p>
             <Button variant="primary" disabled={props.generating === true} onClick={props.onGenerate}>
               {t("library.summary.generate")}
             </Button>
@@ -144,7 +145,7 @@ export function SummaryCard(props: {
         ) : null
       ) : bodyShown ? (
         <div id={bodyId} data-testid="collection-summary-body">
-          {current.quality === "degraded" ? <p className="mb-2 text-xs text-muted">{t("library.summary.degraded")}</p> : null}
+          {current.quality === "degraded" ? <p className="mb-2 max-w-[70ch] text-note text-muted">{t("library.summary.degraded")}</p> : null}
           <RichText source={current.body} />
           {current.partials.length === 0 ? null : (
             <div className="mt-4 border-t border-line pt-3">
@@ -154,7 +155,7 @@ export function SummaryCard(props: {
               </button>
               {showPartials ? (
                 <>
-                  {current.partials.length === 1 ? null : <p className="mt-2 text-xs text-muted">{t("library.summary.detailsHint")}</p>}
+                  {current.partials.length === 1 ? null : <p className="mt-2 max-w-[70ch] text-note text-muted">{t("library.summary.detailsHint")}</p>}
                   <ol className="mt-2 flex flex-col gap-3">
                     {[...current.partials]
                       .sort((a, b) => a.index - b.index)

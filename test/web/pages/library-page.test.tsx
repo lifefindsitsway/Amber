@@ -7,7 +7,8 @@ import { collectionDetailDtoSchema } from "../../../src/shared/dto/collection.ts
 import { useEffect } from "react";
 import { useApi, useTaskHub } from "../../../src/web/api/context.tsx";
 import { queryKeys } from "../../../src/web/api/queries.ts";
-import { Cover, LibraryPage } from "../../../src/web/pages/library-page.tsx";
+import { LibraryPage } from "../../../src/web/pages/library-page.tsx";
+import { Cover } from "../../../src/web/pages/library/columns.tsx";
 import { ContextMenuHost } from "../../../src/web/ui/context-menu.tsx";
 import { collectionDetail, stageRun, task } from "../../fixtures/web/shell-data.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
@@ -88,7 +89,7 @@ describe("LibraryPage", () => {
     await waitFor(() => expect(api.calls.some((call) => call.path.includes("status=none"))).toBe(true));
   });
 
-  it("opens a row's notes from the 笔记 button right of 删除", async () => {
+  it("opens a row's notes from its 「⋯」 menu", async () => {
     routes();
     renderApp(
       <Routes>
@@ -98,7 +99,7 @@ describe("LibraryPage", () => {
       { route: "/library" },
     );
     const row = await screen.findByTestId("library-row");
-    fireEvent.click(within(row).getByRole("button", { name: "笔记" }));
+    fireEvent.click(within(await openRowMenu(row)).getByRole("menuitem", { name: "笔记" }));
     expect((await screen.findByTestId("where")).textContent).toBe("/notes?contentId=c1");
   });
 
@@ -134,14 +135,14 @@ describe("LibraryPage", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     expect(await screen.findByTestId("library-pinned")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    fireEvent.click(within(await openRowMenu(screen.getByTestId("library-row"))).getByRole("menuitem", { name: "重命名" }));
     const input = await screen.findByLabelText("标题");
     fireEvent.change(input, { target: { value: "  我的第一讲 " } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ title: "我的第一讲" }));
   });
 
-  it("pins and unpins from the row, the pin button always as wide as its wider label", async () => {
+  it("pins and unpins from the row's icon button, the same size whichever it offers", async () => {
     const pinnedItem = { ...content, id: "c2", title: "第二讲 操作系统", collections: [], pinnedAt: 5 };
     const api = mockApi({
       "GET /api/contents": { body: { items: [pinnedItem, content], total: 2 } },
@@ -157,19 +158,9 @@ describe("LibraryPage", () => {
     expect(within(plainRow).queryByRole("button", { name: "取消置顶" })).toBeNull();
     const unpin = within(pinnedRow).getByRole("button", { name: "取消置顶" });
     const pin = within(plainRow).getByRole("button", { name: "置顶" });
-
-    // Both buttons hold both labels in one grid cell, the inactive one invisible, so they share a width.
-    for (const [button, hidden] of [
-      [unpin, "置顶"],
-      [pin, "取消置顶"],
-    ] as const) {
-      const labels = [...button.querySelectorAll(".grid > span")];
-      expect(labels.map((label) => label.textContent)).toEqual(["置顶", "取消置顶"]);
-      const inactive = labels.find((label) => label.getAttribute("aria-hidden") === "true");
-      expect(inactive?.textContent).toBe(hidden);
-      expect(inactive?.className.split(" ")).toContain("invisible");
-      expect(labels.every((label) => label.className.split(" ").includes("[grid-area:1/1]"))).toBe(true);
-    }
+    // Icon only, one fixed size, so the action column lines up across rows.
+    expect(unpin.textContent).toBe("");
+    expect(pin.textContent).toBe("");
     const classes = (row: HTMLElement): string[] => within(row).getAllByRole("button").map((button) => button.className);
     expect(classes(pinnedRow)).toEqual(classes(plainRow));
 
@@ -185,6 +176,7 @@ describe("LibraryPage", () => {
       "GET /api/collections": { body: { items: [] } },
       "GET /api/tasks/events": { body: {} },
       "GET /api/collections/k1": { body: collectionDetail("k1", "生成式软件工程", ["c1"]) },
+      "POST /api/contents/trash-plan": readyPlan("c1"),
       "DELETE /api/contents/c1": { status: 204 },
     });
     const lectureReads = () => api.calls.filter((call) => call.path === "/api/collections/k1").length;
@@ -198,9 +190,10 @@ describe("LibraryPage", () => {
     await screen.findByText("第一讲 检索增强");
     await waitFor(() => expect(lectureReads()).toBe(1));
     expect(screen.getByRole("columnheader", { name: "操作" }).className).not.toContain("sr-only");
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.click(within(await openRowMenu(screen.getByTestId("library-row"))).getByRole("menuitem", { name: "删除" }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条内容？" });
     expect(dialog.textContent).toContain("第一讲 检索增强");
+    await confirmEnabled(dialog);
     fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(api.calls.some((call) => call.method === "DELETE" && call.path === "/api/contents/c1")).toBe(true));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -208,12 +201,13 @@ describe("LibraryPage", () => {
     await waitFor(() => expect(lectureReads()).toBe(2));
   });
 
-  it("keeps the dialog open with the reason when unfinished tasks block the deletion", async () => {
+  it("keeps the dialog open and checks again when unfinished tasks block the deletion", async () => {
     const reason = "这条内容还有未结束的任务（排队中、处理中或等待中）。请先在左下角「任务」里取消它，再删除";
     mockApi({
       "GET /api/contents": { body: { items: [content], total: 1 } },
       "GET /api/collections": { body: { items: [] } },
       "GET /api/tasks/events": { body: {} },
+      "POST /api/contents/trash-plan": readyPlan("c1"),
       "DELETE /api/contents/c1": {
         status: 409,
         body: { error: { class: "conflict", code: "conflict.tasks_unfinished", retryDisposition: "never", userMessage: reason } },
@@ -221,10 +215,12 @@ describe("LibraryPage", () => {
     });
     renderApp(<LibraryPage />, { route: "/library", path: "/library" });
     await screen.findByText("第一讲 检索增强");
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    fireEvent.click(within(await openRowMenu(screen.getByTestId("library-row"))).getByRole("menuitem", { name: "删除" }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条内容？" });
+    await confirmEnabled(dialog);
     fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
-    expect(await within(dialog).findByText(reason)).toBeTruthy();
+    // The refusal means something changed since the check: the dialog checks again and says so.
+    expect(await within(dialog).findByTestId("delete-plan-changed")).toBeTruthy();
     expect(screen.getAllByTestId("library-row")).toHaveLength(1);
   });
 
@@ -257,12 +253,14 @@ describe("LibraryPage", () => {
     expect(meta.className.split(" ")).toContain("@5xl:hidden");
     expect(meta.textContent).toMatch(/^YouTube · 1:15 · \S/u);
     const row = screen.getByTestId("library-row");
-    // Accessible names, in order: the pin button's hidden alternative label is not part of its name.
-    const actions = within(row).getAllByRole("button");
-    const names = ["重命名", "置顶", "合集", "删除", "笔记"];
-    expect(names.map((name) => actions.indexOf(within(row).getByRole("button", { name })))).toEqual([0, 1, 2, 3, 4]);
-    expect(actions).toHaveLength(5);
-    fireEvent.click(screen.getByRole("button", { name: "合集" }));
+    // On the row: two quiet icon buttons and the 「⋯」 menu, which holds every action.
+    expect(within(row).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["置顶", "加入合集", "「第一讲 检索增强」的更多操作"]);
+    expect(within(row).queryByRole("button", { name: "删除" })).toBeNull();
+    const menu = await openRowMenu(row);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["重命名", "置顶", "合集归属", "笔记", "删除"]);
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    fireEvent.click(within(row).getByRole("button", { name: "加入合集" }));
     const dialog = await screen.findByRole("dialog", { name: "管理合集" });
     await waitFor(() => expect((within(dialog).getByRole("checkbox", { name: "生成式软件工程" }) as HTMLInputElement).checked).toBe(true));
   });
@@ -332,10 +330,10 @@ describe("LibraryPage", () => {
     );
     const row = (await screen.findByText("第一讲 检索增强")).closest("tr") as HTMLElement;
     rightClick(within(row).getByText("1:15"));
-    expect(contextLabels()).toEqual(["打开", "在新标签页中打开", "复制来源链接", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["打开", "在新标签页中打开", "复制来源链接", "重命名", "置顶", "合集归属", "删除"]);
     // Menu rows share one colour; only the confirmation dialog warns.
     expect(screen.getAllByRole("menuitem").filter((item) => item.className.includes("text-danger"))).toEqual([]);
-    expect(within(row).getAllByRole("button").map((button) => button.textContent)).toEqual(["重命名", "置顶取消置顶", "合集", "删除", "笔记"]);
+    expect(within(row).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["置顶", "加入合集", "「第一讲 检索增强」的更多操作"]);
     fireEvent.click(screen.getByTestId("context-menu-item-delete"));
     expect((await screen.findByRole("dialog", { name: "删除这条内容？" })).textContent).toContain("第一讲 检索增强");
   });
@@ -371,7 +369,7 @@ describe("LibraryPage", () => {
     const deep = snippet.getAttribute("href") ?? "";
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     rightClick(snippet);
-    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "合集归属", "删除"]);
     fireEvent.click(screen.getByTestId("context-menu-item-open-new-tab"));
     expect(open).toHaveBeenCalledWith(`${window.location.origin}${deep}`, "_blank", "noopener");
     open.mockRestore();
@@ -630,6 +628,21 @@ describe("Cover", () => {
   });
 });
 
+/** Opens a row's 「⋯」 menu from the keyboard and returns it. */
+async function openRowMenu(row: HTMLElement): Promise<HTMLElement> {
+  fireEvent.keyDown(within(row).getByTestId("content-row-menu"), { key: "Enter" });
+  return screen.findByRole("menu");
+}
+
+/** The delete dialog's confirmation waits for its pre-check. */
+async function confirmEnabled(dialog: HTMLElement): Promise<void> {
+  await waitFor(() => expect(within(dialog).getByTestId<HTMLButtonElement>("delete-confirm").disabled).toBe(false));
+}
+
+function readyPlan(...ids: string[]) {
+  return { body: { items: ids.map((contentId) => ({ contentId, title: `${contentId} 标题`, state: "ready" })) } };
+}
+
 function rightClick(element: Element): void {
   act(() => {
     element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
@@ -802,5 +815,175 @@ describe("LibraryPage search with speakers", () => {
     expect(screen.getByTestId("hit-basis-changed").textContent).toBe("人物依据已变化");
     expect(screen.getByTestId("speaker-hits")).toBeTruthy();
     expect(screen.getAllByTestId("library-row")).toHaveLength(2);
+  });
+});
+
+describe("LibraryPage row actions", () => {
+  it("reveals pin and add-to-collection on hover or keyboard focus without taking or giving width, and never on touch screens", async () => {
+    routes();
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    const row = await screen.findByTestId("library-row");
+    expect(row.className.split(" ")).toContain("group");
+    const titleCell = within(row).getByRole("link", { name: "第一讲 检索增强" }).closest("td") as HTMLElement;
+    const titleClasses = titleCell.className;
+    const revealed = [within(row).getByTestId("library-row-pin"), within(row).getByTestId("library-row-collections")];
+    for (const button of revealed) {
+      // Rendered all the time and only hidden, so their place is kept and the title never moves.
+      expect(button.className.split(" ")).toEqual(
+        expect.arrayContaining(["invisible", "opacity-0", "group-hover:visible", "group-hover:opacity-100", "group-focus-within:visible", "group-focus-within:opacity-100", "[@media(hover:none)]:hidden"]),
+      );
+      expect(button.getAttribute("aria-label")).not.toBe("");
+    }
+    // 「⋯」 is always there, on touch screens too.
+    const more = within(row).getByTestId("content-row-menu");
+    expect(more.className.split(" ")).not.toEqual(expect.arrayContaining(["invisible"]));
+    expect(more.className).not.toContain("hover:none");
+    expect(more.className).not.toContain("group-hover:");
+
+    fireEvent.mouseEnter(row);
+    fireEvent.focus(revealed[0] as HTMLElement);
+    // Hovering or focusing changes no markup: the same buttons, the same title cell.
+    expect([within(row).getByTestId("library-row-pin"), within(row).getByTestId("library-row-collections")]).toEqual(revealed);
+    expect(titleCell.className).toBe(titleClasses);
+  });
+
+  it("explains the icon buttons in tooltips", async () => {
+    routes();
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    const row = await screen.findByTestId("library-row");
+    fireEvent.focus(within(row).getByTestId("library-row-collections"));
+    expect((await screen.findByRole("tooltip")).textContent).toBe("加入合集");
+  });
+});
+
+describe("LibraryPage selection", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("keeps the header check box's checked and mixed states in line with the selection across pages", async () => {
+    stubApi({ total: 25 });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("讲次 1");
+    fireEvent.click(screen.getByTestId("library-select-mode"));
+    const header = (): HTMLInputElement => screen.getByTestId("library-select-page") as HTMLInputElement;
+    const count = (): string | null => screen.getByTestId("library-selection-count").textContent;
+    expect(header().checked).toBe(false);
+    expect(header().indeterminate).toBe(false);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 2」" }));
+    expect(header().checked).toBe(false);
+    expect(header().indeterminate).toBe(true);
+    expect(count()).toBe("已选 1 项");
+
+    fireEvent.click(header());
+    expect(header().checked).toBe(true);
+    expect(header().indeterminate).toBe(false);
+    expect(count()).toBe("已选 10 项");
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByText("讲次 11");
+    expect(header().checked).toBe(false);
+    expect(header().indeterminate).toBe(false);
+    expect(count()).toBe("已选 10 项");
+    fireEvent.click(header());
+    expect(count()).toBe("已选 20 项");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 15」" }));
+    expect(header().indeterminate).toBe(true);
+    expect(count()).toBe("已选 19 项");
+
+    fireEvent.click(screen.getByRole("button", { name: "上一页" }));
+    await screen.findByText("讲次 1");
+    expect(header().checked).toBe(true);
+    expect(header().indeterminate).toBe(false);
+    // A fully picked page is unpicked as a whole; the other page's picks stay.
+    fireEvent.click(header());
+    expect(count()).toBe("已选 9 项");
+    expect((screen.getByRole("checkbox", { name: "选择「讲次 2」" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("orders the bar as count · cancel | delete · export, and disables each action past its own limit with the reason", async () => {
+    stubApi({ total: 210 });
+    renderApp(<LibraryPage />, { route: "/library?pageSize=50", path: "/library" });
+    await screen.findByText("讲次 1");
+    fireEvent.click(screen.getByTestId("library-select-mode"));
+    const header = (): HTMLElement => screen.getByTestId("library-select-page");
+    fireEvent.click(header());
+    const bar = screen.getByTestId("library-selection-bar");
+    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "删除…", "导出所选…"]);
+    const remove = screen.getByTestId("library-delete-selected") as HTMLButtonElement;
+    const exportButton = screen.getByTestId("library-export-selected") as HTMLButtonElement;
+    expect(remove.className).toContain("text-danger");
+    expect(remove.className).not.toContain("bg-danger");
+    expect(exportButton.className).toContain("bg-accent-glow");
+    expect(remove.disabled).toBe(false);
+    expect(exportButton.disabled).toBe(false);
+
+    // 51 picked: past the content pack's limit, within the delete's.
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByText("讲次 51");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 51」" }));
+    expect(exportButton.disabled).toBe(true);
+    expect(screen.getByTestId("library-selection-limit").textContent).toBe("单个内容包最多 50 条，请减少到 50 条以内");
+    expect(exportButton.getAttribute("aria-describedby")).toBe("library-selection-limit");
+    expect(remove.disabled).toBe(false);
+    expect(screen.queryByTestId("library-delete-limit")).toBeNull();
+
+    // 201 picked: past the delete's limit too.
+    fireEvent.click(header());
+    for (const first of [101, 151]) {
+      fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+      await screen.findByText(`讲次 ${first}`);
+      fireEvent.click(header());
+    }
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await screen.findByText("讲次 201");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 201」" }));
+    expect(screen.getByTestId("library-selection-count").textContent).toBe("已选 201 项");
+    expect(remove.disabled).toBe(true);
+    expect(screen.getByTestId("library-delete-limit").textContent).toBe("一次最多删除 200 项，请减少到 200 项以内");
+    expect(remove.getAttribute("aria-describedby")).toBe("library-delete-limit");
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 201」" }));
+    expect(remove.disabled).toBe(false);
+    expect(screen.queryByTestId("library-delete-limit")).toBeNull();
+  });
+
+  it("deletes the picked rows through the shared dialog, keeping only the failures picked", async () => {
+    const second = { ...content, id: "c2", title: "第二讲", collections: [] };
+    const third = { ...content, id: "c3", title: "第三讲", collections: [] };
+    const api = mockApi({
+      "GET /api/contents": { body: { items: [content, second, third], total: 3 } },
+      "GET /api/collections": { body: { items: [] } },
+      "GET /api/tasks/events": { body: {} },
+      "POST /api/contents/trash-plan": {
+        body: {
+          items: [
+            { contentId: "c1", title: "第一讲 检索增强", state: "ready" },
+            { contentId: "c3", title: "第三讲", state: "tasks", unfinishedTaskCount: 1 },
+          ],
+        },
+      },
+      "POST /api/contents/trash": { body: { trashedIds: ["c1"], alreadyTrashedIds: [], failed: [{ contentId: "c3", reason: "stopping" }], cancelledTaskCount: 1 } },
+    });
+    renderApp(<LibraryPage />, { route: "/library", path: "/library" });
+    await screen.findByText("第三讲");
+    fireEvent.click(screen.getByTestId("library-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「第一讲 检索增强」" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「第三讲」" }));
+    fireEvent.click(screen.getByTestId("library-delete-selected"));
+    const dialog = await screen.findByRole("dialog", { name: "删除所选的 2 项内容？" });
+    expect(api.calls.find((call) => call.path === "/api/contents/trash-plan")?.body).toEqual({ contentIds: ["c1", "c3"] });
+    await confirmEnabled(dialog);
+    const confirm = within(dialog).getByTestId("delete-confirm");
+    expect(confirm.textContent).toBe("取消任务并删除 2 项");
+    const listReads = api.calls.filter((call) => call.path.startsWith("/api/contents?")).length;
+    fireEvent.click(confirm);
+    const report = await within(dialog).findByTestId("delete-report");
+    expect(report.textContent).toContain("已取消 1 个任务。");
+    expect(api.calls.find((call) => call.path === "/api/contents/trash")?.body).toEqual({ contentIds: ["c1", "c3"], cancelTasks: true });
+    // The list is read again; the moved row leaves the selection, the failed one stays.
+    await waitFor(() => expect(api.calls.filter((call) => call.path.startsWith("/api/contents?")).length).toBeGreaterThan(listReads));
+    expect(screen.getByTestId("library-selection-count").textContent).toBe("已选 1 项");
+    fireEvent.click(within(dialog).getByTestId("delete-close"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect((screen.getByRole("checkbox", { name: "选择「第三讲」" }) as HTMLInputElement).checked).toBe(true);
   });
 });

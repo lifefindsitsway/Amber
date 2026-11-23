@@ -43,6 +43,15 @@ export const library = {
     action: "新总结",
     filtered: "没有符合筛选条件的内容",
   },
+  /** The two quiet icon buttons a library row shows on hover or keyboard focus. */
+  rowActions: {
+    addToCollection: "加入合集",
+  },
+  /** The selection bar's delete action; the export side keeps its keys under `contentPack.select`. */
+  selection: {
+    delete: "删除…",
+    deleteTooMany: "一次最多删除 {{max}} 项，请减少到 {{max}} 项以内",
+  },
   membership: {
     action: "合集",
     title: "管理合集",
@@ -54,10 +63,56 @@ export const library = {
   notes: {
     action: "笔记",
   },
+  /** The delete dialog shared by the single-Content entries and the batch delete of the selection bar. */
   deleteContent: {
     action: "删除",
     title: "删除这条内容？",
-    description: "「{{title}}」将移到回收站，{{days}} 天后自动彻底删除，期间可在「回收站」恢复；本地原文件不会被删除。",
+    titleMany: "删除所选的 {{count}} 项内容？",
+    description: "内容移入回收站，{{days}} 天内可恢复；本地原文件不会被删除。",
+    tasksNote: "已经发生的模型与转录调用无法撤回；远端转录作业会尽力取消",
+    /** The pre-check's rows, one per state; rows counting 0 are left out. */
+    plan: {
+      label: "删除前检查",
+      ready: "可直接删除 {{count}} 项",
+      tasks: "需要先取消任务 {{count}} 项",
+      blocked: "暂时不能删 {{count}} 项（正在归纳合集{{names}}）",
+      trashed: "已在回收站 {{count}} 项（无需操作）",
+      missing: "已不存在 {{count}} 项（无需操作）",
+      showBlocked: "查看是哪几项",
+      hideBlocked: "收起",
+      collectionName: "「{{name}}」",
+      unnamedCollection: "（已删除的合集）",
+      nameSeparator: "、",
+    },
+    /** The single-Content dialog states the one Content's situation instead of counting rows. */
+    single: {
+      title: "「{{title}}」",
+      tasks: "这条内容有 {{count}} 个未结束的任务，删除前会先取消。",
+      blocked: "正在归纳合集{{names}}，归纳结束前暂时不能删除。",
+      trashed: "这条内容已在回收站，无需操作。",
+      missing: "这条内容已不存在，无需操作。",
+    },
+    confirm: "删除",
+    confirmCancelTasks: "取消任务并删除",
+    confirmMany: "删除 {{count}} 项",
+    confirmManyCancelTasks: "取消任务并删除 {{count}} 项",
+    done: "已将 {{count}} 项移入回收站",
+    openTrash: "打开回收站",
+    /** The result report shown in the dialog when some Contents could not be moved. */
+    report: {
+      summary: "已将 {{trashed}} 项移入回收站，{{failed}} 项未能删除：",
+      cancelled: "已取消 {{count}} 个任务。",
+      label: "未能删除的内容",
+    },
+    reason: {
+      tasks: "有未结束的任务（可能刚刚开始了新任务）",
+      stopping: "任务已取消，但还没有停下来，请稍后再删",
+      summarizing: "正在归纳所在的合集，归纳结束后才能删除",
+      missing: "内容已不存在",
+      internal: "删除时出错，请稍后再试",
+    },
+    /** A Task started after the pre-check and the server refused; the pre-check has been read again. */
+    planChanged: "内容没有删除：期间开始了新任务，情况已更新，请重新确认",
   },
   collections: {
     title: "合集",
@@ -97,6 +152,35 @@ export const library = {
     reorderCancel: "取消",
     reorderHint: "拖动把手或用方向键移动内容，保存后生效",
     reorderChanged: "合集内容已变化，请重新调整顺序",
+    /** The lecture list's selection mode. */
+    selection: {
+      remove: "移出合集",
+      removeDone: "已将 {{count}} 项移出合集",
+      removeFailed: "没有移出任何内容，合集保持原样",
+    },
+  },
+  /** The delete-collection dialog shared by the collection page, the collection list card and the sidebar row. */
+  deleteCollection: {
+    withContents: "删除合集和其中的 {{count}} 项内容",
+    withContentsTrash: "内容移入回收站，{{days}} 天内可恢复。",
+    withContentsShared: "另有 {{count}} 项还在其它合集里，会保留。",
+    withContentsTasks: "其中 {{count}} 项有未结束的任务，会先取消。",
+    withContentsBlocked: "其中 {{count}} 项正在被合集{{names}}的归纳使用，归纳结束前只能删除合集本身。",
+    keepContents: "只删除合集",
+    keepContentsHint: "{{count}} 项内容都保留在「全部内容」里。",
+    collectionTask: "这个合集的归纳正在进行，删除前会先取消。",
+    irreversible: "合集本身、合集归纳与合集术语表删除后无法恢复。",
+    irreversibleWithTrash: "合集本身、合集归纳与合集术语表删除后无法恢复；从回收站恢复的内容不会回到这个合集。",
+    confirmWithContents: "删除合集和 {{count}} 项内容",
+    confirmWithContentsCancelTasks: "取消任务并删除合集和 {{count}} 项内容",
+    confirmKeep: "删除合集",
+    confirmKeepCancelTasks: "取消任务并删除合集",
+    membersChanged: "合集和内容都没有删除，但已取消 {{count}} 个任务。删除范围有变化，请重新确认",
+    membersChangedNoTasks: "合集和内容都没有删除。删除范围有变化，请重新确认",
+    done: "已删除合集「{{name}}」",
+    doneWithContents: "已删除合集「{{name}}」，{{count}} 项内容移入回收站",
+    /** Follows the line above in the same sentence. */
+    doneCancelled: "；已取消 {{count}} 个任务",
   },
   summary: {
     title: "合集归纳",

@@ -1,4 +1,4 @@
-import { FileText, FolderPlus, Link2, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { FileText, FolderPlus, Link2, NotebookPen, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -18,8 +18,12 @@ export interface ContentActionTarget {
   sourceUrl?: string;
 }
 
-/** The menus a Content offers its actions in: the right-click menu and the row's 「⋯」 menu. */
-export type ContentActionSurface = "context" | "overflow";
+/**
+ * The menus a Content offers its actions in: the right-click menu, the sidebar rows' 「⋯」
+ * menu (`overflow`) and the library row's 「⋯」 menu (`row`), which holds every action of
+ * the row, notes included.
+ */
+export type ContentActionSurface = "context" | "overflow" | "row";
 
 /** One Content action and the menus that show it. */
 export interface SurfacedAction extends MenuAction {
@@ -86,6 +90,8 @@ export function useContentActions(options: { onDeleted?: (contentId: string) => 
   const [managing, setManaging] = useState<string | undefined>(undefined);
   const { onDeleted } = options;
 
+  // Groups in menu order; deleting always comes last, set apart by a separator, in the same
+  // colour as every other row: the confirmation dialog is where the warning lives.
   const groups = (content: ContentActionTarget, opts: ContentActionOptions): SurfacedAction[][] => {
     const pinned = content.pinnedAt !== undefined;
     const { sourceUrl } = content;
@@ -105,45 +111,55 @@ export function useContentActions(options: { onDeleted?: (contentId: string) => 
                 id: "copy-source-url",
                 label: t("common.menu.copySourceUrl"),
                 icon: <Link2 size={14} aria-hidden="true" />,
-                surfaces: ["context", "overflow"] as const,
+                surfaces: ["context", "overflow", "row"] as const,
                 onSelect: () => void copyText(sourceUrl),
               },
             ]),
       ],
       [
-        { id: "rename", label: t("shell.sidebar.rename"), icon: <Pencil size={14} aria-hidden="true" />, surfaces: ["context", "overflow"], onSelect: () => setRenaming(content.id) },
+        { id: "rename", label: t("shell.sidebar.rename"), icon: <Pencil size={14} aria-hidden="true" />, surfaces: ["context", "overflow", "row"], onSelect: () => setRenaming(content.id) },
         {
           id: pinned ? "unpin" : "pin",
           label: pinned ? t("shell.sidebar.unpin") : t("shell.sidebar.pin"),
           icon: pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />,
-          surfaces: ["context", "overflow"],
+          surfaces: ["context", "overflow", "row"],
           onSelect: () => patch.mutate({ contentId: content.id, patch: { pinned: !pinned } }),
-        },
-        {
-          id: "delete",
-          label: t("shell.sidebar.delete"),
-          icon: <Trash2 size={14} aria-hidden="true" />,
-          surfaces: ["context", "overflow"],
-          onSelect: () => setDeleting(actionTarget({ id: content.id, title: content.title })),
         },
         {
           id: "membership",
           label: t("shell.sidebar.membership"),
           icon: <FolderPlus size={14} aria-hidden="true" />,
-          surfaces: ["context", "overflow"],
+          surfaces: ["context", "overflow", "row"],
           onSelect: () => setManaging(content.id),
+        },
+        {
+          id: "notes",
+          label: t("library.notes.action"),
+          icon: <NotebookPen size={14} aria-hidden="true" />,
+          surfaces: ["row"],
+          onSelect: () => void navigate(`/notes?contentId=${encodeURIComponent(content.id)}`),
+        },
+      ],
+      [
+        {
+          id: "delete",
+          label: t("shell.sidebar.delete"),
+          icon: <Trash2 size={14} aria-hidden="true" />,
+          surfaces: ["context", "overflow", "row"],
+          onSelect: () => setDeleting(actionTarget({ id: content.id, title: content.title })),
         },
       ],
     ];
   };
 
-  // The right-click menu separates its groups; the small 「⋯」 menu stays one plain list.
+  // The right-click menu separates all its groups; the small 「⋯」 menus keep their actions in
+  // one plain list and set only deleting apart.
   const entries = (surface: ContentActionSurface, content: ContentActionTarget, opts: ContentActionOptions = {}): MenuEntry[] => {
     const out: MenuEntry[] = [];
     for (const group of groups(content, opts)) {
       const shown = group.filter((action) => action.surfaces.includes(surface));
       if (shown.length === 0) continue;
-      if (surface === "context" && out.length > 0) out.push("separator");
+      if (out.length > 0 && (surface !== "overflow" || shown.some((action) => action.id === "delete"))) out.push("separator");
       out.push(...shown);
     }
     return out;

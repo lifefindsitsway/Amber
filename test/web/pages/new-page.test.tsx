@@ -7,13 +7,14 @@ import { queryKeys } from "../../../src/web/api/queries.ts";
 import { NewPage, routeAfterImport } from "../../../src/web/pages/new-page.tsx";
 import { useOpenTasksRequest } from "../../../src/web/shell/task-panel.tsx";
 import { usePasteGuard } from "../../../src/web/shell/paste-guard.ts";
-import { baseRoutes, content, provider, SETTINGS } from "../../fixtures/web/shell-data.ts";
+import { baseRoutes, collection, content, provider, SETTINGS } from "../../fixtures/web/shell-data.ts";
 import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
 import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 import { chooseOption, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
 import { APP_SHARE, LONG_SHARE, SHORT, UNSUPPORTED, VIDEO_2, WEB_SHARE, WEB_SHARE_LINK, YT_LIST, YT_VIDEO } from "../../fixtures/platform/share-text.ts";
+import { fakeInspect, newEntries, STALE_REPLY } from "../../fixtures/web/collection-preview.ts";
 
 beforeEach(stubSelectLayout);
 
@@ -49,6 +50,35 @@ function page(onOpenTasks?: () => void, onClient?: (client: QueryClient) => void
 const TRASH_LIST = [...queryKeys.trash, "list"];
 const PLAYLIST = "https://www.youtube.com/playlist?list=PL1234567890";
 
+/** One page of a playlist preview: `count` new entries, `yt<n>`. */
+function playlistPage(url: string, count: number, extra: Record<string, unknown> = {}) {
+  return {
+    kind: "collection",
+    canonicalUrl: url,
+    title: "播放列表",
+    previewId: "pv1",
+    itemCount: count,
+    offset: 0,
+    items: Array.from({ length: count }, (_, index) => ({
+      platformContentId: `yt${index + 1}`,
+      canonicalUrl: `https://www.youtube.com/watch?v=yt${index + 1}`,
+      title: `第 ${index + 1} 讲`,
+      durationMs: 600_000,
+      index,
+      state: "new",
+    })),
+    ...extra,
+  };
+}
+
+/** Waits for the collection preview to be read, then presses its 「开始处理」. */
+async function confirmPreview(): Promise<void> {
+  const dialog = await screen.findByTestId("collection-preview");
+  const start = await within(dialog).findByTestId("preview-submit");
+  await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(start);
+}
+
 describe("NewPage", () => {
   it("imports one link with this run's settings and opens its detail page", async () => {
     const { calls } = mockApi({
@@ -60,7 +90,7 @@ describe("NewPage", () => {
     renderApp(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "AI 模型" }).textContent).toBe("我的模型 · m1"));
-    await waitFor(() => expect((screen.getByLabelText("输出语言") as HTMLSelectElement).value).toBe("en"));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "输出语言" }).textContent).toBe("英语"));
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `  ${VIDEO}  \n` } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
@@ -68,6 +98,7 @@ describe("NewPage", () => {
     expect(post?.body).toEqual({
       items: [{ url: VIDEO }],
       settings: { templateId: "summary.core", outputLanguage: "en", autoProofread: true, modelRef: { providerProfileId: "p1", modelId: "m1" } },
+      confirmCollections: true,
     });
     expect(post?.headers["idempotency-key"]).toBeTruthy();
     expect(screen.queryByTestId("no-llm-banner")).toBeNull();
@@ -194,10 +225,12 @@ describe("NewPage and the trash", () => {
       ...baseRoutes(),
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"], skippedTrashedContentIds: ["c8", "c9"] } },
       "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } },
+      "POST /api/contents/inspect": { body: playlistPage(PLAYLIST, 4) },
     });
     renderApp(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: PLAYLIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
+    await confirmPreview();
     const notice = await screen.findByTestId("new-skipped-trashed");
     expect(notice.textContent).toContain("2 项在回收站中，未导入");
     expect(within(notice).getByRole("link", { name: "打开回收站" }).getAttribute("href")).toBe("/trash");
@@ -734,7 +767,7 @@ describe("NewPage link box with share texts", () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/import": importReply });
     renderApp(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: text } });
-    const scope = screen.queryByTestId("link-scope")?.textContent ?? null;
+    const scope = screen.queryByTestId("link-recognition")?.textContent ?? null;
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/import") || screen.queryByText("请先粘贴至少一条链接") !== null).toBe(true));
     const sent = calls.some((call) => call.path === "/api/contents/import") ? posted(calls) : undefined;
@@ -747,9 +780,9 @@ describe("NewPage link box with share texts", () => {
     renderApp(page(), { route: "/new" });
     pasteInto(box(), LONG_SHARE);
     expect(box().value).toBe([WEB_SHARE_LINK, `${VIDEO_2}?p=3`, YT_VIDEO, UNSUPPORTED, YT_LIST].join("\n"));
-    expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 5 条链接");
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已从分享内容中提取 5 条链接，另有 1 条不支持、不会提交");
     fireEvent.change(box(), { target: { value: `${box().value} ` } });
-    expect(screen.queryByTestId("new-paste-note")).toBeNull();
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 1 个合集，开始处理前可以挑选内容并安排顺序，另有 1 条不支持、不会提交");
   });
 
   it("pastes a plain list of links as it is, with no note", async () => {
@@ -759,7 +792,7 @@ describe("NewPage link box with share texts", () => {
     Object.defineProperty(event, "clipboardData", { value: { getData: () => `${VIDEO}\n${YT_VIDEO}` } });
     box().dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
-    expect(screen.queryByTestId("new-paste-note")).toBeNull();
+    expect(screen.queryByText(/已从分享内容中提取/)).toBeNull();
   });
 
   it("leaves a paste without a supported link to the browser", async () => {
@@ -804,20 +837,20 @@ describe("NewPage link box with share texts", () => {
       expect(execCommand).toHaveBeenCalledWith("insertText", false, `\n${WEB_SHARE_LINK}`);
       expect(box().value).toBe(`${VIDEO}\n${WEB_SHARE_LINK}`);
       // The insert's own change event does not take the note away.
-      expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 1 条链接");
+      expect(screen.getByTestId("link-recognition-text").textContent).toBe("已从分享内容中提取 1 条链接");
     } finally {
       Reflect.deleteProperty(document, "execCommand");
     }
   });
 
-  it("sends supported links alone as they are, with nothing beside the button", async () => {
-    expect(await submitted(` ${VIDEO_2}\n\n${YT_VIDEO} ${SHORT} `)).toEqual({ urls: [VIDEO_2, YT_VIDEO, SHORT], scope: null });
+  it("sends supported links alone as they are, saying only that they go as a batch", async () => {
+    expect(await submitted(` ${VIDEO_2}\n\n${YT_VIDEO} ${SHORT} `)).toEqual({ urls: [VIDEO_2, YT_VIDEO, SHORT], scope: "已识别 3 条链接，将作为一批导入" });
   });
 
   it("sends only the supported links when unsupported links or words are around them, and says so", async () => {
-    expect(await submitted(`${WEB_SHARE}\n${UNSUPPORTED}\n另一行文字`)).toEqual({ urls: [WEB_SHARE_LINK], scope: "将处理 1 条链接，另有 1 条未加入·查看" });
-    expect(await submitted(`${YT_VIDEO}\n另一行文字`)).toEqual({ urls: [YT_VIDEO], scope: "将处理 1 条链接，另有 1 行文字未加入" });
-    expect(await submitted(`${YT_VIDEO}。`)).toEqual({ urls: [YT_VIDEO], scope: "将处理 1 条链接，链接以外的文字不会提交" });
+    expect(await submitted(`${WEB_SHARE}\n${UNSUPPORTED}\n另一行文字`)).toEqual({ urls: [WEB_SHARE_LINK], scope: "已识别 1 条链接，另有 1 条不支持、不会提交·查看" });
+    expect(await submitted(`${YT_VIDEO}\n另一行文字`)).toEqual({ urls: [YT_VIDEO], scope: "已识别 1 条链接，另有 1 行文字不会提交" });
+    expect(await submitted(`${YT_VIDEO}。`)).toEqual({ urls: [YT_VIDEO], scope: "已识别 1 条链接，链接以外的文字不会提交" });
   });
 
   it("sends every line as written when no link is supported, as before, with no scope", async () => {
@@ -833,31 +866,31 @@ describe("NewPage link box with share texts", () => {
     renderApp(page(), { route: "/new" });
     const others = Array.from({ length: 25 }, (_, index) => `${UNSUPPORTED}/${index}`);
     fireEvent.change(box(), { target: { value: [YT_VIDEO, ...others, "一行字", "又一行"].join("\n") } });
-    const scope = screen.getByTestId("link-scope");
-    expect(scope.textContent).toBe("将处理 1 条链接，另有 25 条未加入·查看");
-    // The button is described by the sentence and stays usable.
+    const scope = screen.getByTestId("link-recognition");
+    expect(scope.textContent).toBe("已识别 1 条链接，另有 25 条不支持、不会提交·查看");
+    // The box is described by the sentence, and the button stays usable.
+    expect(document.getElementById(box().getAttribute("aria-describedby") ?? "")?.textContent).toBe("已识别 1 条链接，另有 25 条不支持、不会提交");
     const submit = screen.getByTestId<HTMLButtonElement>("new-submit");
-    expect(document.getElementById(submit.getAttribute("aria-describedby") ?? "")?.textContent).toBe("将处理 1 条链接，另有 25 条未加入");
     expect(submit.disabled).toBe(false);
     const toggle = within(scope).getByRole("button", { name: "查看" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    const details = screen.getByTestId("link-scope-details");
+    const details = screen.getByTestId("link-recognition-details");
     expect(within(details).getAllByRole("listitem").map((item) => item.textContent)).toEqual(others.slice(0, 20));
     expect(details.textContent).toContain("还有 5 条未列出");
     expect(details.textContent).toContain("另有 2 行文字不含链接，也不会提交");
     fireEvent.click(within(scope).getByRole("button", { name: "收起" }));
-    expect(screen.queryByTestId("link-scope-details")).toBeNull();
+    expect(screen.queryByTestId("link-recognition-details")).toBeNull();
   });
 
   it("counts supported links for the batch hint and spots a platform list among words", async () => {
     mockApi(baseRoutes());
     renderApp(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: `${WEB_SHARE}\n${UNSUPPORTED}\n${YT_VIDEO}` } });
-    expect(screen.getByText("识别到 2 条链接，将作为一批导入")).toBeTruthy();
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 2 条链接，将作为一批导入，另有 1 条不支持、不会提交");
     fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
-    expect(screen.getByText("识别到平台合集或播放列表，将整批导入")).toBeTruthy();
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 1 个合集，开始处理前可以挑选内容并安排顺序，链接以外的文字不会提交");
   });
 
   it("routes a platform list taken from a share text to its collection", async () => {
@@ -865,10 +898,12 @@ describe("NewPage link box with share texts", () => {
       ...baseRoutes(),
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"] } },
       "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } },
+      "POST /api/contents/inspect": { body: playlistPage(YT_LIST, 2) },
     });
     renderApp(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
     fireEvent.click(screen.getByTestId("new-submit"));
+    await confirmPreview();
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k7"));
     expect(posted(calls)).toEqual([YT_LIST]);
   });
@@ -960,7 +995,7 @@ describe("NewPage after a paste elsewhere", () => {
     return location.pathname === "/new" ? <NewPage /> : <p data-testid="elsewhere">{location.pathname}</p>;
   }
 
-  it("arrives with every link of the paste, the paste note, and the links left out beside the button", async () => {
+  it("arrives with every link of the paste, and the line under the box saying so and naming the links left out", async () => {
     mockApi(baseRoutes());
     renderApp(<Shell />, { route: "/library" });
     await screen.findByTestId("elsewhere");
@@ -969,7 +1004,358 @@ describe("NewPage after a paste elsewhere", () => {
     document.dispatchEvent(event);
     const field = await screen.findByTestId<HTMLTextAreaElement>("new-url-input");
     expect(field.value).toBe(`${WEB_SHARE_LINK}\n${UNSUPPORTED}`);
-    expect(screen.getByTestId("new-paste-note").textContent).toBe("已提取分享内容里的 2 条链接");
-    expect(screen.getByTestId("link-scope").textContent).toBe("将处理 1 条链接，另有 1 条未加入·查看");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("已从分享内容中提取 2 条链接，另有 1 条不支持、不会提交·查看");
+  });
+});
+
+describe("NewPage with collection links", () => {
+  const SERIES = "https://space.bilibili.com/12345/lists/678?type=season";
+  const imported = (calls: Array<{ path: string; method: string; body?: unknown; headers: Record<string, string> }>) => calls.filter((call) => call.method === "POST" && call.path === "/api/contents/import");
+  const reply = (collectionIds: string[] = ["k9"]) => ({ status: 202, body: { importBatchId: "b1", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"], collectionIds } });
+  const dialog = (): HTMLElement => screen.getByTestId("collection-preview");
+  const entryRow = (id: string): HTMLElement => {
+    const found = within(dialog()).getAllByTestId("preview-entry").find((element) => element.dataset["entryId"] === id);
+    if (found === undefined) throw new Error(`no row ${id}`);
+    return found;
+  };
+  const choiceError = (urls: string[]) => ({
+    status: 400,
+    body: { error: { class: "invalid_request", code: "invalid_request.collection_choice_required", retryDisposition: "never", userMessage: "导入合集前请先预览并选择要导入的内容", details: { urls } } },
+  });
+
+  it("opens the preview before sending, then imports the chosen entries in their order and opens the collection", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, title: "示例播放列表", pageSize: 50, entries: newEntries(3, "y") }]);
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply(["k9"]) });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${VIDEO}\n${YT_LIST}` } });
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 1 个合集，开始处理前可以挑选内容并安排顺序");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
+    expect(imported(calls)).toHaveLength(0);
+    expect(inspect.requests[0]).toEqual({ url: YT_LIST });
+    fireEvent.click(entryRow("y2"));
+    fireEvent.mouseDown(within(dialog()).getByTestId("preview-tab-order"));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "移到最前" }));
+    // The other link shares the batch.
+    expect(within(dialog()).getByTestId("preview-submit").textContent).toBe("开始处理 3 项");
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k9"));
+    expect(imported(calls)[0]?.body).toEqual({
+      items: [{ url: VIDEO }, { url: YT_LIST, entries: ["y3", "y1"], previewId: "pv1" }],
+      settings: { templateId: "summary.core", outputLanguage: "zh-CN", autoProofread: true },
+      confirmCollections: true,
+    });
+  });
+
+  it("opens the preview from the line under the box", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(2, "y") }]);
+    mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByRole("button", { name: "预览合集" }));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
+  });
+
+  it("goes back to the form on 「取消」 with the text and the choice kept", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(3, "y") }]);
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply() });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
+    fireEvent.click(entryRow("y1"));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByTestId("collection-preview")).toBeNull());
+    expect(screen.getByTestId<HTMLTextAreaElement>("new-url-input").value).toBe(YT_LIST);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
+    expect(entryRow("y1").dataset["chosen"]).toBe("false");
+    expect(inspect.requests).toHaveLength(1);
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(imported(calls)).toHaveLength(1));
+    expect((imported(calls)[0]?.body as { items: unknown[] }).items).toEqual([{ url: YT_LIST, entries: ["y2", "y3"], previewId: "pv1" }]);
+  });
+
+  it("previews afresh after an import that leaves the page open, instead of resending the last choice", async () => {
+    const collection = { url: YT_LIST, pageSize: 50, entries: newEntries(3, "y") };
+    const inspect = fakeInspect([collection]);
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": inspect.reply,
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"], collectionIds: ["k9"], skippedTrashedContentIds: ["c8"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await confirmPreview();
+    await screen.findByTestId("new-skipped-trashed");
+    expect(imported(calls)).toHaveLength(1);
+    // What was imported is in the collection now.
+    collection.entries = collection.entries.map((entry) => ({ ...entry, state: "in_collection" as const }));
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
+    await waitFor(() => expect(inspect.requests).toHaveLength(2));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry").map((row) => row.dataset["chosen"])).toEqual(["false", "false", "false"]));
+    expect(imported(calls)).toHaveLength(1);
+  });
+
+  it("orders several collections as the box lists them, each as arranged", async () => {
+    const inspect = fakeInspect([
+      { url: SERIES, title: "合集一", pageSize: 50, entries: newEntries(2, "BV1a") },
+      { url: YT_LIST, title: "列表二", pageSize: 50, entries: newEntries(2, "y") },
+    ]);
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply(["k1", "k2"]) });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${SERIES}\n${VIDEO}\n${YT_LIST}` } });
+    expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 2 个合集，开始处理前可以挑选内容并安排顺序");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "下一个" }));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry").map((element) => element.dataset["entryId"])).toEqual(["y1", "y2"]));
+    fireEvent.mouseDown(within(dialog()).getByTestId("preview-tab-order"));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "移到最前" }));
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k1"));
+    expect((imported(calls)[0]?.body as { items: unknown[] }).items).toEqual([
+      { url: SERIES, entries: ["BV1a1", "BV1a2"], previewId: "pv1" },
+      { url: VIDEO },
+      { url: YT_LIST, entries: ["y2", "y1"], previewId: "pv2" },
+    ]);
+  });
+
+  it("opens the preview for a short link the server found to be a collection, then sends the choice for it", async () => {
+    const inspect = fakeInspect([{ url: SHORT, title: "短链合集", pageSize: 50, entries: newEntries(2, "BV1s") }]);
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": inspect.reply,
+      "POST /api/contents/import": () => {
+        attempts += 1;
+        return attempts === 1 ? choiceError([SHORT]) : reply(["k5"]);
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${SHORT}\n${VIDEO}` } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
+    expect(imported(calls)[0]?.body).toMatchObject({ items: [{ url: SHORT }, { url: VIDEO }], confirmCollections: true });
+    expect(inspect.requests[0]).toEqual({ url: SHORT });
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k5"));
+    expect((imported(calls)[1]?.body as { items: unknown[] }).items).toEqual([{ url: SHORT, entries: ["BV1s1", "BV1s2"], previewId: "pv1" }, { url: VIDEO }]);
+    // Two confirmations, two keys.
+    expect(imported(calls)[0]?.headers["idempotency-key"]).not.toBe(imported(calls)[1]?.headers["idempotency-key"]);
+  });
+
+  it("asks about parts after the preview and sends both choices without previewing again", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(2, "y") }]);
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": (call) =>
+        (call.body as { url: string }).url === MULTI_P
+          ? { body: { kind: "multipart", canonicalUrl: MULTI_P, title: "多 P 稿件", parts: [1, 2].map((index) => ({ platformPartId: `p${index}`, index, title: `P${index}`, durationMs: 1000 })) } }
+          : inspect.reply(call),
+      "POST /api/contents/import": () => {
+        attempts += 1;
+        return attempts === 1
+          ? { status: 400, body: { error: { class: "invalid_request", code: "invalid_request.multipart_choice_required", retryDisposition: "never", userMessage: "该稿件有多个分 P" } } }
+          : reply(["k3"]);
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${YT_LIST}\n${MULTI_P}` } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    expect(await screen.findByTestId("parts-choice")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("collection-preview")).toBeNull());
+    // Only the multi-part link is asked about.
+    expect(calls.filter((call) => call.path === "/api/contents/inspect").map((call) => (call.body as { url: string }).url)).toEqual([YT_LIST, MULTI_P]);
+    fireEvent.click(screen.getByLabelText("仅第 1 P"));
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k3"));
+    expect(screen.queryByTestId("collection-preview")).toBeNull();
+    expect((imported(calls)[1]?.body as { items: unknown[] }).items).toEqual([{ url: YT_LIST, entries: ["y1", "y2"], previewId: "pv1" }, { url: MULTI_P, parts: "first" }]);
+  });
+
+  it("reads the collection again when the import finds the preview stale, and sends the new choice under a new key", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(2, "y") }]);
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": inspect.reply,
+      "POST /api/contents/import": () => {
+        attempts += 1;
+        return attempts === 1 ? STALE_REPLY : reply(["k9"]);
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
+    fireEvent.click(entryRow("y1"));
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(inspect.requests).toHaveLength(2));
+    expect(inspect.requests[1]).toEqual({ url: YT_LIST });
+    expect((await within(dialog()).findByRole("alert")).textContent).toContain("合集内容已变化或预览已过期，请重新读取");
+    await waitFor(() => expect(within(dialog()).getByTestId<HTMLButtonElement>("preview-submit").disabled).toBe(false));
+    expect(entryRow("y1").dataset["chosen"]).toBe("false");
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k9"));
+    const [first, second] = imported(calls);
+    expect((second?.body as { items: unknown[] }).items).toEqual([{ url: YT_LIST, entries: ["y2"], previewId: "pv2" }]);
+    expect(first?.headers["idempotency-key"]).not.toBe(second?.headers["idempotency-key"]);
+  });
+
+  it("retries a network failure with the same key and body, and takes a new key once the choice changes", async () => {
+    const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(3, "y") }]);
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply(["k9"]) });
+    const served = globalThis.fetch;
+    let drops = 2;
+    vi.stubGlobal("fetch", (input: string, init: RequestInit = {}) => {
+      const result = served(input, init);
+      if (String(input) === "/api/contents/import" && drops > 0) {
+        drops -= 1;
+        // Sent and recorded, but the answer is lost on the way back.
+        return result.then(() => Promise.reject(new TypeError("network")));
+      }
+      return result;
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
+    const submit = within(dialog()).getByTestId<HTMLButtonElement>("preview-submit");
+    fireEvent.click(submit);
+    expect((await within(dialog()).findByRole("alert")).textContent).toBeTruthy();
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    fireEvent.click(submit);
+    await waitFor(() => expect(imported(calls)).toHaveLength(2));
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    fireEvent.click(entryRow("y3"));
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k9"));
+    const [first, retry, changed] = imported(calls);
+    expect(retry?.headers["idempotency-key"]).toBe(first?.headers["idempotency-key"]);
+    expect(retry?.body).toEqual(first?.body);
+    expect(changed?.headers["idempotency-key"]).not.toBe(first?.headers["idempotency-key"]);
+    expect((changed?.body as { items: unknown[] }).items).toEqual([{ url: YT_LIST, entries: ["y1", "y2"], previewId: "pv1" }]);
+  });
+
+  it("goes to the chosen collection's page for loose links, and to the new one by the answer's collections", async () => {
+    await expect(
+      routeAfterImport({ api: new ApiClient({ baseUrl: "" }, "local"), response: { importBatchId: "b", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"], collectionIds: ["k2"] }, urls: [VIDEO, YT_VIDEO], collection: { name: "新课" } }),
+    ).resolves.toEqual({ path: "/collections/k2", openTasks: false });
+    await expect(
+      routeAfterImport({
+        api: new ApiClient({ baseUrl: "" }, "local"),
+        response: { importBatchId: "b", taskIds: ["t1"], contentIds: ["c1"], collectionIds: ["k3", "k1"] },
+        urls: [YT_LIST],
+        collection: { id: "k1" },
+        collectionImport: true,
+      }),
+    ).resolves.toEqual({ path: "/collections/k3", openTasks: false });
+  });
+});
+
+describe("NewPage form checks and settings", () => {
+  it("shows a missing link right under the box, marking the box invalid", async () => {
+    mockApi(baseRoutes());
+    renderApp(page(), { route: "/new" });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    const message = await screen.findByTestId("new-problem-links");
+    expect(message.textContent).toBe("请先粘贴至少一条链接");
+    const box = screen.getByTestId("new-url-input");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+    expect(box.getAttribute("aria-describedby")?.split(" ")).toContain(message.id);
+    // Right under the box, before the line about what it holds and the settings.
+    expect(box.nextElementSibling).toBe(message);
+  });
+
+  it("shows a link the server cannot take under the box, not at the foot of the form", async () => {
+    const userMessage = "暂不支持这个链接。目前支持：bilibili, youtube";
+    mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/import": {
+        status: 422,
+        body: { error: { class: "source_unsupported_url", code: "source_unsupported_url", retryDisposition: "never", userMessage } },
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: "not a link at all" } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    const message = await screen.findByTestId("new-problem-links");
+    expect(message.textContent).toBe(userMessage);
+    const box = screen.getByTestId("new-url-input");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+    expect(box.getAttribute("aria-describedby")?.split(" ")).toContain(message.id);
+    expect(screen.queryAllByText(userMessage)).toHaveLength(1);
+  });
+
+  it("shows a missing collection name under its field, opening the settings", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "GET /api/collections": { body: { items: [] } } });
+    renderApp(page(), { route: "/new" });
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    await chooseOption(screen.getByRole("combobox", { name: "加入合集" }), "新建合集…");
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    const message = await screen.findByTestId("new-problem-collectionName");
+    expect(message.textContent).toBe("请填写新合集名称");
+    expect(screen.getByLabelText("新合集名称").getAttribute("aria-invalid")).toBe("true");
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
+  it("starts the settings menus at their defaults and sends what is chosen in them", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "GET /api/settings": { body: { ...SETTINGS, defaultSummaryTemplateId: "t2", defaultOutputLanguage: "ja" } },
+      "GET /api/summary-templates": {
+        body: {
+          items: [
+            { id: "summary.core", builtin: true, name: "summaryTemplate.core", currentVersion: 1, deleted: false },
+            { id: "t2", builtin: false, name: "我的模板", currentVersion: 1, deleted: false },
+          ],
+        },
+      },
+      "GET /api/collections": { body: { items: [collection("k1", "第一门课"), collection("k2", "第二门课")] } },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    const template = screen.getByRole("combobox", { name: "总结模板" });
+    const language = screen.getByRole("combobox", { name: "输出语言" });
+    const target = screen.getByRole("combobox", { name: "加入合集" });
+    await waitFor(() => expect(template.textContent).toBe("我的模板"));
+    expect(language.textContent).toBe("日语");
+    expect(target.textContent).toBe("不加入合集");
+    await waitFor(async () => expect(await selectOptionNames(target)).toEqual(["不加入合集", "第一门课", "第二门课", "新建合集…"]));
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/import")).toBe(true));
+    expect(calls.find((call) => call.path === "/api/contents/import")?.body).toMatchObject({ settings: { templateId: "t2", outputLanguage: "ja" } });
+    expect(calls.find((call) => call.path === "/api/contents/import")?.body).not.toHaveProperty("collection");
+    cleanup();
+
+    const second = mockApi({
+      ...baseRoutes(),
+      "GET /api/collections": { body: { items: [collection("k1", "第一门课")] } },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    renderApp(page(), { route: "/new" });
+    fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "总结模板" }).textContent).toBe("核心总结"));
+    await chooseOption(screen.getByRole("combobox", { name: "总结模板" }), "核心总结");
+    await chooseOption(screen.getByRole("combobox", { name: "输出语言" }), "英语");
+    await waitFor(async () => expect(await selectOptionNames(screen.getByRole("combobox", { name: "加入合集" }))).toContain("第一门课"));
+    await chooseOption(screen.getByRole("combobox", { name: "加入合集" }), "第一门课");
+    fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(second.calls.some((call) => call.path === "/api/contents/import")).toBe(true));
+    expect(second.calls.find((call) => call.path === "/api/contents/import")?.body).toMatchObject({
+      settings: { templateId: "summary.core", outputLanguage: "en" },
+      collection: { id: "k1" },
+    });
   });
 });

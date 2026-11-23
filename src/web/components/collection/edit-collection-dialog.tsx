@@ -6,6 +6,7 @@ import { usePatchCollection } from "../../api/queries.ts";
 import { appErrorOf } from "../confirm-dialog.tsx";
 import { Button } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
+import { TextArea, TextInput } from "../../ui/text-field.tsx";
 import { ErrorView } from "../error-view.tsx";
 
 export interface EditableCollection {
@@ -58,25 +59,13 @@ export function CollectionEditForm(props: { collection: EditableCollection; onDo
       className="flex flex-col gap-3"
       data-testid="edit-collection"
     >
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1.5 text-sm">
         {t("library.collection.nameLabel")}
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          maxLength={DISPLAY_NAME_MAX_CHARS}
-          autoFocus={props.focus !== "description"}
-          className="h-9 rounded-md border border-line bg-surface px-2"
-        />
+        <TextInput value={name} onChange={(event) => setName(event.target.value)} maxLength={DISPLAY_NAME_MAX_CHARS} autoFocus={props.focus !== "description"} />
       </label>
-      <label className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1.5 text-sm">
         {t("library.collections.descriptionLabel")}
-        <textarea
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          rows={3}
-          autoFocus={props.focus === "description"}
-          className="min-h-16 rounded-md border border-line bg-surface p-2"
-        />
+        <TextArea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} autoFocus={props.focus === "description"} className="min-h-16" />
       </label>
       {patch.error === null ? null : <ErrorView error={appErrorOf(patch.error)} />}
       <div className="flex items-center justify-end gap-2">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exportBlock, pageSelection, toggleSelected, togglePage } from "../../../../src/web/pages/library/selection.ts";
+import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage } from "../../../../src/web/pages/library/selection.ts";
 
 describe("library selection", () => {
   it("keeps the order rows were picked in", () => {
@@ -21,5 +21,10 @@ describe("library selection", () => {
     expect(exportBlock(0, 50)).toBe("empty");
     expect(exportBlock(50, 50)).toBeUndefined();
     expect(exportBlock(51, 50)).toBe("tooMany");
+  });
+
+  it("drops what a deletion took out of the library, keeping the order of the rest", () => {
+    expect(removeSelected(["a", "b", "c", "d"], ["c", "a", "x"])).toEqual(["b", "d"]);
+    expect(removeSelected(["a"], [])).toEqual(["a"]);
   });
 });

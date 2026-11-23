@@ -4,7 +4,7 @@ import { Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CollectionItemDto } from "../../../../src/shared/dto/collection.ts";
 import { useContentActions } from "../../../../src/web/components/use-content-actions.tsx";
-import { ItemList, ReorderList } from "../../../../src/web/pages/collection/item-list.tsx";
+import { ItemList, ReorderList, type ItemSelection } from "../../../../src/web/pages/collection/item-list.tsx";
 import { ContextMenuHost } from "../../../../src/web/ui/context-menu.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
@@ -25,6 +25,8 @@ const ITEMS: CollectionItemDto[] = [
   { id: "i2", contentId: "c2", position: 1, addedAt: 1, title: "第二讲", processingStatus: "running", source: { kind: "local" }, updatedAt: UPDATED },
 ];
 const COLUMNS = ["序号", "封面", "标题", "来源", "时长", "状态", "更新时间"];
+/** The plain list ends each row with its 「⋯」 menu. */
+const LIST_COLUMNS = [...COLUMNS, "操作"];
 
 function rightClick(element: Element): void {
   act(() => {
@@ -36,11 +38,11 @@ function contextLabels(): (string | null)[] {
   return within(screen.getByTestId("context-menu")).getAllByRole("menuitem").map((item) => item.textContent);
 }
 
-function List(props: { startIndex?: number }) {
+function List(props: { startIndex?: number; selection?: ItemSelection }) {
   const actions = useContentActions();
   return (
     <>
-      <ItemList items={ITEMS} startIndex={props.startIndex ?? 0} actions={actions} />
+      <ItemList items={ITEMS} startIndex={props.startIndex ?? 0} actions={actions} selection={props.selection} />
       {actions.dialogs}
     </>
   );
@@ -99,33 +101,67 @@ describe("ItemList", () => {
     renderList();
     const [first, second] = screen.getAllByTestId("collection-item");
     rightClick(within(first as HTMLElement).getByText("第 1 项"));
-    expect(contextLabels()).toEqual(["打开", "在新标签页中打开", "复制来源链接", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["打开", "在新标签页中打开", "复制来源链接", "重命名", "置顶", "合集归属", "删除"]);
     act(() => {
       fireEvent.keyDown(screen.getByTestId("context-menu"), { key: "Escape" });
     });
     rightClick(within(second as HTMLElement).getByText("第二讲"));
-    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "删除", "合集归属"]);
+    expect(contextLabels()).toEqual(["在新标签页中打开", "复制链接地址", "打开", "重命名", "置顶", "合集归属", "删除"]);
   });
 
-  it("numbers the rows by their place in the whole collection and has no buttons on a row", () => {
+  it("numbers the rows by their place in the whole collection; a row's only button is its 「⋯」 menu", () => {
     renderList(10);
     expect(numbers()).toEqual(["第 11 项", "第 12 项"]);
     expect(screen.queryByRole("button", { name: /移出合集/ })).toBeNull();
     for (const row of screen.getAllByTestId("collection-item")) {
-      expect(within(row).queryAllByRole("button")).toEqual([]);
+      expect(within(row).getAllByRole("button")).toEqual([within(row).getByTestId("content-row-menu")]);
     }
+  });
+
+  it("shows the same Content actions in the row's 「⋯」 as the library row does", async () => {
+    renderList();
+    const [first] = screen.getAllByTestId("collection-item") as HTMLElement[];
+    const trigger = within(first as HTMLElement).getByTestId("content-row-menu");
+    expect(trigger.getAttribute("aria-label")).toContain("第一讲");
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["复制来源链接", "重命名", "置顶", "合集归属", "笔记", "删除"]);
+  });
+
+  it("starts each row with a check box in the selection mode; the header box picks the page", () => {
+    const toggle = vi.fn();
+    const togglePage = vi.fn();
+    mockApi({});
+    renderApp(
+      <ContextMenuHost blockNative={false}>
+        <List selection={{ picked: new Set(["c2"]), page: "some", toggle, togglePage }} />
+      </ContextMenuHost>,
+    );
+    expect(headers()[0]).toBe("");
+    const page = screen.getByRole("checkbox", { name: "选择本页全部内容" }) as HTMLInputElement;
+    expect(page.indeterminate).toBe(true);
+    const [first, second] = screen.getAllByTestId("collection-item") as HTMLElement[];
+    expect((within(second as HTMLElement).getByRole("checkbox", { name: "选择「第二讲」" }) as HTMLInputElement).checked).toBe(true);
+    expect(second?.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(within(first as HTMLElement).getByRole("checkbox", { name: "选择「第一讲」" }));
+    expect(toggle).toHaveBeenLastCalledWith("c1", true);
+    // A click on the row's plain area picks it too; its link keeps its own action.
+    fireEvent.click(within(second as HTMLElement).getByText("第 2 项"));
+    expect(toggle).toHaveBeenLastCalledWith("c2", false);
+    fireEvent.click(page);
+    expect(togglePage).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("member table", () => {
   it("has a header and the content list's columns, in order: number, cover, title, source, duration, status, update time", () => {
     renderList();
-    expect(headers()).toEqual(COLUMNS);
+    expect(headers()).toEqual(LIST_COLUMNS);
     const [first, second] = screen.getAllByTestId("collection-item") as HTMLElement[];
     const row = cells(first as HTMLElement).map((cell) => cell.textContent);
     expect(row[0]).toBe("第 1 项");
     expect(row[2]).toContain("第一讲");
-    expect(row.slice(3)).toEqual(["YouTube", "1:02:05", "已完成", expect.stringContaining("2026")]);
+    expect(row.slice(3, 7)).toEqual(["YouTube", "1:02:05", "已完成", expect.stringContaining("2026")]);
+    expect(within(cells(first as HTMLElement)[7] as HTMLElement).getByTestId("content-row-menu")).toBeTruthy();
     expect(cells(second as HTMLElement).map((cell) => cell.textContent).slice(3, 5)).toEqual(["本地文件", ""]);
     expect(within(second as HTMLElement).getByText("处理中")).toBeTruthy();
   });
@@ -133,7 +169,7 @@ describe("member table", () => {
   it("folds source, duration and update time under the title, and the cover, at the content list's widths", () => {
     renderList();
     const header = screen.getAllByRole("columnheader");
-    const byName = (name: string) => header[COLUMNS.indexOf(name)]?.className ?? "";
+    const byName = (name: string) => header[LIST_COLUMNS.indexOf(name)]?.className ?? "";
     for (const name of ["来源", "时长", "更新时间"]) expect(byName(name)).toContain("hidden @5xl:table-cell");
     expect(byName("封面")).toContain("hidden @3xl:table-cell");
     for (const name of ["序号", "标题", "状态"]) expect(byName(name)).not.toContain("hidden");

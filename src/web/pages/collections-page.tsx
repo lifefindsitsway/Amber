@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus } from "lucide-react";
+import { FolderOpen, Pencil, Plus } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router";
@@ -10,11 +10,13 @@ import { queryKeys, useCollections } from "../api/queries.ts";
 import { useCollectionActions } from "../components/collection/use-collection-actions.tsx";
 import { ErrorView } from "../components/error-view.tsx";
 import { formatDateTime } from "../format.ts";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
 import { useContextMenuTarget } from "../ui/context-menu.tsx";
-import { EmptyState, Loading, PageHeader } from "../ui/feedback.tsx";
+import { EmptyState, PageHeader, SkeletonRows } from "../ui/feedback.tsx";
 import { Modal } from "../ui/modal.tsx";
 import { Pagination, usePagination } from "../ui/pagination.tsx";
+import { TextArea, TextInput } from "../ui/text-field.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import type { AppError } from "../../shared/errors.ts";
 
@@ -44,11 +46,11 @@ export function CollectionsPage() {
       />
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto p-6">
         {collections.isPending ? (
-          <Loading />
+          <SkeletonRows count={4} rowHeight={88} gap={12} testId="collections-loading" />
         ) : collections.isError ? (
           <ErrorView error={appErrorOf(collections.error)} />
         ) : collections.data.items.length === 0 ? (
-          <EmptyState title={t("library.collections.empty")} hint={t("library.collections.emptyHint")} />
+          <EmptyState icon={<FolderOpen size={28} />} title={t("library.collections.empty")} hint={t("library.collections.emptyHint")} />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {pager.slice(collections.data.items).map((collection) => (
@@ -83,16 +85,17 @@ function CollectionCard(props: { collection: CollectionDto }) {
           {t("library.collections.updatedAt", { date: formatDateTime(collection.updatedAt, i18n.language) })}
         </p>
       </Link>
-      <button
-        type="button"
-        className="absolute top-3 right-3 rounded p-1.5 text-muted hover:bg-sunken hover:text-ink"
-        aria-label={t("library.collection.edit")}
-        title={t("library.collection.edit")}
-        data-testid="collection-card-edit"
-        onClick={() => actions.action("edit")?.onSelect()}
-      >
-        <Pencil size={14} aria-hidden="true" />
-      </button>
+      <Tooltip content={t("library.collection.edit")}>
+        <button
+          type="button"
+          className={`absolute top-3 right-3 rounded p-1.5 text-muted hover:bg-sunken hover:text-ink ${FOCUS_RING}`}
+          aria-label={t("library.collection.edit")}
+          data-testid="collection-card-edit"
+          onClick={() => actions.action("edit")?.onSelect()}
+        >
+          <Pencil size={14} aria-hidden="true" />
+        </button>
+      </Tooltip>
       {actions.dialogs}
     </li>
   );
@@ -134,19 +137,13 @@ export function CreateCollectionDialog(props: { open: boolean; onOpenChange: (op
           void submit();
         }}
       >
-        <label className="flex flex-col gap-1 text-sm">
+        <label className="flex flex-col gap-1.5 text-sm">
           {t("library.collections.nameLabel")}
-          <input
-            className="h-9 rounded-md border border-line bg-surface px-2"
-            value={name}
-            maxLength={DISPLAY_NAME_MAX_CHARS}
-            onChange={(event) => setName(event.target.value)}
-            autoFocus
-          />
+          <TextInput value={name} maxLength={DISPLAY_NAME_MAX_CHARS} onChange={(event) => setName(event.target.value)} autoFocus />
         </label>
-        <label className="flex flex-col gap-1 text-sm">
+        <label className="flex flex-col gap-1.5 text-sm">
           {t("library.collections.descriptionLabel")}
-          <textarea className="min-h-16 rounded-md border border-line bg-surface p-2" value={description} onChange={(event) => setDescription(event.target.value)} />
+          <TextArea className="min-h-16" value={description} onChange={(event) => setDescription(event.target.value)} />
         </label>
         {error === undefined ? null : <ErrorView error={error} />}
         <div className="flex justify-end gap-2">

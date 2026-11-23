@@ -46,22 +46,35 @@ afterEach(() => {
 });
 
 describe("useContentActions", () => {
-  it("offers open only in the right-click menu, in one shared order with the 「⋯」 menu", () => {
+  it("offers open only in the right-click menu, in one shared order with the 「⋯」 menu, deleting last and set apart", () => {
     mockApi({});
     const { unmount } = renderApp(<Probe surface="context" content={PLATFORM} />);
-    expect(rows()).toEqual(["打开", "复制来源链接", "—", "重命名", "置顶", "删除", "合集归属"]);
+    expect(rows()).toEqual(["打开", "复制来源链接", "—", "重命名", "置顶", "合集归属", "—", "删除"]);
     unmount();
     renderApp(<Probe surface="overflow" content={PLATFORM} />);
-    expect(rows()).toEqual(["复制来源链接", "重命名", "置顶", "删除", "合集归属"]);
+    expect(rows()).toEqual(["复制来源链接", "重命名", "置顶", "合集归属", "—", "删除"]);
+  });
+
+  it("gives the library row's 「⋯」 menu every row action, notes included, deleting last", async () => {
+    mockApi({ "GET /api/collections": { body: { items: [] } }, "GET /api/contents/c1": { body: { id: "c1", source: { kind: "youtube" }, processingStatus: "succeeded", collections: [], createdAt: 1, updatedAt: 1, media: [] } } });
+    const { unmount } = renderApp(<Probe surface="row" content={PLATFORM} />, { route: "/library" });
+    expect(rows()).toEqual(["复制来源链接", "—", "重命名", "置顶", "合集归属", "笔记", "—", "删除"]);
+    fireEvent.click(screen.getByTestId("action-membership"));
+    expect(await screen.findByRole("dialog", { name: "管理合集" })).toBeTruthy();
+    unmount();
+    renderApp(<Probe surface="row" content={{ ...PLATFORM, pinnedAt: 3 }} />, { route: "/library" });
+    expect(rows()).toEqual(["复制来源链接", "—", "重命名", "取消置顶", "合集归属", "笔记", "—", "删除"]);
+    fireEvent.click(screen.getByTestId("action-notes"));
+    expect(screen.getByTestId("where").textContent).toBe("/notes?contentId=c1");
   });
 
   it("has no source link for a local file and offers unpin for a pinned Content", () => {
     mockApi({});
     const { unmount } = renderApp(<Probe surface="context" content={{ ...LOCAL, pinnedAt: 5 }} />);
-    expect(rows()).toEqual(["打开", "—", "重命名", "取消置顶", "删除", "合集归属"]);
+    expect(rows()).toEqual(["打开", "—", "重命名", "取消置顶", "合集归属", "—", "删除"]);
     unmount();
     renderApp(<Probe surface="overflow" content={LOCAL} />);
-    expect(rows()).toEqual(["重命名", "置顶", "删除", "合集归属"]);
+    expect(rows()).toEqual(["重命名", "置顶", "合集归属", "—", "删除"]);
   });
 
   it("copies the canonical source URL", async () => {
@@ -85,13 +98,17 @@ describe("useContentActions", () => {
   });
 
   it("pins through the API and opens the shared delete dialog", async () => {
-    const { calls } = mockApi({ "PATCH /api/contents/c2": { body: { id: "c2", source: { kind: "local" }, processingStatus: "succeeded", collections: [], createdAt: 1, updatedAt: 1 } } });
+    const { calls } = mockApi({
+      "PATCH /api/contents/c2": { body: { id: "c2", source: { kind: "local" }, processingStatus: "succeeded", collections: [], createdAt: 1, updatedAt: 1 } },
+      "POST /api/contents/trash-plan": { body: { items: [{ contentId: "c2", title: "本地文件", state: "ready" }] } },
+    });
     renderApp(<Probe surface="context" content={LOCAL} />);
     fireEvent.click(screen.getByTestId("action-pin"));
     await waitFor(() => expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ pinned: true }));
     fireEvent.click(screen.getByTestId("action-delete"));
     const dialog = await screen.findByRole("dialog", { name: "删除这条内容？" });
     expect(dialog.textContent).toContain("本地文件");
+    await waitFor(() => expect(calls.find((call) => call.path === "/api/contents/trash-plan")?.body).toEqual({ contentIds: ["c2"] }));
   });
 });
 

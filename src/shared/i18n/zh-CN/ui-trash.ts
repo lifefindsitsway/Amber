@@ -18,4 +18,18 @@ export const trash = {
   lessThanDay: "不到 1 天后彻底删除",
   expired: "已到期，等待清理",
   untitled: "未命名内容",
+  /** The selection mode: pick entries across pages and restore them together. */
+  selection: {
+    restore: "恢复所选",
+    restoreTooMany: "一次最多恢复 {{max}} 项，请减少到 {{max}} 项以内",
+    restored: "已恢复 {{count}} 项",
+    reportTitle: "部分内容未能恢复",
+    reportSummary: "已恢复 {{restored}} 项，{{failed}} 项未能恢复：",
+    reportLabel: "未能恢复的内容",
+    reason: {
+      expired: "已到期，不能再恢复",
+      missing: "已不存在",
+      internal: "恢复时出错，请稍后再试",
+    },
+  },
 } as const;

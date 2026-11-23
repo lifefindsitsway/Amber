@@ -1,19 +1,26 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, FolderPlus, NotebookPen, Package, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { CheckSquare, FolderPlus, Library, Package, Pin, PinOff, Trash2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate, useSearchParams } from "react-router";
-import { z } from "zod";
-import { CONTENT_LIST_IDS_MAX, IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
+import { Link, useSearchParams } from "react-router";
+import { CONTENT_LIST_IDS_MAX, CONTENT_TRASH_BATCH_MAX, IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
 import { contentListDtoSchema, type ContentDto } from "../../shared/dto/content.ts";
 import { CONTENT_PROCESSING_STATUSES, CONTENT_SOURCE_KINDS } from "../../shared/enums.ts";
 import { useApi, useTaskHub } from "../api/context.tsx";
 import { queryKeys, queryString, useCollections, usePatchContent } from "../api/queries.ts";
 import { formatDateTime, formatDuration } from "../format.ts";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Checkbox } from "../ui/checkbox.tsx";
 import { useContextMenuTarget } from "../ui/context-menu.tsx";
-import { EmptyState, Loading, PageHeader } from "../ui/feedback.tsx";
+import { EmptyState, PageHeader, SkeletonRows } from "../ui/feedback.tsx";
+import { NativeSelect } from "../ui/native-select.tsx";
+import { InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 import { Pagination, useListPosition, usePagination } from "../ui/pagination.tsx";
+import { TextInput } from "../ui/text-field.tsx";
+import { useToastOffset } from "../ui/toast.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
+import { ContentRowMenu } from "../components/content-row-menu.tsx";
+import { DeleteContentsDialog } from "../components/delete-content-dialog.tsx";
 import { ErrorView } from "../components/error-view.tsx";
 import { actionTarget, useContentActions } from "../components/use-content-actions.tsx";
 import { HitSnippet } from "../search/hit-snippet.tsx";
@@ -21,21 +28,10 @@ import { SpeakerHitsGroup } from "../search/hit-speaker.tsx";
 import { hitsByContent, normalizeQuery, useSearch, type ContentSideHit } from "../search/search.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { collectionChoiceOf, filtersFromSearch, UNCOLLECTED_CHOICE, withCollectionChoice, withFilter } from "./library/filters.ts";
-import { exportBlock, pageSelection, toggleSelected, togglePage } from "./library/selection.ts";
+import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage } from "./library/selection.ts";
 import { PackActiveNotice, useExportPackWizard } from "./content-pack/pack-entry.tsx";
+import { COLUMN, COMPACT_UP, Cover, NARROW, StatusBadge, WIDE_ONLY } from "./library/columns.tsx";
 
-const SELECT_CLASS = "h-8 rounded-md border border-line bg-surface px-2 text-sm";
-/** `w-px` with no wrapping shrinks a column to its content. */
-export const NARROW = "w-px whitespace-nowrap py-2 font-medium";
-export const COLUMN = "px-2 py-2 font-medium";
-/**
- * Columns by the width of the list area (a container query, in rem so it follows the font
- * size and the sidebar): from 64rem every column shows; below that source, duration and
- * update time fold into a line under the title; below 48rem cover and collections go too.
- * The collection page's member table folds at the same widths.
- */
-export const WIDE_ONLY = "hidden @5xl:table-cell";
-export const COMPACT_UP = "hidden @3xl:table-cell";
 /** Elements that handle `Esc` themselves, so it does not leave the selection mode there. */
 const KEEPS_ESCAPE = ["input:not([type=checkbox])", "textarea", "select", "[contenteditable=true]", "[role=dialog]", "[role=menu]"].join(",");
 /** A click on these keeps its own action instead of picking the row. */
@@ -43,13 +39,22 @@ const INTERACTIVE = ["a", "button", "input", "select", "label"].join(",");
 /** The outermost columns keep the rows off the page edges, more so on wide lists. */
 const EDGE_START = "pl-6 @5xl:pl-10";
 const EDGE_END = "pr-6 @5xl:pr-10";
+/** A quiet icon-only row action: muted until pointed at, the size of the 「⋯」 trigger beside it. */
+const ROW_ICON = `flex size-7 items-center justify-center rounded text-muted hover:bg-line hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING}`;
+/**
+ * Pin and add-to-collection appear while the row is hovered or holds keyboard focus. They are
+ * always rendered and only hidden (visibility, not removal), so their place is kept and the title
+ * never moves; a hidden button cannot take focus, and focus reaching the row reveals them before
+ * Tab gets to them. Touch screens cannot hover: there they are left out and 「⋯」 has everything.
+ */
+const REVEALED_ON_ROW = "invisible opacity-0 transition-opacity duration-150 motion-reduce:transition-none group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 [@media(hover:none)]:hidden";
 
 /**
  * All contents: filters and the page live in the URL so the new page can link to
  * one import batch. The search box goes through the search service with `scope=library`: while
  * a query is in effect the table lists only the Contents it hit, best first, each with one
  * excerpt, unpaged. 「选择」 turns on a checkbox column; picked rows, across pages and
- * filters, go into one content pack through the bar at the page foot.
+ * filters, are deleted or go into one content pack through the bar at the page foot.
  */
 export function LibraryPage() {
   const { t, i18n } = useTranslation();
@@ -61,9 +66,8 @@ export function LibraryPage() {
   const [search, setSearch] = useSearchParams();
   const filters = useMemo(() => filtersFromSearch(search), [search]);
   const [query, setQuery] = useState("");
-  // The row buttons and the rows' right-click menu open the same dialogs.
+  // The rows' 「⋯」 menus, their icon buttons and their right-click menu open the same dialogs.
   const actions = useContentActions();
-  const navigate = useNavigate();
   const scroller = useRef<HTMLDivElement>(null);
   const found = useSearch(query, "library");
   const searching = found.active;
@@ -71,7 +75,10 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<string[] | undefined>(undefined);
   const selecting = selected !== undefined;
   const wizard = useExportPackWizard();
-  const pageCheckbox = useRef<HTMLInputElement>(null);
+  // The picked ids the delete dialog works on, fixed when it opened.
+  const [deleting, setDeleting] = useState<readonly string[] | undefined>(undefined);
+  const bar = useRef<HTMLDivElement>(null);
+  const [barLift, setBarLift] = useState<number | undefined>(undefined);
 
   // The key starts with `contents`, so a task event re-reads only the page on screen. The
   // previous page's answer stays as placeholder only to keep the pager's total; its rows are
@@ -142,9 +149,21 @@ export function LibraryPage() {
   const shownIds = pending || failure !== null ? [] : rows.map(({ item }) => item.id);
   const pagePicked = selected === undefined ? "none" : pageSelection(selected, shownIds);
   const block = exportBlock(selected?.length ?? 0, IMPORT_BATCH_MAX);
-  useEffect(() => {
-    if (pageCheckbox.current !== null) pageCheckbox.current.indeterminate = pagePicked === "some";
-  }, [pagePicked]);
+  const deleteBlock = exportBlock(selected?.length ?? 0, CONTENT_TRASH_BATCH_MAX);
+  const barShown = selected !== undefined && selected.length > 0;
+  // Toasts rise above the selection bar (and the pager under it) while the bar is shown.
+  useLayoutEffect(() => {
+    const element = bar.current;
+    if (!barShown || element === null) {
+      setBarLift(undefined);
+      return undefined;
+    }
+    const measure = (): void => setBarLift(Math.max(0, window.innerHeight - element.getBoundingClientRect().top));
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [barShown, block, deleteBlock]);
+  useToastOffset(barLift);
   // `Esc` leaves the selection mode, unless a dialog or a field takes the key itself.
   useEffect(() => {
     if (!selecting) return undefined;
@@ -167,8 +186,9 @@ export function LibraryPage() {
       <PageHeader title={t("library.title")} />
       <PackActiveNotice className="mx-6 mt-3" />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-6 py-3">
-        <input
-          className="h-8 w-56 rounded-md border border-line bg-surface px-2 text-sm"
+        <TextInput
+          size="md"
+          className="w-56"
           type="search"
           placeholder={t("library.searchPlaceholder")}
           aria-label={t("library.searchPlaceholder")}
@@ -176,24 +196,24 @@ export function LibraryPage() {
           onChange={(event) => setQuery(event.target.value)}
           data-testid="library-search"
         />
-        <select className={SELECT_CLASS} aria-label={t("library.filter.status")} value={filters.status ?? ""} onChange={(event) => setFilter("status", event.target.value)}>
+        <NativeSelect size="md" aria-label={t("library.filter.status")} value={filters.status ?? ""} onChange={(event) => setFilter("status", event.target.value)}>
           <option value="">{`${t("library.filter.status")} · ${t("library.filter.any")}`}</option>
           {CONTENT_PROCESSING_STATUSES.map((status) => (
             <option key={status} value={status}>
               {t(`common.status.${status}`)}
             </option>
           ))}
-        </select>
-        <select className={SELECT_CLASS} aria-label={t("library.filter.source")} value={filters.source ?? ""} onChange={(event) => setFilter("source", event.target.value)}>
+        </NativeSelect>
+        <NativeSelect size="md" aria-label={t("library.filter.source")} value={filters.source ?? ""} onChange={(event) => setFilter("source", event.target.value)}>
           <option value="">{`${t("library.filter.source")} · ${t("library.filter.any")}`}</option>
           {CONTENT_SOURCE_KINDS.map((source) => (
             <option key={source} value={source}>
               {t(`common.source.${source}`)}
             </option>
           ))}
-        </select>
-        <select
-          className={SELECT_CLASS}
+        </NativeSelect>
+        <NativeSelect
+          size="md"
           aria-label={t("library.filter.collection")}
           value={collectionChoiceOf(filters)}
           onChange={(event) => setSearch(withCollectionChoice(search, event.target.value))}
@@ -205,13 +225,13 @@ export function LibraryPage() {
               {collection.name}
             </option>
           ))}
-        </select>
+        </NativeSelect>
         {filters.importBatchId === undefined ? null : (
           <span className="inline-flex items-center gap-2 rounded-md bg-accent-soft px-2 py-1 text-xs text-accent">
             {t("library.filter.importBatch")}
-            <button type="button" className="underline" onClick={() => setFilter("importBatchId", "")}>
+            <TextAction className="underline" onClick={() => setFilter("importBatchId", "")}>
               {t("library.filter.clearImportBatch")}
-            </button>
+            </TextAction>
           </span>
         )}
         <Button
@@ -228,7 +248,7 @@ export function LibraryPage() {
       </div>
       <div ref={scroller} className="@container min-h-0 flex-1 overflow-auto">
         {pending ? (
-          <Loading />
+          <SkeletonRows count={6} rowHeight={40} gap={12} className="p-6" testId="library-loading" />
         ) : failure !== null ? (
           <div className="p-6">
             <ErrorView error={appErrorOf(failure)} />
@@ -243,11 +263,16 @@ export function LibraryPage() {
           ) : filtered ? (
             <EmptyState title={t("library.empty.filtered")} />
           ) : (
-            <EmptyState title={t("library.empty.title")} hint={t("library.empty.hint")}>
-              <Link to="/new" className="text-sm text-accent underline">
-                {t("library.empty.action")}
-              </Link>
-            </EmptyState>
+            <EmptyState
+              icon={<Library size={28} />}
+              title={t("library.empty.title")}
+              hint={t("library.empty.hint")}
+              action={
+                <Link to="/new" className={`text-sm ${TEXT_ACTION_CLASS}`}>
+                  {t("library.empty.action")}
+                </Link>
+              }
+            />
           )
         ) : (
           <>
@@ -257,12 +282,11 @@ export function LibraryPage() {
                 <tr>
                   {selecting ? (
                     <th className={`${NARROW} ${EDGE_START} pr-2`}>
-                      <input
-                        ref={pageCheckbox}
-                        type="checkbox"
+                      <Checkbox
                         className="align-middle"
                         aria-label={t("contentPack.select.pageLabel")}
                         checked={pagePicked === "all"}
+                        indeterminate={pagePicked === "some"}
                         onChange={() => setSelected((current) => togglePage(current ?? [], shownIds))}
                         data-testid="library-select-page"
                       />
@@ -289,7 +313,7 @@ export function LibraryPage() {
                   return (
                     <tr
                       key={item.id}
-                      className={`border-b border-line ${picked ? "bg-accent-soft" : "hover:bg-panel"}`}
+                      className={`group border-b border-line ${picked ? "bg-accent-soft" : "hover:bg-panel focus-within:bg-panel"}`}
                       data-testid="library-row"
                       data-content-id={item.id}
                       {...(selecting ? { "aria-selected": picked } : {})}
@@ -301,8 +325,7 @@ export function LibraryPage() {
                     >
                       {selecting ? (
                         <td className={`${EDGE_START} py-2 pr-2`}>
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             className="align-middle"
                             aria-label={t("contentPack.select.rowLabel", { title })}
                             checked={picked}
@@ -347,39 +370,32 @@ export function LibraryPage() {
                       </td>
                       <td className={`${WIDE_ONLY} px-2 py-2 text-xs whitespace-nowrap text-muted`}>{updatedAt}</td>
                       <td className={`py-2 pl-4 ${EDGE_END} text-center whitespace-nowrap`}>
-                        <Button size="sm" variant="ghost" onClick={() => actions.rename(item.id)}>
-                          <Pencil size={14} aria-hidden="true" />
-                          {t("library.rename.action")}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={patch.isPending && patch.variables?.contentId === item.id}
-                          onClick={() => patch.mutate({ contentId: item.id, patch: { pinned: !pinned } })}
-                        >
-                          {pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
-                          {/* Both labels share one grid cell, so the button is as wide as the wider one and the action buttons line up across rows; the label stays next to its icon. */}
-                          <span className="grid text-left">
-                            <span className={`${pinned ? "invisible " : ""}[grid-area:1/1]`} aria-hidden={pinned ? "true" : undefined}>
-                              {t("library.pin.action")}
-                            </span>
-                            <span className={`${pinned ? "" : "invisible "}[grid-area:1/1]`} aria-hidden={pinned ? undefined : "true"}>
-                              {t("library.unpin.action")}
-                            </span>
-                          </span>
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => actions.manageCollections(item.id)}>
-                          <FolderPlus size={14} aria-hidden="true" />
-                          {t("library.membership.action")}
-                        </Button>
-                        <Button size="sm" variant="ghost" className="text-danger" onClick={() => actions.remove(targetOf(item))}>
-                          <Trash2 size={14} aria-hidden="true" />
-                          {t("library.deleteContent.action")}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => void navigate(`/notes?contentId=${encodeURIComponent(item.id)}`)}>
-                          <NotebookPen size={14} aria-hidden="true" />
-                          {t("library.notes.action")}
-                        </Button>
+                        <div className="flex items-center justify-end gap-0.5">
+                          <Tooltip content={pinned ? t("library.unpin.action") : t("library.pin.action")}>
+                            <button
+                              type="button"
+                              className={`${ROW_ICON} ${REVEALED_ON_ROW}`}
+                              aria-label={pinned ? t("library.unpin.action") : t("library.pin.action")}
+                              disabled={patch.isPending && patch.variables?.contentId === item.id}
+                              onClick={() => patch.mutate({ contentId: item.id, patch: { pinned: !pinned } })}
+                              data-testid="library-row-pin"
+                            >
+                              {pinned ? <PinOff size={15} aria-hidden="true" /> : <Pin size={15} aria-hidden="true" />}
+                            </button>
+                          </Tooltip>
+                          <Tooltip content={t("library.rowActions.addToCollection")}>
+                            <button
+                              type="button"
+                              className={`${ROW_ICON} ${REVEALED_ON_ROW}`}
+                              aria-label={t("library.rowActions.addToCollection")}
+                              onClick={() => actions.manageCollections(item.id)}
+                              data-testid="library-row-collections"
+                            >
+                              <FolderPlus size={15} aria-hidden="true" />
+                            </button>
+                          </Tooltip>
+                          <ContentRowMenu actions={actions} content={targetOf(item)} label={title} surface="row" alwaysShown />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -389,8 +405,9 @@ export function LibraryPage() {
           </>
         )}
       </div>
-      {selected === undefined || selected.length === 0 ? null : (
+      {selected === undefined || !barShown ? null : (
         <div
+          ref={bar}
           role="region"
           aria-label={t("contentPack.select.barLabel")}
           className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line bg-panel px-6 py-2.5"
@@ -399,12 +416,32 @@ export function LibraryPage() {
           <span className="text-sm font-medium" aria-live="polite" data-testid="library-selection-count">
             {t("contentPack.select.count", { count: selected.length })}
           </span>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(undefined)} data-testid="library-selection-clear">
+            {t("contentPack.select.clear")}
+          </Button>
+          {deleteBlock === "tooMany" ? (
+            <InlineNote id="library-delete-limit" testId="library-delete-limit">
+              {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
+            </InlineNote>
+          ) : null}
           {block === "tooMany" ? (
-            <span id="library-selection-limit" className="text-xs text-danger">
+            <InlineNote id="library-selection-limit" testId="library-selection-limit">
               {t("contentPack.select.tooMany", { max: IMPORT_BATCH_MAX })}
-            </span>
+            </InlineNote>
           ) : null}
           <div className="ml-auto flex items-center gap-2">
+            <span aria-hidden="true" className="mr-1 h-5 w-px bg-line" />
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={deleteBlock !== undefined}
+              aria-describedby={deleteBlock === "tooMany" ? "library-delete-limit" : undefined}
+              onClick={() => setDeleting([...selected])}
+              data-testid="library-delete-selected"
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              {t("library.selection.delete")}
+            </Button>
             <Button
               variant="primary"
               size="sm"
@@ -416,14 +453,17 @@ export function LibraryPage() {
               <Package size={14} aria-hidden="true" />
               {t("contentPack.select.exportSelected")}
             </Button>
-            <Button size="sm" onClick={() => setSelected(undefined)} data-testid="library-selection-clear">
-              {t("contentPack.select.clear")}
-            </Button>
           </div>
         </div>
       )}
       {searching ? null : <Pagination pager={pager} className="border-t border-line px-6 py-3" />}
       {actions.dialogs}
+      <DeleteContentsDialog
+        contentIds={deleting}
+        onOpenChange={(open) => (open ? undefined : setDeleting(undefined))}
+        // Gone from the library: out of the selection; what failed stays picked.
+        onSettled={({ removedIds }) => setSelected((current) => (current === undefined ? current : removeSelected(current, removedIds)))}
+      />
       {wizard.dialog}
     </div>
   );
@@ -441,44 +481,4 @@ function hitRows(hits: ReturnType<typeof hitsByContent>, known: readonly Content
     const item = byId.get(contentId);
     return item === undefined ? [] : [{ item, hit: first }];
   });
-}
-
-/**
- * Platform covers are loaded without a Referer: some CDNs refuse foreign referrers. The CSP
- * admits images over https only, so a cover stored with plain http is asked for over https;
- * one that still fails shows the empty placeholder instead of a broken image.
- */
-export function Cover({ url, className = "h-12 w-20" }: { url?: string | undefined; className?: string }) {
-  const [failed, setFailed] = useState<string>();
-  const src = url?.replace(/^http:\/\//, "https://");
-  if (src === undefined || src === failed) {
-    return <div data-testid="cover-placeholder" className={`${className} rounded bg-sunken`} />;
-  }
-  return (
-    <img
-      src={src}
-      alt=""
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onError={() => setFailed(src)}
-      // The base style's max-width: 100% lets a shrink-to-fit table column squeeze the image.
-      className={`${className} max-w-none rounded object-cover`}
-    />
-  );
-}
-
-const STATUS_TONE: Record<string, string> = {
-  // 「已导入」: a Content from a content pack with no processing task; a neutral fact, not a state of work.
-  none: "text-muted ring-1 ring-line ring-inset",
-  queued: "bg-sunken text-muted",
-  running: "bg-accent-soft text-accent",
-  waiting: "bg-accent-soft text-accent",
-  succeeded: "bg-ok/10 text-ok",
-  failed: "bg-danger/10 text-danger",
-  cancelled: "bg-sunken text-muted",
-};
-
-export function StatusBadge({ status }: { status: ContentDto["processingStatus"] }) {
-  const { t } = useTranslation();
-  return <span className={`rounded px-1.5 py-0.5 text-xs ${STATUS_TONE[status] ?? ""}`}>{t(`common.status.${status}`)}</span>;
 }

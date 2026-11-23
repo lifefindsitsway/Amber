@@ -301,7 +301,7 @@ describe("CollectionPage", () => {
     const column = screen.getByRole("heading", { name: "内容" }).closest("section")?.parentElement;
     expect(column?.className).toContain("max-w-7xl");
     expect(column?.className).not.toContain("max-w-4xl");
-    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["序号", "封面", "标题", "来源", "时长", "状态", "更新时间"]);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["序号", "封面", "标题", "来源", "时长", "状态", "更新时间", "操作"]);
     expect(within(screen.getAllByTestId("collection-item")[0] as HTMLElement).getAllByRole("cell")[3]?.textContent).toBe("B 站");
   });
 
@@ -599,6 +599,113 @@ describe("CollectionPage", () => {
     await waitFor(() => expect(box().checked).toBe(false));
     expect(screen.getByRole("dialog", { name: "管理合集" })).toBe(dialog);
     expect(api.calls.some((call) => call.method === "DELETE" && call.path === "/api/collections/k1/items/i1")).toBe(true);
+  });
+});
+
+describe("CollectionPage selection", () => {
+  const pick = (title: string) => fireEvent.click(screen.getByRole("checkbox", { name: `选择「${title}」` }));
+  const count = () => screen.getByTestId("collection-selection-count").textContent;
+  const trashPlan = (ids: string[]) => ({ body: { items: ids.map((contentId) => ({ contentId, title: contentId, state: "ready" })) } });
+
+  it("picks lectures across pages, the header box picking the page, and leaves on Esc", async () => {
+    routes({ "GET /api/collections/k1": { body: course(12) } });
+    stubScrollIntoView();
+    render();
+    fireEvent.click(await screen.findByTestId("collection-select-mode"));
+    // Reordering waits while lectures are being picked.
+    expect(screen.queryByRole("button", { name: "调整顺序" })).toBeNull();
+    pick("第2讲");
+    expect(count()).toBe("已选 1 项");
+    const page = () => screen.getByRole("checkbox", { name: "选择本页全部内容" }) as HTMLInputElement;
+    expect(page().indeterminate).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(lectureNumbers()[0]).toBe("第 11 项"));
+    expect(page().checked).toBe(false);
+    fireEvent.click(page());
+    expect(count()).toBe("已选 3 项");
+    fireEvent.click(screen.getByRole("button", { name: "上一页" }));
+    await waitFor(() => expect(lectureNumbers()[0]).toBe("第 1 项"));
+    expect((screen.getByRole("checkbox", { name: "选择「第2讲」" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("collection-selection-bar")).toBeNull());
+    expect(screen.queryByRole("checkbox", { name: "选择「第2讲」" })).toBeNull();
+  });
+
+  it("offers leaving the collection as a plain button and deleting as the outlined destructive one", async () => {
+    routes();
+    render();
+    fireEvent.click(await screen.findByTestId("collection-select-mode"));
+    expect(screen.queryByTestId("collection-selection-bar")).toBeNull();
+    pick("第1讲");
+    const bar = screen.getByTestId("collection-selection-bar");
+    const buttons = within(bar).getAllByRole("button").map((button) => button.textContent);
+    expect(buttons).toEqual(["取消", "移出合集", "删除…"]);
+    expect(within(bar).getByTestId("collection-remove-selected").className).toContain("border-line bg-surface");
+    expect(within(bar).getByTestId("collection-delete-selected").className).toContain("text-danger");
+    expect(within(bar).getByTestId("collection-delete-selected").className).not.toContain("bg-danger");
+  });
+
+  it("removes the picked lectures from this collection in one request, says so and drops them from the selection", async () => {
+    let removed = false;
+    const api = routes({
+      "GET /api/collections/k1": () => ({ body: removed ? { ...detail, itemCount: 1, items: [item(2)] } : detail }),
+      "POST /api/collections/k1/items/remove": () => {
+        removed = true;
+        return { body: { ...detail, itemCount: 1, items: [item(2)] } };
+      },
+    });
+    render();
+    fireEvent.click(await screen.findByTestId("collection-select-mode"));
+    pick("第1讲");
+    pick("第3讲");
+    fireEvent.click(screen.getByTestId("collection-remove-selected"));
+    expect((await screen.findByTestId("toast")).textContent).toContain("已将 2 项移出合集");
+    await waitFor(() => expect(rowIds()).toEqual(["i2"]));
+    expect(api.calls.filter((call) => call.method === "POST").map((call) => [call.path, call.body])).toEqual([["/api/collections/k1/items/remove", { contentIds: ["c1", "c3"] }]]);
+    // Nothing left picked: the bar goes, the mode stays.
+    expect(screen.queryByTestId("collection-selection-bar")).toBeNull();
+    expect(screen.getByTestId("collection-select-mode").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("says nothing left the collection when the removal is refused, keeps the pick and reads the lectures again", async () => {
+    const api = routes({ "POST /api/collections/k1/items/remove": { status: 404, body: NOT_FOUND } });
+    render();
+    fireEvent.click(await screen.findByTestId("collection-select-mode"));
+    pick("第1讲");
+    fireEvent.click(screen.getByTestId("collection-remove-selected"));
+    const failed = await screen.findByTestId("collection-remove-failed");
+    expect(failed.textContent).toContain("没有移出任何内容，合集保持原样");
+    expect(failed.getAttribute("role")).toBe("alert");
+    expect(count()).toBe("已选 1 项");
+    expect(screen.queryByTestId("toast")).toBeNull();
+    await waitFor(() => expect(api.calls.filter((call) => call.path === "/api/collections/k1").length).toBeGreaterThan(1));
+  });
+
+  it("deletes the picked lectures through the shared delete dialog", async () => {
+    const api = routes({
+      "POST /api/contents/trash-plan": trashPlan(["c1", "c2"]),
+      "POST /api/contents/trash": { body: { trashedIds: ["c1", "c2"], alreadyTrashedIds: [], failed: [], cancelledTaskCount: 0 } },
+    });
+    render();
+    fireEvent.click(await screen.findByTestId("collection-select-mode"));
+    pick("第1讲");
+    pick("第2讲");
+    fireEvent.click(screen.getByTestId("collection-delete-selected"));
+    const dialog = await screen.findByTestId("delete-content-dialog");
+    expect(within(dialog).getByRole("heading").textContent).toContain("删除所选的 2 项内容？");
+    const confirm = within(dialog).getByTestId("delete-confirm");
+    await waitFor(() => expect(confirm.textContent).toBe("删除 2 项"));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(screen.queryByTestId("delete-content-dialog")).toBeNull());
+    expect(api.calls.find((call) => call.path === "/api/contents/trash")?.body).toEqual({ contentIds: ["c1", "c2"], cancelTasks: false });
+    expect(screen.queryByTestId("collection-selection-bar")).toBeNull();
+  });
+
+  it("ends each lecture row with a visible 「⋯」 menu", async () => {
+    routes();
+    render();
+    await screen.findByText("第 1 项");
+    for (const row of screen.getAllByTestId("collection-item")) expect(within(row).getByTestId("content-row-menu")).toBeTruthy();
   });
 });
 

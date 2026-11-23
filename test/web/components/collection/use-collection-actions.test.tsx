@@ -40,6 +40,13 @@ function openMenu(): string[] {
 }
 
 const choose = (id: string) => fireEvent.click(screen.getByTestId(`context-menu-item-${id}`));
+/** A collection whose members all belong elsewhere too: deleting it is a plain confirmation. */
+const deleteRoutes = {
+  "GET /api/collections/k1/delete-plan": {
+    body: { memberCount: 1, exclusiveContentIds: [], sharedCount: 1, trashedMemberCount: 0, exclusiveWithTasksCount: 0, collectionTaskCount: 0, blocked: [] },
+  },
+  "POST /api/collections/k1/delete": { body: { trashedIds: [], cancelledTaskCount: 0 } },
+};
 const failure = { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "导出时出错了" } } };
 
 describe("useCollectionActions", () => {
@@ -83,24 +90,24 @@ describe("useCollectionActions", () => {
   });
 
   it("leaves the page of the collection it deleted", async () => {
-    const { calls } = mockApi({ "DELETE /api/collections/k1": { status: 204 } });
+    const { calls } = mockApi(deleteRoutes);
     render(undefined, "/collections/k1");
     openMenu();
     choose("delete");
     const dialog = await screen.findByRole("dialog", { name: "删除合集「LLM」？" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "删除合集" }));
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/collections"));
-    expect(calls.some((call) => call.method === "DELETE" && call.path === "/api/collections/k1")).toBe(true);
+    expect(calls.find((call) => call.method === "POST" && call.path === "/api/collections/k1/delete")?.body).toEqual({ contents: "keep", cancelTasks: false });
   });
 
   it("stays where it is after deleting a collection that is not being viewed", async () => {
-    const { calls } = mockApi({ "DELETE /api/collections/k1": { status: 204 } });
+    const { calls } = mockApi(deleteRoutes);
     render(undefined, "/library");
     openMenu();
     choose("delete");
-    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "删除" }));
+    fireEvent.click(await within(await screen.findByRole("dialog")).findByRole("button", { name: "删除合集" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(calls.some((call) => call.method === "DELETE")).toBe(true);
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/collections/k1/delete")).toBe(true);
     expect(screen.getByTestId("location").textContent).toBe("/library");
   });
 

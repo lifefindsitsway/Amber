@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, BookA, MoreHorizontal, Package, Pencil, Plus, RefreshCw } from "lucide-react";
+import { ArrowUpDown, BookA, CheckSquare, ListVideo, MoreHorizontal, Package, Pencil, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router";
 import { z } from "zod";
@@ -14,6 +14,7 @@ import {
 import { taskAcceptedDtoSchema, taskListDtoSchema } from "../../shared/dto/task.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { useApi, useTaskHub } from "../api/context.tsx";
+import { DeleteContentsDialog } from "../components/delete-content-dialog.tsx";
 import { queryKeys, queryString, useSettings } from "../api/queries.ts";
 import { CollectionEditForm } from "../components/collection/edit-collection-dialog.tsx";
 import { useCollectionActions, type CollectionAction } from "../components/collection/use-collection-actions.tsx";
@@ -21,17 +22,23 @@ import { ErrorView } from "../components/error-view.tsx";
 import { useContentActions } from "../components/use-content-actions.tsx";
 import { useSearch } from "../search/search.ts";
 import { TerminologyEditor } from "../components/terminology-editor.tsx";
-import { Button } from "../ui/button.tsx";
+import { Button, FOCUS_RING } from "../ui/button.tsx";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MenuEntries, useContextMenuTarget, type MenuEntry } from "../ui/context-menu.tsx";
-import { EmptyState, Loading, PageHeader } from "../ui/feedback.tsx";
+import { EmptyState, PageHeader, SkeletonRows } from "../ui/feedback.tsx";
 import { Modal } from "../ui/modal.tsx";
+import { Callout, InlineNote } from "../ui/notice.tsx";
 import { Pagination, usePagination } from "../ui/pagination.tsx";
+import { TextInput } from "../ui/text-field.tsx";
+import { useToast } from "../ui/toast.tsx";
+import { Tooltip } from "../ui/tooltip.tsx";
 import { useDocumentTitle } from "../use-document-title.ts";
-import { ItemList, ReorderList } from "./collection/item-list.tsx";
+import { ItemList, ReorderList, type ItemSelection } from "./collection/item-list.tsx";
+import { SelectionBar, useSelectionEscape } from "./collection/selection-bar.tsx";
+import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage } from "./library/selection.ts";
 import { SearchHits } from "./collection/search-hits.tsx";
 import { SummaryCard } from "./collection/summary-card.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
-import { IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
+import { CONTENT_TRASH_BATCH_MAX, IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
 import { useExportPackWizard } from "./content-pack/pack-entry.tsx";
 
 const summaryKey = (id: string) => [...queryKeys.collection(id), "summary"] as const;
@@ -42,7 +49,9 @@ const latestSummaryTaskKey = (id: string) => [...queryKeys.collection(id), "late
  * One collection: header actions, rollup summary card and the ordered
  * lectures, paged in the browser since the detail carries them all. The order changes only
  * through 「调整顺序」: a draft of every lecture, sent as one complete order on save. The
- * lecture search goes through the search service with `scope=<collectionId>`.
+ * lecture search goes through the search service with `scope=<collectionId>`. 「选择」 turns on
+ * a check box column; picked lectures, across pages, leave the collection together (one
+ * transaction: all or none) or go to the trash through the shared delete dialog.
  */
 export function CollectionPage() {
   const { id = "" } = useParams();
@@ -51,6 +60,7 @@ export function CollectionPage() {
   const hub = useTaskHub();
   const queryClient = useQueryClient();
   const settings = useSettings();
+  const toast = useToast();
   const path = `/api/collections/${encodeURIComponent(id)}`;
 
   const detail = useQuery({ queryKey: queryKeys.collection(id), queryFn: () => client.get(path, collectionDetailDtoSchema) });
@@ -138,6 +148,40 @@ export function CollectionPage() {
     return entry === undefined ? [] : [entry];
   });
   const packWizard = useExportPackWizard();
+  // `undefined` outside the selection mode; picked Content ids in the order they were picked.
+  const [selected, setSelected] = useState<string[] | undefined>(undefined);
+  const selecting = selected !== undefined;
+  // Another collection opened in the same page starts outside the selection mode.
+  const [selectionScope, setSelectionScope] = useState(id);
+  if (selectionScope !== id) {
+    setSelectionScope(id);
+    setSelected(undefined);
+  }
+  const exitSelection = useCallback(() => setSelected(undefined), []);
+  useSelectionEscape(selecting, exitSelection);
+  // The picked ids the delete dialog works on, fixed when it opened.
+  const [deleting, setDeleting] = useState<readonly string[] | undefined>(undefined);
+  // Leaving the collection is one transaction: it either moves every picked lecture or none.
+  const removeItems = useMutation({
+    mutationFn: (contentIds: string[]) => client.post(`${path}/items/remove`, collectionDetailDtoSchema, { body: { contentIds } }),
+    onSuccess: async (updated, contentIds) => {
+      queryClient.setQueryData(queryKeys.collection(id), updated);
+      setSelected((current) => (current === undefined ? current : removeSelected(current, contentIds)));
+      toast.show({ tone: "success", message: t("library.collection.selection.removeDone", { count: contentIds.length }) });
+      // Item counts, the contents' collection chips and the summary's freshness all follow the members.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.collections }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll }),
+        queryClient.invalidateQueries({ queryKey: summaryKey(id) }),
+        ...contentIds.map((contentId) => queryClient.invalidateQueries({ queryKey: queryKeys.content(contentId) })),
+      ]);
+    },
+    // A refusal usually means the members changed meanwhile: show them as they are now.
+    onError: () => void queryClient.invalidateQueries({ queryKey: queryKeys.collection(id) }),
+  });
+  const members = useMemo(() => new Set(detail.data?.items.map((item) => item.contentId) ?? []), [detail.data]);
+  // A lecture that left the collection by other means no longer counts as picked.
+  const picked = useMemo(() => (selected === undefined ? undefined : selected.filter((contentId) => members.has(contentId))), [selected, members]);
 
   // Member statuses and the summary task advance through task events. Stage and unit events
   // are ignored: what the lecture list and summary card read is written by the task projection
@@ -158,7 +202,7 @@ export function CollectionPage() {
   );
 
   if (detail.isPending) {
-    return <Loading />;
+    return <SkeletonRows count={6} rowHeight={40} gap={12} className="p-6" testId="collection-loading" />;
   }
   if (detail.isError) {
     return (
@@ -172,8 +216,21 @@ export function CollectionPage() {
   const enterReorder = (): void => {
     saveOrder.reset();
     setOrderChanged(false);
+    setSelected(undefined);
     setDraft(collection.items.map((item) => item.id));
   };
+  const selectionFor = (shownContentIds: readonly string[]): ItemSelection | undefined =>
+    picked === undefined
+      ? undefined
+      : {
+          picked: new Set(picked),
+          page: pageSelection(picked, shownContentIds),
+          toggle: (contentId, on) => setSelected((current) => toggleSelected(current ?? [], contentId, on)),
+          togglePage: () => setSelected(togglePage(picked, shownContentIds)),
+        };
+  const pageItems = pager.slice(collection.items);
+  const deleteBlock = exportBlock(picked?.length ?? 0, CONTENT_TRASH_BATCH_MAX);
+  const removeError = removeItems.error === null ? undefined : appErrorOf(removeItems.error);
   const cancelReorder = (): void => {
     saveOrder.reset();
     leaveReorder();
@@ -194,11 +251,13 @@ export function CollectionPage() {
               {t("library.collection.summarize")}
             </Button>
             <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <Button variant="ghost" aria-label={t("library.collection.more")}>
-                  <MoreHorizontal size={16} />
-                </Button>
-              </DropdownMenu.Trigger>
+              <Tooltip content={t("library.collection.more")}>
+                <DropdownMenu.Trigger asChild>
+                  <Button variant="ghost" aria-label={t("library.collection.more")}>
+                    <MoreHorizontal size={16} aria-hidden="true" />
+                  </Button>
+                </DropdownMenu.Trigger>
+              </Tooltip>
               <DropdownMenu.Portal>
                 <DropdownMenu.Content align="end" className={MENU_CONTENT_CLASS}>
                   <MenuEntries entries={overflow} testIdPrefix="collection-" />
@@ -221,7 +280,7 @@ export function CollectionPage() {
           {actions.exportError === undefined ? null : <ErrorView error={actions.exportError} />}
           {summarize.error === null ? null : <SummaryError error={appErrorOf(summarize.error)} items={collection.items} />}
           {summary.isPending ? (
-            <Loading />
+            <SkeletonRows count={2} rowHeight={20} testId="collection-summary-loading" />
           ) : summary.isError ? (
             <ErrorView error={appErrorOf(summary.error)} />
           ) : (
@@ -248,14 +307,21 @@ export function CollectionPage() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  {found.active || collection.items.length < 2 ? null : (
+                  {found.active || selecting || collection.items.length < 2 ? null : (
                     <Button size="sm" onClick={enterReorder}>
                       <ArrowUpDown size={14} />
                       {t("library.collection.reorder")}
                     </Button>
                   )}
-                  <input
-                    className="h-8 w-48 rounded-md border border-line bg-surface px-2 text-sm"
+                  {collection.items.length === 0 ? null : (
+                    <Button size="sm" variant={selecting ? "primary" : "secondary"} aria-pressed={selecting} onClick={() => setSelected(selecting ? undefined : [])} data-testid="collection-select-mode">
+                      <CheckSquare size={14} aria-hidden="true" />
+                      {selecting ? t("contentPack.select.exit") : t("contentPack.select.enter")}
+                    </Button>
+                  )}
+                  <TextInput
+                    size="md"
+                    className="w-48"
                     type="search"
                     placeholder={t("search.collectionPlaceholder")}
                     aria-label={t("search.collectionPlaceholder")}
@@ -270,34 +336,83 @@ export function CollectionPage() {
                 </div>
               )}
             </div>
-            {reordering ? <p className="mb-2 text-sm text-muted">{t("library.collection.reorderHint")}</p> : null}
+            {reordering ? <InlineNote className="mb-2">{t("library.collection.reorderHint")}</InlineNote> : null}
             {orderChanged && !reordering ? (
-              <p className="mb-2 rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert" data-testid="collection-order-changed">
+              <Callout tone="warn" announce="alert" className="mb-2" testId="collection-order-changed">
                 {t("library.collection.reorderChanged")}
-              </p>
+              </Callout>
             ) : null}
+            {removeError === undefined ? null : (
+              <Callout tone="error" announce="alert" className="mb-2" title={t("library.collection.selection.removeFailed")} testId="collection-remove-failed">
+                {removeError.userMessage !== "" ? removeError.userMessage : t(`errors.${removeError.class}`)}
+              </Callout>
+            )}
             {reordering && saveOrder.error !== null ? (
               <div className="mb-2">
                 <ErrorView error={appErrorOf(saveOrder.error)} />
               </div>
             ) : null}
             {collection.items.length === 0 ? (
-              <EmptyState title={t("library.collection.emptyItems")} />
+              <EmptyState icon={<ListVideo size={28} />} title={t("library.collection.emptyItems")} />
             ) : reordering ? (
               <ReorderList items={collection.items} order={draft} onChange={setDraft} actions={lectureActions} />
             ) : found.active ? (
-              <SearchHits items={collection.items} search={found} actions={lectureActions} />
+              <SearchHits items={collection.items} search={found} actions={lectureActions} selection={selectionFor} />
             ) : (
-              <ItemList items={pager.slice(collection.items)} startIndex={pager.offset} actions={lectureActions} />
+              <ItemList items={pageItems} startIndex={pager.offset} actions={lectureActions} selection={selectionFor(pageItems.map((item) => item.contentId))} />
             )}
           </section>
         </div>
       </div>
+      {picked === undefined || picked.length === 0 ? null : (
+        <SelectionBar
+          count={picked.length}
+          onClear={exitSelection}
+          testIdPrefix="collection"
+          notes={
+            deleteBlock === "tooMany" ? (
+              <InlineNote id="collection-delete-limit" testId="collection-delete-limit">
+                {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
+              </InlineNote>
+            ) : undefined
+          }
+        >
+          <Button
+            size="sm"
+            loading={removeItems.isPending}
+            onClick={() => {
+              removeItems.reset();
+              removeItems.mutate([...picked]);
+            }}
+            data-testid="collection-remove-selected"
+          >
+            <Undo2 size={14} aria-hidden="true" />
+            {t("library.collection.selection.remove")}
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={deleteBlock !== undefined || removeItems.isPending}
+            aria-describedby={deleteBlock === "tooMany" ? "collection-delete-limit" : undefined}
+            onClick={() => setDeleting([...picked])}
+            data-testid="collection-delete-selected"
+          >
+            <Trash2 size={14} aria-hidden="true" />
+            {t("library.selection.delete")}
+          </Button>
+        </SelectionBar>
+      )}
       {/* The page foot, as on every paged list, however short the lecture list is. */}
       {reordering || found.active ? null : <Pagination pager={pager} className="border-t border-line px-6 py-3" />}
 
       {actions.dialogs}
       {lectureActions.dialogs}
+      <DeleteContentsDialog
+        contentIds={deleting}
+        onOpenChange={(open) => (open ? undefined : setDeleting(undefined))}
+        // Gone from the library: out of the selection; what failed stays picked.
+        onSettled={({ removedIds }) => setSelected((current) => (current === undefined ? current : removeSelected(current, removedIds)))}
+      />
       {packWizard.dialog}
       <Modal open={terminology} onOpenChange={setTerminology} title={t("library.collection.terminologyTitle")} wide>
         <TerminologyEditor scope={`collection:${id}`} />
@@ -321,7 +436,7 @@ function ExportPackItem(props: { collection: CollectionDetailDto; onSelect: (con
         <Package size={14} aria-hidden="true" />
         {t("contentPack.entry.exportPack")}
       </span>
-      {reason === undefined ? null : <span className="max-w-56 pl-6 text-xs text-muted">{reason}</span>}
+      {reason === undefined ? null : <span className="max-w-56 pl-6 text-note text-muted">{reason}</span>}
     </DropdownMenu.Item>
   );
 }
@@ -336,9 +451,11 @@ function CollectionName(props: { collection: CollectionDetailDto; editing: boole
   return (
     <span ref={menuTarget} className="inline-flex items-center gap-2" data-testid="collection-name">
       <span className="truncate">{props.collection.name}</span>
-      <button type="button" className="rounded p-1 text-muted hover:bg-sunken" aria-label={t("library.collection.edit")} onClick={props.onEdit}>
-        <Pencil size={14} />
-      </button>
+      <Tooltip content={t("library.collection.edit")}>
+        <button type="button" className={`rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`} aria-label={t("library.collection.edit")} onClick={props.onEdit}>
+          <Pencil size={14} aria-hidden="true" />
+        </button>
+      </Tooltip>
     </span>
   );
 }
@@ -387,9 +504,8 @@ export function SummaryError({ error, items }: { error: AppError; items: readonl
     return <ErrorView error={error} />;
   }
   return (
-    <div className="rounded-md border border-danger/40 bg-danger/5 p-3 text-sm" role="alert">
-      <p>{t("library.summary.missing")}</p>
-      <ul className="mt-1 list-disc pl-5" data-testid="missing-summaries">
+    <Callout tone="error" announce="alert" title={t("library.summary.missing")}>
+      <ul className="list-disc pl-5" data-testid="missing-summaries">
         {missing.map((contentId) => {
           const item = items.find((candidate) => candidate.contentId === contentId);
           const index = item === undefined ? -1 : items.indexOf(item);
@@ -400,6 +516,6 @@ export function SummaryError({ error, items }: { error: AppError; items: readonl
           );
         })}
       </ul>
-    </div>
+    </Callout>
   );
 }

@@ -1,7 +1,21 @@
 import type { Request, Route } from "@playwright/test";
 import { contentDtoSchema, type ContentDto } from "../../src/shared/dto/content.ts";
-import { trashItemDtoSchema, trashListDtoSchema, trashPurgeAllDtoSchema, type TrashItemDto } from "../../src/shared/dto/trash.ts";
-import { API_PAGE_SIZE_DEFAULT, TRASH_RETENTION_DAYS } from "../../src/shared/defaults.ts";
+import {
+  contentTrashPlanDtoSchema,
+  contentTrashPlanRequestSchema,
+  contentTrashRequestSchema,
+  contentTrashResultDtoSchema,
+  trashItemDtoSchema,
+  trashListDtoSchema,
+  trashPurgeAllDtoSchema,
+  trashRestoreRequestSchema,
+  trashRestoreResultDtoSchema,
+  type ContentTrashPlanItemDto,
+  type ContentTrashResultDto,
+  type TrashItemDto,
+  type TrashRestoreResultDto,
+} from "../../src/shared/dto/trash.ts";
+import { API_PAGE_SIZE_DEFAULT, CONTENT_TRASH_BATCH_MAX, TRASH_RETENTION_DAYS } from "../../src/shared/defaults.ts";
 import { ERROR_CLASS_DEFAULTS, errorResponseSchema, type ErrorClass } from "../../src/shared/errors.ts";
 
 /*
@@ -9,6 +23,11 @@ import { ERROR_CLASS_DEFAULTS, errorResponseSchema, type ErrorClass } from "../.
  * listings, and every `/api/contents/:id` endpoint answers 404 until it is restored. Purged
  * Contents stay hidden for good. Times are the real clock rather than the fixed `now` of the
  * other fakes, because the page counts the days left against its own clock.
+ *
+ * The batch delete (`POST /api/contents/trash-plan`, `POST /api/contents/trash`) sees the
+ * unfinished Tasks and the collection summaries a test seeds; cancelling a Content's Tasks
+ * clears its seeded count. The batch restore (`POST /api/trash/restore`) judges each id on its
+ * own: restored, already back in the library, expired, or unknown.
  */
 
 const DAY_MS = 86_400_000;
@@ -39,11 +58,21 @@ export interface MockTrash {
   seed(contentId: string, ageMs?: number): TrashItemDto;
   /** Puts a Content whose retention ran out a day ago in the trash: it can only wait for the sweep or be purged. */
   seedExpired(): TrashItemDto;
+  /** Gives a library Content `count` unfinished Tasks, which the batch delete must cancel first. */
+  seedTasks(contentId: string, count: number): void;
+  /** Freezes a library Content in the unfinished summaries of these collections; it cannot be deleted. */
+  seedBlocked(contentId: string, collections: Array<{ id: string; name?: string }>): void;
+  /** Unfinished Tasks a Content still has. */
+  unfinishedTasks(contentId: string): number;
 }
+
+type BlockingCollection = { id: string; name?: string };
 
 export class TrashState {
   private readonly entries = new Map<string, TrashEntry>();
   private readonly purgedIds: string[] = [];
+  private readonly tasks = new Map<string, number>();
+  private readonly blockers = new Map<string, BlockingCollection[]>();
   private readonly lookup: (contentId: string) => LibraryContent | undefined;
 
   /** `lookup` resolves a Content id the library knows; undefined for unknown ids. */
@@ -96,6 +125,63 @@ export class TrashState {
     this.purgedIds.push(contentId);
   }
 
+  /** Where a Content stands before deletion, most binding first, as the server ranks it. */
+  planItem(contentId: string): ContentTrashPlanItemDto {
+    const entry = this.entries.get(contentId);
+    if (entry !== undefined) return { contentId, ...titled(entry.content), state: "trashed" };
+    const found = this.purgedIds.includes(contentId) ? undefined : this.lookup(contentId);
+    if (found === undefined) return { contentId, state: "missing" };
+    const blocking = this.blockers.get(contentId);
+    if (blocking !== undefined) return { contentId, ...titled(found.content), state: "blocked", blockingCollections: blocking };
+    const unfinished = this.tasks.get(contentId) ?? 0;
+    if (unfinished > 0) return { contentId, ...titled(found.content), state: "tasks", unfinishedTaskCount: unfinished };
+    return { contentId, ...titled(found.content), state: "ready" };
+  }
+
+  /** `POST /api/contents/trash`: each Content on its own; cancelling clears the seeded Tasks first. */
+  trashMany(contentIds: readonly string[], cancelTasks: boolean): ContentTrashResultDto {
+    const result: ContentTrashResultDto = { trashedIds: [], alreadyTrashedIds: [], failed: [], cancelledTaskCount: 0 };
+    for (const contentId of contentIds) {
+      const planned = this.planItem(contentId);
+      if (planned.state === "trashed") {
+        result.alreadyTrashedIds.push(contentId);
+      } else if (planned.state === "missing") {
+        result.failed.push({ contentId, reason: "missing" });
+      } else if (planned.state === "blocked") {
+        result.failed.push({ contentId, reason: "summarizing" });
+      } else if (planned.state === "tasks" && !cancelTasks) {
+        result.failed.push({ contentId, reason: "tasks" });
+      } else {
+        result.cancelledTaskCount += planned.unfinishedTaskCount ?? 0;
+        this.tasks.delete(contentId);
+        this.trash(contentId);
+        result.trashedIds.push(contentId);
+      }
+    }
+    return contentTrashResultDtoSchema.parse(result);
+  }
+
+  /** `POST /api/trash/restore`: each Content on its own. */
+  restoreMany(contentIds: readonly string[]): TrashRestoreResultDto {
+    const result: TrashRestoreResultDto = { restoredIds: [], alreadyActiveIds: [], failed: [] };
+    for (const contentId of contentIds) {
+      const entry = this.entries.get(contentId);
+      if (entry !== undefined) {
+        if (expired(entry)) {
+          result.failed.push({ contentId, reason: "expired" });
+        } else {
+          this.restore(contentId);
+          result.restoredIds.push(contentId);
+        }
+      } else if (!this.purgedIds.includes(contentId) && this.lookup(contentId) !== undefined) {
+        result.alreadyActiveIds.push(contentId);
+      } else {
+        result.failed.push({ contentId, reason: "missing" });
+      }
+    }
+    return trashRestoreResultDtoSchema.parse(result);
+  }
+
   mock(): MockTrash {
     return {
       ids: () => this.ordered().map((entry) => entry.content.id),
@@ -106,8 +192,21 @@ export class TrashState {
         return this.put(found, Date.now() - ageMs);
       },
       seedExpired: () => this.put(expiredContent(), Date.now() - RETENTION_MS - DAY_MS),
+      seedTasks: (contentId, count) => {
+        if (this.lookup(contentId) === undefined) throw new Error(`unknown content ${contentId}`);
+        this.tasks.set(contentId, count);
+      },
+      seedBlocked: (contentId, collections) => {
+        if (this.lookup(contentId) === undefined) throw new Error(`unknown content ${contentId}`);
+        this.blockers.set(contentId, collections);
+      },
+      unfinishedTasks: (contentId) => this.tasks.get(contentId) ?? 0,
     };
   }
+}
+
+function titled(content: ContentDto): { title?: string } {
+  return content.title === undefined ? {} : { title: content.title };
 }
 
 function expired(entry: TrashEntry): boolean {
@@ -146,21 +245,34 @@ function expiredContent(): LibraryContent {
   };
 }
 
-function errorBody(errorClass: ErrorClass, code: string): unknown {
+function errorBody(errorClass: ErrorClass, code: string, details?: Record<string, unknown>): unknown {
   return errorResponseSchema.parse({
-    error: { class: errorClass, code, retryDisposition: ERROR_CLASS_DEFAULTS[errorClass].retryDisposition ?? "never", userMessage: "" },
+    error: { class: errorClass, code, retryDisposition: ERROR_CLASS_DEFAULTS[errorClass].retryDisposition ?? "never", userMessage: "", ...(details === undefined ? {} : { details }) },
   });
 }
 
 /**
- * `/api/trash*`, `DELETE /api/contents/:id`, and the 404 of every other `/api/contents/:id`
- * endpoint of a hidden Content; false for anything else.
+ * `/api/trash*`, `DELETE /api/contents/:id`, the batch delete with its pre-check, and the 404
+ * of every other `/api/contents/:id` endpoint of a hidden Content; false for anything else.
  */
 export async function handleTrash(state: TrashState, route: Route, request: Request, url: URL): Promise<boolean> {
   const method = request.method();
   const path = url.pathname;
   const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   const notFound = () => json(errorBody("not_found", "not_found"), 404);
+  const tooMany = (itemCount: number) => json(errorBody("invalid_request", "invalid_request.batch_too_large", { itemCount, limit: CONTENT_TRASH_BATCH_MAX }), 400);
+
+  // Matched before `/api/contents/:id`, whose pattern would take them for ids.
+  if (method === "POST" && path === "/api/contents/trash-plan") {
+    const { contentIds } = contentTrashPlanRequestSchema.parse(request.postDataJSON());
+    if (contentIds.length > CONTENT_TRASH_BATCH_MAX) return (await tooMany(contentIds.length), true);
+    return (await json(contentTrashPlanDtoSchema.parse({ items: contentIds.map((contentId) => state.planItem(contentId)) })), true);
+  }
+  if (method === "POST" && path === "/api/contents/trash") {
+    const { contentIds, cancelTasks } = contentTrashRequestSchema.parse(request.postDataJSON());
+    if (contentIds.length > CONTENT_TRASH_BATCH_MAX) return (await tooMany(contentIds.length), true);
+    return (await json(state.trashMany(contentIds, cancelTasks)), true);
+  }
 
   const contentMatch = /^\/api\/contents\/([^/]+)(\/.*)?$/.exec(path);
   if (contentMatch !== null) {
@@ -170,6 +282,12 @@ export async function handleTrash(state: TrashState, route: Route, request: Requ
     }
     if (state.hidden(contentId)) return (await notFound(), true);
     return false;
+  }
+
+  if (method === "POST" && path === "/api/trash/restore") {
+    const { contentIds } = trashRestoreRequestSchema.parse(request.postDataJSON());
+    if (contentIds.length > CONTENT_TRASH_BATCH_MAX) return (await tooMany(contentIds.length), true);
+    return (await json(state.restoreMany(contentIds)), true);
   }
 
   if (path === "/api/trash") {

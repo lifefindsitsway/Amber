@@ -1,7 +1,7 @@
 /**
  * The library's selection mode, as plain set operations: rows are picked one by one or a page
- * at a time, the pick survives paging and filtering, and a content pack takes at most
- * `max` Contents, so the export is refused with the reason rather than truncated.
+ * at a time, the pick survives paging and filtering, and each bar action takes at most `max`
+ * Contents, so it is refused with the reason rather than truncated.
  */
 
 /** The ids in the order they were picked, `id` added or removed. */
@@ -18,6 +18,12 @@ export function pageSelection(selected: readonly string[], pageIds: readonly str
   return count === 0 ? "none" : count === pageIds.length ? "all" : "some";
 }
 
+/** The ids without `removed`, order kept: what a deletion took out of the library leaves the selection. */
+export function removeSelected(selected: readonly string[], removed: readonly string[]): string[] {
+  const gone = new Set(removed);
+  return selected.filter((id) => !gone.has(id));
+}
+
 /** The header checkbox: a fully picked page is unpicked, otherwise every row of the page is picked. */
 export function togglePage(selected: readonly string[], pageIds: readonly string[]): string[] {
   if (pageSelection(selected, pageIds) === "all") {
@@ -28,7 +34,7 @@ export function togglePage(selected: readonly string[], pageIds: readonly string
   return [...selected, ...pageIds.filter((id) => !picked.has(id))];
 }
 
-/** Why 「导出所选…」 cannot start, if it cannot. */
+/** Why a bar action (「导出所选…」 up to `IMPORT_BATCH_MAX`, 「删除…」 up to `CONTENT_TRASH_BATCH_MAX`) cannot start, if it cannot. */
 export function exportBlock(count: number, max: number): "empty" | "tooMany" | undefined {
   if (count === 0) return "empty";
   return count > max ? "tooMany" : undefined;

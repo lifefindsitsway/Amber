@@ -183,7 +183,7 @@ describe("TrashPage", () => {
     client?.setQueryData(queryKeys.contentsAll, { items: [] });
     client?.setQueryData(noteKeys.groups, { items: [] });
     fireEvent.click(within(row).getByTestId("trash-restore"));
-    expect((await screen.findByTestId("trash-notice")).textContent).toBe("已恢复「讲次 c1」");
+    expect((await screen.findByTestId("toast")).textContent).toContain("已恢复「讲次 c1」");
     expect(await screen.findByTestId("trash-empty")).toBeTruthy();
     expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/api/trash/c1/restore"]);
     expect(listReads(calls)).toBe(2);
@@ -207,6 +207,7 @@ describe("TrashPage", () => {
     fireEvent.click(within(row).getByTestId("trash-restore"));
     expect(await within(row).findByText("这条内容在回收站中已到期，不能再恢复")).toBeTruthy();
     expect(screen.queryByTestId("trash-notice")).toBeNull();
+    expect(screen.queryByTestId("toast")).toBeNull();
     expect(events).toEqual([]);
   });
 
@@ -349,6 +350,109 @@ describe("TrashPage", () => {
     expect(screen.getAllByTestId("trash-row")).toHaveLength(10);
     fireEvent.click(screen.getByTestId("trash-empty-all"));
     expect((await screen.findByRole("dialog")).textContent).toContain("将彻底删除回收站中的全部 23 条内容");
+  });
+
+  it("picks entries across pages for restoring, the header box picking the page, and leaves on Esc", async () => {
+    mockApi({ "GET /api/trash": paged(() => many(12)) });
+    renderApp(page(), { route: "/trash" });
+    await screen.findAllByTestId("trash-row");
+    fireEvent.click(screen.getByTestId("trash-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c2」" }));
+    expect(screen.getByTestId("trash-selection-count").textContent).toBe("已选 1 项");
+    const pageBox = () => screen.getByRole("checkbox", { name: "选择本页全部内容" }) as HTMLInputElement;
+    expect(pageBox().indeterminate).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(rowIds()).toEqual(["c11", "c12"]));
+    fireEvent.click(pageBox());
+    expect(screen.getByTestId("trash-selection-count").textContent).toBe("已选 3 项");
+    fireEvent.click(screen.getByRole("button", { name: "上一页" }));
+    await waitFor(() => expect(rowIds()[0]).toBe("c1"));
+    expect((screen.getByRole("checkbox", { name: "选择「讲次 c2」" }) as HTMLInputElement).checked).toBe(true);
+    // A click on the row's plain area picks it too.
+    fireEvent.click(within(screen.getAllByTestId("trash-row")[0] as HTMLElement).getByText("讲次 c1"));
+    expect(screen.getByTestId("trash-selection-count").textContent).toBe("已选 4 项");
+    const bar = screen.getByTestId("trash-selection-bar");
+    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "恢复所选"]);
+    expect(within(bar).getByTestId("trash-restore-selected").className).toContain("bg-accent-glow");
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("trash-selection-bar")).toBeNull());
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("restores the picked entries in one request and says so when all came back", async () => {
+    let restored: string[] = [];
+    const { calls } = mockApi({
+      "GET /api/trash": () => list([item("c1"), item("c2"), item("c3")].filter((entry) => !restored.includes(entry.id))),
+      "POST /api/trash/restore": (call) => {
+        restored = (call.body as { contentIds: string[] }).contentIds;
+        return { body: { restoredIds: ["c1"], alreadyActiveIds: ["c3"], failed: [] } };
+      },
+    });
+    const events: ContentEvent[] = [];
+    renderApp(page({ events }), { route: "/trash" });
+    await screen.findAllByTestId("trash-row");
+    fireEvent.click(screen.getByTestId("trash-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c1」" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c3」" }));
+    fireEvent.click(screen.getByTestId("trash-restore-selected"));
+    expect((await screen.findByTestId("toast")).textContent).toContain("已恢复 2 项");
+    await waitFor(() => expect(rowIds()).toEqual(["c2"]));
+    expect(calls.filter((call) => call.method === "POST").map((call) => [call.path, call.body])).toEqual([["/api/trash/restore", { contentIds: ["c1", "c3"] }]]);
+    expect(events).toEqual([{ type: "restored", contentId: "c1" }]);
+    expect(screen.queryByTestId("trash-selection-bar")).toBeNull();
+    expect(screen.queryByTestId("trash-restore-report")).toBeNull();
+  });
+
+  it("lists the entries that could not come back with the reason; the restored and the gone ones leave the selection", async () => {
+    let restored = false;
+    mockApi({
+      "GET /api/trash": paged(() => (restored ? many(12).filter((entry) => entry.id !== "c1") : many(12))),
+      "POST /api/trash/restore": () => {
+        restored = true;
+        return {
+          body: {
+            restoredIds: ["c1"],
+            alreadyActiveIds: [],
+            failed: [
+              { contentId: "c2", reason: "expired" },
+              { contentId: "c3", reason: "internal" },
+              { contentId: "c11", reason: "missing" },
+            ],
+          },
+        };
+      },
+    });
+    renderApp(page(), { route: "/trash" });
+    await screen.findAllByTestId("trash-row");
+    fireEvent.click(screen.getByTestId("trash-select-mode"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c1」" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c2」" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c3」" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(rowIds()[0]).toBe("c11"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择「讲次 c11」" }));
+    fireEvent.click(screen.getByTestId("trash-restore-selected"));
+    const report = await screen.findByTestId("trash-restore-report");
+    expect(report.textContent).toContain("已恢复 1 项，3 项未能恢复：");
+    const failed = within(report).getAllByTestId("trash-restore-report-item");
+    expect(failed.map((entry) => entry.dataset["contentId"])).toEqual(["c2", "c3", "c11"]);
+    expect(failed[0]?.textContent).toContain("讲次 c2");
+    expect(failed[0]?.textContent).toContain("已到期，不能再恢复");
+    expect(failed[1]?.textContent).toContain("讲次 c3");
+    expect(failed[1]?.textContent).toContain("恢复时出错，请稍后再试");
+    expect(failed[2]?.textContent).toContain("讲次 c11");
+    expect(failed[2]?.textContent).toContain("已不存在");
+    expect(screen.queryByTestId("toast")).toBeNull();
+    fireEvent.click(within(report).getByTestId("trash-restore-report-close"));
+    await waitFor(() => expect(screen.queryByTestId("trash-restore-report")).toBeNull());
+    // The expired and the failed entries stay picked; the one that no longer exists does not.
+    expect(screen.getByTestId("trash-selection-count").textContent).toBe("已选 2 项");
+    // With c1 restored, c11 moved up to the first page.
+    fireEvent.click(screen.getByRole("button", { name: "上一页" }));
+    await waitFor(() => expect(rowIds()).toContain("c11"));
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择「讲次 c2」" }).checked).toBe(true);
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择「讲次 c3」" }).checked).toBe(true);
+    expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择「讲次 c11」" }).checked).toBe(false);
   });
 
   it("moves to the last page when a purge empties the page on screen", async () => {

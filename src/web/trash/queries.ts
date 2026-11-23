@@ -1,7 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { contentDtoSchema } from "../../shared/dto/content.ts";
-import { trashListDtoSchema, trashPurgeAllDtoSchema, type TrashPurgeAllDto } from "../../shared/dto/trash.ts";
+import { trashListDtoSchema, trashPurgeAllDtoSchema, trashRestoreResultDtoSchema, type TrashPurgeAllDto } from "../../shared/dto/trash.ts";
 import { useApi, useContentEvents } from "../api/context.tsx";
 import { forgetContent, refreshContentViews, type ContentEventBus } from "../api/content-events.ts";
 import { queryKeys, queryString } from "../api/queries.ts";
@@ -50,6 +50,24 @@ export function useRestoreTrashItem() {
       await refreshContentViews(queryClient);
     },
     // An expired entry may have been swept meanwhile; the list shows what is left.
+    onError: () => void queryClient.invalidateQueries({ queryKey: queryKeys.trash }),
+  });
+}
+
+/**
+ * `POST /api/trash/restore`: the server decides for each Content on its own whether it can
+ * come back (restored, already back, expired, gone); the restored ones reappear in every view.
+ */
+export function useRestoreTrashItems() {
+  const client = useApi();
+  const queryClient = useQueryClient();
+  const contentEvents = useContentEvents();
+  return useMutation({
+    mutationFn: (contentIds: readonly string[]) => client.post("/api/trash/restore", trashRestoreResultDtoSchema, { body: { contentIds } }),
+    onSuccess: async (result) => {
+      for (const contentId of result.restoredIds) contentEvents.publish({ type: "restored", contentId });
+      await refreshContentViews(queryClient);
+    },
     onError: () => void queryClient.invalidateQueries({ queryKey: queryKeys.trash }),
   });
 }
