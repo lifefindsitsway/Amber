@@ -1,8 +1,26 @@
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { dataDirDiskUsage } from "../../../../src/server/adapters/file-store/disk-usage.ts";
 import { tempDataDir } from "../../../tools/sqlite.ts";
+
+/** Runs once right after the next listing of the given directory, before the walk goes on. */
+const afterListing = vi.hoisted(() => ({ dir: "", run: (): void => undefined }));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readdir: async (...args: Parameters<typeof actual.readdir>) => {
+      const entries = await (actual.readdir as (...a: Parameters<typeof actual.readdir>) => Promise<unknown>)(...args);
+      if (args[0] === afterListing.dir) {
+        afterListing.dir = "";
+        afterListing.run();
+      }
+      return entries;
+    },
+  };
+});
 
 describe("dataDirDiskUsage", () => {
   it("sums every regular file under the data directory without following symlinks", async () => {
@@ -39,5 +57,21 @@ describe("dataDirDiskUsage", () => {
     // The cache moved to another volume: what stays under the data directory counts again.
     excluded = [join(tempDataDir("amber-disk-elsewhere-"), "media")];
     expect((await usage.diskUsage()).usedBytes).toBe(5800);
+  });
+
+  it("does not fail when a directory goes away between listing its parent and reading it", async () => {
+    const root = tempDataDir("amber-disk-");
+    mkdirSync(join(root, "tmp", "job"), { recursive: true });
+    mkdirSync(join(root, "tmp", "swapped"), { recursive: true });
+    writeFileSync(join(root, "tmp", "job", "pack.amberpack"), Buffer.alloc(4000));
+    writeFileSync(join(root, "kept.bin"), Buffer.alloc(10));
+    afterListing.dir = join(root, "tmp");
+    afterListing.run = () => {
+      rmSync(join(root, "tmp", "job"), { recursive: true });
+      rmSync(join(root, "tmp", "swapped"), { recursive: true });
+      writeFileSync(join(root, "tmp", "swapped"), Buffer.alloc(3));
+    };
+
+    expect((await dataDirDiskUsage(root).diskUsage()).usedBytes).toBe(10);
   });
 });

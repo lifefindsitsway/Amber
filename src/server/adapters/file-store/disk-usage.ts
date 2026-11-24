@@ -41,7 +41,12 @@ async function directoryBytes(dir: string, exclude: ReadonlySet<string>): Promis
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (!exclude.has(comparable(path))) {
-        total += await directoryBytes(path, exclude);
+        // Job and scratch directories come and go while the server runs: one removed (or
+        // replaced) between listing its parent and reading it no longer counts either.
+        total += await directoryBytes(path, exclude).catch((error: unknown) => {
+          if (isGone(error)) return 0;
+          throw error;
+        });
       }
     } else if (entry.isFile()) {
       // A file removed between listing and stat simply no longer counts.
@@ -52,4 +57,9 @@ async function directoryBytes(dir: string, exclude: ReadonlySet<string>): Promis
     }
   }
   return total;
+}
+
+function isGone(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
