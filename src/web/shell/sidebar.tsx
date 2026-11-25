@@ -3,7 +3,7 @@ import { DropdownMenu } from "radix-ui";
 import { Check, ChevronDown, ChevronRight, FolderOpen, Library, ListTodo, NotebookPen, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Trash2, UserRound } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent, type ReactElement, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { matchPath, NavLink, useLocation, useNavigate } from "react-router";
+import { matchPath, NavLink, useLocation, useMatch, useNavigate, useResolvedPath } from "react-router";
 import { SIDEBAR_COLLECTION_ITEMS, SIDEBAR_RECENT_ITEMS, THEME_DEFAULT, UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
 import { collectionDetailDtoSchema, collectionDtoSchema, type CollectionDto, type CollectionItemDto } from "../../shared/dto/collection.ts";
 import { contentDetailDtoSchema, type ContentDto } from "../../shared/dto/content.ts";
@@ -266,11 +266,19 @@ export function Sidebar(props: { onOpenOmnibox: () => void; onOpenTasks: () => v
             data-testid="sidebar-tasks"
             onClick={props.onOpenTasks}
             {...collapsedName(t("common.nav.tasks"), collapsed)}
-            className={`${rowClass(false)} ${collapsed ? "justify-center" : ""}`}
+            className={`${rowClass(false)} ${collapsed ? "relative justify-center" : ""}`}
           >
             <ListTodo size={16} aria-hidden="true" />
             {collapsed ? null : <span className="flex-1 text-left">{t("common.nav.tasks")}</span>}
-            {taskCount > 0 ? <span className="rounded-full bg-accent-glow px-1.5 text-xs text-accent-ink">{taskCount}</span> : null}
+            {/* The icon column has no room beside the icon: the count rides on its corner there. */}
+            {taskCount > 0 ? (
+              <span
+                className={`rounded-full bg-accent-glow text-accent-ink tabular-nums ${collapsed ? "absolute -top-0.5 right-0 min-w-4 px-1 text-center text-[10px] leading-4" : "px-1.5 text-xs"}`}
+                data-testid="sidebar-task-count"
+              >
+                {taskCount}
+              </span>
+            ) : null}
           </button>
         </CollapsedTip>
         <AccountMenu collapsed={collapsed} />
@@ -385,6 +393,10 @@ function CollapsedTip(props: { label: string; collapsed: boolean; children: Reac
 }
 
 function NavItem(props: { to: string; icon: ReactNode; label: string; collapsed: boolean; end?: boolean; testId?: string }) {
+  // A plain string, not NavLink's className callback: the collapsed entry sits inside a tooltip
+  // trigger that merges its child's className as a string, which would turn a callback into its
+  // source text and strip the entry of all its styling.
+  const active = useMatch({ path: useResolvedPath(props.to).pathname, end: props.end === true }) !== null;
   return (
     <CollapsedTip label={props.label} collapsed={props.collapsed}>
       <NavLink
@@ -392,7 +404,7 @@ function NavItem(props: { to: string; icon: ReactNode; label: string; collapsed:
         end={props.end === true}
         {...collapsedName(props.label, props.collapsed)}
         {...(props.testId === undefined ? {} : { "data-testid": props.testId })}
-        className={({ isActive }) => `${rowClass(isActive)} ${props.collapsed ? "justify-center" : ""}`}
+        className={`${rowClass(active)} ${props.collapsed ? "justify-center" : ""}`}
       >
         {props.icon}
         {props.collapsed ? null : <span className="truncate">{props.label}</span>}

@@ -34,7 +34,7 @@ const FIELD_CLASS = "flex items-center gap-2 text-xs";
 /** A check box or radio with its label, kept at the small text of the rest of the panel. */
 const CHOICE_LABEL_CLASS = "text-xs!";
 /** Sentences that explain, at the note size, in the panel's own dimmed white. */
-const NOTE_CLASS = "max-w-[70ch] text-note text-white/60";
+const NOTE_CLASS = "text-note text-white/60";
 const BUTTON_CLASS = "rounded border border-white/20 px-2 py-1 text-xs hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50";
 
 function Section(props: { title: string; children: ReactNode; testId?: string }) {

@@ -264,7 +264,7 @@ function EmptySearch(props: GroupProps) {
       <div className="flex flex-col items-center gap-1 px-2 pt-6 pb-3 text-center" data-testid="omnibox-empty">
         <SearchX size={20} className="mb-1 text-muted" aria-hidden="true" />
         <p className="text-sm font-medium">{t("search.empty")}</p>
-        <p className="max-w-[70ch] text-note text-muted">{t("search.emptyHint")}</p>
+        <p className="text-note text-muted">{t("search.emptyHint")}</p>
       </div>
       <Command.Item value="new" className={ITEM} onSelect={() => props.run(() => props.context.navigate("/new"))}>
         <Link2 size={14} className="text-muted" aria-hidden="true" />

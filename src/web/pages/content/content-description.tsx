@@ -1,7 +1,7 @@
 import { useIsMutating, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { CONTENT_DESCRIPTION_MAX_CHARS } from "../../../shared/defaults.ts";
+import { CONTENT_DESCRIPTION_MAX_CHARS, TOAST_DISMISS_MS } from "../../../shared/defaults.ts";
 import { contentDescriptionFetchDtoSchema, type ContentDescriptionFetchDto, type ContentDetailDto } from "../../../shared/dto/content.ts";
 import { ApiError } from "../../api/client.ts";
 import { useApi, useTask } from "../../api/context.tsx";
@@ -61,8 +61,23 @@ export function ContentDescription(props: { content: ContentDetailDto }) {
   // The last fetch on this page: its outcome is said once, under the description.
   const last = useMutationState({
     filters: { mutationKey: fetchKey(content.id) },
-    select: (mutation) => ({ status: mutation.state.status, data: mutation.state.data as ContentDescriptionFetchDto | undefined, error: mutation.state.error }),
+    select: (mutation) => ({
+      status: mutation.state.status,
+      data: mutation.state.data as ContentDescriptionFetchDto | undefined,
+      error: mutation.state.error,
+      submittedAt: mutation.state.submittedAt,
+    }),
   }).at(-1);
+  // "The platform has no description" only reports how the click went and needs nothing from
+  // the user, so it leaves after the standard delay like any other finished-result note; a
+  // failure, and a "could not read it" with its retry, stay until acted upon.
+  const emptyAt = last?.status === "success" && last.data?.result === "empty" ? last.submittedAt : undefined;
+  const [settledEmptyAt, setSettledEmptyAt] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (emptyAt === undefined) return undefined;
+    const timer = setTimeout(() => setSettledEmptyAt(emptyAt), TOAST_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [emptyAt]);
   const retry = (
     <TextAction onClick={fetch} data-testid="content-description-retry">
       {t("common.action.retry")}
@@ -81,7 +96,7 @@ export function ContentDescription(props: { content: ContentDetailDto }) {
         {retry}
       </>
     );
-  } else if (last?.status === "success" && last.data?.result === "empty") {
+  } else if (emptyAt !== undefined && emptyAt !== settledEmptyAt) {
     status = t("contentView.description.empty");
   } else if (last?.status === "success" && last.data?.result === "unknown") {
     status = (
@@ -98,7 +113,7 @@ export function ContentDescription(props: { content: ContentDetailDto }) {
     <>
       {text === undefined ? null : <PlainDescription text={text} truncated={content.descriptionTruncated === true} maxChars={CONTENT_DESCRIPTION_MAX_CHARS} />}
       {status === null ? null : (
-        <p className="max-w-[70ch] text-note text-muted" role="status" data-testid="content-description-status">
+        <p className="text-note text-muted" role="status" data-testid="content-description-status">
           {status}
         </p>
       )}

@@ -69,7 +69,7 @@ export function CredentialsSection(props: { title?: string }) {
             </Button>
           }
         >
-          <p className="max-w-[70ch]">{t("admin.credentials.rotateFailed")}</p>
+          <p>{t("admin.credentials.rotateFailed")}</p>
           {rotateFailed === "" ? null : <p className={`mt-1 break-all ${NOTE_TEXT_CLASS}`}>{rotateFailed}</p>}
         </Callout>
       )}

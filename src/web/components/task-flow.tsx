@@ -118,7 +118,7 @@ export function ResendPrompt(props: { taskId: string; units: WorkUnitDto[] }) {
         </Button>
       }
     >
-      <p className="max-w-[70ch]">{t("shell.flow.resendWarning", { count })}</p>
+      <p>{t("shell.flow.resendWarning", { count })}</p>
       {resend.error instanceof ApiError ? (
         <div className="mt-2">
           <ErrorView error={resend.error.error} />

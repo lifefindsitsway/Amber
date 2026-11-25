@@ -16,7 +16,7 @@
   --color-accent-soft: #fbf0dc;
   --color-danger: #b42318;
   --color-ok: #2f7d4f;
-  --color-link: #2c5fa8;
+  --color-link: var(--color-accent);
   --color-warn: #7a5c00;
   --color-warn-soft: #fbf5cf;
   --color-danger-soft: #fdeceb;
@@ -28,12 +28,15 @@
 }
 
 /*
- * Roles of the colours added beside the accent. The accent marks only the primary action, the
- * selection and work in progress; links and inline text actions take `link` (4.5:1 on surface,
- * panel and sunken); cautions take `warn` on `warn-soft`, kept apart from the accent so a
- * reminder never reads as the main action; `danger-soft` and `ok-soft` are the grounds of error
- * and success notices. Body text (`ink`) clears 4.5:1 on every soft ground. The stylesheet is
- * checked by a contrast test, so a new value has to pass it.
+ * Roles of the colours added beside the accent. Links, inline text actions and clickable
+ * timestamps take `link`, which every theme points at its own accent: they keep the amber look
+ * users know rather than a separate link hue. On the light grounds the amber falls below the
+ * 4.5:1 body-text ratio, so `link` is exempt from that check; the contrast test pins it to
+ * the accent instead, so it cannot drift to a hue of its own. Each theme block redeclares it,
+ * so the reference resolves against that block's accent. Cautions take `warn` on `warn-soft`,
+ * kept apart from the accent so a reminder never reads as the main action; `danger-soft` and
+ * `ok-soft` are the grounds of error and success notices. Body text (`ink`) clears 4.5:1 on
+ * every soft ground. The stylesheet is checked by a contrast test, so a new value has to pass it.
  *
  * `color-scheme` lets scrollbars, native dropdown lists and form controls follow the theme.
  * `--select-chevron` is the native select's arrow, drawn in the theme's muted colour: an image
@@ -62,7 +65,7 @@
   --color-accent-soft: #3a2f1c;
   --color-danger: #f97066;
   --color-ok: #6cc28f;
-  --color-link: #86aee8;
+  --color-link: var(--color-accent);
   --color-warn: #dcc25a;
   --color-warn-soft: #302c14;
   --color-danger-soft: #3b201d;
@@ -86,7 +89,7 @@ html[data-theme="bean-green"] {
   --color-accent-soft: #e2efc0;
   --color-danger: #a51f15;
   --color-ok: #246b3f;
-  --color-link: #1c4b8a;
+  --color-link: var(--color-accent);
   --color-warn: #6a5000;
   --color-warn-soft: #eee9b9;
   --color-danger-soft: #f2d9d2;
@@ -106,7 +109,7 @@ html[data-theme="parchment"] {
   --color-accent-soft: #f1ddb0;
   --color-danger: #b42318;
   --color-ok: #246b3f;
-  --color-link: #244e8c;
+  --color-link: var(--color-accent);
   --color-warn: #6a5000;
   --color-warn-soft: #f2e8a6;
   --color-danger-soft: #f4dccf;

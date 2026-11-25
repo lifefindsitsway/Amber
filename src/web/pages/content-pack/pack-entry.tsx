@@ -22,7 +22,7 @@ export function useExportPackWizard(): { open: (request: ExportRequest) => void;
   };
 }
 
-/** 「导入内容包…」 and its dialog. */
+/** 「导入内容包」 and its dialog. */
 export function ImportPackButton(props: { variant?: "primary" | "secondary" | "ghost"; size?: "sm" | "md"; testId?: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);

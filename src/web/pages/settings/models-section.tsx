@@ -25,7 +25,7 @@ import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { CONTROL_BASE, CONTROL_HEIGHT } from "../../ui/control.ts";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { NativeSelect } from "../../ui/native-select.tsx";
-import { FieldError, FieldHint, NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
+import { FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { SuggestionInput } from "../../ui/suggestion-input.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
@@ -452,9 +452,14 @@ function ModelLimits({ profileId, model }: { profileId: string; model: ModelCapa
       <p className="mt-0.5 text-xs text-muted" data-testid="model-limits">
         {t("settings.models.contextWindow")} <span className="text-ink">{t("settings.models.limits.missing")}</span>
         <span aria-hidden="true"> · </span>
-        <TextAction className="font-medium" aria-label={t("settings.models.limits.fillFor", { model: model.modelId })} onClick={() => setFilling(true)}>
+        <button
+          type="button"
+          className={`rounded px-0.5 font-medium text-accent-ink underline decoration-accent/60 underline-offset-2 hover:decoration-accent dark:text-accent ${FOCUS_RING}`}
+          aria-label={t("settings.models.limits.fillFor", { model: model.modelId })}
+          onClick={() => setFilling(true)}
+        >
           {t("settings.models.limits.fill")}
-        </TextAction>
+        </button>
         {maxPart}
       </p>
     );

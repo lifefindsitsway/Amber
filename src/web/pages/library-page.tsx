@@ -420,12 +420,12 @@ export function LibraryPage() {
             {t("contentPack.select.clear")}
           </Button>
           {deleteBlock === "tooMany" ? (
-            <InlineNote id="library-delete-limit" testId="library-delete-limit">
+            <InlineNote id="library-delete-limit" testId="library-delete-limit" className="text-warn!">
               {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
             </InlineNote>
           ) : null}
           {block === "tooMany" ? (
-            <InlineNote id="library-selection-limit" testId="library-selection-limit">
+            <InlineNote id="library-selection-limit" testId="library-selection-limit" className="text-warn!">
               {t("contentPack.select.tooMany", { max: IMPORT_BATCH_MAX })}
             </InlineNote>
           ) : null}

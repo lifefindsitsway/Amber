@@ -27,7 +27,7 @@ import { queryKeys } from "../../api/queries.ts";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS } from "../../models/context-window.ts";
 import { Button, FOCUS_RING } from "../../ui/button.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { FieldError, FieldHint, InlineNote, TextAction } from "../../ui/notice.tsx";
+import { FieldError, FieldHint, InlineNote } from "../../ui/notice.tsx";
 import { PasswordInput } from "../../ui/password-input.tsx";
 import { Select, type SelectOption } from "../../ui/select.tsx";
 import { SuggestionInput } from "../../ui/suggestion-input.tsx";
@@ -628,7 +628,7 @@ export function ProfileEditor({ profile, onClose }: { profile?: ProviderProfileD
                   </p>
                 )}
                 {connectionForced ? null : (
-                  <Button size="sm" variant="ghost" className="ml-auto text-link" aria-expanded={connectionShown} onClick={() => setConnectionOpen(!connectionShown)}>
+                  <Button size="sm" variant="ghost" className="ml-auto text-accent-ink dark:text-accent" aria-expanded={connectionShown} onClick={() => setConnectionOpen(!connectionShown)}>
                     {connectionShown ? t("settings.models.connectionCollapse") : t("settings.models.connectionEdit")}
                   </Button>
                 )}
@@ -702,15 +702,16 @@ function InlineError({ children, id, testId }: { children: ReactNode; id: string
  */
 function AddressNotice(props: { undo: ConnectionUndo | undefined; restorable: boolean; labelled: boolean; onUndo: () => void; onRestore: () => void }) {
   const { t } = useTranslation();
+  const link = `rounded px-0.5 font-medium text-accent-ink underline decoration-accent/60 underline-offset-2 hover:decoration-accent dark:text-accent ${FOCUS_RING}`;
   return (
     <div aria-live="polite" className="empty:hidden">
       {props.undo !== undefined ? (
         <p className="border-t border-line px-3 py-2 text-note text-muted" data-testid="address-changed">
           {props.undo.message}
           <span aria-hidden="true"> · </span>
-          <TextAction className="font-medium" onClick={props.onUndo}>
+          <button type="button" className={link} onClick={props.onUndo}>
             {t("settings.models.addressUndo")}
-          </TextAction>
+          </button>
         </p>
       ) : props.restorable ? (
         <p className="border-t border-line px-3 py-2 text-note text-muted" data-testid="address-custom">
@@ -720,9 +721,9 @@ function AddressNotice(props: { undo: ConnectionUndo | undefined; restorable: bo
               <span aria-hidden="true"> · </span>
             </>
           ) : null}
-          <TextAction className="font-medium" onClick={props.onRestore}>
+          <button type="button" className={link} onClick={props.onRestore}>
             {t("settings.models.addressRestore")}
-          </TextAction>
+          </button>
         </p>
       ) : null}
     </div>

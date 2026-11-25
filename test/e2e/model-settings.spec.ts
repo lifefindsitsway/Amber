@@ -157,9 +157,10 @@ test("AI models: a service fills in its official address, the key goes along on 
 
   await row.getByRole("button", { name: "测试连接" }).click();
   await expect(row.getByTestId("probe-connected")).toHaveText("连接成功 · 延迟 640 ms");
-  await expect(row.getByTestId("probe-check-stream")).toHaveText("流式支持");
-  await expect(row.getByTestId("probe-check-structuredOutput")).toHaveText("JSON不支持");
-  await expect(row.getByTestId("probe-check-tools")).toHaveText("工具未能确认· 输出上限内没生成完");
+  // What the test settled is in the capability table; only what it could not tell is listed.
+  await expect(row.getByTestId("probe-check-stream")).toHaveCount(0);
+  await expect(row.getByTestId("probe-check-structuredOutput")).toHaveCount(0);
+  await expect(row.getByTestId("probe-check-tools")).toHaveText("工具调用未能确认：输出上限内没生成完");
 });
 
 test("AI models: Qwen in Tokyo needs a workspace id before it can be saved", async ({ page }) => {

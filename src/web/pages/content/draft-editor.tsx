@@ -589,7 +589,7 @@ export function DraftEditor(props: {
           </>
         }
       >
-        <p className="max-w-[70ch] text-sm" data-testid="draft-conflict">
+        <p className="text-sm" data-testid="draft-conflict">
           {t("contentView.draft.conflictMessage")}
         </p>
       </Modal>

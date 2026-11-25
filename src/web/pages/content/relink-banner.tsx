@@ -50,7 +50,7 @@ export function RelinkBanner(props: { content: ContentDetailDto }) {
       }
     >
       <div className="flex flex-col gap-2">
-        <p className="max-w-[70ch]">{t("contentView.relink.missing", { name: missing.displayName ?? t("contentView.relink.unnamed") })}</p>
+        <p>{t("contentView.relink.missing", { name: missing.displayName ?? t("contentView.relink.unnamed") })}</p>
         {relink.error === null ? null : <ErrorView error={appErrorOf(relink.error)} />}
       </div>
     </Callout>

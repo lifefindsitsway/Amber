@@ -165,8 +165,8 @@ describe("ContextWindowNotice variants", () => {
     mockApi(windowRoutes([providerWithoutWindow("p1", "我的服务", ["m1"])]).routes);
     renderApp(<ContextWindowNotice modelRef={BARE} />);
     const link = await screen.findByTestId("context-window-notice-settings");
-    // The link colour clears 4.5:1 on the caution ground in every theme (test/guards/styles-contrast.test.ts).
-    expect(link.className).toContain("text-link");
+    // The dark accent ink on the light themes, the accent itself on the dark one: both read on the caution ground.
+    expect(link.className.split(" ")).toEqual(expect.arrayContaining(["text-accent-ink", "dark:text-accent"]));
     expect(screen.getByTestId("context-window-notice").className).toContain("bg-warn-soft");
   });
 

@@ -616,7 +616,7 @@ function CacheMediaForm(props: {
           />
         </label>
         {phase === undefined || phase === "failed" ? null : (
-          <p className={`max-w-[70ch] text-note ${answer !== undefined && !answer.disk.ok ? "text-danger" : "text-muted"}`} role="status" data-testid="cache-preflight">
+          <p className={`text-note ${answer !== undefined && !answer.disk.ok ? "text-danger" : "text-muted"}`} role="status" data-testid="cache-preflight">
             {answer === undefined ? t("contentView.cache.preflightChecking") : preflightText(answer, t)}
           </p>
         )}
@@ -695,7 +695,7 @@ function InspectionPanel(props: {
             <Checkbox
               checked={props.overwriteConfirmed}
               onChange={(event) => props.onOverwriteConfirmed(event.target.checked)}
-              labelClassName="text-note"
+              labelClassName="text-note!"
               data-testid="cache-overwrite-confirm"
             >
               {t("contentView.cache.overwriteConfirm")}

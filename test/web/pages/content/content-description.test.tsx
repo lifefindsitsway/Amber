@@ -1,5 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOAST_DISMISS_MS } from "../../../../src/shared/defaults.ts";
 import type { ContentDetailDto } from "../../../../src/shared/dto/content.ts";
 import { ContentDescription, DescriptionFetchButton, useDescriptionFetch } from "../../../../src/web/pages/content/content-description.tsx";
 import { useContentDetail } from "../../../../src/web/pages/content/content-data.ts";
@@ -81,12 +82,22 @@ describe("the title row's description entry", () => {
     expect(screen.queryByTestId("content-description-status")).toBeNull();
   });
 
-  it("says once that the platform has no description", async () => {
+  it("says once that the platform has no description, then lets the note go", async () => {
     const empty = contentDetail({ descriptionCheckedAt: 9 });
     mockApi({ [LATEST]: { body: { items: [], eventSeq: 0 } }, [FETCH]: { body: { result: "empty", content: empty } } });
     renderApp(<TitleBits content={contentDetail()} />);
     fireEvent.click(await screen.findByTestId("content-description-fetch"));
-    expect((await screen.findByTestId("content-description-status")).textContent).toContain("原平台没有为这个视频填写简介");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      expect((await screen.findByTestId("content-description-status")).textContent).toContain("原平台没有为这个视频填写简介");
+      // It only reports how the click went, so it leaves after the standard delay.
+      await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_DISMISS_MS - 100)));
+      expect(screen.getByTestId("content-description-status")).toBeTruthy();
+      await act(async () => void (await vi.advanceTimersByTimeAsync(200)));
+      expect(screen.queryByTestId("content-description-status")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers a retry when nothing could be read, and keeps an existing description on a failed refetch", async () => {

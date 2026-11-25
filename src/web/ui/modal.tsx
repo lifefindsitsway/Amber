@@ -107,7 +107,7 @@ export function Modal(props: {
                 </Dialog.Close>
               </div>
               {props.description === undefined ? null : (
-                <Dialog.Description id={descriptionId} className="max-w-[70ch] text-sm text-muted">
+                <Dialog.Description id={descriptionId} className="text-sm text-muted">
                   {props.description}
                 </Dialog.Description>
               )}

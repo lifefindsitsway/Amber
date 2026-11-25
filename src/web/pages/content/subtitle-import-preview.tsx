@@ -248,7 +248,7 @@ function Notices(props: { preview: SubtitlePreview }) {
   // To be read before choosing anything, so a caution box; several points become a list under one icon.
   return (
     <Callout tone="warn" density="compact" testId="subtitle-preview-notices">
-      <ul className={`flex max-w-[70ch] flex-col gap-1.5 ${items.length > 1 ? "list-disc pl-4" : ""}`}>
+      <ul className={`flex flex-col gap-1.5 ${items.length > 1 ? "list-disc pl-4" : ""}`}>
         {items.map((item) => (
           <li key={item.key} className="min-w-0" data-notice={item.key}>
             {item.body}

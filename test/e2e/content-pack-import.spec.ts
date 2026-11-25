@@ -175,10 +175,10 @@ test("the import preview by keyboard and screen reader names", async ({ page }) 
   const dialog = await uploadPack(page);
   // Every row's action and details control is named after its Content.
   await expect(dialog.getByRole("combobox", { name: "如何处理「第五讲：智能体」" })).toBeVisible();
-  const details = dialog.getByRole("button", { name: "展开「第五讲：智能体」的细节" });
+  const details = dialog.getByRole("button", { name: "展开「第五讲：智能体」的详情" });
   await details.focus();
   await page.keyboard.press("Enter");
-  await expect(dialog.getByRole("button", { name: "收起「第五讲：智能体」的细节" })).toHaveAttribute("aria-expanded", "true");
+  await expect(dialog.getByRole("button", { name: "收起「第五讲：智能体」的详情" })).toHaveAttribute("aria-expanded", "true");
   const action = dialog.getByRole("combobox", { name: "如何处理「第五讲：智能体」" });
   await action.focus();
   await action.selectOption("skip");

@@ -41,19 +41,6 @@ describe("toasts", () => {
     expect(toasts()).toHaveLength(0);
   });
 
-  it("keeps a persistent toast until it is closed", () => {
-    render(
-      <ToastProvider>
-        <Trigger options={{ tone: "info", message: "已导出", persistent: true }} />
-      </ToastProvider>,
-    );
-    fireEvent.click(screen.getByTestId("show"));
-    act(() => vi.advanceTimersByTime(TOAST_DISMISS_MS * 5));
-    expect(toasts()).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
-    expect(toasts()).toHaveLength(0);
-  });
-
   it("pauses while hovered or focused and resumes with the time that was left", () => {
     render(
       <ToastProvider>
@@ -94,50 +81,24 @@ describe("toasts", () => {
     expect(toasts().map((toast) => toast.textContent?.replace(/\s/g, ""))).toEqual(["二", "三", "四"]);
   });
 
-  it("never drops the newest; among the older ones the oldest transient goes first, persistent ones last", () => {
-    function Mixed(props: { testId: string; items: Array<[string, boolean]> }) {
+  it("keeps the newest three, dropping the oldest", () => {
+    function Many() {
       const toast = useToast();
       return (
-        <button type="button" data-testid={props.testId} onClick={() => props.items.forEach(([message, persistent]) => toast.show({ tone: "info", message, persistent }))}>
-          mixed
+        <button type="button" data-testid="many" onClick={() => ["一", "二", "三", "四"].forEach((message) => toast.show({ tone: "info", message }))}>
+          many
         </button>
       );
     }
     render(
       <ToastProvider>
-        <Mixed
-          testId="mixed"
-          items={[
-            ["常驻一", true],
-            ["短暂一", false],
-            ["短暂二", false],
-            ["短暂三", false],
-            ["短暂四", false],
-          ]}
-        />
-        <Mixed
-          testId="all-persistent"
-          items={[
-            ["常驻二", true],
-            ["常驻三", true],
-            ["常驻四", true],
-          ]}
-        />
-        <Mixed testId="one-transient" items={[["短暂五", false]]} />
+        <Many />
       </ToastProvider>,
     );
-    const texts = (): Array<string | undefined> => toasts().map((toast) => toast.textContent?.replace(/\s/g, ""));
-    fireEvent.click(screen.getByTestId("mixed"));
-    expect(texts()).toEqual(["常驻一", "短暂三", "短暂四"]);
-    // The persistent one outlives the transient ones' delay as well.
+    fireEvent.click(screen.getByTestId("many"));
+    expect(toasts().map((toast) => toast.textContent?.replace(/\s/g, ""))).toEqual(["二", "三", "四"]);
     act(() => vi.advanceTimersByTime(TOAST_DISMISS_MS));
-    expect(texts()).toEqual(["常驻一"]);
-    // Only persistent toasts left beyond the limit: the oldest of them goes.
-    fireEvent.click(screen.getByTestId("all-persistent"));
-    expect(texts()).toEqual(["常驻二", "常驻三", "常驻四"]);
-    // A transient one arriving among persistent ones stays visible: the oldest persistent goes.
-    fireEvent.click(screen.getByTestId("one-transient"));
-    expect(texts()).toEqual(["常驻三", "常驻四", "短暂五"]);
+    expect(toasts()).toHaveLength(0);
   });
 
   it("runs the action and closes the toast", () => {

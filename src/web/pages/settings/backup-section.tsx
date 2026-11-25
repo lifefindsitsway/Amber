@@ -410,8 +410,8 @@ function RestoreCard() {
       ) : fresh ? null : (
         // Why restoring is unavailable here: to be read before trying, so it is boxed.
         <Callout tone="info" className="mb-3" testId="restore-not-fresh">
-          <p className="max-w-[70ch]">{t("backup.restore.notFresh")}</p>
-          <p className="mb-2 max-w-[70ch]">{t("backup.restore.notFreshHowTo")}</p>
+          <p>{t("backup.restore.notFresh")}</p>
+          <p className="mb-2">{t("backup.restore.notFreshHowTo")}</p>
           <details className="mb-2 text-note" data-testid="restore-clear-help">
             <summary className="cursor-pointer text-muted">{t("backup.restore.clearHelpTitle")}</summary>
             <p className="mt-1 text-danger">{t("backup.restore.clearHelpBody")}</p>

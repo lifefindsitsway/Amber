@@ -371,7 +371,7 @@ export function CollectionPage() {
           testIdPrefix="collection"
           notes={
             deleteBlock === "tooMany" ? (
-              <InlineNote id="collection-delete-limit" testId="collection-delete-limit">
+              <InlineNote id="collection-delete-limit" testId="collection-delete-limit" className="text-warn!">
                 {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
               </InlineNote>
             ) : undefined

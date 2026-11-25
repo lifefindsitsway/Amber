@@ -222,7 +222,7 @@ describe("DeleteCollectionDialog", () => {
     expect(deletes(calls).map((call) => call.body)).toEqual(Array.from({ length: 3 }, () => ({ contents: "exclusive", cancelTasks: true, expectedContentIds: ["c1", "c2", "c3", "c4", "c5"] })));
   });
 
-  it("keeps the result toast until it is closed, with a way to the trash", async () => {
+  it("reports the result in a toast that leaves on its own, with a way to the trash", async () => {
     mockApi({
       [`GET ${PLAN_PATH}`]: { body: plan() },
       [`POST ${DELETE_PATH}`]: { body: { trashedIds: ["c1", "c2", "c3", "c4", "c5"], cancelledTaskCount: 3 } },
@@ -233,10 +233,22 @@ describe("DeleteCollectionDialog", () => {
     fireEvent.click(confirmButton());
     const toast = await screen.findByTestId("toast");
     expect(toast.textContent).toContain("已删除合集「Stanford CS193T」，5 项内容移入回收站；已取消 3 个任务");
-    await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_DISMISS_MS * 2)));
-    expect(screen.getByTestId("toast")).toBe(toast);
     fireEvent.click(within(toast).getByTestId("toast-action"));
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/trash"));
+  });
+
+  it("lets the result toast go after the standard delay", async () => {
+    mockApi({
+      [`GET ${PLAN_PATH}`]: { body: plan() },
+      [`POST ${DELETE_PATH}`]: { body: { trashedIds: ["c1"], cancelledTaskCount: 0 } },
+    });
+    render();
+    await opened();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    fireEvent.click(confirmButton());
+    await screen.findByTestId("toast");
+    await act(async () => void (await vi.advanceTimersByTimeAsync(TOAST_DISMISS_MS + 1)));
+    expect(screen.queryByTestId("toast")).toBeNull();
   });
 
   it("leaves the collection's page once it is gone", async () => {

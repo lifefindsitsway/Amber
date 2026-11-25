@@ -5,22 +5,12 @@ import { TOAST_DISMISS_MS } from "../../shared/defaults.ts";
 import { FOCUS_RING } from "./button.tsx";
 import { TEXT_ACTION_CLASS } from "./notice.tsx";
 
-/** Toasts on screen at once; a new one beyond this pushes out an older one, transient first. */
+/** Toasts on screen at once; a new one beyond this pushes out the oldest. */
 const TOAST_LIMIT = 3;
 
-/**
- * Drops toasts beyond `TOAST_LIMIT`, never the newest: it is what just happened, and dropping it
- * at once would leave it unseen and unannounced. Among the older ones the oldest transient goes
- * first, sparing persistent ones (they report what cannot be undone and stay until closed); only
- * when all of them are persistent does the oldest of those go.
- */
+/** Drops the oldest toasts beyond `TOAST_LIMIT`; the newest is what just happened and always stays. */
 function withinLimit(toasts: ToastEntry[]): ToastEntry[] {
-  const kept = [...toasts];
-  while (kept.length > TOAST_LIMIT) {
-    const transient = kept.findIndex((toast, index) => index < kept.length - 1 && toast.persistent !== true);
-    kept.splice(transient === -1 ? 0 : transient, 1);
-  }
-  return kept;
+  return toasts.slice(-TOAST_LIMIT);
 }
 
 /**
@@ -32,8 +22,6 @@ export interface ToastOptions {
   message: ReactNode;
   /** One follow-up, e.g. "view" or "undo"; choosing it also closes the toast. */
   action?: { label: string; onClick: () => void };
-  /** Stays until closed instead of leaving after the standard delay. */
-  persistent?: boolean;
 }
 
 export interface ToastApi {
@@ -139,14 +127,14 @@ function ToastItem(props: { toast: ToastEntry; onDismiss: (id: string) => void }
   const remaining = useRef(TOAST_DISMISS_MS);
   const paused = hovered || focused;
   useEffect(() => {
-    if (toast.persistent === true || paused) return undefined;
+    if (paused) return undefined;
     const started = Date.now();
     const timer = setTimeout(onDismiss, remaining.current);
     return () => {
       clearTimeout(timer);
       remaining.current = Math.max(0, remaining.current - (Date.now() - started));
     };
-  }, [paused, toast.persistent, onDismiss]);
+  }, [paused, onDismiss]);
   const Icon = toast.tone === "success" ? CircleCheck : Info;
   return (
     <li

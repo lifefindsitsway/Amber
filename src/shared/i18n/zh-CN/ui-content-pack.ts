@@ -26,7 +26,7 @@ export const contentPack = {
   /** The 「⋯」 entries on the content and collection pages, the new page and the backup section. */
   entry: {
     exportPack: "导出内容包…",
-    importPack: "导入内容包…",
+    importPack: "导入内容包",
     collectionTooMany: "合集超过 {{max}} 条，请在全部内容页按合集筛选后分批选择",
     collectionEmpty: "合集里还没有内容",
     settingsTitle: "内容包",
@@ -251,9 +251,9 @@ export const contentPack = {
       nothing: "没有新资料",
       existing: "资料都已在本机",
     },
-    details: "细节",
-    showDetails: "展开「{{title}}」的细节",
-    hideDetails: "收起「{{title}}」的细节",
+    details: "详情",
+    showDetails: "展开「{{title}}」的详情",
+    hideDetails: "收起「{{title}}」的详情",
     trashLink: "打开回收站",
     candidates: {
       title: "选择要合并进的内容",

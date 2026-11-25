@@ -21,23 +21,21 @@ const RESULT: ProbeResultDto = {
   observedAt: 2,
 };
 
-function badges(): Array<[string | null, string | null]> {
+function unconfirmedLines(): Array<[string | null, string | null]> {
   return within(screen.getByTestId("probe-checks"))
     .getAllByRole("listitem")
-    .map((item) => [item.getAttribute("data-result"), item.textContent]);
+    .map((item) => [item.getAttribute("data-testid"), item.textContent]);
 }
 
 describe("ProbeResult", () => {
-  it("says the connection worked with its latency and words each capability badge, with the reason when it could not tell", () => {
+  it("says the connection worked with its latency, and only names what it could not confirm, with why", () => {
     render(<ProbeResult result={RESULT} regionHint={false} />);
     expect(screen.getByTestId("probe-connected").textContent).toBe("连接成功 · 延迟 812 ms");
-    expect(badges()).toEqual([
-      ["supported", "流式支持"],
-      ["unsupported", "JSON不支持"],
-      ["inconclusive", "工具未能确认· 输出上限内没生成完"],
-    ]);
-    const inconclusive = screen.getByTestId("probe-check-tools");
-    expect(within(inconclusive).getByText("未能确认").className).toContain("text-muted");
+    // What the test settled shows in the capability table; it is not repeated here.
+    expect(screen.queryByTestId("probe-check-stream")).toBeNull();
+    expect(screen.queryByTestId("probe-check-structuredOutput")).toBeNull();
+    expect(unconfirmedLines()).toEqual([["probe-check-tools", "工具调用未能确认：输出上限内没生成完"]]);
+    expect(screen.getByTestId("probe-checks").className).toContain("text-muted");
   });
 
   it("gives each inconclusive reason its fixed wording, and an absent check as not confirmed", () => {
@@ -55,11 +53,22 @@ describe("ProbeResult", () => {
       />,
     );
     expect(screen.getByTestId("probe-incomplete").textContent).toBe("已连通，但在输出上限内未生成完");
-    expect(badges()).toEqual([
-      ["inconclusive", "流式未能确认· 服务返回了无法识别的错误"],
-      ["inconclusive", "JSON未能确认· 被限流，稍后再试"],
-      ["inconclusive", "工具未能确认"],
+    expect(unconfirmedLines()).toEqual([
+      ["probe-check-stream", "流式输出未能确认：服务返回了无法识别的错误"],
+      ["probe-check-structuredOutput", "结构化输出未能确认：被限流，稍后再试"],
+      ["probe-check-tools", "工具调用未能确认"],
     ]);
+  });
+
+  it("adds no capability lines when the test settled every one", () => {
+    render(
+      <ProbeResult
+        result={{ ...RESULT, checks: [{ flag: "stream", result: "supported" }, { flag: "structuredOutput", result: "unsupported" }, { flag: "tools", result: "supported" }] }}
+        regionHint={false}
+      />,
+    );
+    expect(screen.getByTestId("probe-connected")).toBeTruthy();
+    expect(screen.queryByTestId("probe-checks")).toBeNull();
   });
 
   it.each([

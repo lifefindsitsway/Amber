@@ -161,7 +161,7 @@ export function DiarizationUnavailableNotice(props: { error: AppError; offer: Di
         </>
       }
     >
-      <p className="max-w-[70ch]">
+      <p>
         <span className="font-medium">{t("speakerTools.retranscribe.unavailable.title")}</span>
         <span>{text}</span>
       </p>

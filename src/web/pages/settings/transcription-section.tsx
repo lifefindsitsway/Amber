@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AudioLines, ChevronDown, GripVertical } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ASR_MODEL_ID_PATTERN, ASR_PRESETS, type AsrPreset } from "../../../shared/asr-presets.ts";
 import { ASR_DIARIZATION_DEFAULT, ASR_TEST_AUDIO_MS } from "../../../shared/defaults.ts";
@@ -450,9 +450,9 @@ function modelInput(preset: AsrPreset, draft: ModelDraft): AsrProfileModelInput 
 
 /**
  * Create or edit a profile; the model list is replaced as a whole, in the order shown. A
- * new profile starts with its service's recommended models and its key is saved right
- * after it. Any model id may be added: the service's models are only suggestions, a known
- * one brings its own family and any other is given one. A model's family is fixed once
+ * new profile starts with no models: the user types the ids they mean to use rather than
+ * pruning a pre-filled list. Its key is saved right after it. Any model id may be added: a
+ * known one brings its own family and any other is given one. A model's family is fixed once
  * saved. The service is fixed once created. A model a running Task uses, and the region of
  * a profile in use, stay as they are (the server refuses with `conflict`).
  */
@@ -464,23 +464,20 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
   const [provider, setProvider] = useState<AsrProviderId>(profile?.provider ?? "dashscope");
   const preset = ASR_PRESETS[provider];
   const [name, setName] = useState(profile?.name ?? t(`settings.transcription.providers.${provider}`));
-  const [models, setModels] = useState<ModelDraft[]>(
-    () =>
-      profile?.models.map((model) => ({ modelId: model.modelId, family: model.family, fresh: false })) ??
-      preset.recommendedModels.map((modelId) => freshDraft(preset, modelId)),
-  );
+  const [models, setModels] = useState<ModelDraft[]>(() => profile?.models.map((model) => ({ modelId: model.modelId, family: model.family, fresh: false })) ?? []);
   const ids = models.map((model) => model.modelId);
   // Dragging only reorders the rows here; saving sends the list in this order.
   const rows = useDragOrder(ids, (order) => setModels((current) => order.flatMap((id) => current.find((model) => model.modelId === id) ?? [])));
   const [adding, setAdding] = useState("");
-  const [addError, setAddError] = useState<"invalid" | "duplicate" | undefined>(undefined);
+  // `pending`: a save was tried while the add input still held an id that was never added.
+  const [addError, setAddError] = useState<"invalid" | "duplicate" | "pending" | undefined>(undefined);
+  const addInput = useRef<HTMLInputElement>(null);
   const [baseURL, setBaseURL] = useState(profile?.baseURL ?? (preset.baseUrlPolicy === "preset_only" ? (preset.endpoints[0]?.baseURL ?? "") : ""));
   const [key, setKey] = useState("");
   const [touched, setTouched] = useState(false);
   const locked = profile?.inUse === true;
   const valid = name.trim() !== "" && models.length > 0;
   const unavailable = new Set(profile?.models.filter((model) => !model.available).map((model) => model.modelId) ?? []);
-  const suggestions = preset.models.filter((model) => !ids.includes(model));
   // The drag order catches up with additions and removals on the next render.
   const shown = [...rows.order.filter((id) => ids.includes(id)), ...ids.filter((id) => !rows.order.includes(id))].flatMap(
     (id) => models.find((model) => model.modelId === id) ?? [],
@@ -547,6 +544,11 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
   }
 
   const nameMissing = touched && name.trim() === "";
+  const pending = adding.trim() !== "";
+  const emptyHintId = `${formId}-models-empty`;
+  // Nothing added and nothing typed: the empty-list line says why saving is off. With an id
+  // still in the input the button stays live, so a click can point at that id instead.
+  const nothingToSave = models.length === 0 && !pending;
   return (
     <Modal
       open
@@ -556,7 +558,7 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
       footer={
         <>
           <Button onClick={onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" form={formId} variant="primary" loading={saving}>
+          <Button type="submit" form={formId} variant="primary" loading={saving} disabled={nothingToSave} aria-describedby={nothingToSave ? emptyHintId : undefined}>
             {t("common.action.save")}
           </Button>
         </>
@@ -567,6 +569,12 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
         onSubmit={(event) => {
           event.preventDefault();
           setTouched(true);
+          // A typed id that was never added would otherwise be dropped without a word.
+          if (pending) {
+            setAddError("pending");
+            addInput.current?.focus();
+            return;
+          }
           if (!valid) return;
           setSaving(true);
           save()
@@ -586,7 +594,7 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
               const nextPreset = ASR_PRESETS[next];
               setProvider(next);
               setName(t(`settings.transcription.providers.${next}`));
-              setModels(nextPreset.recommendedModels.map((modelId) => freshDraft(nextPreset, modelId)));
+              setModels([]);
               setAdding("");
               setAddError(undefined);
               setBaseURL(nextPreset.baseUrlPolicy === "preset_only" ? (nextPreset.endpoints[0]?.baseURL ?? "") : "");
@@ -630,104 +638,113 @@ function ProfileEditor({ profile, onClose }: { profile?: AsrProfileDto; onClose:
             />
           </Field>
         )}
-        <h3 className="mb-2 text-xs font-medium text-muted">{t("settings.transcription.modelsTitle")}</h3>
-        <ul data-testid="asr-model-drafts">
-          {shown.map((model) => {
-            const choosable = model.fresh && !isKnown(preset, model.modelId);
-            return (
-              <li
-                key={model.modelId}
-                ref={rows.rowRef(model.modelId)}
-                className={`py-1 text-sm ${rows.dragging === model.modelId ? "bg-accent-soft" : ""}`}
-                data-testid="asr-model-draft"
-              >
-                <div className="flex items-center gap-2">
-                  <Tooltip content={t("settings.transcription.dragModel")}>
-                    <button
-                      type="button"
-                      className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
-                      aria-label={`${t("settings.transcription.dragModel")} · ${model.modelId}`}
-                      {...rows.handleProps(model.modelId)}
-                    >
-                      <GripVertical size={14} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                  <span className="min-w-0 flex-1 truncate font-mono">{model.modelId}</span>
-                  {choosable ? (
-                    // A menu like the service and region menus above it in this dialog.
-                    <Select
-                      ariaLabel={t("settings.transcription.familyFor", { model: model.modelId })}
-                      describedBy={`${formId}-family-${model.modelId}`}
-                      size="sm"
-                      width="content"
-                      menuWidth="fit"
-                      value={model.family ?? preset.customModelFamily}
-                      options={preset.families.map((family) => ({ value: family.id, label: familyName(provider, family.id) }))}
-                      placeholder={t("settings.transcription.familyFor", { model: model.modelId })}
-                      onChange={(family) => setModels((current) => current.map((item) => (item.modelId === model.modelId ? { ...item, family } : item)))}
-                    />
-                  ) : model.family === undefined ? null : (
-                    <span className="text-xs text-muted" data-testid="asr-model-draft-family">
-                      {familyName(provider, model.family)}
-                    </span>
-                  )}
-                  {unavailable.has(model.modelId) ? <span className="text-xs text-danger">{t("settings.transcription.unavailable")}</span> : null}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={models.length <= 1}
-                    aria-label={`${t("settings.transcription.removeModel")} · ${model.modelId}`}
-                    onClick={() => setModels((current) => current.filter((item) => item.modelId !== model.modelId))}
+        {/* The bottom margin of a Field: the add row keeps the usual gap to the next field. */}
+        <div className="mb-5">
+          <h3 className="mb-2 text-xs font-medium text-muted">{t("settings.transcription.modelsTitle")}</h3>
+          {shown.length === 0 ? (
+            <FieldHint id={emptyHintId} testId="asr-models-empty">
+              {t("settings.transcription.noModels")}
+            </FieldHint>
+          ) : (
+            <ul data-testid="asr-model-drafts">
+              {shown.map((model) => {
+                const choosable = model.fresh && !isKnown(preset, model.modelId);
+                return (
+                  <li
+                    key={model.modelId}
+                    ref={rows.rowRef(model.modelId)}
+                    className={`py-1 text-sm ${rows.dragging === model.modelId ? "bg-accent-soft" : ""}`}
+                    data-testid="asr-model-draft"
                   >
-                    {t("settings.transcription.removeModel")}
-                  </Button>
-                </div>
-                {choosable ? (
-                  <FieldHint id={`${formId}-family-${model.modelId}`} className="mt-1.5 ml-8">
-                    {t("settings.transcription.familyHint")}
-                  </FieldHint>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-        <div className="mt-2 flex items-center gap-2">
-          <TextInput
-            aria-label={t("settings.transcription.addModel")}
-            list={`asr-model-suggestions-${provider}`}
-            className="min-w-0 flex-1 font-mono"
-            value={adding}
-            invalid={addError !== undefined}
-            aria-describedby={addError === undefined ? undefined : `${formId}-add-error`}
-            placeholder={t("settings.transcription.addModelPlaceholder")}
-            spellCheck={false}
-            autoComplete="off"
-            onChange={(event) => {
-              setAdding(event.target.value);
-              setAddError(undefined);
-            }}
-            onKeyDown={(event) => {
-              // Enter adds the typed model instead of saving the whole form.
-              if (event.key === "Enter") {
-                event.preventDefault();
-                addModel();
-              }
-            }}
-          />
-          <datalist id={`asr-model-suggestions-${provider}`} data-testid="asr-model-suggestions">
-            {suggestions.map((model) => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
-          <Button size="sm" disabled={adding.trim() === ""} onClick={addModel}>
-            {t("settings.transcription.addModelSubmit")}
-          </Button>
+                    <div className="flex items-center gap-2">
+                      <Tooltip content={t("settings.transcription.dragModel")}>
+                        <button
+                          type="button"
+                          className={`cursor-grab touch-none rounded p-1 text-muted hover:bg-sunken ${FOCUS_RING}`}
+                          aria-label={`${t("settings.transcription.dragModel")} · ${model.modelId}`}
+                          {...rows.handleProps(model.modelId)}
+                        >
+                          <GripVertical size={14} aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                      <span className="min-w-0 flex-1 truncate font-mono">{model.modelId}</span>
+                      {choosable ? (
+                        // A menu like the service and region menus above it in this dialog.
+                        <Select
+                          ariaLabel={t("settings.transcription.familyFor", { model: model.modelId })}
+                          describedBy={`${formId}-family-${model.modelId}`}
+                          size="sm"
+                          width="content"
+                          menuWidth="fit"
+                          value={model.family ?? preset.customModelFamily}
+                          options={preset.families.map((family) => ({ value: family.id, label: familyName(provider, family.id) }))}
+                          placeholder={t("settings.transcription.familyFor", { model: model.modelId })}
+                          onChange={(family) => setModels((current) => current.map((item) => (item.modelId === model.modelId ? { ...item, family } : item)))}
+                        />
+                      ) : model.family === undefined ? null : (
+                        <span className="text-xs text-muted" data-testid="asr-model-draft-family">
+                          {familyName(provider, model.family)}
+                        </span>
+                      )}
+                      {unavailable.has(model.modelId) ? <span className="text-xs text-danger">{t("settings.transcription.unavailable")}</span> : null}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`${t("settings.transcription.removeModel")} · ${model.modelId}`}
+                        onClick={() => setModels((current) => current.filter((item) => item.modelId !== model.modelId))}
+                      >
+                        {t("settings.transcription.removeModel")}
+                      </Button>
+                    </div>
+                    {choosable ? (
+                      <FieldHint id={`${formId}-family-${model.modelId}`} className="mt-1.5 ml-8">
+                        {t("settings.transcription.familyHint")}
+                      </FieldHint>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="mt-2 flex items-center gap-2">
+            <TextInput
+              ref={addInput}
+              aria-label={t("settings.transcription.addModel")}
+              className="min-w-0 flex-1 font-mono"
+              value={adding}
+              invalid={addError !== undefined}
+              aria-describedby={addError !== undefined ? `${formId}-add-error` : shown.length === 0 ? emptyHintId : undefined}
+              placeholder={t("settings.transcription.addModelPlaceholder")}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(event) => {
+                setAdding(event.target.value);
+                setAddError(undefined);
+              }}
+              onKeyDown={(event) => {
+                // Enter adds the typed model instead of saving the whole form.
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  addModel();
+                }
+              }}
+            />
+            <Button size="sm" disabled={adding.trim() === ""} onClick={addModel}>
+              {t("settings.transcription.addModelSubmit")}
+            </Button>
+          </div>
+          {addError === undefined ? null : (
+            <FieldError id={`${formId}-add-error`} className="mt-1.5" testId="asr-add-model-error">
+              {t(
+                addError === "invalid"
+                  ? "settings.transcription.invalidModelId"
+                  : addError === "duplicate"
+                    ? "settings.transcription.duplicateModel"
+                    : "settings.transcription.pendingModel",
+              )}
+            </FieldError>
+          )}
         </div>
-        {addError === undefined ? null : (
-          <FieldError id={`${formId}-add-error`} className="mt-1.5" testId="asr-add-model-error">
-            {t(addError === "invalid" ? "settings.transcription.invalidModelId" : "settings.transcription.duplicateModel")}
-          </FieldError>
-        )}
         {profile === undefined ? (
           <Field label={t("settings.transcription.keyLabel")} htmlFor="asr-new-key" hint={t("settings.common.credential.writeOnly")}>
             <TextInput

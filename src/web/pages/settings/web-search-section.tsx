@@ -104,7 +104,7 @@ export function WebSearchSection() {
         <RequestError error={mutations.test.error} />
       </SettingsBlock>
       <SettingsBlock title={t("settings.webSearch.privacyTitle")}>
-        <ul className="max-w-[70ch] list-disc space-y-1 pl-5 text-note text-muted" data-testid="web-search-privacy">
+        <ul className="list-disc space-y-1 pl-5 text-note text-muted" data-testid="web-search-privacy">
           <li>{t("settings.webSearch.privacy.model", { turns: CHAT_SEARCH_PLAN_TURNS })}</li>
           <li>{t("settings.webSearch.privacy.service", { chars: WEB_SEARCH_QUERY_MAX_CHARS })}</li>
           <li>{t("settings.webSearch.privacy.logs")}</li>

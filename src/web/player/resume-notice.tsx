@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type FocusEvent, type Keyboa
 import { useTranslation } from "react-i18next";
 import { PLAYBACK_RESUME_NOTICE_MS } from "../../shared/defaults.ts";
 import { formatDuration } from "../format.ts";
-import { TextAction } from "../ui/notice.tsx";
+import { FOCUS_RING } from "../ui/button.tsx";
 import { usePlayerController } from "./player-controller.tsx";
 
 /** How long the fade-out takes before the card leaves the page; the class below matches it. */
@@ -62,7 +62,7 @@ export function ResumeNotice() {
   return (
     <div
       role="status"
-      className={`absolute top-2 left-2 z-[2] flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-line bg-surface px-3 py-1 text-note text-muted shadow-sm motion-safe:transition-opacity motion-safe:duration-150 ${fading ? "opacity-0" : "opacity-100"}`}
+      className={`absolute top-2 left-2 z-[2] flex max-w-[calc(100%-1rem)] items-center gap-2 rounded-md border border-line bg-surface px-3 py-1 text-note text-ink shadow-sm motion-safe:transition-opacity motion-safe:duration-150 ${fading ? "opacity-0" : "opacity-100"}`}
       data-testid="resume-notice"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -74,9 +74,9 @@ export function ResumeNotice() {
       <span aria-hidden="true" className="text-muted">
         ·
       </span>
-      <TextAction className="shrink-0 font-medium" onClick={() => controller.restart()} data-testid="resume-restart">
+      <button type="button" className={`shrink-0 rounded-sm font-medium text-link hover:underline ${FOCUS_RING}`} onClick={() => controller.restart()} data-testid="resume-restart">
         {t("contentView.playbackResume.restart")}
-      </TextAction>
+      </button>
     </div>
   );
 }

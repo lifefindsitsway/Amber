@@ -74,7 +74,7 @@ describe("BackupSection", () => {
   it("keeps backups to the desktop client; content packs are offered in both modes", async () => {
     fakeShell.desktop = false;
     render({ "GET /api/content-packs/active": { body: {} } });
-    expect(await screen.findByRole("button", { name: "导入内容包…" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "导入内容包" })).toBeTruthy();
     expect(screen.getByText("内容包")).toBeTruthy();
     expect(screen.queryByText("导出备份")).toBeNull();
     expect(screen.queryByText("从备份恢复")).toBeNull();

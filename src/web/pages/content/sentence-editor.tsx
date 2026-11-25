@@ -590,9 +590,9 @@ function SaveStatus(props: { sync: DraftSyncSnapshot; onRetry: () => void }) {
       <span className="flex items-center gap-1 text-xs text-danger" role="status" data-testid="draft-save-status">
         {t("editor.status.failed")}
         {" · "}
-        <TextAction className="font-medium" onClick={props.onRetry} data-testid="draft-retry">
+        <button type="button" className={`rounded-sm font-medium underline-offset-2 hover:underline ${FOCUS_RING}`} onClick={props.onRetry} data-testid="draft-retry">
           {t("editor.status.retry")}
-        </TextAction>
+        </button>
       </span>
     );
   }
@@ -854,7 +854,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
   const nothing = state.checkedHits.length === 0 && sentences === 0;
   return (
     <div className="flex flex-col gap-2" data-testid="filler-section">
-      <p className="max-w-[70ch] text-note text-muted">{t("editor.filler.hint")}</p>
+      <p className="text-note text-muted">{t("editor.filler.hint")}</p>
       {counts.length === 0 && state.whole.length === 0 ? <p className="text-note text-muted">{t("editor.filler.none")}</p> : null}
       <div className="flex flex-wrap gap-1.5" role="group" aria-label={t("editor.filler.words")}>
         {counts.map((entry) => {
@@ -912,7 +912,7 @@ function FillerSection(props: { state: FillerState; texts: readonly string[]; de
           {t("editor.filler.whole", { count: state.whole.length })}
         </label>
       ) : (
-        <p className="max-w-[70ch] text-note text-muted" data-testid="filler-whole-skipped">
+        <p className="text-note text-muted" data-testid="filler-whole-skipped">
           {t("editor.filler.wholeSkipped", { count: state.whole.length })}
         </p>
       )}

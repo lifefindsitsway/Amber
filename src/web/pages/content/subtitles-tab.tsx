@@ -734,8 +734,8 @@ function ImportResult(props: { outcome: ImportOutcome }) {
       </Callout>
       {warnings.length === 0 ? null : (
         <Callout tone="warn" density="compact" testId="subtitle-import-warnings">
-          <p className="max-w-[70ch]">{t("subtitleImport.result.warnings")}</p>
-          <ul className="mt-1 flex max-w-[70ch] list-disc flex-col gap-0.5 pl-4">
+          <p>{t("subtitleImport.result.warnings")}</p>
+          <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-4">
             {warnings.map((code) => (
               <li key={code} data-warning={code}>
                 {t(`subtitleImport.warning.${code}`)}

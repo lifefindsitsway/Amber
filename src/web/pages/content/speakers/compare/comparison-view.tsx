@@ -296,7 +296,7 @@ function DifferenceRow(props: {
       ) : (
         <button
           type="button"
-          className={`w-14 shrink-0 rounded-sm text-left font-mono text-xs text-link tabular-nums underline-offset-2 hover:underline ${FOCUS_RING}`}
+          className={`w-14 shrink-0 rounded-sm text-left font-mono text-xs text-link tabular-nums hover:underline ${FOCUS_RING}`}
           aria-label={t("speakerCompare.row.locate", { time })}
           onClick={() => props.onLocate?.(difference.segmentId)}
           data-testid="comparison-locate"

@@ -152,7 +152,7 @@ export const RadioCard = forwardRef<HTMLInputElement, RadioCardProps>(function R
           {title}
         </span>
         {description === undefined ? null : (
-          <span id={`${inputId}-description`} className="max-w-[70ch] text-note text-muted">
+          <span id={`${inputId}-description`} className="text-note text-muted">
             {description}
           </span>
         )}

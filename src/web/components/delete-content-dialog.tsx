@@ -337,7 +337,7 @@ function SingleState(props: { tally: Tally; names: string }) {
             ? t("library.deleteContent.single.missing")
             : undefined;
   return note === undefined ? null : (
-    <p className="max-w-[70ch] text-note text-muted" data-testid="delete-single-state">
+    <p className="text-note text-muted" data-testid="delete-single-state">
       {note}
     </p>
   );

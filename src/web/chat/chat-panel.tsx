@@ -1081,7 +1081,7 @@ function Unavailable(props: { reason: "no_model" | "context_window_unknown"; mod
       testId="chat-unavailable"
       data-reason={props.reason}
       actions={
-        <Link to="/settings/models" className={`font-medium ${TEXT_ACTION_CLASS}`} data-testid="chat-configure">
+        <Link to="/settings/models" className={`rounded-sm font-medium text-accent-ink underline-offset-2 hover:underline dark:text-accent ${FOCUS_RING}`} data-testid="chat-configure">
           {t("chat.configure")}
         </Link>
       }

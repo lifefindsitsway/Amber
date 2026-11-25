@@ -6,10 +6,13 @@ import type { ModelRefDto } from "../../shared/dto/model-ref.ts";
 import { useProviders, useSetContextWindow } from "../api/queries.ts";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { Button, FOCUS_RING } from "../ui/button.tsx";
-import { Callout, FieldError, InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
+import { Callout, FieldError, InlineNote } from "../ui/notice.tsx";
 import { SuggestionInput } from "../ui/suggestion-input.tsx";
 import { CONTEXT_WINDOW_SUGGESTION_LABELS, CONTEXT_WINDOW_SUGGESTIONS, parseTokenCount } from "./context-window.ts";
 import { findModel } from "./use-model-readiness.ts";
+
+/** The notice's links: the dark accent ink on light themes, the accent itself on the dark one. */
+const LINK = `rounded-sm text-accent-ink underline-offset-2 hover:underline dark:text-accent ${FOCUS_RING}`;
 
 /**
  * The full notices on screen, by model: a deferring notice for the same model (the chat beside
@@ -141,9 +144,9 @@ export function ContextWindowNotice(props: {
         {...(props.className === undefined ? {} : { className: props.className })}
         icon={<Info size={14} className="text-warn" aria-hidden="true" />}
         action={
-          <TextAction className="font-medium" onClick={elsewhere} data-testid={`${testId}-goto`}>
+          <button type="button" className={`font-medium ${LINK}`} onClick={elsewhere} data-testid={`${testId}-goto`}>
             {t("modelReadiness.gotoFill")}
-          </TextAction>
+          </button>
         }
       >
         {t("modelReadiness.elsewhere", { model: modelLabel })}
@@ -163,7 +166,7 @@ export function ContextWindowNotice(props: {
       {...(props.className === undefined ? {} : { className: props.className })}
     >
       <div className="flex flex-col gap-2">
-        <p id={`${id}-text`} className="max-w-[70ch]">
+        <p id={`${id}-text`}>
           {t("modelReadiness.notice", { model: modelLabel })}
         </p>
         {found === undefined ? null : (
@@ -230,14 +233,14 @@ export function ContextWindowNotice(props: {
               </span>
             )}
             {minimal ? null : (
-              <Link to="/settings/models" className={`ml-auto text-note ${TEXT_ACTION_CLASS}`} data-testid={`${testId}-settings`}>
+              <Link to="/settings/models" className={`ml-auto text-note ${LINK}`} data-testid={`${testId}-settings`}>
                 {t("modelReadiness.settings")}
               </Link>
             )}
           </div>
         )}
         {found === undefined ? (
-          <Link to="/settings/models" className={`self-start text-note ${TEXT_ACTION_CLASS}`} data-testid={`${testId}-settings`}>
+          <Link to="/settings/models" className={`self-start text-note ${LINK}`} data-testid={`${testId}-settings`}>
             {t("modelReadiness.settings")}
           </Link>
         ) : null}

@@ -304,7 +304,7 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
           </>
         }
       >
-        <p className="max-w-[70ch] text-sm" data-testid="translation-draft-conflict">
+        <p className="text-sm" data-testid="translation-draft-conflict">
           {t("editor.translation.conflictMessage")}
         </p>
       </Modal>

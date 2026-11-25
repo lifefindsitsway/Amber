@@ -481,7 +481,7 @@ function ExportConfirm(props: {
       </p>
       {/* Read before the pack is written: once it leaves, nothing in it is protected. */}
       <Callout tone="warn" testId="pack-export-notice">
-        <ul className="flex max-w-[70ch] flex-col gap-1">
+        <ul className="flex flex-col gap-1">
           <li className="font-medium">{t("contentPack.export.confirm.unencrypted")}</li>
           <li className="text-note text-muted">{t("contentPack.export.confirm.noSecrets")}</li>
         </ul>

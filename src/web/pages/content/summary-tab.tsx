@@ -27,7 +27,7 @@ import { copyText } from "../../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
 import { EmptyState, Loading, Spinner } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { Callout, NOTE_TEXT_CLASS, TextAction } from "../../ui/notice.tsx";
+import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import { ApiError } from "../../api/client.ts";
 import { useContentPage } from "./content-context.tsx";
@@ -640,9 +640,9 @@ function ChapterFailure(props: { taskId: string }) {
       <p className="flex flex-wrap items-center gap-x-1.5 text-note text-danger">
         <span>{t("contentView.chapters.lastFailed")}</span>
         <span aria-hidden="true">·</span>
-        <TextAction aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chapters-failed-toggle">
+        <button type="button" className={`rounded-sm underline ${FOCUS_RING}`} aria-expanded={open} onClick={() => setOpen(!open)} data-testid="chapters-failed-toggle">
           {open ? t("contentView.chapters.hideReason") : t("contentView.chapters.showReason")}
-        </TextAction>
+        </button>
       </p>
       {!open ? null : (
         <div className="mt-1.5">
@@ -675,7 +675,7 @@ function ChapterItem(props: { chapter: ChapterRevisionDto["chapters"][number]; s
   return (
     <li className="rounded-md px-2 py-1.5 hover:bg-sunken">
       <div className="flex items-start gap-2">
-        <button type="button" className={`rounded-sm font-mono text-xs text-link underline-offset-2 hover:underline ${FOCUS_RING}`} data-reading-time onClick={() => props.onSeek(chapter.startMs)}>
+        <button type="button" className={`rounded-sm font-mono text-xs text-link hover:underline ${FOCUS_RING}`} data-reading-time onClick={() => props.onSeek(chapter.startMs)}>
           {formatDuration(chapter.startMs)}
         </button>
         <div className="min-w-0 flex-1">

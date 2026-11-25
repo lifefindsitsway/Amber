@@ -93,7 +93,7 @@ export function BlockedCard(props: { content: ExportPlanContent }) {
       </h3>
       <p className="text-xs text-muted">{sourceLine(content.sourceKind, content.durationMs, t)}</p>
       <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-note" data-testid="pack-export-blocked">
-        <span className="max-w-[70ch]">
+        <span>
           {content.blocked === "busy"
             ? task === undefined
               ? t("contentPack.export.blocked.busyUnknown")

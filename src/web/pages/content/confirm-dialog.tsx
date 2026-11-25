@@ -32,7 +32,7 @@ export function ConfirmDialog(props: {
         </>
       }
     >
-      <p className="max-w-[70ch] text-sm">{props.message}</p>
+      <p className="text-sm">{props.message}</p>
     </Modal>
   );
 }

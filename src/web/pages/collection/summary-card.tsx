@@ -70,7 +70,7 @@ export function SummaryCard(props: {
   const changedMembers = summary.speakerContextChangedMembers;
   const speakerHint =
     changedMembers === undefined ? null : (
-      <p role="note" className="max-w-[70ch] text-note text-muted" data-testid="collection-summary-speaker-hint">
+      <p role="note" className="text-note text-muted" data-testid="collection-summary-speaker-hint">
         {t("speakerContext.collectionChanged", { count: changedMembers })}
       </p>
     );
@@ -136,7 +136,7 @@ export function SummaryCard(props: {
         summary.activeTaskId === undefined ? (
           <div className="flex flex-col items-start gap-2">
             <p className="text-sm">{t("library.summary.notGenerated")}</p>
-            <p className="max-w-[70ch] text-note text-muted">{t("library.summary.notGeneratedHint")}</p>
+            <p className="text-note text-muted">{t("library.summary.notGeneratedHint")}</p>
             <Button variant="primary" disabled={props.generating === true} onClick={props.onGenerate}>
               {t("library.summary.generate")}
             </Button>
@@ -145,7 +145,7 @@ export function SummaryCard(props: {
         ) : null
       ) : bodyShown ? (
         <div id={bodyId} data-testid="collection-summary-body">
-          {current.quality === "degraded" ? <p className="mb-2 max-w-[70ch] text-note text-muted">{t("library.summary.degraded")}</p> : null}
+          {current.quality === "degraded" ? <p className="mb-2 text-note text-muted">{t("library.summary.degraded")}</p> : null}
           <RichText source={current.body} />
           {current.partials.length === 0 ? null : (
             <div className="mt-4 border-t border-line pt-3">
@@ -155,7 +155,7 @@ export function SummaryCard(props: {
               </button>
               {showPartials ? (
                 <>
-                  {current.partials.length === 1 ? null : <p className="mt-2 max-w-[70ch] text-note text-muted">{t("library.summary.detailsHint")}</p>}
+                  {current.partials.length === 1 ? null : <p className="mt-2 text-note text-muted">{t("library.summary.detailsHint")}</p>}
                   <ol className="mt-2 flex flex-col gap-3">
                     {[...current.partials]
                       .sort((a, b) => a.index - b.index)

@@ -327,6 +327,22 @@ describe("Sidebar", () => {
     expect(localStorage.getItem("amber.sidebar.collapsed")).toBe("1");
   });
 
+  it("keeps each collapsed entry a full-height row, the current one highlighted", () => {
+    mockApi(baseRoutes());
+    localStorage.setItem("amber.sidebar.collapsed", "1");
+    renderApp(<Sidebar onOpenOmnibox={() => undefined} onOpenTasks={() => undefined} />, { route: "/library" });
+    const library = screen.getByRole("link", { name: "全部内容" });
+    const trash = screen.getByRole("link", { name: "回收站" });
+    for (const entry of [library, trash]) {
+      expect(entry.className).toContain("h-8");
+      expect(entry.className).toContain("justify-center");
+      expect(entry.className).not.toContain("=>");
+    }
+    expect(library.className).toContain("bg-sunken font-medium");
+    expect(trash.className).not.toContain("font-medium");
+    localStorage.removeItem("amber.sidebar.collapsed");
+  });
+
   it("creates a collection from the sidebar", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/collections": { status: 201, body: collection("k9", "新课") } });
     localStorage.removeItem("amber.sidebar.collapsed");

@@ -34,7 +34,7 @@ const BAILIAN = profile({
 });
 
 const marks = (element: Element): Array<string | null> => [...element.querySelectorAll("svg[data-vendor-icon]")].map((icon) => icon.getAttribute("data-vendor-icon"));
-const suggestions = (dialog: HTMLElement) => [...within(dialog).getByTestId("asr-model-suggestions").querySelectorAll("option")].map((option) => option.value);
+const drafts = (dialog: HTMLElement) => within(dialog).queryAllByTestId("asr-model-draft").map((row) => row.querySelector(".font-mono")?.textContent);
 const CONFLICT = { status: 409, body: { error: { class: "conflict", code: "conflict", retryDisposition: "never", userMessage: "" } } };
 
 beforeEach(stubSelectLayout);
@@ -118,7 +118,7 @@ describe("TranscriptionSection", () => {
     expect(await selectOptionNames(screen.getByRole("combobox", { name: "默认转录模型" }))).toEqual(["未设置", "scribe_v2"]);
   });
 
-  it("adds a Bailian profile with its recommended models and the Beijing region only, then stores the key", async () => {
+  it("starts a new profile with no models, lets the user type the ones to use with the Beijing region only, then stores the key", async () => {
     const api = mockApi({
       "GET /api/asr-profiles": { body: { items: [profile()] } },
       "GET /api/settings": { body: SETTINGS },
@@ -132,17 +132,36 @@ describe("TranscriptionSection", () => {
     const service = within(dialog).getByRole("combobox", { name: "服务" });
     expect(service.textContent).toBe("阿里云百炼");
     expect(marks(service)).toEqual(["dashscope"]);
-    const drafts = () => within(dialog).getAllByTestId("asr-model-draft").map((row) => row.querySelector(".font-mono")?.textContent);
-    expect(drafts()).toEqual([QWEN, "fun-asr"]);
+    // Nothing is pre-filled and nothing is suggested: the user types the ids they use.
+    expect(drafts(dialog)).toEqual([]);
+    expect(dialog.querySelector("datalist")).toBeNull();
+    const input = within(dialog).getByLabelText("添加模型") as HTMLInputElement;
+    expect(input.getAttribute("list")).toBeNull();
+    expect(input.placeholder).toBe("输入要使用的模型 ID，按回车添加");
+    // One quiet line stands in for the empty list and is why saving is off.
+    const empty = within(dialog).getByTestId("asr-models-empty");
+    expect(empty.textContent).toBe("还没有添加模型，至少添加一个才能保存");
+    const save = within(dialog).getByRole("button", { name: "保存" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(save.getAttribute("aria-describedby")).toBe(empty.id);
+    expect(input.getAttribute("aria-describedby")).toBe(empty.id);
+
     // Known models bring their own family, shown as fixed text.
+    fireEvent.change(input, { target: { value: QWEN } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "fun-asr" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "添加" }));
+    expect(drafts(dialog)).toEqual([QWEN, "fun-asr"]);
+    expect(within(dialog).queryByTestId("asr-models-empty")).toBeNull();
     expect(within(dialog).getAllByTestId("asr-model-draft-family").map((item) => item.textContent)).toEqual(["千问 ASR（发送热词）", "Fun-ASR（不发送热词）"]);
-    // Every suggested model is already in: nothing left to suggest.
-    expect(suggestions(dialog)).toEqual([]);
+    expect(within(dialog).queryByRole("combobox", { name: `参数兼容 · ${QWEN}` })).toBeNull();
+    expect(save.disabled).toBe(false);
+    expect(save.getAttribute("aria-describedby")).toBeNull();
     const region = within(dialog).getByRole("combobox", { name: "地域" });
     expect(region.textContent).toBe("华北 2（北京）");
     expect(await selectOptionNames(region)).toEqual(["华北 2（北京）"]);
     fireEvent.change(within(dialog).getByLabelText("API Key"), { target: { value: "<placeholder-asr-key>" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    fireEvent.click(save);
     await waitFor(() => expect(api.calls.some((call) => call.method === "PUT")).toBe(true));
     expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({
       name: "阿里云百炼",
@@ -155,7 +174,7 @@ describe("TranscriptionSection", () => {
     expect(api.calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
-  it("starts an ElevenLabs profile with Scribe v2, suggests the models not yet added, and takes any typed-in model with a family", async () => {
+  it("starts an ElevenLabs profile with no models, and takes any typed-in model with a family", async () => {
     const api = mockApi({
       "GET /api/asr-profiles": { body: { items: [BAILIAN] } },
       "GET /api/settings": { body: SETTINGS },
@@ -165,15 +184,19 @@ describe("TranscriptionSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
     const dialog = await screen.findByRole("dialog");
     await chooseOption(within(dialog).getByRole("combobox", { name: "服务" }), "ElevenLabs");
-    expect(suggestions(dialog)).toEqual(["scribe_v2_medical"]);
+    expect(drafts(dialog)).toEqual([]);
+    expect(within(dialog).getByTestId("asr-models-empty")).toBeTruthy();
+    expect(dialog.querySelector("datalist")).toBeNull();
     const input = within(dialog).getByLabelText("添加模型") as HTMLInputElement;
     const add = within(dialog).getByRole("button", { name: "添加" });
 
     // A known model takes its own family, shown as text without a choice.
+    fireEvent.change(input, { target: { value: "scribe_v2" } });
+    fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.change(input, { target: { value: "scribe_v2_medical" } });
     fireEvent.click(add);
     expect(input.value).toBe("");
-    expect(suggestions(dialog)).toEqual([]);
+    expect(within(dialog).queryByLabelText("参数兼容 · scribe_v2")).toBeNull();
     expect(within(dialog).queryByLabelText("参数兼容 · scribe_v2_medical")).toBeNull();
     expect(within(dialog).getAllByTestId("asr-model-draft-family").map((item) => item.textContent)).toEqual(["Scribe v2", "Scribe（通用）"]);
 
@@ -204,6 +227,71 @@ describe("TranscriptionSection", () => {
         models: [{ modelId: "scribe_v2" }, { modelId: "scribe_v2_medical" }, { modelId: "scribe_v3", family: "scribe_v2" }],
       }),
     );
+  });
+
+  it("refuses to save while a typed model id is still waiting to be added, and points at it", async () => {
+    const api = mockApi({
+      "GET /api/asr-profiles": { body: { items: [profile()] } },
+      "GET /api/settings": { body: SETTINGS },
+      "POST /api/asr-profiles": { status: 201, body: BAILIAN },
+    });
+    renderApp(<TranscriptionSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("添加模型") as HTMLInputElement;
+    const save = within(dialog).getByRole("button", { name: "保存" }) as HTMLButtonElement;
+
+    // With no model yet, a typed id makes the save button live so a click can explain itself.
+    fireEvent.change(input, { target: { value: "fun-asr" } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    const error = within(dialog).getByTestId("asr-add-model-error");
+    expect(error.textContent).toBe("输入框里的模型 ID 还没有添加，请按回车或点「添加」");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")).toBe(error.id);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("fun-asr");
+
+    // The same once a model is in: the typed id is not dropped on save.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(drafts(dialog)).toEqual(["fun-asr"]);
+    fireEvent.change(input, { target: { value: "my-asr" } });
+    fireEvent.click(save);
+    expect(within(dialog).getByTestId("asr-add-model-error").textContent).toContain("还没有添加");
+    expect(document.activeElement).toBe(input);
+    expect(api.calls.some((call) => call.method === "POST")).toBe(false);
+
+    // Added, it saves with its chosen family; a known id is sent bare.
+    fireEvent.click(within(dialog).getByRole("button", { name: "添加" }));
+    expect(within(dialog).queryByTestId("asr-add-model-error")).toBeNull();
+    expect(within(dialog).getByRole("combobox", { name: "参数兼容 · my-asr" })).toBeTruthy();
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({
+        name: "阿里云百炼",
+        provider: "dashscope",
+        models: [{ modelId: "fun-asr" }, { modelId: "my-asr", family: "fun_asr" }],
+        baseURL: "https://dashscope.aliyuncs.com",
+      }),
+    );
+  });
+
+  it("starts the model list empty again when the service of a new profile changes", async () => {
+    mockApi({ "GET /api/asr-profiles": { body: { items: [profile()] } }, "GET /api/settings": { body: SETTINGS } });
+    renderApp(<TranscriptionSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "添加 Profile" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByLabelText("添加模型") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "fun-asr" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(drafts(dialog)).toEqual(["fun-asr"]);
+    const service = within(dialog).getByRole("combobox", { name: "服务" });
+    await chooseOption(service, "ElevenLabs");
+    expect(drafts(dialog)).toEqual([]);
+    expect(within(dialog).getByTestId("asr-models-empty")).toBeTruthy();
+    await chooseOption(service, "阿里云百炼");
+    expect(drafts(dialog)).toEqual([]);
+    expect((within(dialog).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("offers each service with its mark, and rebuilds the region menu when the service changes", async () => {
@@ -279,7 +367,7 @@ describe("TranscriptionSection", () => {
     expect(within(dialog).getAllByTestId("asr-model-draft-family").map((item) => item.textContent)).toEqual(["Scribe v2", "Scribe（通用）"]);
   });
 
-  it("reorders and removes models in the edit dialog, keeps at least one, and saves them in that order", async () => {
+  it("reorders and removes models in the edit dialog, and saves them in that order", async () => {
     const api = mockApi({
       "GET /api/asr-profiles": { body: { items: [BAILIAN] } },
       "GET /api/settings": { body: SETTINGS },
@@ -289,14 +377,20 @@ describe("TranscriptionSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("heading", { name: "编辑 Profile" })).toBeTruthy();
-    const drafts = () => within(dialog).getAllByTestId("asr-model-draft").map((row) => row.querySelector(".font-mono")?.textContent);
+    // Editing starts from the saved models, in their saved order.
+    expect(drafts(dialog)).toEqual([QWEN, "fun-asr"]);
+    expect(within(dialog).queryByTestId("asr-models-empty")).toBeNull();
     fireEvent.keyDown(within(dialog).getByRole("button", { name: "拖动调整模型顺序 · fun-asr" }), { key: "ArrowUp" });
-    await waitFor(() => expect(drafts()).toEqual(["fun-asr", QWEN]));
+    await waitFor(() => expect(drafts(dialog)).toEqual(["fun-asr", QWEN]));
     fireEvent.click(within(dialog).getByRole("button", { name: `移除 · ${QWEN}` }));
-    await waitFor(() => expect(drafts()).toEqual(["fun-asr"]));
-    expect((within(dialog).getByRole("button", { name: "移除 · fun-asr" }) as HTMLButtonElement).disabled).toBe(true);
-    // The removed model is suggested again.
-    expect(suggestions(dialog)).toEqual([QWEN]);
+    await waitFor(() => expect(drafts(dialog)).toEqual(["fun-asr"]));
+    // The last one can go too; with none left the list says why saving is off.
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除 · fun-asr" }));
+    expect(within(dialog).getByTestId("asr-models-empty")).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "保存" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "添加模型" }), { target: { value: "fun-asr" } });
+    fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "添加模型" }), { key: "Enter" });
+    await waitFor(() => expect(drafts(dialog)).toEqual(["fun-asr"]));
     expect(api.calls.some((call) => call.method === "PATCH")).toBe(false);
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toEqual({ models: [{ modelId: "fun-asr" }] }));

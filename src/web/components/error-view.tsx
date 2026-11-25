@@ -4,7 +4,8 @@ import type { StageEngineDto } from "../../shared/dto/task.ts";
 import type { StageId } from "../../shared/enums.ts";
 import type { AppError } from "../../shared/errors.ts";
 import { useAsrProfiles, useProviders } from "../api/queries.ts";
-import { Callout, TextAction } from "../ui/notice.tsx";
+import { FOCUS_RING } from "../ui/button.tsx";
+import { Callout } from "../ui/notice.tsx";
 import { useAsrModelLabel } from "./asr-model-select.tsx";
 
 /**
@@ -58,9 +59,9 @@ export function ErrorView(props: { error: AppError; stage?: StageId; engine?: St
       <p>{message}</p>
       {props.error.upstreamMessage === undefined ? null : (
         <div className="mt-1.5">
-          <TextAction className="text-note" onClick={() => setOpen(!open)} aria-expanded={open}>
+          <button type="button" className={`rounded-sm text-note text-muted underline ${FOCUS_RING}`} onClick={() => setOpen(!open)} aria-expanded={open}>
             {open ? t("common.action.hideDetail") : t("common.error.upstream")}
-          </TextAction>
+          </button>
           {open ? <pre className="mt-1 max-h-40 overflow-auto rounded bg-surface/70 p-2 text-xs whitespace-pre-wrap">{props.error.upstreamMessage}</pre> : null}
         </div>
       )}

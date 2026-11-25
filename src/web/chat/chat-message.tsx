@@ -132,7 +132,7 @@ export function AssistantMessage(props: {
         />
       )}
       {props.speakerContext === undefined ? null : (
-        <p role="note" className="mt-1 max-w-[70ch] text-note text-muted" data-testid="chat-speaker-mismatch" data-state={props.speakerContext.state}>
+        <p role="note" className="mt-1 text-note text-muted" data-testid="chat-speaker-mismatch" data-state={props.speakerContext.state}>
           {t("chat.speakerMismatch", { names: props.speakerContext.speakers.map((speaker) => speaker.label).join(t("chat.speakerSeparator")) })}
         </p>
       )}

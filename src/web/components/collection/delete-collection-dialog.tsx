@@ -139,7 +139,6 @@ export function DeleteCollectionDialog(props: {
     toast.show({
       tone: "success",
       message,
-      persistent: true,
       ...(trashed > 0 ? { action: { label: t("library.deleteContent.openTrash"), onClick: () => void navigate("/trash") } } : {}),
     });
     const viewing = matchPath("/collections/:id", pathname)?.params.id === collection.id;
@@ -205,7 +204,7 @@ export function DeleteCollectionDialog(props: {
   } else {
     body = (
       <div className="flex flex-col gap-4">
-        {withChoices ? <Choices plan={data} chosen={effective} disabled={busy} onChoose={setChoice} /> : <p className="max-w-[70ch] text-sm">{t("library.collection.deleteDescription")}</p>}
+        {withChoices ? <Choices plan={data} chosen={effective} disabled={busy} onChoose={setChoice} /> : <p className="text-sm">{t("library.collection.deleteDescription")}</p>}
         {data.collectionTaskCount > 0 ? (
           <Callout tone="warn" density="compact" testId="delete-collection-task-note">
             {`${t("library.deleteCollection.collectionTask")} ${t("library.deleteContent.tasksNote")}`}

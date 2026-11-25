@@ -11,8 +11,8 @@ import { FOCUS_RING } from "./button.tsx";
  * Toasts (ui/toast.tsx) only report something finished; they never carry an error to handle.
  */
 
-/** 13 px muted explanatory text on a 20 px line, at most about 70 characters wide. */
-export const NOTE_TEXT_CLASS = "text-note text-muted max-w-[70ch]";
+/** 13 px muted explanatory text on a 20 px line, as wide as its container. */
+export const NOTE_TEXT_CLASS = "text-note text-muted";
 
 /** Links and inline text actions: the link colour, underlined on hover, the shared focus ring. */
 export const TEXT_ACTION_CLASS = `rounded-sm text-link underline-offset-2 hover:underline ${FOCUS_RING}`;
@@ -45,7 +45,7 @@ export function FieldHint({ id, children, className = "", testId }: { id: string
  */
 export function FieldError({ id, children, className = "", testId }: { id: string; children: ReactNode; className?: string; testId?: string }) {
   return (
-    <p id={id} className={`flex max-w-[70ch] items-start gap-1.5 text-note text-danger ${className}`} data-testid={testId}>
+    <p id={id} className={`flex items-start gap-1.5 text-note text-danger ${className}`} data-testid={testId}>
       <CircleAlert size={14} className="mt-[3px] shrink-0" aria-hidden="true" />
       <span className="min-w-0">{children}</span>
     </p>
@@ -116,8 +116,9 @@ type NoticeProps = Omit<HTMLAttributes<HTMLDivElement>, "title" | "children"> & 
 
 /**
  * A boxed notice for what must be read before acting, or a problem to deal with: tone icon, an
- * optional title, the text and the actions. Plain-string text is capped at about 70 characters a
- * line; richer content lays itself out (cap its paragraphs with `max-w-[70ch]`). `density: "compact"` for tight rows (13 px text,
+ * optional title, the text and the actions. Text runs the full width of the box: in Chinese a
+ * character-count cap would wrap a short sentence with half the row still empty.
+ * `density: "compact"` for tight rows (13 px text,
  * smaller padding). Other attributes (`role`, `aria-labelledby`, `data-*`) pass through to the
  * box; an explicit `role` wins over `announce`.
  */
@@ -135,20 +136,38 @@ export function Callout({
 }: NoticeProps & { density?: "regular" | "compact" }) {
   const look = TONES[tone];
   const compact = density === "compact";
+  const text = children === undefined ? null : typeof children === "string" ? <p>{children}</p> : <div className="min-w-0">{children}</div>;
+  // Without a title the notice is a sentence or two: its actions sit at the right end of the
+  // same row, so the box stays one line tall, and drop below the text only when the box is too
+  // narrow for both. With a title the text reads as a block and the actions follow it.
+  const inline = title === undefined && actions !== undefined;
   return (
     <div
       role={announce}
       {...rest}
-      className={`flex items-start rounded-md border text-ink ${compact ? "gap-2 px-2.5 py-2 text-note" : "gap-2.5 px-3 py-2.5 text-sm"} ${look.box} ${className}`}
+      className={`flex rounded-md border text-ink ${inline ? "items-center" : "items-start"} ${compact ? "gap-2 px-2.5 py-2 text-note" : "gap-2.5 px-3 py-2.5 text-sm"} ${look.box} ${className}`}
       data-tone={tone}
       data-testid={testId}
     >
       <span className={`flex h-5 shrink-0 items-center ${look.icon}`}>{icon ?? <look.Icon size={16} aria-hidden="true" />}</span>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        {title === undefined ? null : <div className="font-medium">{title}</div>}
-        {children === undefined ? null : typeof children === "string" ? <p className="max-w-[70ch]">{children}</p> : <div className="min-w-0">{children}</div>}
-        {actions === undefined ? null : <div className="mt-1 flex flex-wrap items-center gap-2">{actions}</div>}
-      </div>
+      {inline ? (
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5">
+          <div className="min-w-0 flex-[1_1_16rem]">{text}</div>
+          <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2" data-notice-actions="">
+            {actions}
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          {title === undefined ? null : <div className="font-medium">{title}</div>}
+          {text}
+          {actions === undefined ? null : (
+            <div className="mt-1 flex flex-wrap items-center gap-2" data-notice-actions="">
+              {actions}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -164,7 +183,7 @@ export function Banner({ tone, title, children, actions, icon, announce, testId,
     <div
       role={announce}
       {...rest}
-      className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-6 py-2 text-sm text-ink ${look.box} ${className}`}
+      className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-4 py-2 text-note text-ink ${look.box} ${className}`}
       data-tone={tone}
       data-testid={testId}
     >

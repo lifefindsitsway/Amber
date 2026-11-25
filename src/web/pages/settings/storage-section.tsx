@@ -349,7 +349,7 @@ function LowWaterRatioHint({ settings }: { settings: InstanceSettingsDto }) {
         </>
       }
     >
-      <p className="max-w-[70ch]">{t("settings.storage.lowWaterHint.text", { gb })}</p>
+      <p>{t("settings.storage.lowWaterHint.text", { gb })}</p>
       <RequestError error={apply.error} />
     </Callout>
   );

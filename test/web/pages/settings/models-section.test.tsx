@@ -99,7 +99,7 @@ describe("ModelsSection", () => {
     expect(api.calls.find((call) => call.method === "POST")?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/u);
     expect((await screen.findByTestId("probe-connected")).textContent).toBe("连接成功 · 延迟 812 ms");
     expect(screen.getByTestId("probe-live")).toBe(live);
-    expect(screen.getByTestId("probe-check-tools").textContent).toBe("工具未能确认· 被限流，稍后再试");
+    expect(screen.getByTestId("probe-check-tools").textContent).toBe("工具调用未能确认：被限流，稍后再试");
   });
 
   it("words a rate-limited connection test as advice to test again, not as a pipeline retry", async () => {

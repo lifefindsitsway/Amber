@@ -6,7 +6,10 @@ import { REPO_ROOT } from "./lib/files.ts";
 // Read as plain text: the CSS pipeline would resolve the stylesheet instead of returning its source.
 const STYLES = readFileSync(join(REPO_ROOT, "src/web/styles.css"), "utf8");
 
-/** Every `--color-*` declared in the blocks opened by `selector`, merged in source order. */
+/**
+ * Every `--color-*` declared in the blocks opened by `selector`, merged in source order. A value
+ * is a hex colour or a reference to another theme colour, kept as `var(--color-<name>)`.
+ */
 function colorsOf(selector: string): Record<string, string> {
   const colors: Record<string, string> = {};
   let from = 0;
@@ -19,7 +22,7 @@ function colorsOf(selector: string): Record<string, string> {
       continue;
     }
     const end = STYLES.indexOf("}", start);
-    for (const match of STYLES.slice(start, end).matchAll(/--color-([a-z-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+    for (const match of STYLES.slice(start, end).matchAll(/--color-([a-z-]+):\s*(#[0-9a-fA-F]{6}|var\(--color-[a-z-]+\))\s*;/g)) {
       colors[match[1] as string] = (match[2] as string).toLowerCase();
     }
     from = end;
@@ -27,13 +30,26 @@ function colorsOf(selector: string): Record<string, string> {
   return colors;
 }
 
+/**
+ * Replaces each `var(--color-<name>)` with that theme's own value. Every theme selector applies to
+ * the document root, so a reference declared in a theme block resolves against the same theme.
+ */
+function resolved(colors: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [role, value] of Object.entries(colors)) {
+    const target = /^var\(--color-([a-z-]+)\)$/.exec(value)?.[1];
+    out[role] = target === undefined ? value : (colors[target] ?? value);
+  }
+  return out;
+}
+
 const BASE = colorsOf("@theme");
 /** The eye-care themes are light: they override the default palette, never the dark one. */
 const THEMES: Record<string, Record<string, string>> = {
-  light: BASE,
-  dark: { ...BASE, ...colorsOf(".dark") },
-  "bean-green": { ...BASE, ...colorsOf('html[data-theme="bean-green"]') },
-  parchment: { ...BASE, ...colorsOf('html[data-theme="parchment"]') },
+  light: resolved(BASE),
+  dark: resolved({ ...BASE, ...colorsOf(".dark") }),
+  "bean-green": resolved({ ...BASE, ...colorsOf('html[data-theme="bean-green"]') }),
+  parchment: resolved({ ...BASE, ...colorsOf('html[data-theme="parchment"]') }),
 };
 
 function luminance(hex: string): number {
@@ -49,9 +65,13 @@ function contrast(a: string, b: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
-/** Foreground → the grounds it is read on; every pair must clear the WCAG AA text ratio. */
+/**
+ * Foreground → the grounds it is read on; every pair must clear the WCAG AA text ratio. `link` is
+ * not listed: links, inline text actions and clickable timestamps share the accent colour, the
+ * amber look users know, which falls below 4.5:1 on the light grounds. A test below pins it to
+ * the accent instead.
+ */
 const PAIRS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ["link", ["surface", "panel", "sunken", "warn-soft", "danger-soft", "ok-soft"]],
   ["warn", ["surface", "panel", "sunken", "warn-soft"]],
   // Field errors sit on every ground, the sunken one included.
   ["danger", ["surface", "panel", "sunken", "danger-soft"]],
@@ -75,6 +95,12 @@ describe("theme colour contrast", () => {
     for (const selector of [".dark", 'html[data-theme="bean-green"]', 'html[data-theme="parchment"]']) {
       expect(Object.keys(colorsOf(selector))).toEqual(expect.arrayContaining(["link", "warn", "warn-soft", "danger-soft", "ok-soft"]));
     }
+  });
+
+  it.each(Object.keys(THEMES))("draws links in the accent colour in the %s theme", (name) => {
+    const colors = THEMES[name] as Record<string, string>;
+    expect(colors["accent"]).toMatch(/^#[0-9a-f]{6}$/);
+    expect(colors["link"]).toBe(colors["accent"]);
   });
 
   it.each(Object.keys(THEMES))("keeps text readable in the %s theme", (name) => {

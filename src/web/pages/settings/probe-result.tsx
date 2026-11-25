@@ -1,6 +1,6 @@
 import { CircleCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { PROBE_CHECK_FLAGS, type ProbeCheckFlag, type ProbeResultDto } from "../../../shared/dto/provider.ts";
+import { PROBE_CHECK_FLAGS, type ProbeResultDto } from "../../../shared/dto/provider.ts";
 import type { AppError } from "../../../shared/errors.ts";
 import { ApiError } from "../../api/client.ts";
 import { Callout } from "../../ui/notice.tsx";
@@ -69,8 +69,10 @@ function useFailureSummary(): (error: unknown) => Summary {
 }
 
 /**
- * What one "test connection" found for a model: a verdict line, then one badge per measured
- * capability. Every state is written out in words; colour only repeats it. Success is a quiet
+ * What one "test connection" found for a model: a verdict line, then a line for each capability
+ * the test could not settle. What it did settle shows in the model's capability table, which the
+ * test refreshes, so it is not repeated here. Every state is written out in words; colour only
+ * repeats it. Success is a quiet
  * line; a test that could not tell is a caution, a model that cannot be used an error notice that
  * says what to fix. It is meant to sit
  * inside a live region the caller keeps mounted, so a new verdict is announced. `regionHint` adds
@@ -91,7 +93,7 @@ export function ProbeResult({ result, error, regionHint }: { result?: ProbeResul
   const authFailed = error instanceof ApiError && error.error.code === "llm_failed.auth";
   const regionLine =
     authFailed && regionHint ? (
-      <p className="max-w-[70ch]" data-testid="probe-region-hint">
+      <p data-testid="probe-region-hint">
         {t("settings.models.probe.regionMismatch")}
       </p>
     ) : null;
@@ -103,40 +105,37 @@ export function ProbeResult({ result, error, regionHint }: { result?: ProbeResul
       </p>
     ) : (
       <Callout tone={summary.tone === "danger" ? "error" : "warn"} density="compact">
-        <p className="max-w-[70ch] font-medium" data-testid={summary.testId}>
+        <p className="font-medium" data-testid={summary.testId}>
           {summary.text}
         </p>
         {summary.fix === undefined ? null : (
-          <p className="max-w-[70ch]" data-testid="probe-fix">
+          <p data-testid="probe-fix">
             {summary.fix}
           </p>
         )}
         {regionLine}
       </Callout>
     );
+  // The capability table above already shows what the test confirmed, so only what it could not
+  // tell is spelled out here, with why: the table would just say "unknown".
+  const unconfirmed = result === undefined ? [] : PROBE_CHECK_FLAGS.flatMap((flag) => {
+    const check = result.checks.find((item) => item.flag === flag);
+    return check === undefined || check.result === "inconclusive" ? [{ flag, reason: check?.reason }] : [];
+  });
   return (
     <div className="mt-2" data-testid="probe-result">
       {verdict}
-      {result === undefined ? null : (
-        <ul className="mt-1.5 flex flex-wrap gap-1.5 text-xs" data-testid="probe-checks">
-          {PROBE_CHECK_FLAGS.map((flag) => (
-            <CheckBadge key={flag} flag={flag} check={result.checks.find((item) => item.flag === flag)} />
+      {unconfirmed.length === 0 ? null : (
+        <ul className="mt-1 flex flex-col gap-0.5 text-note text-muted" data-testid="probe-checks">
+          {unconfirmed.map(({ flag, reason }) => (
+            <li key={flag} data-testid={`probe-check-${flag}`} data-result="inconclusive">
+              {reason === undefined
+                ? t("settings.models.probe.unconfirmedCheck", { check: t(`settings.models.capability.${flag}`) })
+                : t("settings.models.probe.unconfirmedCheckBecause", { check: t(`settings.models.capability.${flag}`), reason: t(`settings.models.probe.reason.${reason}`) })}
+            </li>
           ))}
         </ul>
       )}
     </div>
-  );
-}
-
-function CheckBadge({ flag, check }: { flag: ProbeCheckFlag; check: ProbeResultDto["checks"][number] | undefined }) {
-  const { t } = useTranslation();
-  const result = check?.result ?? "inconclusive";
-  const tone = result === "supported" ? "text-ok" : result === "unsupported" ? "text-ink" : "text-muted";
-  return (
-    <li className="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5" data-testid={`probe-check-${flag}`} data-result={result}>
-      <span className="text-muted">{t(`settings.models.probe.check.${flag}`)}</span>
-      <span className={tone}>{t(`settings.models.probe.result.${result}`)}</span>
-      {check?.reason === undefined ? null : <span className="text-muted">· {t(`settings.models.probe.reason.${check.reason}`)}</span>}
-    </li>
   );
 }

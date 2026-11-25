@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Banner, Callout, FieldError, FieldHint, InlineNote, TextAction, type NoticeTone } from "../../../src/web/ui/notice.tsx";
+import { Banner, Callout, FieldError, FieldHint, InlineNote, NOTE_TEXT_CLASS, TextAction, type NoticeTone } from "../../../src/web/ui/notice.tsx";
 
 describe("FieldHint and FieldError", () => {
   it("describe a control by id, and the error is not a second live announcement", () => {
@@ -26,6 +26,24 @@ describe("FieldHint and FieldError", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     // The icon is decoration; the text alone is the message.
     expect(screen.getByTestId("error").querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+describe("line width", () => {
+  it("lets explanatory text run the width of its container: a character cap wraps Chinese at half a row", () => {
+    render(
+      <>
+        <FieldHint id="w-hint" testId="hint">说明</FieldHint>
+        <FieldError id="w-error" testId="error">错误</FieldError>
+        <Callout tone="info" testId="callout">
+          提示
+        </Callout>
+      </>,
+    );
+    expect(NOTE_TEXT_CLASS).not.toMatch(/max-w-/);
+    expect(screen.getByTestId("hint").className).not.toMatch(/max-w-/);
+    expect(screen.getByTestId("error").className).not.toMatch(/max-w-/);
+    expect(screen.getByTestId("callout").innerHTML).not.toMatch(/max-w-/);
   });
 });
 
@@ -95,6 +113,27 @@ describe("Callout", () => {
     expect(group).toBe(screen.getByTestId("group"));
     expect(group.getAttribute("data-variant")).toBe("full");
     expect(group.className).toContain("text-note");
+  });
+});
+
+describe("Callout actions", () => {
+  it("keeps an untitled notice's actions on the text's row, and puts a titled one's below its text", () => {
+    render(
+      <>
+        <Callout tone="warn" testId="untitled" actions={<button type="button">去配置</button>}>
+          还没有配置 AI 模型
+        </Callout>
+        <Callout tone="warn" testId="titled" title="需要处理" actions={<button type="button">处理</button>}>
+          正文
+        </Callout>
+      </>,
+    );
+    const rowOf = (testId: string): HTMLElement | null | undefined => screen.getByTestId(testId).querySelector("[data-notice-actions]")?.parentElement;
+    expect(rowOf("untitled")?.className).toContain("flex-wrap");
+    expect(rowOf("untitled")?.className).not.toContain("flex-col");
+    expect(screen.getByTestId("untitled").className).toContain("items-center");
+    expect(rowOf("titled")?.className).toContain("flex-col");
+    expect(screen.getByTestId("titled").className).toContain("items-start");
   });
 });
 

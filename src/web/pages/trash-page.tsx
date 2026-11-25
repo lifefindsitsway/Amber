@@ -225,7 +225,7 @@ export function TrashPage() {
           testIdPrefix="trash"
           notes={
             restoreBlock === "tooMany" ? (
-              <InlineNote id="trash-restore-limit" testId="trash-restore-limit">
+              <InlineNote id="trash-restore-limit" testId="trash-restore-limit" className="text-warn!">
                 {t("trash.selection.restoreTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
               </InlineNote>
             ) : undefined

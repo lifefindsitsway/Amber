@@ -121,7 +121,7 @@ export function NoteCard(props: { note: NoteDto; variant: "popover" | "page"; on
     <article className="flex flex-col gap-2 text-sm" data-testid="note-card" data-note-id={note.id}>
       {page ? (
         <div className="flex items-start gap-2">
-          <span className="shrink-0 font-mono text-xs text-muted tabular-nums">{formatDuration(note.startMs)}</span>
+          <span className="shrink-0 font-mono text-xs text-link tabular-nums">{formatDuration(note.startMs)}</span>
           <blockquote className="line-clamp-3 min-w-0 flex-1 border-l-2 border-line pl-2 text-muted" title={note.quote}>
             {note.quote}
           </blockquote>
