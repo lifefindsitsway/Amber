@@ -21,10 +21,14 @@ test("collection preview: choose entries across pages, set the processing order,
   await expect(dialog.getByTestId("preview-chosen-count")).toHaveText(`· 已选 ${defaultChosen} 项`);
   await expect(rows.nth(4)).toHaveAttribute("data-chosen", "false");
   await expect(rows.nth(6).getByRole("checkbox")).toBeDisabled();
+  // The defaults are exactly the entries not in this collection: the shortcut has nothing to change.
+  const onlyOutside = dialog.getByRole("button", { name: "只选还不在此合集里的" });
+  await expect(onlyOutside).toBeDisabled();
 
   // Leave out the first entry.
   await rows.nth(0).click();
   await expect(rows.nth(0)).toHaveAttribute("data-chosen", "false");
+  await expect(onlyOutside).toBeEnabled();
 
   // The end of the list in view reads the second page; one of its entries is chosen too.
   await dialog.getByTestId("preview-more").scrollIntoViewIfNeeded();

@@ -69,8 +69,11 @@ export function selectable(entry: PreviewEntry): boolean {
   return entry.state !== "trashed" && entry.state !== "unavailable";
 }
 
-/** Entries not yet in the compared collection: what "only the ones not imported yet" and the defaults pick. */
-export function notImported(entry: PreviewEntry): boolean {
+/**
+ * Entries not yet in the compared collection (new ones, ones already in the library, ones being
+ * processed): what the defaults and 「只选还不在此合集里的」 pick.
+ */
+export function notInCollection(entry: PreviewEntry): boolean {
   return entry.state === undefined || entry.state === "new" || entry.state === "in_library" || entry.state === "processing";
 }
 
@@ -105,7 +108,7 @@ export function withFirstPage(session: PreviewSession, page: Page): PreviewSessi
  */
 export function withDefaults(session: PreviewSession, budget: number): PreviewSession {
   if (session.chosen) return session;
-  const picked = session.entries.filter((entry) => selectable(entry) && notImported(entry)).slice(0, Math.max(0, budget));
+  const picked = session.entries.filter((entry) => selectable(entry) && notInCollection(entry)).slice(0, Math.max(0, budget));
   const { order: _order, ...rest } = session;
   return {
     ...rest,

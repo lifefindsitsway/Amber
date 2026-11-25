@@ -14,7 +14,7 @@ import { TextInput } from "../../ui/text-field.tsx";
 import { ErrorView } from "../error-view.tsx";
 import { EntryCover, EntryDuration, EntryState, EntryTitle, PartsNote } from "./entry-parts.tsx";
 import { OrderList, OrderToolbar } from "./order-list.tsx";
-import { chosenDuration, hoursAndMinutes, notImported, rangeBetween, selectable, type CollectionChoice, type PreviewEntry, type PreviewSession } from "./state.ts";
+import { chosenDuration, hoursAndMinutes, notInCollection, rangeBetween, selectable, type CollectionChoice, type PreviewEntry, type PreviewSession } from "./state.ts";
 import type { CollectionPreview } from "./use-collection-preview.ts";
 
 type Pane = "select" | "order";
@@ -278,7 +278,7 @@ function selectView(session: PreviewSession, query: string): SelectView {
 
 /**
  * Acts on the rows on screen, as it says: the select-all box (mixed while some are chosen),
- * 「只选还没导入的」, 「加载全部」 (stoppable), and the title filter once there are many rows.
+ * 「只选还不在此合集里的」, 「加载全部」 (stoppable), and the title filter once there are many rows.
  */
 function SelectToolbar(props: { preview: CollectionPreview; session: PreviewSession; view: SelectView; query: string; onQuery: (query: string) => void }) {
   const { t } = useTranslation();
@@ -288,6 +288,8 @@ function SelectToolbar(props: { preview: CollectionPreview; session: PreviewSess
   const chosenShown = view.choosable.filter((entry) => session.selected.has(entry.platformContentId)).length;
   const allState = chosenShown === 0 ? "none" : chosenShown === view.choosable.length ? "all" : "some";
   const canPage = session.nextOffset !== undefined;
+  const onlyOutside = view.choosable.filter(notInCollection);
+  const insideChosen = view.choosable.filter((entry) => !notInCollection(entry) && session.selected.has(entry.platformContentId)).length;
   return (
     <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-2 pb-2" data-testid="preview-toolbar">
       <Checkbox
@@ -304,14 +306,16 @@ function SelectToolbar(props: { preview: CollectionPreview; session: PreviewSess
         {t("shell.collectionPreview.shownScope", { count: view.shown.length })}
       </span>
       <TextAction
-        className="text-note"
+        className="text-note disabled:cursor-default disabled:text-muted disabled:no-underline"
+        // Disabled when the shown rows are already chosen exactly so: a click that changes nothing reads as broken.
+        disabled={onlyOutside.every((entry) => session.selected.has(entry.platformContentId)) && insideChosen === 0}
         onClick={() => {
-          preview.choose(session.url, ids(view.choosable.filter((entry) => !notImported(entry))), false);
-          preview.choose(session.url, ids(view.choosable.filter(notImported)), true);
+          preview.choose(session.url, ids(view.choosable.filter((entry) => !notInCollection(entry))), false);
+          preview.choose(session.url, ids(onlyOutside), true);
         }}
-        data-testid="preview-only-new"
+        data-testid="preview-only-not-in-collection"
       >
-        {t("shell.collectionPreview.onlyNew")}
+        {t("shell.collectionPreview.onlyNotInCollection")}
       </TextAction>
       {session.loadingAll ? (
         <span className="inline-flex items-center gap-1.5">

@@ -202,7 +202,7 @@ export const shell = {
     tabOrderCount: "处理顺序 · {{count}}",
     selectAll: "全选",
     shownScope: "在已显示的 {{count}} 项中",
-    onlyNew: "只选还没导入的",
+    onlyNotInCollection: "只选还不在此合集里的",
     loadAll: "加载全部",
     stopLoading: "停止加载",
     filter: "筛选标题",

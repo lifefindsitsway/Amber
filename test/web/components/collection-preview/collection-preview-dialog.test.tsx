@@ -144,7 +144,7 @@ describe("CollectionPreviewDialog choosing entries", () => {
     expect(chosen()).toEqual(["v1", "v3", "v4", "v6", "v7"]);
   });
 
-  it("selects all on screen with a three-state box, and only those not imported yet on request", async () => {
+  it("selects all on screen with a three-state box, and only those not in this collection yet on request", async () => {
     setup([{ url: LIST, pageSize: 50, entries: [...newEntries(2), { id: "v3", title: "第 3 讲", state: "in_collection" }, { id: "v4", title: "第 4 讲", state: "unavailable" }] }]);
     await loaded(4);
     const all = within(dialog()).getByRole("checkbox", { name: "全选" }) as HTMLInputElement;
@@ -158,8 +158,43 @@ describe("CollectionPreviewDialog choosing entries", () => {
     fireEvent.click(all);
     expect(chosen()).toEqual([]);
     expect(within(dialog()).getByTestId("preview-none-chosen").textContent).toBe("没有选择内容，这个合集不会导入");
-    fireEvent.click(within(dialog()).getByRole("button", { name: "只选还没导入的" }));
+    const onlyOutside = within(dialog()).getByRole("button", { name: "只选还不在此合集里的" }) as HTMLButtonElement;
+    expect(onlyOutside.disabled).toBe(false);
+    fireEvent.click(onlyOutside);
     expect(chosen()).toEqual(["v1", "v2"]);
+    // Clicking again would change nothing, so it says so by being disabled rather than doing nothing.
+    expect(onlyOutside.disabled).toBe(true);
+    fireEvent.click(all);
+    expect(chosen()).toEqual(["v1", "v2", "v3"]);
+    expect(onlyOutside.disabled).toBe(false);
+  });
+
+  it("counts entries already in the library or being processed as not in this collection, disabled while they are all chosen", async () => {
+    setup([
+      {
+        url: LIST,
+        pageSize: 50,
+        entries: [
+          ...newEntries(2),
+          { id: "lib", title: "资料库里的一讲", state: "in_library" },
+          { id: "run", title: "处理中的一讲", state: "processing" },
+          { id: "col", title: "已在合集的一讲", state: "in_collection" },
+        ],
+      },
+    ]);
+    await loaded(5);
+    // The defaults already pick every entry not in this collection: nothing for the action to change.
+    expect(chosen()).toEqual(["v1", "v2", "lib", "run"]);
+    const onlyOutside = within(dialog()).getByRole("button", { name: "只选还不在此合集里的" }) as HTMLButtonElement;
+    expect(onlyOutside.disabled).toBe(true);
+    // Leaving out one of them and adding the one already in the collection both enable it; it puts the defaults back.
+    fireEvent.click(within(dialog()).getByRole("checkbox", { name: /资料库里的一讲/ }));
+    fireEvent.click(within(dialog()).getByRole("checkbox", { name: /已在合集的一讲/ }));
+    expect(chosen()).toEqual(["v1", "v2", "run", "col"]);
+    expect(onlyOutside.disabled).toBe(false);
+    fireEvent.click(onlyOutside);
+    expect(chosen()).toEqual(["v1", "v2", "lib", "run"]);
+    expect(onlyOutside.disabled).toBe(true);
   });
 
   it("offers the title filter only past the threshold, and acts on the filtered rows", async () => {
