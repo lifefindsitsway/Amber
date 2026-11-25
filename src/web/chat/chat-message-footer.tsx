@@ -1,14 +1,12 @@
 import { Check, Copy, RotateCcw, Trash2 } from "lucide-react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ChatMessageDto } from "../../shared/dto/chat.ts";
 import { useProviders } from "../api/queries.ts";
 import { formatBeijingDateTime, formatBeijingDateTimeSeconds } from "../format.ts";
 import { LlmModelMark } from "../models/model-mark.tsx";
 import { FOCUS_RING } from "../ui/button.tsx";
-import { copyText } from "../ui/clipboard.ts";
+import { useCopyFeedback } from "../ui/copy-feedback.tsx";
 import { Tooltip } from "../ui/tooltip.tsx";
-import { useAutoDismiss } from "../use-auto-dismiss.ts";
 
 const ICON_BUTTON = `flex size-6 items-center justify-center rounded text-muted transition-colors duration-150 motion-reduce:transition-none hover:bg-sunken hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
 
@@ -31,8 +29,7 @@ export function ChatMessageFooter(props: {
   busy: boolean;
 }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState<number | undefined>(undefined);
-  useAutoDismiss(copied, () => setCopied(undefined));
+  const { copied, copy } = useCopyFeedback();
   const model = props.answer.modelRef;
   // The list the panel's model picker reads, shared through the query cache.
   const providers = useProviders();
@@ -41,21 +38,17 @@ export function ChatMessageFooter(props: {
   const time = finished ?? props.askedAt;
   return (
     <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted" data-testid="chat-turn-footer">
-      <Tooltip content={copied === undefined ? t("chat.turn.copy") : t("chat.turn.copied")}>
+      <Tooltip content={copied ? t("chat.turn.copied") : t("chat.turn.copy")}>
         <button
           type="button"
           className={ICON_BUTTON}
           disabled={!props.copyable}
           aria-label={t("chat.turn.copy")}
           data-testid="chat-turn-copy"
-          data-copied={copied === undefined ? undefined : "true"}
-          onClick={() => {
-            void copyText(props.copy()).then((ok) => {
-              if (ok) setCopied(Date.now());
-            });
-          }}
+          data-copied={copied ? "true" : undefined}
+          onClick={() => void copy(props.copy())}
         >
-          {copied === undefined ? <Copy size={13} aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
+          {copied ? <Check size={13} className="text-ok" aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
         </button>
       </Tooltip>
       {props.onRetry === undefined ? null : (

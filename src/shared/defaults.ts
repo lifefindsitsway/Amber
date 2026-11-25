@@ -578,3 +578,5 @@ export const COLLECTION_PREVIEW_FILTER_MIN = 20;
 export const PLATFORM_COLLECTION_RESOLVE_CONCURRENCY = 3;
 /** How long a transient "done" notice stays before it dismisses itself. */
 export const TOAST_DISMISS_MS = 6000;
+/** How long a copy button shows that it copied before it reads "copy" again. */
+export const COPY_FEEDBACK_MS = 1500;

@@ -11,7 +11,8 @@ export const auth = {
   },
   changePassword: {
     title: "设置新密码",
-    intro: "管理员重置了你的密码，请先设置一个新密码再继续使用。",
+    /** Shown whenever the password was set by someone else: a new account, an admin reset or a preset first admin. */
+    intro: "你正在使用临时密码。为了账号安全，请先设置一个只有你自己知道的新密码。",
     currentPassword: "当前密码",
     newPassword: "新密码",
     confirmPassword: "确认新密码",

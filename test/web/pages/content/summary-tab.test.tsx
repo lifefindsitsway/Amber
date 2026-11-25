@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BREAKPOINT_DRAWER_PX, PARAGRAPH_MAX_CHARS } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, COPY_FEEDBACK_MS, PARAGRAPH_MAX_CHARS } from "../../../../src/shared/defaults.ts";
 import type { ChapterRevisionDto, ChaptersDto } from "../../../../src/shared/dto/chapter.ts";
 import type { ContentSummariesDto } from "../../../../src/shared/dto/summary.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
@@ -305,13 +305,43 @@ describe("summary copy and context menu", () => {
     const copy = screen.getByRole("button", { name: "复制" });
     fireEvent.click(copy);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("## 摘要\n讲了重排序 [1:15]。"));
-    await waitFor(() => expect(copy.textContent).toBe("已复制"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
 
     expect(rightClick(within(body).getByText(/讲了重排序/))).toBe(true);
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["复制全文", "导出…"]);
     fireEvent.click(screen.getByTestId("context-menu-item-copy-all"));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(writeText).toHaveBeenLastCalledWith("## 摘要\n讲了重排序 [1:15]。");
+  });
+
+  it("says 已复制 only briefly, and again on every copy from the button or the menu", async () => {
+    const writeText = setup();
+    const body = await screen.findByTestId("summary-body");
+    await within(body).findByRole("button", { name: "1:15" });
+    const copy = screen.getByTestId("summary-copy");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      const passFeedback = () => act(async () => void (await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS)));
+      fireEvent.click(copy);
+      await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
+      await passFeedback();
+      expect(screen.getByRole("button", { name: "复制" })).toBe(copy);
+
+      fireEvent.click(copy);
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
+      await passFeedback();
+      expect(screen.getByRole("button", { name: "复制" })).toBe(copy);
+
+      // Copying the whole text from the menu confirms on the toolbar button too.
+      rightClick(within(body).getByText(/讲了重排序/));
+      fireEvent.click(screen.getByTestId("context-menu-item-copy-all"));
+      await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
+      await passFeedback();
+      expect(screen.getByRole("button", { name: "复制" })).toBe(copy);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens the export dialog from the menu", async () => {

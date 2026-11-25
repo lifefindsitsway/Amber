@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useLocation } from "react-router";
-import { BREAKPOINT_DRAWER_PX, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT, READER_LOCATE_VIEWPORT_RATIO, READER_MARGIN_DEFAULT, READER_MARGIN_MAX } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, COPY_FEEDBACK_MS, NOTE_SPAN_MAX_SEGMENTS, PARAGRAPH_GAP_MS, READER_FONT_SIZE_DEFAULT, READER_LINE_HEIGHT_DEFAULT, READER_LOCATE_VIEWPORT_RATIO, READER_MARGIN_DEFAULT, READER_MARGIN_MAX } from "../../../../src/shared/defaults.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, type ReaderTypography } from "../../../../src/shared/reader-typography.ts";
 import type { NoteViewDto } from "../../../../src/shared/dto/note.ts";
 import { selectionForExplain } from "../../../../src/web/chat/selection-toolbar.tsx";
@@ -141,6 +141,29 @@ describe("TranscriptTab reading view", () => {
     expect(screen.queryByTestId("transcript-chapters-stale")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "复制" }));
     expect(writeText).toHaveBeenCalledWith("今天讲检索。先看向量库。\n\n再看重排序。");
+  });
+
+  it("says 已复制 on the copy button only briefly, and again on every copy", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mockApi(contentRoutes());
+    renderApp(<ContentPage />, { route: "/contents/c1?tab=transcript&revision=r1", path: "/contents/:id" });
+    const reader = await screen.findByTestId("transcript-reader");
+    await waitFor(() => expect(reader.querySelector(`[data-segment-id='${CITED_SEGMENT_ID}']`)).not.toBeNull());
+    const copy = screen.getByTestId("transcript-copy");
+    expect(screen.getByRole("button", { name: "复制" })).toBe(copy);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      for (const times of [1, 2]) {
+        fireEvent.click(copy);
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(times));
+        await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
+        await act(async () => void (await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS)));
+        expect(screen.getByRole("button", { name: "复制" })).toBe(copy);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("heads a chapter with its title alone, in a heading, and a play button beside it named by where it plays from", async () => {
@@ -827,7 +850,7 @@ describe("TranscriptTab speakers: copy and apply-speakers link", () => {
 
   it("splits 复制 into the body alone and the body with each turn opening with its speaker's name", async () => {
     const { writeText } = await openSpeakers();
-    expect(screen.getByTestId("transcript-copy").textContent).toBe("复制");
+    expect(screen.getByRole("button", { name: "复制" })).toBe(screen.getByTestId("transcript-copy"));
     await pickCopy("transcript-copy-body");
     expect(writeText).toHaveBeenLastCalledWith(
       "开场\n\n今天讲检索。先看向量库。\n\n嗯。\n\n对，重排序是第二步，要把粗排的结果再精排一遍。\n\n第二段仍然是他在讲，所以还在同一个发言轮次里。\n\n这一句没有人认领，所以它属于未分配的轮次。\n\n正文\n\n再看重排序，它决定了最终展示给用户的排列顺序。",
@@ -836,6 +859,23 @@ describe("TranscriptTab speakers: copy and apply-speakers link", () => {
     expect(writeText).toHaveBeenLastCalledWith(
       "开场\n\n陈明：今天讲检索。先看向量库。\n\n发言人 2：嗯。\n\n陈明：对，重排序是第二步，要把粗排的结果再精排一遍。\n\n第二段仍然是他在讲，所以还在同一个发言轮次里。\n\n这一句没有人认领，所以它属于未分配的轮次。\n\n正文\n\n陈明：再看重排序，它决定了最终展示给用户的排列顺序。",
     );
+  });
+
+  it("says 已复制 on the menu button only briefly after either copy, and again on every copy", async () => {
+    const { writeText } = await openSpeakers();
+    const trigger = screen.getByTestId("transcript-copy");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      for (const [times, id] of [[1, "transcript-copy-body"], [2, "transcript-copy-speakers"], [3, "transcript-copy-body"]] as const) {
+        await pickCopy(id);
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(times));
+        await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(trigger));
+        await act(async () => void (await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS)));
+        expect(screen.getByRole("button", { name: "复制" })).toBe(trigger);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses a half-width colon and a space for a revision that is not Chinese", async () => {

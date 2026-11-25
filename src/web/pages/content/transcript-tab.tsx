@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, ChevronDown, Copy, NotebookPen, Pencil, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronDown, NotebookPen, Pencil, Sparkles } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -21,7 +21,7 @@ import { Button } from "../../ui/button.tsx";
 import { Checkbox } from "../../ui/checkbox.tsx";
 import { NativeSelect } from "../../ui/native-select.tsx";
 import { NOTE_TEXT_CLASS, TEXT_ACTION_CLASS, TextAction } from "../../ui/notice.tsx";
-import { copyText } from "../../ui/clipboard.ts";
+import { CopyLabel, useCopyFeedback } from "../../ui/copy-feedback.tsx";
 import { notesBySegment } from "../../notes/note-anchor.ts";
 import { useOptionalNotesUi } from "../../notes/note-ui-context.tsx";
 import { useContentNotes } from "../../notes/queries.ts";
@@ -803,8 +803,9 @@ function TranscriptReader(props: {
     if (speaker === undefined) return "";
     return t(isChineseLanguage(revision.language) ? "speakerReader.copy.prefixCjk" : "speakerReader.copy.prefixOther", { name: speakerLabel(t, speaker) });
   };
-  const copyBody = (): void => void copyText(readingText(rows));
-  const copyWithSpeakers = (): void => void copyText(readingTextWithSpeakers(sections, speakerPrefix));
+  const copyFeedback = useCopyFeedback();
+  const copyBody = (): void => void copyFeedback.copy(readingText(rows));
+  const copyWithSpeakers = (): void => void copyFeedback.copy(readingTextWithSpeakers(sections, speakerPrefix));
   const targetIndex = located.segmentId === undefined ? undefined : rowIndexOfSegment(shownRows, located.segmentId);
   const selectionPins = selection.pinnedKeys;
   const figurePins = figureRows.pinnedKeys;
@@ -1001,8 +1002,7 @@ function TranscriptReader(props: {
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <Button size="sm" variant="ghost" data-testid="transcript-copy">
-                <Copy size={14} />
-                {t("speakerReader.copy.menu")}
+                <CopyLabel copied={copyFeedback.copied} label={t("speakerReader.copy.menu")} />
                 <ChevronDown size={12} aria-hidden="true" />
               </Button>
             </DropdownMenu.Trigger>
@@ -1019,8 +1019,7 @@ function TranscriptReader(props: {
           </DropdownMenu.Root>
         ) : (
           <Button size="sm" variant="ghost" onClick={copyBody} data-testid="transcript-copy">
-            <Copy size={14} />
-            {t("common.action.copy")}
+            <CopyLabel copied={copyFeedback.copied} label={t("common.action.copy")} />
           </Button>
         )}
         {speakerMode ? (

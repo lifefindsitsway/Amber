@@ -80,7 +80,7 @@ describe("speaker mode decision", () => {
     // No speaker mode: no speaker switch in the typography popover and the plain copy button.
     fireEvent.click(screen.getByRole("button", { name: "Aa 阅读排版" }));
     expect(screen.queryByRole("switch", { name: "显示发言人" })).toBeNull();
-    expect(screen.getByTestId("transcript-copy").textContent).toBe("复制");
+    expect(screen.getByRole("button", { name: "复制" })).toBe(screen.getByTestId("transcript-copy"));
   });
 
   it("asks for no speakers when no sentence names one", async () => {

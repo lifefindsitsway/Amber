@@ -1,5 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { COPY_FEEDBACK_MS } from "../../../src/shared/defaults.ts";
 import type { ChatMessageDto } from "../../../src/shared/dto/chat.ts";
 import { ChatMessageFooter } from "../../../src/web/chat/chat-message-footer.tsx";
 import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
@@ -101,5 +102,24 @@ describe("ChatMessageFooter", () => {
     fireEvent.focus(screen.getByTestId("chat-turn-copy"));
     expect((await screen.findByRole("tooltip")).textContent).toBe("已复制");
     expect(screen.getByTestId("chat-turn-copy").getAttribute("aria-label")).toBe("复制回答");
+  });
+
+  it("shows the check only briefly, and again on every copy", async () => {
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    renderFooter(ANSWER);
+    const copy = screen.getByTestId("chat-turn-copy");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      for (const times of [1, 2]) {
+        fireEvent.click(copy);
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(times));
+        await waitFor(() => expect(copy.getAttribute("data-copied")).toBe("true"));
+        await act(async () => void (await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS)));
+        expect(copy.getAttribute("data-copied")).toBeNull();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

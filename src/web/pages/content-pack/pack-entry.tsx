@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { PackageOpen } from "lucide-react";
+import { Upload } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { contentPackImportJobDtoSchema } from "../../../shared/dto/content-pack.ts";
@@ -22,14 +22,14 @@ export function useExportPackWizard(): { open: (request: ExportRequest) => void;
   };
 }
 
-/** 「导入内容包」 and its dialog. */
-export function ImportPackButton(props: { variant?: "primary" | "secondary" | "ghost"; size?: "sm" | "md"; testId?: string }) {
+/** 「导入内容包」 and its dialog; a secondary button, the same size as other page-header actions. */
+export function ImportPackButton(props: { testId?: string }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button variant={props.variant ?? "secondary"} size={props.size ?? "md"} onClick={() => setOpen(true)} data-testid={props.testId ?? "pack-import-open"}>
-        <PackageOpen size={14} aria-hidden="true" />
+      <Button variant="secondary" onClick={() => setOpen(true)} data-testid={props.testId ?? "pack-import-open"}>
+        <Upload size={14} aria-hidden="true" />
         {t("contentPack.entry.importPack")}
       </Button>
       <ImportPackDialog open={open} onClose={() => setOpen(false)} />

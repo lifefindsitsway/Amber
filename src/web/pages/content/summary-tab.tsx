@@ -23,8 +23,8 @@ import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
 import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { usePlayerController } from "../../player/player-controller.tsx";
 import { Button, FOCUS_RING } from "../../ui/button.tsx";
-import { copyText } from "../../ui/clipboard.ts";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
+import { CopyLabel, useCopyFeedback } from "../../ui/copy-feedback.tsx";
 import { EmptyState, Loading, Spinner } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
@@ -143,7 +143,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
   const current = entry.current;
   const segments = useSegments(current?.transcriptRevisionId);
   const [history, setHistory] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const copyFeedback = useCopyFeedback();
   const [exporting, setExporting] = useState(false);
 
   const times = useMemo(() => new Map((segments.data ?? []).map((segment) => [segment.id, segment.startMs])), [segments.data]);
@@ -170,7 +170,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
   const generateId = useId();
   const windowSaved = useFocusAfterSave(windowMissing, () => document.getElementById(generateId));
   const copyAll = (text: string): void => {
-    void copyText(text).then((copied) => setCopied(copied));
+    void copyFeedback.copy(text);
   };
   const explainEntries = useExplainEntries();
   const bodyMenu = useContextMenuTarget<HTMLDivElement>((hit) => {
@@ -214,9 +214,9 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
           onClick={() => {
             if (current !== undefined) copyAll(plainText(current.body, timeOf));
           }}
+          data-testid="summary-copy"
         >
-          <Copy size={14} />
-          {copied ? t("common.action.copied") : t("common.action.copy")}
+          <CopyLabel copied={copyFeedback.copied} label={t("common.action.copy")} />
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setExporting(true)} data-testid="summary-export">
           <Download size={14} />

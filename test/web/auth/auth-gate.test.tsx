@@ -108,6 +108,9 @@ describe("AuthGate and /login", () => {
     await screen.findByTestId("login-form");
     fillLogin("alice", "temporary-password-1");
     expect(await screen.findByTestId("change-password-form")).toBeTruthy();
+    // A new account and an admin reset both land here: the wording fits either.
+    expect(screen.getByText("你正在使用临时密码。为了账号安全，请先设置一个只有你自己知道的新密码。")).toBeTruthy();
+    expect(screen.queryByText(/重置/)).toBeNull();
     expect(screen.queryByLabelText("当前密码")).toBeNull();
     fireEvent.change(screen.getByLabelText("新密码"), { target: { value: "short" } });
     fireEvent.change(screen.getByLabelText("确认新密码"), { target: { value: "short" } });

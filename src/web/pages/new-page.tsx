@@ -746,7 +746,7 @@ export function NewPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title={t("shell.newPage.title")} actions={<ImportPackButton variant="ghost" testId="new-pack-import" />} />
+      <PageHeader title={t("shell.newPage.title")} actions={<ImportPackButton testId="new-pack-import" />} />
       <PackActiveNotice className="mx-auto mt-4 w-[calc(100%-3rem)] max-w-2xl" />
       <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 py-8">
         {noLlm ? (

@@ -1,6 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { BREAKPOINT_DRAWER_PX } from "../../../../src/shared/defaults.ts";
+import { BREAKPOINT_DRAWER_PX, COPY_FEEDBACK_MS } from "../../../../src/shared/defaults.ts";
 import { ContentPage } from "../../../../src/web/pages/content/content-page.tsx";
 import { markdownExportBody, subtitleExportBody, translationsOf } from "../../../../src/web/pages/content/export-dialog.tsx";
 import { resetSubtitlePrefsMemory, writeTrack } from "../../../../src/web/player/subtitle-prefs.ts";
@@ -91,6 +91,31 @@ describe("ExportDialog", () => {
     });
     fireEvent.click(screen.getByTestId("export-copy"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(MARKDOWN));
+  });
+
+  it("says 已复制 on the copy button only briefly, and again on every copy", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mockApi({ ...contentRoutes(), "POST /api/contents/c1/export": { file: { filename: "第一讲.md", text: MARKDOWN } } });
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    fireEvent.click(await screen.findByTestId("summary-export"));
+    await screen.findByTestId("export-dialog");
+    const copy = screen.getByTestId("export-copy");
+    await waitFor(() => expect((copy as HTMLButtonElement).disabled).toBe(false));
+    // The label slot holds both texts so the button keeps its width; only the shown one names it.
+    expect(screen.getByRole("button", { name: "复制 Markdown" })).toBe(copy);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      for (const times of [1, 2]) {
+        fireEvent.click(copy);
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(times));
+        await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
+        await act(async () => void (await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS)));
+        expect(screen.getByRole("button", { name: "复制 Markdown" })).toBe(copy);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lists every lineage root next to the primary and disables bilingual files without a translation", async () => {

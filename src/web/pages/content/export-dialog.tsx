@@ -13,6 +13,7 @@ import { upgradeTrackPref, useSubtitlePrefs } from "../../player/subtitle-prefs.
 import { exportSaver } from "../../export/export-saver.ts";
 import { Button } from "../../ui/button.tsx";
 import { Checkbox } from "../../ui/checkbox.tsx";
+import { CopyLabel, useCopyFeedback } from "../../ui/copy-feedback.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { NativeSelect } from "../../ui/native-select.tsx";
@@ -136,7 +137,7 @@ function ExportForm(props: { templateId?: string }) {
   const [subtitleId, setSubtitleId] = useState<string | undefined>(undefined);
   const [translationId, setTranslationId] = useState<string | undefined>(undefined);
   const [backlinks, setBacklinks] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const copyFeedback = useCopyFeedback();
   // `undefined` = not touched: ticked whenever the chosen version names speakers.
   const [markdownSpeakers, setMarkdownSpeakers] = useState<boolean | undefined>(undefined);
   const [fileSpeakers, setFileSpeakers] = useState<boolean | undefined>(undefined);
@@ -161,8 +162,8 @@ function ExportForm(props: { templateId?: string }) {
       setSavedAs(undefined);
       const file = await fetchFile(action.body);
       if (action.copy === true) {
-        await navigator.clipboard?.writeText(await file.blob.text());
-        setCopied(true);
+        // Shows as copied only when the clipboard took it (plain http has no Clipboard API).
+        await copyFeedback.copy(await file.blob.text());
       } else {
         // Cancelling a save dialog is no export: nothing to confirm.
         setSavedAs(await exportSaver().save(file));
@@ -298,8 +299,7 @@ function ExportForm(props: { templateId?: string }) {
                 {...(downloadChoice.figures === true ? { "aria-describedby": copyNoteId } : {})}
                 data-testid="export-copy"
               >
-                <Copy size={14} />
-                {copied ? t("common.action.copied") : t("contentView.export.copyMarkdown")}
+                <CopyLabel copied={copyFeedback.copied} label={t("contentView.export.copyMarkdown")} />
               </Button>
               <Button size="sm" variant="primary" disabled={nothing || exportFile.isPending} onClick={() => exportFile.mutate({ body: markdownExportBody(downloadChoice) })} data-testid="export-markdown">
                 <Download size={14} />

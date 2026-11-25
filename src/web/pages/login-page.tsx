@@ -39,7 +39,7 @@ export function LoginPage() {
       queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== queryKeys.me[0] });
       queryClient.setQueryData(queryKeys.me, principal);
       // The new principal re-renders this page: straight on to the remembered page, or the
-      // change step for a reset password.
+      // change step for a temporary password.
       if (principal.mustChangePassword) {
         setVerified(password);
       }
