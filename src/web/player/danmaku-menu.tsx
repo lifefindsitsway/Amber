@@ -274,7 +274,7 @@ export function DanmakuMenu(props: {
                 onClick={fetch}
                 data-testid="player-danmaku-update"
               >
-                {pending ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
+                {pending ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
                 {t("danmaku.update")}
               </button>
               {cooling ? (

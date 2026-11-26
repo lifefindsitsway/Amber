@@ -22,7 +22,7 @@ import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
 import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
 import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { usePlayerController } from "../../player/player-controller.tsx";
-import { Button, FOCUS_RING } from "../../ui/button.tsx";
+import { Button, buttonClass, FOCUS_RING } from "../../ui/button.tsx";
 import { useContextMenuTarget, type MenuAction, type MenuHit } from "../../ui/context-menu.tsx";
 import { CopyLabel, useCopyFeedback } from "../../ui/copy-feedback.tsx";
 import { EmptyState, Loading, Spinner } from "../../ui/feedback.tsx";
@@ -198,7 +198,7 @@ function TemplatePanel(props: { entry: TemplateEntry }) {
       {current === undefined ? t("contentView.summary.generate") : t("contentView.summary.regenerate")}
     </Button>
   ) : (
-    <Link to="/settings/models" className={`inline-flex h-7 items-center rounded-md border border-line px-2 text-xs hover:bg-sunken ${FOCUS_RING}`} data-testid="summary-configure">
+    <Link to="/settings/models" className={buttonClass("secondary", "sm")} data-testid="summary-configure">
       {t("common.action.goConfigure")}
     </Link>
   );
@@ -530,7 +530,7 @@ function ChapterSection(props: { onSeek: (ms: number) => void }) {
             </span>
           )}
           {showConfigure ? (
-            <Link to="/settings/models" className={`inline-flex h-7 items-center rounded-md border border-line px-2 text-xs hover:bg-sunken ${FOCUS_RING}`} data-testid="chapters-configure">
+            <Link to="/settings/models" className={buttonClass("secondary", "sm")} data-testid="chapters-configure">
               {t("common.action.goConfigure")}
             </Link>
           ) : (

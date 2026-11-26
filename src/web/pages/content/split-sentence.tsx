@@ -90,7 +90,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
     return (
       <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1" title={reason} data-testid="split-disabled">
         <Button size="sm" variant="ghost" disabled data-testid="split-button">
-          <Scissors size={13} aria-hidden="true" />
+          <Scissors size={14} aria-hidden="true" />
           {t("speakerEditor.split.action")}
         </Button>
         <span className="text-note text-muted" data-testid="split-disabled-reason">
@@ -104,7 +104,7 @@ export function SplitControl(props: { index: number; segment: DraftSegment }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="split-control">
       <Button size="sm" variant="ghost" disabled={!hasCaret || !inRange} onClick={split} title={hasCaret ? undefined : t("speakerEditor.split.needCaret")} data-testid="split-button">
-        <Scissors size={13} aria-hidden="true" />
+        <Scissors size={14} aria-hidden="true" />
         {t("speakerEditor.split.action")}
       </Button>
       {hasCaret ? (

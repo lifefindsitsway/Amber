@@ -24,7 +24,7 @@ import { ConfirmDialog, appErrorOf } from "../components/confirm-dialog.tsx";
 import { ErrorView } from "../components/error-view.tsx";
 import { taskKindLabel } from "../components/task-kind-label.ts";
 import { latestStageRuns, ResendPrompt, runningStep, waitingUnits } from "../components/task-flow.tsx";
-import { Button, FOCUS_RING } from "../ui/button.tsx";
+import { Button, buttonClass, FOCUS_RING } from "../ui/button.tsx";
 import { Checkbox } from "../ui/checkbox.tsx";
 import { keepOpenForContextMenu, useContextMenuTarget, type MenuAction } from "../ui/context-menu.tsx";
 import { EmptyState, SkeletonRows } from "../ui/feedback.tsx";
@@ -395,7 +395,7 @@ function viewEntry(label: string, target: string, onNavigate: () => void, naviga
 function ViewLink(props: { target: string; onNavigate: () => void }) {
   const { t } = useTranslation();
   return (
-    <Link to={props.target} onClick={props.onNavigate} className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs font-medium hover:bg-sunken">
+    <Link to={props.target} onClick={props.onNavigate} className={buttonClass("secondary", "sm")}>
       {t("shell.tasks.view")}
     </Link>
   );

@@ -15,7 +15,7 @@ import { ContextWindowNotice } from "../../models/context-window-notice.tsx";
 import { useFocusAfterSave } from "../../models/use-focus-after-save.ts";
 import { useModelReadiness } from "../../models/use-model-readiness.ts";
 import { HighlightBand, highlightTone } from "../../player/timeline.tsx";
-import { Button } from "../../ui/button.tsx";
+import { Button, buttonClass } from "../../ui/button.tsx";
 import { EmptyState, Loading } from "../../ui/feedback.tsx";
 import { Callout, InlineNote } from "../../ui/notice.tsx";
 import { useContentPage } from "./content-context.tsx";
@@ -81,7 +81,7 @@ export function HighlightsTab() {
             {label}
           </Button>
         ) : (
-          <Link to="/settings/models" className="inline-flex h-7 items-center rounded-md border border-line px-2 text-xs" data-testid="highlights-configure">
+          <Link to="/settings/models" className={buttonClass("secondary", "sm")} data-testid="highlights-configure">
             {t("common.action.goConfigure")}
           </Link>
         )}

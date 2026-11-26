@@ -191,7 +191,7 @@ export function ParagraphControl(props: { index: number }) {
         {...(action.blocked === undefined ? {} : { "aria-describedby": reasonId })}
         data-testid="paragraph-action"
       >
-        <Icon size={13} aria-hidden="true" />
+        <Icon size={14} aria-hidden="true" />
         {t(`paragraphEditor.${action.kind}`)}
         <kbd className="rounded border border-line px-1 font-mono text-[11px] font-normal text-muted" aria-hidden="true">
           {apple ? t("paragraphEditor.shortcutMac") : t("paragraphEditor.shortcut")}

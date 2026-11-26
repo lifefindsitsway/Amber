@@ -144,7 +144,7 @@ export function TrashPage() {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-6 py-3">
         <InlineNote className="min-w-0 flex-1">{t("trash.hint", { days: TRASH_RETENTION_DAYS })}</InlineNote>
         <Button
-          size="sm"
+          size="md"
           variant={selecting ? "primary" : "secondary"}
           aria-pressed={selecting}
           disabled={!selecting && total === 0}
@@ -232,7 +232,7 @@ export function TrashPage() {
           }
         >
           <Button
-            size="sm"
+            size="md"
             variant="primary"
             loading={restoreMany.isPending}
             disabled={restoreBlock !== undefined}

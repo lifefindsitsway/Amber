@@ -291,6 +291,8 @@ describe("PlatformAccountsSection in the desktop client", () => {
     expect(await screen.findByText("无法从浏览器读取登录信息，请完全退出浏览器后重试，或导入 cookies.txt")).toBeTruthy();
     // The cookies.txt import stays available as the fallback.
     expect(screen.getAllByText("选择 cookies.txt 文件")).toHaveLength(2);
+    // A real button, reachable by Tab and opened by Enter or Space like any other.
+    expect(screen.getAllByRole("button", { name: "选择 cookies.txt 文件" })).toHaveLength(2);
     fireEvent.change(select, { target: { value: "chrome" } });
     unavailable = false;
     fireEvent.click(screen.getByTestId("browser-import"));

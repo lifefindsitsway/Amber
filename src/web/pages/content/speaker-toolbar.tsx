@@ -595,7 +595,7 @@ function MergeMenu(props: { from: SpeakerDto; targets: readonly SpeakerDto[]; co
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <Button size="sm" variant="ghost" disabled={props.disabled} aria-label={t("speakerEditor.panel.mergeFor", { name: label })} className="text-xs" data-testid="speaker-panel-merge">
-          <Combine size={13} aria-hidden="true" />
+          <Combine size={14} aria-hidden="true" />
           {t("speakerEditor.panel.merge")}
         </Button>
       </DropdownMenu.Trigger>

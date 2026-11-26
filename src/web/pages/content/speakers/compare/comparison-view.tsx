@@ -320,7 +320,7 @@ function DifferenceRow(props: {
           onClick={() => play(sentence.startMs, sentence.endMs)}
           data-testid="comparison-play"
         >
-          {props.rangePlayable ? <Play size={12} aria-hidden="true" /> : <StepForward size={12} aria-hidden="true" />}
+          {props.rangePlayable ? <Play size={14} aria-hidden="true" /> : <StepForward size={14} aria-hidden="true" />}
           {t(props.rangePlayable ? "speakerCompare.row.play" : "speakerCompare.row.jump")}
         </Button>
       )}

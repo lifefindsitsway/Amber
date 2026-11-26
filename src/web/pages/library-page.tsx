@@ -205,7 +205,7 @@ export function LibraryPage() {
           </span>
         )}
         <Button
-          size="sm"
+          size="md"
           variant={selecting ? "primary" : "secondary"}
           className="ml-auto"
           aria-pressed={selecting}
@@ -397,7 +397,7 @@ export function LibraryPage() {
         >
           <Button
             variant="danger"
-            size="sm"
+            size="md"
             disabled={deleteBlock !== undefined}
             aria-describedby={deleteBlock === "tooMany" ? "library-delete-limit" : undefined}
             onClick={() => setDeleting([...selected])}
@@ -408,7 +408,7 @@ export function LibraryPage() {
           </Button>
           <Button
             variant="primary"
-            size="sm"
+            size="md"
             disabled={block !== undefined}
             aria-describedby={block === "tooMany" ? "library-selection-limit" : undefined}
             onClick={() => wizard.open({ contentIds: selected })}

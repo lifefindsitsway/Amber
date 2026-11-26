@@ -31,4 +31,24 @@ describe("FilePicker", () => {
     expect(screen.getByText("talk.srt")).toBeTruthy();
     expect(screen.getByRole("button", { name: "字幕文件 选择文件" })).toBeTruthy();
   });
+
+  it("can stand as a compact named button without the file name, and reports the same file twice", () => {
+    const onFile = vi.fn();
+    render(<FilePicker accept=".txt" fileName={undefined} onFile={onFile} size="sm" hideName buttonLabel="选择 cookies.txt 文件" testId="picker" />);
+    const button = screen.getByRole("button", { name: "选择 cookies.txt 文件" });
+    expect(button.className).toContain("h-7");
+    expect(button.tabIndex).toBe(0);
+    expect(screen.queryByText("未选择文件")).toBeNull();
+    const input = screen.getByTestId("picker") as HTMLInputElement;
+    const click = vi.spyOn(input, "click");
+    button.focus();
+    fireEvent.click(button);
+    expect(click).toHaveBeenCalledTimes(1);
+    const file = new File(["x"], "cookies.txt");
+    fireEvent.change(input, { target: { files: [file] } });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(onFile).toHaveBeenCalledTimes(2);
+    expect(input.value).toBe("");
+  });
 });
+

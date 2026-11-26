@@ -1,6 +1,6 @@
 import { useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "./button.tsx";
+import { Button, type ButtonSize } from "./button.tsx";
 
 /**
  * A file chooser that opens only from its button. The native input stays hidden, so neither the
@@ -19,6 +19,12 @@ export function FilePicker(props: {
   /** Marks the field as failing validation, e.g. no file chosen yet. */
   invalid?: boolean | undefined;
   testId?: string;
+  /** Button height; the default matches form fields. */
+  size?: ButtonSize;
+  /** The button's text; 「选择文件」 when absent. */
+  buttonLabel?: string;
+  /** Leave out the chosen file's name, e.g. when the file is read at once into a field. */
+  hideName?: boolean;
 }) {
   const { t } = useTranslation();
   const input = useRef<HTMLInputElement>(null);
@@ -32,21 +38,28 @@ export function FilePicker(props: {
         hidden
         tabIndex={-1}
         data-testid={props.testId}
-        onChange={(event) => props.onFile(event.target.files?.[0] ?? undefined)}
+        onChange={(event) => {
+          props.onFile(event.target.files?.[0] ?? undefined);
+          // Cleared, so picking the same file again still reports it.
+          event.target.value = "";
+        }}
       />
       <Button
         id={buttonId}
+        {...(props.size === undefined ? {} : { size: props.size })}
         {...(props.labelledBy === undefined ? {} : { "aria-labelledby": `${props.labelledBy} ${buttonId}` })}
-        {...(props.label === undefined ? {} : { "aria-label": `${props.label} ${t("common.file.choose")}` })}
+        {...(props.label === undefined ? {} : { "aria-label": `${props.label} ${props.buttonLabel ?? t("common.file.choose")}` })}
         aria-describedby={props.describedBy}
         aria-invalid={props.invalid === true ? true : undefined}
         onClick={() => input.current?.click()}
       >
-        {t("common.file.choose")}
+        {props.buttonLabel ?? t("common.file.choose")}
       </Button>
-      <span className="min-w-0 truncate text-sm" title={props.fileName}>
-        {props.fileName ?? t("common.file.none")}
-      </span>
+      {props.hideName === true ? null : (
+        <span className="min-w-0 truncate text-sm" title={props.fileName}>
+          {props.fileName ?? t("common.file.none")}
+        </span>
+      )}
     </div>
   );
 }

@@ -298,23 +298,23 @@ export function CollectionPage() {
               <h2 className="text-sm font-semibold">{t("library.collection.items")}</h2>
               {reordering ? (
                 <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={cancelReorder} disabled={saveOrder.isPending}>
+                  <Button size="md" onClick={cancelReorder} disabled={saveOrder.isPending}>
                     {t("library.collection.reorderCancel")}
                   </Button>
-                  <Button size="sm" variant="primary" onClick={() => saveOrder.mutate(draft)} disabled={saveOrder.isPending}>
+                  <Button size="md" variant="primary" onClick={() => saveOrder.mutate(draft)} disabled={saveOrder.isPending}>
                     {t("library.collection.reorderSave")}
                   </Button>
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
                   {found.active || selecting || collection.items.length < 2 ? null : (
-                    <Button size="sm" onClick={enterReorder}>
+                    <Button size="md" onClick={enterReorder}>
                       <ArrowUpDown size={14} />
                       {t("library.collection.reorder")}
                     </Button>
                   )}
                   {collection.items.length === 0 ? null : (
-                    <Button size="sm" variant={selecting ? "primary" : "secondary"} aria-pressed={selecting} onClick={() => setSelected(selecting ? undefined : [])} data-testid="collection-select-mode">
+                    <Button size="md" variant={selecting ? "primary" : "secondary"} aria-pressed={selecting} onClick={() => setSelected(selecting ? undefined : [])} data-testid="collection-select-mode">
                       <CheckSquare size={14} aria-hidden="true" />
                       {selecting ? t("contentPack.select.exit") : t("contentPack.select.enter")}
                     </Button>
@@ -329,7 +329,7 @@ export function CollectionPage() {
                     onChange={(event) => setQuery(event.target.value)}
                     data-testid="collection-search"
                   />
-                  <Button size="sm" onClick={() => setTerminology(true)}>
+                  <Button size="md" onClick={() => setTerminology(true)}>
                     <BookA size={14} />
                     {t("library.collection.terminology")}
                   </Button>
@@ -378,7 +378,7 @@ export function CollectionPage() {
           }
         >
           <Button
-            size="sm"
+            size="md"
             loading={removeItems.isPending}
             onClick={() => {
               removeItems.reset();
@@ -390,7 +390,7 @@ export function CollectionPage() {
             {t("library.collection.selection.remove")}
           </Button>
           <Button
-            size="sm"
+            size="md"
             variant="danger"
             disabled={deleteBlock !== undefined || removeItems.isPending}
             aria-describedby={deleteBlock === "tooMany" ? "collection-delete-limit" : undefined}

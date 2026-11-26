@@ -168,7 +168,8 @@ export function usePagination(options: PaginationOptions): Pager {
   };
 }
 
-const BOX = "inline-flex h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-line bg-surface px-3 text-sm";
+// The pager sits in the list foot with the toolbar-sized (32 px) controls.
+const BOX = "inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-line bg-surface px-3 text-sm";
 
 /**
  * The pager under a list: total · page size · previous · current page ·
@@ -213,13 +214,13 @@ export function Pagination({ pager, className = "" }: { pager: Pager; className?
         </select>
         <ChevronDown size={12} aria-hidden="true" className="pointer-events-none absolute top-1/2 right-[4.5px] -translate-y-1/2 text-muted" />
       </span>
-      <Button disabled={page <= 1} onClick={() => pager.setPage(page - 1)}>
+      <Button size="md" disabled={page <= 1} onClick={() => pager.setPage(page - 1)}>
         {t("common.pagination.previous")}
       </Button>
       <span className={BOX} aria-current="page">
         {t("common.pagination.current", { page, count: pageCount })}
       </span>
-      <Button disabled={page >= pageCount} onClick={() => pager.setPage(page + 1)}>
+      <Button size="md" disabled={page >= pageCount} onClick={() => pager.setPage(page + 1)}>
         {t("common.pagination.next")}
       </Button>
       {/* noValidate: the browser would block an out-of-range page instead of letting it clamp. */}
@@ -237,7 +238,7 @@ export function Pagination({ pager, className = "" }: { pager: Pager; className?
           value={jump}
           onChange={(event) => setJump(event.target.value)}
         />
-        <Button type="submit">{t("common.pagination.jump")}</Button>
+        <Button size="md" type="submit">{t("common.pagination.jump")}</Button>
       </form>
     </nav>
   );

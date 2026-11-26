@@ -12,6 +12,7 @@ import { clearBilibiliPlayerSession, openBilibiliLogin } from "../../desktop/bri
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
 import { Button } from "../../ui/button.tsx";
+import { FilePicker } from "../../ui/file-picker.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { NativeSelect } from "../../ui/native-select.tsx";
 import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
@@ -304,21 +305,16 @@ function CookiesImport(props: { platform: Platform; server: boolean; onImported:
           onChange={(event) => setValue(event.target.value)}
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <label className="inline-flex h-8 cursor-pointer items-center rounded-md border border-line px-3 text-sm hover:bg-sunken">
-            {t("settings.platformAccounts.importFile")}
-            <input
-              type="file"
-              accept=".txt,text/plain"
-              className="sr-only"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file !== undefined) {
-                  void file.text().then(setValue);
-                }
-              }}
-            />
-          </label>
+          <FilePicker
+            accept=".txt,text/plain"
+            fileName={undefined}
+            size="sm"
+            hideName
+            buttonLabel={t("settings.platformAccounts.importFile")}
+            onFile={(file) => {
+              if (file !== undefined) void file.text().then(setValue);
+            }}
+          />
           <Button type="submit" variant="primary" size="sm" loading={put.isPending} disabled={value.trim() === ""}>
             {t("settings.platformAccounts.importSubmit")}
           </Button>

@@ -101,7 +101,7 @@ export function SpeakerIdentityCard(props: {
               </div>
               <div ref={footer} className="flex justify-end px-3 py-2.5">
                 <Button size="sm" onClick={() => setEditing(true)} data-testid="speaker-card-edit">
-                  <Pencil size={13} aria-hidden="true" />
+                  <Pencil size={14} aria-hidden="true" />
                   {t("speakerIdentity.card.edit")}
                 </Button>
               </div>

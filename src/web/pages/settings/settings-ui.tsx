@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ErrorView } from "../../components/error-view.tsx";
 import type { AppError } from "../../../shared/errors.ts";
 import { ApiError } from "../../api/client.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, type ButtonSize } from "../../ui/button.tsx";
 import { CONTROL_BASE, CONTROL_HEIGHT } from "../../ui/control.ts";
 import { Modal } from "../../ui/modal.tsx";
 import { FieldError, FieldHint, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
@@ -153,7 +153,7 @@ export function ConfirmButton(props: {
   disabled?: boolean;
   /** The confirmed action is under way: the button shows it and cannot be pressed again. */
   pending?: boolean;
-  size?: "sm" | "md";
+  size?: ButtonSize;
   testId?: string;
 }) {
   const { t } = useTranslation();

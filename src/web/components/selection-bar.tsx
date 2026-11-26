@@ -88,7 +88,7 @@ export function SelectionBar(props: {
       <span className="text-sm font-medium" aria-live="polite" data-testid={`${props.testIdPrefix}-selection-count`}>
         {t("contentPack.select.count", { count: props.count })}
       </span>
-      <Button size="sm" variant="ghost" onClick={props.onClear} data-testid={`${props.testIdPrefix}-selection-clear`}>
+      <Button size="md" variant="ghost" onClick={props.onClear} data-testid={`${props.testIdPrefix}-selection-clear`}>
         {t("contentPack.select.clear")}
       </Button>
       {props.notes}

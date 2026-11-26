@@ -12,7 +12,7 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { localTimeStamp, pickPackDestination } from "../../desktop/bridge.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { formatDateTime } from "../../format.ts";
-import { Button } from "../../ui/button.tsx";
+import { Button, buttonClass } from "../../ui/button.tsx";
 import { Checkbox } from "../../ui/checkbox.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
@@ -583,7 +583,7 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
               <a
                 href={downloadUrl(client, result.downloadPath)}
                 download={result.fileName}
-                className="inline-flex h-9 max-w-full items-center gap-1.5 rounded-md bg-accent-glow px-3 text-sm font-medium text-accent-ink hover:brightness-105"
+                className={`${buttonClass("primary")} max-w-full`}
                 data-testid="pack-export-download"
               >
                 <Download size={14} aria-hidden="true" className="shrink-0" />
