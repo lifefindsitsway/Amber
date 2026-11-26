@@ -21,6 +21,7 @@ import { Checkbox } from "../../ui/checkbox.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
+import { TwoStepButton } from "../../ui/two-step-button.tsx";
 import type { ContentSummariesDto } from "../../../shared/dto/summary.ts";
 import { transcriptDraftDtoSchema } from "../../../shared/dto/transcript.ts";
 import { translationsDtoSchema } from "../../../shared/dto/translation.ts";
@@ -291,16 +292,17 @@ export function RevisionDeleteDialog(props: {
         <>
           <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
           {blockers.draft > 0 ? (
-            <Button
-              // The second click is the step that throws the draft away.
-              variant={confirmDiscard ? "danger-solid" : "danger"}
+            <TwoStepButton
+              label={t("contentView.revisions.discardDraft")}
+              confirmLabel={t("contentView.revisions.discardDraftConfirm")}
+              onConfirm={() => discard.mutate()}
               loading={discard.isPending}
               disabled={busy}
-              onClick={() => (confirmDiscard ? discard.mutate() : setConfirmDiscard(true))}
+              // The drafts to throw away are those blocking this set; a different set asks again.
+              resetKey={ids.join(" ")}
+              onArmedChange={setConfirmDiscard}
               data-testid="revision-discard-draft"
-            >
-              {confirmDiscard ? t("contentView.revisions.discardDraftConfirm") : t("contentView.revisions.discardDraft")}
-            </Button>
+            />
           ) : null}
           {blocked && !revision.archived && !isPrimary ? (
             <Button loading={archive.isPending} disabled={busy || blockers.draft > 0} onClick={() => archive.mutate()} data-testid="revision-archive-instead">

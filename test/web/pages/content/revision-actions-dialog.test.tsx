@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RevisionActions, RevisionDeleteDialog, setBlockers, setHistoryArtifacts } from "../../../../src/web/pages/content/revision-actions-dialog.tsx";
 import { revision } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { confirmTwoStep, passTwoStepGuard } from "../../../fixtures/web/two-step.ts";
 
 const blockers = (overrides: Partial<ReturnType<typeof revision>["blockers"]> = {}) => ({
   children: 0,
@@ -118,10 +119,14 @@ describe("RevisionDeleteDialog", () => {
     });
     const discard = await screen.findByTestId("revision-discard-draft");
     expect((screen.getByTestId("revision-archive-instead") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "放弃草稿" })).toBe(discard);
+    expect(discard.className).not.toContain("text-danger");
+    expect(screen.queryByTestId("revision-discard-draft-hint")).toBeNull();
     fireEvent.click(discard);
     expect(api.calls.some((call) => call.method === "DELETE")).toBe(false);
-    expect(discard.textContent).toBe("确认放弃草稿");
+    expect(screen.getByRole("button", { name: "确认放弃草稿" })).toBe(discard);
     expect(screen.getByTestId("revision-discard-draft-hint")).toBeTruthy();
+    passTwoStepGuard();
     fireEvent.click(discard);
     // Only drafts whose base is in the delete set go, each at the version just read, so a save
     // from another window in between is refused rather than lost.
@@ -131,6 +136,28 @@ describe("RevisionDeleteDialog", () => {
         "/api/contents/c1/translations/ja/draft?version=1",
       ]),
     );
+  });
+
+  it("asks again once the delete set changes: ticking the later versions disarms the discard and hides its warning", async () => {
+    const target = revision("m1", { kind: "manual", parentRevisionId: "r1", descendantIds: ["m2"], blockers: blockers({ draft: 1 }) });
+    const { api } = render(target, {
+      "GET /api/contents/c1/transcript/draft": { body: { id: "d1", contentId: "c1", baseRevisionId: "m1", version: 4, segments: [], updatedAt: 1 } },
+      "GET /api/contents/c1/translations": { body: { activeTasks: [], translations: [] } },
+      "DELETE /api/contents/c1/transcript/draft": { status: 204 },
+    });
+    const discard = await screen.findByTestId("revision-discard-draft");
+    fireEvent.click(discard);
+    expect(discard.hasAttribute("data-armed")).toBe(true);
+    expect(screen.getByTestId("revision-discard-draft-hint")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("revision-delete-descendants"));
+    expect(discard.hasAttribute("data-armed")).toBe(false);
+    expect(screen.getByRole("button", { name: "放弃草稿" })).toBe(discard);
+    expect(screen.queryByTestId("revision-discard-draft-hint")).toBeNull();
+    // The press after the change arms again rather than discarding.
+    passTwoStepGuard();
+    fireEvent.click(discard);
+    expect(discard.hasAttribute("data-armed")).toBe(true);
+    expect(api.calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 
   it("leaves a transcript draft whose base is outside the delete set", async () => {
@@ -143,8 +170,7 @@ describe("RevisionDeleteDialog", () => {
       "DELETE /api/contents/c1/translations/ja/draft": { status: 204 },
     });
     const discard = await screen.findByTestId("revision-discard-draft");
-    fireEvent.click(discard);
-    fireEvent.click(discard);
+    confirmTwoStep(discard);
     await waitFor(() => expect(api.calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1/translations/ja/draft?version=1"]));
   });
 

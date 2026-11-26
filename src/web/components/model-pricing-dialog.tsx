@@ -21,6 +21,7 @@ import { Modal } from "../ui/modal.tsx";
 import { NativeSelect } from "../ui/native-select.tsx";
 import { FieldError, FieldHint, NOTE_TEXT_CLASS } from "../ui/notice.tsx";
 import { TextArea, TextInput } from "../ui/text-field.tsx";
+import { TwoStepButton } from "../ui/two-step-button.tsx";
 import { ErrorView } from "./error-view.tsx";
 
 /** The unit whose absence leaves cache-hit requests out of a cost estimate. */
@@ -115,7 +116,8 @@ export function ModelPricingDialog(props: {
   );
   const [note, setNote] = useState(props.pricing?.note ?? "");
   const [touched, setTouched] = useState(false);
-  const [pending, setPending] = useState(false);
+  // Which of the two requests is under way, so the right button shows it.
+  const [pending, setPending] = useState<"save" | "clear" | undefined>(undefined);
   const [error, setError] = useState<unknown>(null);
 
   const used = new Set(items.map((item) => item.unit));
@@ -135,13 +137,13 @@ export function ModelPricingDialog(props: {
   const noteErrorId = `${formId}-note-error`;
 
   const submit = (pricing: ModelPricing | null): void => {
-    setPending(true);
+    setPending(pricing === null ? "clear" : "save");
     setError(null);
     props
       .onSubmit(pricing)
       .then(() => props.onClose())
       .catch((failure: unknown) => setError(failure))
-      .finally(() => setPending(false));
+      .finally(() => setPending(undefined));
   };
 
   return (
@@ -153,12 +155,18 @@ export function ModelPricingDialog(props: {
       footer={
         <>
           {props.pricing === undefined ? null : (
-            <Button variant="danger" className="mr-auto" disabled={pending} onClick={() => submit(null)}>
-              {t("settings.pricing.clear")}
-            </Button>
+            <TwoStepButton
+              className="mr-auto"
+              label={t("settings.pricing.clear")}
+              confirmLabel={t("settings.pricing.clearConfirm")}
+              onConfirm={() => submit(null)}
+              loading={pending === "clear"}
+              disabled={pending === "save"}
+              data-testid="pricing-clear"
+            />
           )}
           <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
-          <Button type="submit" form={formId} variant="primary" loading={pending} disabled={conflict !== undefined}>
+          <Button type="submit" form={formId} variant="primary" loading={pending === "save"} disabled={conflict !== undefined || pending === "clear"}>
             {t("common.action.save")}
           </Button>
         </>

@@ -5,6 +5,7 @@ import { ApiError } from "../../../src/web/api/client.ts";
 import { formatPricing, ModelPricingControl, ModelPricingDialog } from "../../../src/web/components/model-pricing-dialog.tsx";
 import { initI18n } from "../../../src/web/i18n.ts";
 import { renderApp } from "../../fixtures/web/render.tsx";
+import { passTwoStepGuard } from "../../fixtures/web/two-step.ts";
 
 const t = initI18n().t;
 
@@ -87,10 +88,22 @@ describe("ModelPricingDialog", () => {
       },
     });
     expect((within(form).getByLabelText("单价 1") as HTMLInputElement).value).toBe("0.2");
-    fireEvent.click(within(form).getByRole("button", { name: "清除价格" }));
-    expect(await within(form).findByRole("alert")).toBeTruthy();
+    const clear = within(form).getByRole("button", { name: "清除价格" });
+    expect(clear.className).not.toContain("text-danger");
+    // The first press only asks: nothing is sent, and a quick second press is a double click.
+    fireEvent.click(clear);
+    expect(within(form).getByRole("button", { name: "确认清除价格" })).toBe(clear);
+    fireEvent.click(clear);
+    expect(onSubmit).not.toHaveBeenCalled();
+    passTwoStepGuard();
+    fireEvent.click(clear);
     expect(onSubmit).toHaveBeenCalledWith(null);
+    expect(await within(form).findByRole("alert")).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
+    // After the failure the button reads 清除价格 again, and trying again asks again.
+    expect(within(form).getByRole("button", { name: "清除价格" })).toBe(clear);
+    fireEvent.click(clear);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });
 

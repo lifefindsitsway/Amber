@@ -6,6 +6,7 @@ import { INITIAL_SCROLL_ATTRIBUTE, type InitialScroll, type InitialScrollOutcome
 import { isChineseLanguage, SentenceEditor, withTexts, type SentenceEditorHandle } from "../../../../src/web/pages/content/sentence-editor.tsx";
 import type { DraftSyncSnapshot } from "../../../../src/web/pages/content/use-draft-sync.ts";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
+import { passTwoStepGuard } from "../../../fixtures/web/two-step.ts";
 
 interface Item {
   id: string;
@@ -828,5 +829,51 @@ describe("SentenceEditor paragraphs and undo history", () => {
     fireEvent.click(screen.getByTestId("editor-undo"));
     expect(values()).toEqual(["二"]);
     expect((screen.getByTestId("editor-undo") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("SentenceEditor 放弃草稿", () => {
+  function renderDiscard(sync: DraftSyncSnapshot) {
+    mockApi({});
+    const onDiscard = vi.fn();
+    renderApp(
+      <SentenceEditor<Item>
+        items={[{ id: "s1", text: "一" }]}
+        onItemsChange={vi.fn()}
+        keyOf={keyOf}
+        renderHeader={header}
+        textLabel={label}
+        layout="compact"
+        fillers
+        deleteWholeSentences
+        sync={sync}
+        onRetry={vi.fn()}
+        onLoadLatest={vi.fn()}
+        onKeepMine={vi.fn()}
+        onDiscard={onDiscard}
+        onExit={vi.fn()}
+        onCommit={vi.fn()}
+        busy={false}
+      />,
+    );
+    return { onDiscard, button: screen.getByTestId("draft-discard") };
+  }
+
+  it("is a neutral button that discards only on a confirmed second press", () => {
+    const { onDiscard, button } = renderDiscard(SAVED);
+    expect(button.className).not.toContain("text-danger");
+    fireEvent.click(button);
+    expect(button.className).toContain("bg-danger");
+    expect(screen.getByRole("button", { name: "确认放弃草稿" })).toBe(button);
+    fireEvent.click(button);
+    expect(onDiscard).not.toHaveBeenCalled();
+    passTwoStepGuard();
+    fireEvent.click(button);
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the discard under way", () => {
+    const { button } = renderDiscard({ ...SAVED, phase: "discarding" });
+    expect(button.getAttribute("aria-busy")).toBe("true");
   });
 });

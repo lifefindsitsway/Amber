@@ -76,6 +76,7 @@ export const editor = {
     emptyCount: "{{count}} 句译文为空",
     outdated: "此草稿基于较早的译文，提交前需要确认",
     outdatedDiscard: "丢弃草稿并编辑当前译文",
+    outdatedDiscardConfirm: "确认丢弃草稿",
     stale: "原文已更新：这份译文基于旧版原文，提交手改后此提示仍会保留",
     baseUnavailable: "此草稿依据的译文已归档或删除，只能丢弃草稿",
     conflictTitle: "当前译文已变化",

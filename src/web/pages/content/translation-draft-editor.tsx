@@ -14,6 +14,7 @@ import { Button } from "../../ui/button.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
 import { Callout, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { TwoStepButton } from "../../ui/two-step-button.tsx";
 import { useContentPage } from "./content-context.tsx";
 import { contentKeys, fetchAllSegments, useRevisions, useSegments, useTranslations } from "./content-data.ts";
 import { languageLabel } from "./labels.ts";
@@ -188,9 +189,14 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
         <p>{t("editor.translation.baseUnavailable")}</p>
         {discard.error instanceof ApiError ? <ErrorView error={discard.error.error} /> : null}
         <div className="flex gap-2">
-          <Button variant="danger" size="sm" loading={discard.isPending} onClick={() => discard.mutate(false)} data-testid="draft-discard">
-            {t("editor.toolbar.discard")}
-          </Button>
+          <TwoStepButton
+            size="sm"
+            label={t("editor.toolbar.discard")}
+            confirmLabel={t("editor.toolbar.discardConfirm")}
+            onConfirm={() => discard.mutate(false)}
+            loading={discard.isPending}
+            data-testid="draft-discard"
+          />
           <Button size="sm" onClick={exit}>
             {t("editor.toolbar.exit")}
           </Button>
@@ -250,9 +256,14 @@ function TranslationDraftSession(props: { language: string; round: number; onClo
                 className="mx-4 mt-2"
                 testId="translation-draft-outdated"
                 actions={
-                  <Button size="sm" variant="danger" loading={discard.isPending} onClick={() => discard.mutate(true)} data-testid="translation-draft-restart">
-                    {t("editor.translation.outdatedDiscard")}
-                  </Button>
+                  <TwoStepButton
+                    size="sm"
+                    label={t("editor.translation.outdatedDiscard")}
+                    confirmLabel={t("editor.translation.outdatedDiscardConfirm")}
+                    onConfirm={() => discard.mutate(true)}
+                    loading={discard.isPending}
+                    data-testid="translation-draft-restart"
+                  />
                 }
               >
                 {t("editor.translation.outdated")}

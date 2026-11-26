@@ -52,6 +52,7 @@ export const settings = {
     noteTooLong: "备注最多 {{max}} 个字符",
     invalidAmount: "请填写非负数字，最多 10 位小数",
     clear: "清除价格",
+    clearConfirm: "确认清除价格",
     unset: "未设置价格",
     conflict: {
       audio_units: "音频只能选一种计费单位：秒、分钟、小时三选一。",

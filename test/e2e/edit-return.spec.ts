@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { TWO_STEP_GUARD_MS } from "../../src/shared/defaults.ts";
 import { READER_TYPOGRAPHY_DEFAULTS, readerTypographyKey } from "../../src/shared/reader-typography.ts";
 import { installMockBackend, LOCAL_CONTENT, segmentId } from "./mock-backend.ts";
 import {
@@ -356,7 +357,10 @@ test.describe("a 3,000-sentence lecture", () => {
     await typeInto(page, indexOf(clicked.id), "改");
     await waitInPage(page, () => document.querySelector('[data-testid="draft-save-status"]')?.textContent === "自动保存");
     expect(state.draft?.version).toBe(1);
+    // 放弃草稿 confirms in place: a second press counts only once the guard after the first has passed.
     await page.getByTestId("draft-discard").click();
+    await expect(page.getByTestId("draft-discard")).toHaveAttribute("data-armed", "");
+    await page.waitForTimeout(TWO_STEP_GUARD_MS);
     await page.getByTestId("draft-discard").click();
     expect(await returnOutcome(page, SPEAKERS_REVISION)).toBe("exact");
     expect(state.draft).toBeUndefined();

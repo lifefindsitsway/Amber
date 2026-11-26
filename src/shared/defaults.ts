@@ -580,3 +580,9 @@ export const PLATFORM_COLLECTION_RESOLVE_CONCURRENCY = 3;
 export const TOAST_DISMISS_MS = 6000;
 /** How long a copy button shows that it copied before it reads "copy" again. */
 export const COPY_FEEDBACK_MS = 1500;
+/**
+ * After a two-step button asks for confirmation, presses within this time do not confirm: a
+ * double click or a held Enter key would otherwise run the destructive action the user only
+ * meant to start.
+ */
+export const TWO_STEP_GUARD_MS = 500;

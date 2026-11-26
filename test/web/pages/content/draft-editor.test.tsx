@@ -9,6 +9,7 @@ import { contentDetail, revision, segment, SEGMENTS } from "../../../fixtures/we
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
 import { recognition, segmentRoute, type Row } from "../../../fixtures/web/speaker-compare.ts";
 import { commitBodies, editorRoutes, puts as speakerPuts, renderSpeakerEditor, talk } from "../../../fixtures/web/speaker-editor.tsx";
+import { confirmTwoStep, passTwoStepGuard } from "../../../fixtures/web/two-step.ts";
 
 const NOT_FOUND = { status: 404, body: { error: { class: "not_found", code: "not_found", retryDisposition: "never", userMessage: "" } } };
 
@@ -117,10 +118,13 @@ describe("DraftEditor", () => {
     const onClose = renderEditor();
     await screen.findByDisplayValue("今天讲检索。");
     const discard = screen.getByTestId("draft-discard");
-    expect(discard.textContent).toBe("放弃草稿");
+    expect(screen.getByRole("button", { name: "放弃草稿" })).toBe(discard);
     fireEvent.click(discard);
-    expect(discard.textContent).toBe("确认放弃草稿");
+    expect(screen.getByRole("button", { name: "确认放弃草稿" })).toBe(discard);
+    // A second press right away is a double click, not the confirmation.
+    fireEvent.click(discard);
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    passTwoStepGuard();
     fireEvent.click(discard);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/contents/c1/transcript/draft?version=3"]);
@@ -134,8 +138,7 @@ describe("DraftEditor", () => {
     });
     const onClose = renderEditor();
     await screen.findByDisplayValue("今天讲检索。");
-    fireEvent.click(screen.getByTestId("draft-discard"));
-    fireEvent.click(screen.getByTestId("draft-discard"));
+    confirmTwoStep(() => screen.getByTestId("draft-discard"));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls.some((call) => call.method === "DELETE" || call.method === "PUT")).toBe(false);
   });
@@ -233,8 +236,7 @@ describe("DraftEditor close result", () => {
     mockApi({ ...BASE, "GET /api/contents/c1/transcript/draft": { body: savedDraft(3) }, "DELETE /api/contents/c1/transcript/draft": { status: 204 } });
     const onClose = renderEditor();
     await screen.findByDisplayValue("今天讲检索。");
-    fireEvent.click(screen.getByTestId("draft-discard"));
-    fireEvent.click(screen.getByTestId("draft-discard"));
+    confirmTwoStep(() => screen.getByTestId("draft-discard"));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(onClose.mock.calls).toEqual([[{ kind: "discarded" }]]);
     // The editor is still on screen here (its parent did not unmount it): a later 退出 reports nothing more.

@@ -9,6 +9,7 @@ import { Checkbox } from "../../ui/checkbox.tsx";
 import { Banner, TextAction } from "../../ui/notice.tsx";
 import { TextInput } from "../../ui/text-field.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
+import { TwoStepButton } from "../../ui/two-step-button.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
 import type { InitialScroll, InitialScrollOutcome } from "./edit-position.ts";
 import { startInitialScroll } from "./editor-initial-scroll.ts";
@@ -184,7 +185,6 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
     undoNow.current = next(undoNow.current);
     setUndoState(undoNow.current);
   }, []);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmExit, setConfirmExit] = useState(false);
 
   // Stable callbacks for the memoized rows read the latest props through refs.
@@ -428,18 +428,16 @@ export function SentenceEditor<S extends SentenceItem>(props: SentenceEditorProp
             <Undo2 size={14} />
             {t("editor.toolbar.undo")}
           </Button>
-          <Button
+          <TwoStepButton
             size="sm"
-            // The second press is the final, unrecoverable step: it takes the filled destructive look.
-            variant={confirmDiscard ? "danger-solid" : "danger"}
+            label={t("editor.toolbar.discard")}
+            confirmLabel={t("editor.toolbar.discardConfirm")}
+            onConfirm={props.onDiscard}
             disabled={busy}
-            onClick={() => (confirmDiscard ? props.onDiscard() : setConfirmDiscard(true))}
-            onBlur={() => setConfirmDiscard(false)}
+            loading={props.sync.phase === "discarding"}
             title={t("editor.toolbar.discardHint")}
             data-testid="draft-discard"
-          >
-            {confirmDiscard ? t("editor.toolbar.discardConfirm") : t("editor.toolbar.discard")}
-          </Button>
+          />
           <Button size="sm" disabled={props.sync.phase === "committing" || props.sync.phase === "discarding"} onClick={() => (props.sync.unsaved ? setConfirmExit(true) : props.onExit())} data-testid="draft-exit">
             {t("editor.toolbar.exit")}
           </Button>

@@ -6,6 +6,7 @@ import { ContentPageProvider } from "../../../../src/web/pages/content/content-c
 import { TranslationDraftEditor } from "../../../../src/web/pages/content/translation-draft-editor.tsx";
 import { contentDetail, revision, segment, SEGMENTS } from "../../../fixtures/web/content-data.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
+import { passTwoStepGuard } from "../../../fixtures/web/two-step.ts";
 
 vi.mock("../../../../src/web/player/subtitle-prefs.ts", async (original) => ({
   ...(await original<object>()),
@@ -126,7 +127,14 @@ describe("TranslationDraftEditor", () => {
     renderEditor();
     await screen.findByDisplayValue("Old.");
     expect(screen.getByTestId("translation-draft-outdated").textContent).toContain("此草稿基于较早的译文，提交前需要确认");
-    fireEvent.click(screen.getByTestId("translation-draft-restart"));
+    const restart = screen.getByTestId("translation-draft-restart");
+    expect(restart.className).not.toContain("text-danger");
+    fireEvent.click(restart);
+    expect(screen.getByRole("button", { name: "确认丢弃草稿" })).toBe(restart);
+    fireEvent.click(restart);
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    passTwoStepGuard();
+    fireEvent.click(restart);
     expect(await screen.findByDisplayValue("Today: retrieval. (v2)")).toBeTruthy();
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([`${URL}?version=4`]);
     expect(screen.queryByTestId("translation-draft-outdated")).toBeNull();
@@ -193,7 +201,13 @@ describe("TranslationDraftEditor", () => {
     const onClose = renderEditor();
     expect(await screen.findByTestId("translation-draft-unavailable")).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull();
-    fireEvent.click(screen.getByTestId("draft-discard"));
+    const discard = screen.getByTestId("draft-discard");
+    expect(discard.className).not.toContain("text-danger");
+    fireEvent.click(discard);
+    expect(screen.getByRole("button", { name: "确认放弃草稿" })).toBe(discard);
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    passTwoStepGuard();
+    fireEvent.click(discard);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual([`${URL}?version=3`]);
   });

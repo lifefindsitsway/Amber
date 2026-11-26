@@ -4,6 +4,7 @@ import { encodeModelKey } from "../../../../src/shared/dto/usage-analytics.ts";
 import { ModelsSection } from "../../../../src/web/pages/settings/models-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 import { chooseOption, openSelect, selectGroups, selectOptionNames, stubSelectLayout } from "../../../fixtures/web/select.ts";
+import { confirmTwoStep } from "../../../fixtures/web/two-step.ts";
 
 const FLAGS = { stream: "unknown", tools: "unknown", structuredOutput: "unknown", vision: "unknown", audioInput: "unknown", reasoning: "unknown" };
 
@@ -226,7 +227,7 @@ describe("ModelsSection", () => {
       "cache_write_1h_tokens_per_million",
       "per_request",
     ]);
-    fireEvent.click(within(dialog).getByRole("button", { name: "清除价格" }));
+    confirmTwoStep(within(dialog).getByRole("button", { name: "清除价格" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PUT")?.body).toEqual({ modelId: "model-a", pricing: null }));
   });
 
