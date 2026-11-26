@@ -276,18 +276,56 @@ export async function installContentPackMock(page: Page, scenario: PackScenario,
   return { calls, decisions: () => decisions };
 }
 
+/** An update the fake shell's updater announces. */
+export interface FakeUpdate {
+  version: string;
+  notes?: string;
+}
+
+/**
+ * The test's hand on the fake shell's update download, as `window.__AMBER_E2E_UPDATE__`:
+ * each `update_download` waits until the test settles it, and the test sends its events.
+ */
+export interface FakeUpdateDriver {
+  /** How many times `update_download` / `update_install` were called. */
+  downloads: number;
+  installs: number;
+  /** Sends one event on the running download's channel. */
+  emit(message: unknown): void;
+  /** Ends the running download successfully, or with the shell's structured failure. */
+  finish(): void;
+  fail(error: unknown): void;
+}
+
 /**
  * Makes the page believe it runs in the desktop client: `isTauri`, the sidecar endpoint at
  * the page's own origin (the mock backend answers it) and the three pack dialogs, which
- * hand back the paths given here with a test grant. Any other shell command answers null.
+ * hand back the paths given here with a test grant. With `update`, the updater's check finds
+ * that version and the download is driven by the test (`FakeUpdateDriver`); without it the
+ * check finds nothing. Any other shell command answers null.
  */
-export async function installFakeDesktopShell(page: Page, picks: { destination?: string; source?: string; originalsParent?: string }): Promise<void> {
+export async function installFakeDesktopShell(page: Page, picks: { destination?: string; source?: string; originalsParent?: string; update?: FakeUpdate }): Promise<void> {
   await page.addInitScript((given) => {
     let callback = 0;
     const grant = (path: string, purpose: string) => ({ path, grant: { path, purpose, expiresAt: Date.now() + 300_000, sig: "e2e-signature" } });
     const shell = window as unknown as Record<string, unknown>;
     shell["isTauri"] = true;
     shell["__AMBER_E2E_SHELL_CALLS__"] = [];
+    let running: { channel: { onmessage: (message: unknown) => void }; resolve: () => void; reject: (error: unknown) => void } | undefined;
+    const driver = {
+      downloads: 0,
+      installs: 0,
+      emit: (message: unknown) => running?.channel.onmessage(message),
+      finish: () => {
+        running?.resolve();
+        running = undefined;
+      },
+      fail: (error: unknown) => {
+        running?.reject(error);
+        running = undefined;
+      },
+    };
+    shell["__AMBER_E2E_UPDATE__"] = driver;
     shell["__TAURI_INTERNALS__"] = {
       transformCallback: () => (callback += 1),
       unregisterCallback: () => undefined,
@@ -305,6 +343,17 @@ export async function installFakeDesktopShell(page: Page, picks: { destination?:
             return given.originalsParent === undefined ? null : grant(`${given.originalsParent}/Amber-Imported-${String(args["localStamp"])}`, "pack_originals_dir");
           case "plugin:event|listen":
             return (callback += 1);
+          case "plugin:updater|check":
+            // The metadata the updater plugin builds its `Update` from.
+            return given.update === undefined ? null : { rid: 41, currentVersion: "0.0.1", version: given.update.version, date: null, body: given.update.notes ?? null, rawJson: {} };
+          case "update_download":
+            driver.downloads += 1;
+            return new Promise<void>((resolve, reject) => {
+              running = { channel: args["onEvent"] as { onmessage: (message: unknown) => void }, resolve, reject };
+            });
+          case "update_install":
+            driver.installs += 1;
+            return null;
           default:
             return null;
         }

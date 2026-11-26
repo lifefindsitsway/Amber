@@ -1,12 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window only: sidecar handshake and diagnostics, event listening, app version, updater, the shell's file, cache-directory (pick, create-and-allow, open folder), bilibili login and player-session clearing, master-key commands, backup destination / inspection / originals directory / restore, content pack destination / source / originals directory, update-install registration, the resumable update download and its install, export saving (save dialog plus writing the file it returned), saving burn products and cached media, notifications, opening http(s) links and making the window fullscreen when the page enters fullscreen. Remote content (iframes, the bilibili login window) gets no IPC.",
+  "description": "Main window only: sidecar handshake and diagnostics, event listening, app version, the update check (download and install go through the shell's own commands below), the shell's file, cache-directory (pick, create-and-allow, open folder), bilibili login and player-session clearing, master-key commands, backup destination / inspection / originals directory / restore, content pack destination / source / originals directory, update-install registration, the resumable update download and its install, export saving (save dialog plus writing the file it returned), saving burn products and cached media, notifications, opening http(s) links and making the window fullscreen when the page enters fullscreen. Remote content (iframes, the bilibili login window) gets no IPC.",
   "windows": ["main"],
   "permissions": [
     "core:event:default",
     "core:app:allow-version",
-    "updater:default",
+    "updater:allow-check",
     "core:window:allow-set-fullscreen",
     "allow-sidecar-endpoint",
     "allow-shell-diagnostics",

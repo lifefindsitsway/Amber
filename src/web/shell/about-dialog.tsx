@@ -5,13 +5,14 @@ import { ApiError } from "../api/client.ts";
 import { useVersion } from "../api/queries.ts";
 import { ErrorView } from "../components/error-view.tsx";
 import { UpdateProgressLine } from "../desktop/desktop-integration.tsx";
+import { UpdateFailureNotice } from "../desktop/update-failure-notice.tsx";
 import { AUTO_CHECK_KEY, autoCheckEnabled, useBackupBusy, useUpdater, type UpdateState } from "../desktop/updater.ts";
 import { useDesktop } from "../desktop/use-desktop.ts";
 import { Button } from "../ui/button.tsx";
 import { Checkbox } from "../ui/checkbox.tsx";
 import { Loading } from "../ui/feedback.tsx";
 import { Modal } from "../ui/modal.tsx";
-import { Callout, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
 
 const LICENSE = "AGPL-3.0";
 
@@ -69,12 +70,6 @@ function useStatusLine(update: UpdateState): string | undefined {
     case "ready_to_install":
     case "installing":
       return t("shell.about.update.readyToInstall", { version: update.version ?? "" });
-    case "failed": {
-      const reason = update.error?.message ?? "";
-      if (update.error?.step === "download") return t("shell.about.update.downloadFailed", { reason });
-      if (update.error?.step === "install") return t("shell.about.update.installFailed", { reason });
-      return t("shell.about.update.failed", { reason });
-    }
     default:
       return undefined;
   }
@@ -97,20 +92,15 @@ function UpdateArea() {
     }
   };
   const line = useStatusLine(update);
+  const failure = update.status === "failed" ? update.error : undefined;
   return (
     <section className="mt-6 border-t border-line pt-6" data-testid="about-update">
       <h3 className="mb-3 text-sm font-semibold">{t("shell.about.update.title")}</h3>
-      {line === undefined ? null : (
+      {line === undefined && failure === undefined ? null : (
         // One element across states, so the line reads as one status that changes.
         <div className="mb-3" data-testid="about-update-status">
-          {update.status === "failed" ? (
-            // A failed check, download or install is something to deal with: retry, or the manual download below.
-            <Callout tone="error" density="compact">
-              {line}
-            </Callout>
-          ) : (
-            <p className="text-sm">{line}</p>
-          )}
+          {/* A failed check, download or install is something to deal with, explained as in the update card. */}
+          {failure === undefined ? <p className="text-sm">{line}</p> : <UpdateFailureNotice error={failure} version={update.version} />}
         </div>
       )}
       <UpdateProgressLine />
@@ -129,7 +119,7 @@ function UpdateArea() {
           </Button>
         ) : null}
         {update.status === "failed" && update.error?.step !== "check" ? (
-          <Button size="sm" onClick={() => void controller.retry()}>
+          <Button size="sm" onClick={() => void controller.retry()} data-testid="about-update-retry">
             {t("shell.desktop.updateRetry")}
           </Button>
         ) : null}

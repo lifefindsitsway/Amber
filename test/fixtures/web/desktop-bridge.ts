@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { RestoreApplyReport, RestoreInspectReport } from "../../../src/shared/dto/backup.ts";
 import type { FileGrant } from "../../../src/shared/dto/local-media.ts";
-import type { PickedFile } from "../../../src/web/desktop/bridge.ts";
+import type { PickedFile, UpdateDownloadEvent } from "../../../src/web/desktop/bridge.ts";
 
 type Handler = (payload: unknown) => void;
 
@@ -31,6 +31,8 @@ export const fakeShell = {
   restoreBackup: vi.fn<(archiveGrant: FileGrant, originalsGrant: FileGrant | null) => Promise<RestoreApplyReport>>(),
   beginUpdateInstall: vi.fn<() => Promise<void>>(),
   endUpdateInstall: vi.fn<() => Promise<void>>(),
+  updateDownload: vi.fn<(rid: number, onEvent: (event: UpdateDownloadEvent) => void) => Promise<void>>(),
+  updateInstall: vi.fn<(rid: number) => Promise<void>>(),
   pickPackDestination: vi.fn<(suggestedName: string) => Promise<PickedFile | null>>(),
   pickPackSource: vi.fn<() => Promise<PickedFile | null>>(),
   pickPackOriginalsDir: vi.fn<(localStamp: string) => Promise<PickedFile | null>>(),
@@ -43,7 +45,7 @@ export const fakeShell = {
 
 export function resetFakeShell(): void {
   fakeShell.desktop = false;
-  for (const mock of [fakeShell.pickLocalFile, fakeShell.pickRelinkFile, fakeShell.saveBurnOutput, fakeShell.saveCachedMedia, fakeShell.openBilibiliLogin, fakeShell.clearBilibiliPlayerSession, fakeShell.rotateMasterKey, fakeShell.pickBackupDestination, fakeShell.inspectBackup, fakeShell.pickRestoreOriginalsDir, fakeShell.restoreBackup, fakeShell.beginUpdateInstall, fakeShell.endUpdateInstall, fakeShell.pickPackDestination, fakeShell.pickPackSource, fakeShell.pickPackOriginalsDir]) {
+  for (const mock of [fakeShell.pickLocalFile, fakeShell.pickRelinkFile, fakeShell.saveBurnOutput, fakeShell.saveCachedMedia, fakeShell.openBilibiliLogin, fakeShell.clearBilibiliPlayerSession, fakeShell.rotateMasterKey, fakeShell.pickBackupDestination, fakeShell.inspectBackup, fakeShell.pickRestoreOriginalsDir, fakeShell.restoreBackup, fakeShell.beginUpdateInstall, fakeShell.endUpdateInstall, fakeShell.updateDownload, fakeShell.updateInstall, fakeShell.pickPackDestination, fakeShell.pickPackSource, fakeShell.pickPackOriginalsDir]) {
     mock.mockReset();
   }
   fakeShell.listeners.clear();
@@ -69,6 +71,8 @@ export const fakeBridge = {
   restoreBackup: (archiveGrant: FileGrant, originalsGrant: FileGrant | null) => fakeShell.restoreBackup(archiveGrant, originalsGrant),
   beginUpdateInstall: () => fakeShell.beginUpdateInstall(),
   endUpdateInstall: () => fakeShell.endUpdateInstall(),
+  updateDownload: (rid: number, onEvent: (event: UpdateDownloadEvent) => void) => fakeShell.updateDownload(rid, onEvent),
+  updateInstall: (rid: number) => fakeShell.updateInstall(rid),
   pickPackDestination: (suggestedName: string) => fakeShell.pickPackDestination(suggestedName),
   pickPackSource: () => fakeShell.pickPackSource(),
   pickPackOriginalsDir: (localStamp: string) => fakeShell.pickPackOriginalsDir(localStamp),

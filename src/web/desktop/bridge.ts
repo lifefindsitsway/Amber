@@ -161,6 +161,33 @@ export function endUpdateInstall(): Promise<void> {
 }
 
 /**
+ * What the shell reports while it downloads an update. `Resumed` carries the bytes already
+ * held, absolute: a continued download starts there, and `0` means the server made it start
+ * over. `Retrying` says the connection dropped or stalled and the shell is reconnecting.
+ */
+export type UpdateDownloadEvent =
+  | { event: "Started"; data: { contentLength?: number } }
+  | { event: "Resumed"; data: { downloaded: number } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Retrying"; data: { attempt: number; delayMs: number } }
+  | { event: "Finished" };
+
+/**
+ * Downloads and verifies the update the updater plugin found (`rid`, its resource id), resuming
+ * after drops on its own. Rejects with `{ kind, status?, attempts, detail }` once it gives up;
+ * the bytes it got are kept, so calling it again for the same update continues from there.
+ */
+export async function updateDownload(rid: number, onEvent: (event: UpdateDownloadEvent) => void): Promise<void> {
+  const { Channel } = await import("@tauri-apps/api/core");
+  await invoke<void>("update_download", { rid, onEvent: new Channel<UpdateDownloadEvent>(onEvent) });
+}
+
+/** Hands the verified download to the installer; on Windows the app exits here. Rejects with a message. */
+export function updateInstall(rid: number): Promise<void> {
+  return invoke<void>("update_install", { rid });
+}
+
+/**
  * Save dialog for a content pack (`.amberpack`): the shell signs the chosen file for
  * `pack_output` and the sidecar writes the pack there. `null` when the user cancels.
  */

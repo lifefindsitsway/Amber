@@ -4,7 +4,11 @@ import { UPDATE_CHECK_TIMEOUT_MS } from "../../shared/defaults.ts";
 import { maintenanceDtoSchema } from "../../shared/dto/backup.ts";
 import { ApiError, type ApiClient } from "../api/client.ts";
 import { useApi } from "../api/context.tsx";
-import { beginUpdateInstall, endUpdateInstall } from "./bridge.ts";
+import { beginUpdateInstall, endUpdateInstall, updateDownload, updateInstall, type UpdateDownloadEvent } from "./bridge.ts";
+import { checkFailure, downloadFailure, installFailure, type UpdateFailure } from "./update-failure.ts";
+
+export type { UpdateDownloadEvent } from "./bridge.ts";
+export type { UpdateFailure, UpdateFailureKind, UpdateStep } from "./update-failure.ts";
 
 /**
  * The desktop client's update controller: one per process, shared by
@@ -20,8 +24,13 @@ export type UpdateStatus = (typeof UPDATE_STATUSES)[number];
 
 export type BackupWork = "export" | "restore";
 
-/** Which step failed; a retry repeats it. */
-export type UpdateStep = "check" | "download" | "install";
+/** Download progress: bytes held, the total once the server sent one, and a reconnect under way. */
+export interface UpdateProgress {
+  downloaded: number;
+  total?: number;
+  /** Set while the shell reconnects after a drop or a stall; the next bytes clear it. */
+  retrying?: { attempt: number };
+}
 
 export interface UpdateState {
   status: UpdateStatus;
@@ -29,10 +38,9 @@ export interface UpdateState {
   version?: string;
   /** The release notes, rendered as plain text only. */
   notes?: string;
-  /** Bytes downloaded so far and the total when the server sent one. */
-  progress?: { downloaded: number; total?: number };
-  /** The failed step and why: an AppError code when the sidecar refused, else the updater's message. */
-  error?: { step: UpdateStep; message: string; code?: string };
+  progress?: UpdateProgress;
+  /** The failed step, what kind of failure it was, and how far a download had got. */
+  error?: UpdateFailure;
   /** Why the maintenance admission was refused (`conflict.*` codes); the download stays ready to install. */
   blocked?: string[];
   /** Whether the bottom-right card shows: set by an automatic check, cleared by 「稍后」. */
@@ -41,23 +49,25 @@ export interface UpdateState {
   manual: boolean;
 }
 
-/** The part of a found update the controller uses (the updater plugin's `Update`). */
+/**
+ * The part of a found update the controller uses (the updater plugin's `Update`). Download and
+ * install go through the shell's own commands by its resource id, not the plugin's: the
+ * shell's download resumes after a dropped connection.
+ */
 export interface UpdateHandle {
   version: string;
-  body?: string;
-  download(onEvent?: (event: UpdateDownloadEvent) => void): Promise<void>;
-  install(): Promise<void>;
+  body?: string | null;
+  rid: number;
   close?(): Promise<void>;
 }
-
-export type UpdateDownloadEvent =
-  | { event: "Started"; data: { contentLength?: number } }
-  | { event: "Progress"; data: { chunkLength: number } }
-  | { event: "Finished" };
 
 /** What the controller talks to; replaced in tests. */
 export interface UpdaterDeps {
   check(options: { timeout: number }): Promise<UpdateHandle | null>;
+  /** Downloads and verifies `update`, continuing from the bytes a failed attempt kept; rejects with the shell's structured failure. */
+  download(update: UpdateHandle, onEvent: (event: UpdateDownloadEvent) => void): Promise<void>;
+  /** Runs the installer on the verified download; on Windows the process ends here. */
+  install(update: UpdateHandle): Promise<void>;
   /** `POST /api/system/maintenance`; rejects with the sidecar's ApiError when refused. */
   requestMaintenance(): Promise<void>;
   /** `DELETE /api/system/maintenance`. */
@@ -85,11 +95,21 @@ function refusalCodes(error: unknown): string[] | undefined {
   return undefined;
 }
 
-function messageOf(error: unknown): { message: string; code?: string } {
-  if (error instanceof ApiError) {
-    return { message: error.error.userMessage, code: error.error.code };
+/** The progress after one download event. Bytes only go back when the shell says it starts over. */
+export function nextProgress(progress: UpdateProgress, event: UpdateDownloadEvent): UpdateProgress {
+  const { retrying: _retrying, ...rest } = progress;
+  switch (event.event) {
+    case "Started":
+      return event.data.contentLength === undefined ? progress : { ...progress, total: event.data.contentLength };
+    case "Resumed":
+      return { ...progress, downloaded: event.data.downloaded };
+    case "Progress":
+      return { ...rest, downloaded: progress.downloaded + event.data.chunkLength };
+    case "Retrying":
+      return { ...progress, retrying: { attempt: event.data.attempt } };
+    case "Finished":
+      return rest;
   }
-  return { message: error instanceof Error ? error.message : String(error) };
 }
 
 export class UpdateController {
@@ -194,9 +214,10 @@ export class UpdateController {
       this.update = found;
       if (previous !== undefined && previous !== found) void previous.close?.().catch(() => undefined);
       const prompt = options.manual ? this.state.prompt && found.version === this.state.version : found.version !== this.deferredVersion;
-      this.set({ status: "available", version: found.version, notes: found.body, prompt });
+      // The plugin reports a release without notes as `null`.
+      this.set({ status: "available", version: found.version, notes: found.body ?? undefined, prompt });
     } catch (error) {
-      this.set({ status: "failed", error: { step: "check", ...messageOf(error) }, prompt: false });
+      this.set({ status: "failed", error: checkFailure(error), prompt: false });
     } finally {
       this.busy = false;
     }
@@ -208,28 +229,28 @@ export class UpdateController {
     this.set({ prompt: false });
   }
 
-  /** Downloads and verifies the found update; installing is a separate step. */
+  /**
+   * Downloads and verifies the found update; installing is a separate step. A retry after a
+   * failed download simply asks again: the shell kept the bytes and reports them as `Resumed`.
+   */
   async download(): Promise<void> {
+    const deps = this.deps;
     const update = this.update;
-    if (update === undefined || this.busy || (this.state.status !== "available" && !(this.state.status === "failed" && this.state.error?.step === "download"))) {
+    if (deps === undefined || update === undefined || this.busy || (this.state.status !== "available" && !(this.state.status === "failed" && this.state.error?.step === "download"))) {
       return;
     }
     this.busy = true;
-    let downloaded = 0;
-    let total: number | undefined;
-    this.set({ status: "downloading", progress: { downloaded: 0 }, error: undefined });
+    let progress: UpdateProgress = { downloaded: 0 };
+    this.set({ status: "downloading", progress, error: undefined });
     try {
-      await update.download((event) => {
-        if (event.event === "Started") {
-          total = event.data.contentLength;
-        } else if (event.event === "Progress") {
-          downloaded += event.data.chunkLength;
-        }
-        this.set({ progress: total === undefined ? { downloaded } : { downloaded, total } });
+      await deps.download(update, (event) => {
+        progress = nextProgress(progress, event);
+        this.set({ progress });
       });
-      this.set({ status: "ready_to_install" });
+      this.set({ status: "ready_to_install", progress: nextProgress(progress, { event: "Finished" }) });
     } catch (error) {
-      this.set({ status: "failed", error: { step: "download", ...messageOf(error) } });
+      const { retrying: _retrying, ...snapshot } = progress;
+      this.set({ status: "failed", progress: snapshot, error: downloadFailure(error, snapshot) });
     } finally {
       this.busy = false;
     }
@@ -256,7 +277,7 @@ export class UpdateController {
         if (codes !== undefined) {
           this.set({ status: "ready_to_install", blocked: codes });
         } else {
-          this.set({ status: "failed", error: { step: "install", ...messageOf(error) } });
+          this.set({ status: "failed", error: installFailure(error) });
         }
         return;
       }
@@ -265,11 +286,11 @@ export class UpdateController {
         await deps.beginUpdateInstall();
         registered = true;
         // On Windows the installer takes over and the process ends here.
-        await update.install();
+        await deps.install(update);
       } catch (error) {
         if (registered) await deps.endUpdateInstall().catch(() => undefined);
         await deps.releaseMaintenance().catch(() => undefined);
-        this.set({ status: "failed", error: { step: "install", ...messageOf(error) } });
+        this.set({ status: "failed", error: installFailure(error) });
       }
     } finally {
       this.busy = false;
@@ -303,6 +324,8 @@ export function defaultUpdaterDeps(client: ApiClient): UpdaterDeps {
       const { check } = await import("@tauri-apps/plugin-updater");
       return check(options);
     },
+    download: (update, onEvent) => updateDownload(update.rid, onEvent),
+    install: (update) => updateInstall(update.rid),
     requestMaintenance: async () => {
       await client.post("/api/system/maintenance", maintenanceDtoSchema, { body: { reason: "update_install" } });
     },

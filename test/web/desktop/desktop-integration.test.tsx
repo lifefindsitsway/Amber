@@ -140,13 +140,12 @@ describe("external links", () => {
 
 describe("update prompt", () => {
   it("offers a version found by the start-up check without downloading it", async () => {
-    const download = vi.fn(async () => undefined);
-    tauri.check.mockResolvedValue({ version: "0.2.0", download, install: vi.fn(async () => undefined) });
+    tauri.check.mockResolvedValue({ version: "0.2.0", rid: 1 });
     setup();
     const prompt = await screen.findByTestId("update-prompt");
     expect(prompt.textContent).toContain("发现新版本");
     expect(screen.getByTestId("update-version").textContent).toBe("v0.2.0");
-    expect(download).not.toHaveBeenCalled();
+    expect(fakeShell.updateDownload).not.toHaveBeenCalled();
     expect(tauri.check).toHaveBeenCalledTimes(1);
   });
 

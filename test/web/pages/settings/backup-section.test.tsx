@@ -214,9 +214,11 @@ describe("export", () => {
   });
 
   it("is unavailable while an update downloads", async () => {
-    const pending: UpdateHandle = { version: "0.2.0", download: () => new Promise(() => undefined), install: async () => undefined };
+    const pending: UpdateHandle = { version: "0.2.0", rid: 1 };
     const controller = new UpdateController({
       check: async () => pending,
+      download: () => new Promise(() => undefined),
+      install: async () => undefined,
       requestMaintenance: async () => undefined,
       releaseMaintenance: async () => undefined,
       beginUpdateInstall: async () => undefined,
