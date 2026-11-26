@@ -1,4 +1,4 @@
-import { FileDown, FolderOpen, ListPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Download, FolderOpen, ListPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
@@ -100,7 +100,7 @@ export function useCollectionActions(
     {
       id: "export",
       label: t("library.collection.exportMarkdown"),
-      icon: <FileDown size={14} aria-hidden="true" />,
+      icon: <Download size={14} aria-hidden="true" />,
       surfaces: ["context", "overflow"],
       onSelect: () => exportMarkdown.mutate({ backlinks: true }),
     },

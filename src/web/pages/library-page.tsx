@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckSquare, FolderPlus, Library, Package, Pin, PinOff, Trash2 } from "lucide-react";
+import { CheckSquare, Download, FolderPlus, Library, Pin, PinOff, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
@@ -414,7 +414,7 @@ export function LibraryPage() {
             onClick={() => wizard.open({ contentIds: selected })}
             data-testid="library-export-selected"
           >
-            <Package size={14} aria-hidden="true" />
+            <Download size={14} aria-hidden="true" />
             {t("contentPack.select.exportSelected")}
           </Button>
         </SelectionBar>

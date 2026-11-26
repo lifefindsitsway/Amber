@@ -4,13 +4,13 @@ import {
   ArrowLeftRight,
   Check,
   ChevronRight,
+  Download,
   Eye,
   EyeOff,
   FileText,
   FolderPlus,
   HardDriveDownload,
   MoreHorizontal,
-  Package,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRight,
@@ -1047,7 +1047,7 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
               onSelect={() => packWizard.open({ contentIds: [content.id], focusContentId: content.id })}
               data-testid="content-menu-export-pack"
             >
-              <Package size={14} aria-hidden="true" />
+              <Download size={14} aria-hidden="true" />
               {t("contentPack.entry.exportPack")}
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="my-1 h-px bg-line" />

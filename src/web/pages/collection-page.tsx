@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, BookA, CheckSquare, ListVideo, MoreHorizontal, Package, Pencil, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { ArrowUpDown, BookA, CheckSquare, Download, ListVideo, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -433,7 +433,7 @@ function ExportPackItem(props: { collection: CollectionDetailDto; onSelect: (con
   return (
     <DropdownMenu.Item className={`${MENU_ITEM_CLASS} flex-col items-start gap-0.5`} disabled={reason !== undefined} onSelect={() => props.onSelect(ids)} data-testid="collection-export-pack">
       <span className="flex items-center gap-2">
-        <Package size={14} aria-hidden="true" />
+        <Download size={14} aria-hidden="true" />
         {t("contentPack.entry.exportPack")}
       </span>
       {reason === undefined ? null : <span className="max-w-56 pl-6 text-note text-muted">{reason}</span>}

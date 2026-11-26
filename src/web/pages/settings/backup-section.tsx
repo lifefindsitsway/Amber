@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filterUiPreferences, type DroppedPreference, type LibraryCategory, BACKUP_FILE_EXTENSION } from "../../../shared/backup.ts";
@@ -212,6 +213,7 @@ function ExportCard() {
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" disabled={disabled} loading={start.isPending} onClick={() => start.mutate()} data-testid="backup-export-start">
+          <Download size={14} aria-hidden="true" />
           {t("backup.export.start")}
         </Button>
         {updateBusy ? <span className="text-note text-muted">{t("backup.export.blockedByUpdate")}</span> : null}
