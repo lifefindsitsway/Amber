@@ -15,6 +15,7 @@ mod marker;
 mod master_key;
 mod pack;
 mod sidecar;
+mod update_download;
 
 /// Named default constants, generated from src/shared/defaults.ts by `pnpm build`.
 mod defaults {
@@ -81,6 +82,7 @@ fn main() {
             app.resources_table().add(supervisor.shutdown_guard());
             app.manage(supervisor);
             app.manage(backup::NativeOps::default());
+            app.manage(update_download::UpdateDownloads::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -99,6 +101,8 @@ fn main() {
             backup::restore_backup,
             backup::begin_update_install,
             backup::end_update_install,
+            update_download::update_download,
+            update_download::update_install,
             pack::pick_pack_destination,
             pack::pick_pack_source,
             pack::pick_pack_originals_dir,

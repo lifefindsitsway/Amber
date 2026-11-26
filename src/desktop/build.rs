@@ -30,6 +30,8 @@ fn main() {
         "pick_pack_originals_dir",
         "begin_update_install",
         "end_update_install",
+        "update_download",
+        "update_install",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest)).expect("tauri-build failed");
 }

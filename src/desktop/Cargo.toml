@@ -25,6 +25,17 @@ tauri-plugin-opener = "=2.7.0"
 tauri-plugin-persisted-scope = { version = "=2.4.0", features = ["protocol-asset"] }
 tauri-plugin-single-instance = "=2.5.0"
 tauri-plugin-updater = "=2.13.0"
+# Resumable update download (the plugin's own download cannot resume); the version, TLS
+# backend without a bundled provider and features the updater plugin already uses.
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider"] }
+# Installs the ring TLS provider that reqwest needs; the version and backend the plugin uses.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring"] }
+# Verifies the downloaded installer's minisign signature; the version the plugin uses.
+minisign-verify = "=0.2.5"
+# Decodes the base64-wrapped public key and signature; the version the plugin uses.
+base64 = "=0.22.1"
+# Stall watchdog and reconnect backoff; the version tauri already runs on.
+tokio = { version = "=1.53.1", features = ["time"] }
 hmac = "=0.13.0"
 sha2 = "=0.11.0"
 # `v1` is the crate's one-store-per-platform mode; on Windows it compiles only the

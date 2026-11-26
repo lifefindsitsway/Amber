@@ -481,6 +481,12 @@ export const SAVE_NOTICE_DISMISS_MS = 30000;
 export const UPDATE_CHECK_TIMEOUT_MS = 15000;
 /** How long the maintenance state entered before an update install lasts unless released first. */
 export const UPDATE_INSTALL_MAINTENANCE_TTL_MS = 600000;
+/** An update download that receives no bytes for this long drops the connection and resumes; also the connect timeout. */
+export const UPDATE_DOWNLOAD_STALL_MS = 30000;
+/** An update download gives up after this many reconnects in a row that gained no bytes; any progress resets the count. */
+export const UPDATE_DOWNLOAD_RETRY_MAX = 5;
+/** Backoff base of update download reconnects: attempt n waits `UPDATE_DOWNLOAD_RETRY_BASE_MS × 2^(n−1)`. */
+export const UPDATE_DOWNLOAD_RETRY_BASE_MS = 1000;
 /** Poll interval of a running backup export's progress. */
 export const BACKUP_PROGRESS_POLL_MS = 1000;
 /** Size cap of one UI preference value carried in a backup. */

@@ -21,7 +21,15 @@ import {
   RESTORED_ORIGINALS_DIR_PREFIX,
 } from "../shared/backup-names.ts";
 import { CACHE_EXTENSIONS } from "../shared/cache-file-name.ts";
-import { FILE_GRANT_TTL_MS, SIDECAR_READY_TIMEOUT_MS, SIDECAR_RESTART_MAX, SIDECAR_SHUTDOWN_GRACE_MS } from "../shared/defaults.ts";
+import {
+  FILE_GRANT_TTL_MS,
+  SIDECAR_READY_TIMEOUT_MS,
+  SIDECAR_RESTART_MAX,
+  SIDECAR_SHUTDOWN_GRACE_MS,
+  UPDATE_DOWNLOAD_RETRY_BASE_MS,
+  UPDATE_DOWNLOAD_RETRY_MAX,
+  UPDATE_DOWNLOAD_STALL_MS,
+} from "../shared/defaults.ts";
 import { INSTALLER_COPY, type InstallerLocale, type ShellCopy } from "../shared/i18n/installer.ts";
 
 /**
@@ -46,6 +54,9 @@ const EXPORTED: readonly (readonly [name: string, rustType: string, value: numbe
   ["SIDECAR_RESTART_MAX", "u32", SIDECAR_RESTART_MAX],
   ["SIDECAR_SHUTDOWN_GRACE_MS", "u64", SIDECAR_SHUTDOWN_GRACE_MS],
   ["FILE_GRANT_TTL_MS", "u64", FILE_GRANT_TTL_MS],
+  ["UPDATE_DOWNLOAD_STALL_MS", "u64", UPDATE_DOWNLOAD_STALL_MS],
+  ["UPDATE_DOWNLOAD_RETRY_MAX", "u32", UPDATE_DOWNLOAD_RETRY_MAX],
+  ["UPDATE_DOWNLOAD_RETRY_BASE_MS", "u64", UPDATE_DOWNLOAD_RETRY_BASE_MS],
 ];
 
 const IDENTITY: readonly (readonly [name: string, value: string])[] = [

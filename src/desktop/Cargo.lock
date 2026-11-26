@@ -47,8 +47,12 @@ dependencies = [
 name = "amber"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "hmac",
  "keyring",
+ "minisign-verify",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -61,6 +65,7 @@ dependencies = [
  "tauri-plugin-persisted-scope",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tokio",
  "webview2-com",
  "windows-core",
 ]
