@@ -13,7 +13,7 @@ import { COLUMN, COMPACT_UP, Cover, NARROW, StatusBadge, WIDE_ONLY } from "../li
 import { Checkbox } from "../../ui/checkbox.tsx";
 import { useContextMenuTarget } from "../../ui/context-menu.tsx";
 import { useDragOrder } from "../../ui/use-drag-order.ts";
-import { ROW_INTERACTIVE } from "./selection-bar.tsx";
+import { ROW_INTERACTIVE } from "../../components/selection-bar.tsx";
 
 /**
  * The selection mode of the member table: picked Contents (by Content id, across pages) and how

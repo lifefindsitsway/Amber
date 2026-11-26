@@ -33,7 +33,7 @@ import { useToast } from "../ui/toast.tsx";
 import { Tooltip } from "../ui/tooltip.tsx";
 import { useDocumentTitle } from "../use-document-title.ts";
 import { ItemList, ReorderList, type ItemSelection } from "./collection/item-list.tsx";
-import { SelectionBar, useSelectionEscape } from "./collection/selection-bar.tsx";
+import { SelectionBar, useSelectionEscape } from "../components/selection-bar.tsx";
 import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage } from "./library/selection.ts";
 import { SearchHits } from "./collection/search-hits.tsx";
 import { SummaryCard } from "./collection/summary-card.tsx";

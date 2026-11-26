@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckSquare, FolderPlus, Library, Package, Pin, PinOff, Trash2 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import { CONTENT_LIST_IDS_MAX, CONTENT_TRASH_BATCH_MAX, IMPORT_BATCH_MAX } from "../../shared/defaults.ts";
@@ -17,11 +17,11 @@ import { NativeSelect } from "../ui/native-select.tsx";
 import { InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 import { Pagination, useListPosition, usePagination } from "../ui/pagination.tsx";
 import { TextInput } from "../ui/text-field.tsx";
-import { useToastOffset } from "../ui/toast.tsx";
 import { Tooltip } from "../ui/tooltip.tsx";
 import { ContentRowMenu } from "../components/content-row-menu.tsx";
 import { DeleteContentsDialog } from "../components/delete-content-dialog.tsx";
 import { ErrorView } from "../components/error-view.tsx";
+import { ROW_INTERACTIVE, SelectionBar, useSelectionEscape } from "../components/selection-bar.tsx";
 import { actionTarget, useContentActions } from "../components/use-content-actions.tsx";
 import { HitSnippet } from "../search/hit-snippet.tsx";
 import { SpeakerHitsGroup } from "../search/hit-speaker.tsx";
@@ -32,10 +32,6 @@ import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage 
 import { PackActiveNotice, useExportPackWizard } from "./content-pack/pack-entry.tsx";
 import { COLUMN, COMPACT_UP, Cover, NARROW, StatusBadge, WIDE_ONLY } from "./library/columns.tsx";
 
-/** Elements that handle `Esc` themselves, so it does not leave the selection mode there. */
-const KEEPS_ESCAPE = ["input:not([type=checkbox])", "textarea", "select", "[contenteditable=true]", "[role=dialog]", "[role=menu]"].join(",");
-/** A click on these keeps its own action instead of picking the row. */
-const INTERACTIVE = ["a", "button", "input", "select", "label"].join(",");
 /** The outermost columns keep the rows off the page edges, more so on wide lists. */
 const EDGE_START = "pl-6 @5xl:pl-10";
 const EDGE_END = "pr-6 @5xl:pr-10";
@@ -77,8 +73,6 @@ export function LibraryPage() {
   const wizard = useExportPackWizard();
   // The picked ids the delete dialog works on, fixed when it opened.
   const [deleting, setDeleting] = useState<readonly string[] | undefined>(undefined);
-  const bar = useRef<HTMLDivElement>(null);
-  const [barLift, setBarLift] = useState<number | undefined>(undefined);
 
   // The key starts with `contents`, so a task event re-reads only the page on screen. The
   // previous page's answer stays as placeholder only to keep the pager's total; its rows are
@@ -151,32 +145,8 @@ export function LibraryPage() {
   const block = exportBlock(selected?.length ?? 0, IMPORT_BATCH_MAX);
   const deleteBlock = exportBlock(selected?.length ?? 0, CONTENT_TRASH_BATCH_MAX);
   const barShown = selected !== undefined && selected.length > 0;
-  // Toasts rise above the selection bar (and the pager under it) while the bar is shown.
-  useLayoutEffect(() => {
-    const element = bar.current;
-    if (!barShown || element === null) {
-      setBarLift(undefined);
-      return undefined;
-    }
-    const measure = (): void => setBarLift(Math.max(0, window.innerHeight - element.getBoundingClientRect().top));
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [barShown, block, deleteBlock]);
-  useToastOffset(barLift);
-  // `Esc` leaves the selection mode, unless a dialog or a field takes the key itself.
-  useEffect(() => {
-    if (!selecting) return undefined;
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      const target = event.target as Element | null;
-      if (target?.closest(KEEPS_ESCAPE) != null) return;
-      if (document.querySelector("[role=dialog]") !== null) return;
-      setSelected(undefined);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [selecting]);
+  const exitSelection = useCallback(() => setSelected(undefined), []);
+  useSelectionEscape(selecting, exitSelection);
   // Edge padding moves to the checkbox column while it is shown.
   const coverEdge = selecting ? "pl-2" : EDGE_START;
   const titleEdge = selecting ? "pl-2 @3xl:px-2" : "pl-6 @3xl:px-2";
@@ -319,7 +289,7 @@ export function LibraryPage() {
                       {...(selecting ? { "aria-selected": picked } : {})}
                       onClick={(event) => {
                         // In the selection mode a click on the row's plain area picks it; links, buttons and fields keep their own action.
-                        if (!selecting || (event.target as Element).closest(INTERACTIVE) !== null) return;
+                        if (!selecting || (event.target as Element).closest(ROW_INTERACTIVE) !== null) return;
                         setSelected((current) => toggleSelected(current ?? [], item.id, !picked));
                       }}
                     >
@@ -406,55 +376,48 @@ export function LibraryPage() {
         )}
       </div>
       {selected === undefined || !barShown ? null : (
-        <div
-          ref={bar}
-          role="region"
-          aria-label={t("contentPack.select.barLabel")}
-          className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line bg-panel px-6 py-2.5"
-          data-testid="library-selection-bar"
+        <SelectionBar
+          count={selected.length}
+          onClear={exitSelection}
+          testIdPrefix="library"
+          notes={
+            <>
+              {deleteBlock === "tooMany" ? (
+                <InlineNote id="library-delete-limit" testId="library-delete-limit" className="text-warn!">
+                  {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
+                </InlineNote>
+              ) : null}
+              {block === "tooMany" ? (
+                <InlineNote id="library-selection-limit" testId="library-selection-limit" className="text-warn!">
+                  {t("contentPack.select.tooMany", { max: IMPORT_BATCH_MAX })}
+                </InlineNote>
+              ) : null}
+            </>
+          }
         >
-          <span className="text-sm font-medium" aria-live="polite" data-testid="library-selection-count">
-            {t("contentPack.select.count", { count: selected.length })}
-          </span>
-          <Button size="sm" variant="ghost" onClick={() => setSelected(undefined)} data-testid="library-selection-clear">
-            {t("contentPack.select.clear")}
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={deleteBlock !== undefined}
+            aria-describedby={deleteBlock === "tooMany" ? "library-delete-limit" : undefined}
+            onClick={() => setDeleting([...selected])}
+            data-testid="library-delete-selected"
+          >
+            <Trash2 size={14} aria-hidden="true" />
+            {t("library.selection.delete")}
           </Button>
-          {deleteBlock === "tooMany" ? (
-            <InlineNote id="library-delete-limit" testId="library-delete-limit" className="text-warn!">
-              {t("library.selection.deleteTooMany", { max: CONTENT_TRASH_BATCH_MAX })}
-            </InlineNote>
-          ) : null}
-          {block === "tooMany" ? (
-            <InlineNote id="library-selection-limit" testId="library-selection-limit" className="text-warn!">
-              {t("contentPack.select.tooMany", { max: IMPORT_BATCH_MAX })}
-            </InlineNote>
-          ) : null}
-          <div className="ml-auto flex items-center gap-2">
-            <span aria-hidden="true" className="mr-1 h-5 w-px bg-line" />
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={deleteBlock !== undefined}
-              aria-describedby={deleteBlock === "tooMany" ? "library-delete-limit" : undefined}
-              onClick={() => setDeleting([...selected])}
-              data-testid="library-delete-selected"
-            >
-              <Trash2 size={14} aria-hidden="true" />
-              {t("library.selection.delete")}
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={block !== undefined}
-              aria-describedby={block === "tooMany" ? "library-selection-limit" : undefined}
-              onClick={() => wizard.open({ contentIds: selected })}
-              data-testid="library-export-selected"
-            >
-              <Package size={14} aria-hidden="true" />
-              {t("contentPack.select.exportSelected")}
-            </Button>
-          </div>
-        </div>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={block !== undefined}
+            aria-describedby={block === "tooMany" ? "library-selection-limit" : undefined}
+            onClick={() => wizard.open({ contentIds: selected })}
+            data-testid="library-export-selected"
+          >
+            <Package size={14} aria-hidden="true" />
+            {t("contentPack.select.exportSelected")}
+          </Button>
+        </SelectionBar>
       )}
       {searching ? null : <Pagination pager={pager} className="border-t border-line px-6 py-3" />}
       {actions.dialogs}

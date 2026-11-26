@@ -15,7 +15,7 @@ import { Modal } from "../ui/modal.tsx";
 import { Callout, InlineNote } from "../ui/notice.tsx";
 import { Pagination, useListPosition, usePagination } from "../ui/pagination.tsx";
 import { useToast } from "../ui/toast.tsx";
-import { SelectionBar, ROW_INTERACTIVE, useSelectionEscape } from "./collection/selection-bar.tsx";
+import { SelectionBar, ROW_INTERACTIVE, useSelectionEscape } from "../components/selection-bar.tsx";
 import { Cover } from "./library/columns.tsx";
 import { exportBlock, pageSelection, removeSelected, toggleSelected, togglePage } from "./library/selection.ts";
 
