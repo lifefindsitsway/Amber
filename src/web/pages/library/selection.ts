@@ -34,7 +34,7 @@ export function togglePage(selected: readonly string[], pageIds: readonly string
   return [...selected, ...pageIds.filter((id) => !picked.has(id))];
 }
 
-/** Why a bar action (「导出所选…」 up to `IMPORT_BATCH_MAX`, 「删除…」 up to `CONTENT_TRASH_BATCH_MAX`) cannot start, if it cannot. */
+/** Why a bar action (「导出所选」 up to `IMPORT_BATCH_MAX`, 「删除」 up to `CONTENT_TRASH_BATCH_MAX`) cannot start, if it cannot. */
 export function exportBlock(count: number, max: number): "empty" | "tooMany" | undefined {
   if (count === 0) return "empty";
   return count > max ? "tooMany" : undefined;

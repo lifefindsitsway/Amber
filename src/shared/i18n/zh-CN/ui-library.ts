@@ -49,7 +49,7 @@ export const library = {
   },
   /** The selection bar's delete action; the export side keeps its keys under `contentPack.select`. */
   selection: {
-    delete: "删除…",
+    delete: "删除",
     deleteTooMany: "一次最多删除 {{max}} 项，请减少到 {{max}} 项以内",
   },
   membership: {

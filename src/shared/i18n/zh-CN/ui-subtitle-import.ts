@@ -79,7 +79,7 @@ export const subtitleImport = {
     originalLabel: "原文：",
     translationLabel: "译文：",
     language: "译文语言",
-    pick: "请选择…",
+    pick: "请选择",
     skip: "不导入译文",
     pickHint: "请选择译文语言，或选「不导入译文」",
   },

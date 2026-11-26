@@ -158,7 +158,7 @@ function DanmakuLayer(props: { contentId: string; context: PlayerExtensionContex
 /**
  * The danmaku button and layer for the `<video>` player, when the Content's platform offers
  * danmaku; `undefined` otherwise. Both stay away from a file without a picture. A narrow
- * picture (DANMAKU_NARROW_PICTURE_PX) moves the button into the settings menu as 「弹幕…」,
+ * picture (DANMAKU_NARROW_PICTURE_PX) moves the button into the settings menu as 「弹幕」,
  * which opens the same popover from the picture's corner. The result is the same object while
  * the Content and its danmaku summary are unchanged.
  */

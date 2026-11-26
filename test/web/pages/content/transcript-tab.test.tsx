@@ -1266,7 +1266,7 @@ describe("TranscriptTab sentence menu with speakers", () => {
     const { reader, writeText } = await open();
     expect(rightClick(reader.querySelector("[data-segment-id='g1']") as HTMLElement)).toBe(true);
     // The last one opens the editor on this sentence with its speaker menu.
-    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）", "复制这句（含发言人）", "更改发言人…"]);
+    expect(menuLabels()).toEqual(["从这里播放", "复制这句", "复制这句（带时间）", "复制这句（含发言人）", "更改发言人"]);
     fireEvent.click(screen.getByTestId("context-menu-item-copy-sentence-with-speaker"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("陈明：今天讲检索。"));
   });

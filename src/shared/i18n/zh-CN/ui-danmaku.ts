@@ -2,7 +2,7 @@
 export const danmaku = {
   button: "弹幕",
   popoverLabel: "弹幕设置",
-  menuEntry: "弹幕…",
+  menuEntry: "弹幕",
   stateOn: "开",
   stateOff: "关",
   show: "显示弹幕",

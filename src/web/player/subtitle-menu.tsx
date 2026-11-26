@@ -14,7 +14,7 @@ const NOTE_CLASS = "max-w-56 px-4 py-1 text-note text-white/60";
 
 /**
  * The 「字幕」 menu of the local player's control bar: display mode, original
- * revision, translation (or 「去翻译」 without one) and 「样式与位置…」, which enters the
+ * revision, translation (or 「去翻译」 without one) and 「样式与位置」, which enters the
  * editor. A translation is chosen by language (following its current version) or, under
  * 「历史版本」, by locking one version. Non-modal and portalled into the player like the other control-bar menus.
  */

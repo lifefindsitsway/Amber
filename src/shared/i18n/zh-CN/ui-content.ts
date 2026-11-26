@@ -20,7 +20,7 @@ export const contentView = {
     playerLocal: "本地缓存",
     playerLocalAudio: "本地缓存（仅音频）",
     cache: "缓存本视频",
-    saveCache: "另存为…",
+    saveCache: "另存为",
     collections: "管理合集",
     more: "更多操作",
     collapseMiddle: "收起中栏",
@@ -80,7 +80,7 @@ export const contentView = {
       historyOf: "{{language}}的历史版本",
       locked: "已锁定",
       goTranslate: "去翻译",
-      editStyle: "样式与位置…",
+      editStyle: "样式与位置",
       loading: "字幕加载中…",
       loadFailed: "字幕加载失败",
       retry: "重试",
@@ -291,7 +291,7 @@ export const contentView = {
     regenerate: "重新生成",
     export: "导出",
     /** Menu row that opens the export dialog. */
-    exportMenu: "导出…",
+    exportMenu: "导出",
     history: "历史版本",
     currentVersion: "当前版本",
     useVersion: "设为当前",
@@ -406,8 +406,8 @@ export const contentView = {
     /** When nothing is processing: what the user can do about it. */
     emptyHintIdle: "可以转录这段音视频，或导入一份字幕文件",
     /** Empty-state entries; both open the 「字幕」 tab, where transcription and subtitle import live. */
-    emptyTranscribe: "转录…",
-    emptyImportSubtitle: "导入字幕…",
+    emptyTranscribe: "转录",
+    emptyImportSubtitle: "导入字幕",
     chapters: "章节",
     chapterOutline: "章节目录（{{count}}）",
     noChapters: "尚无章节",

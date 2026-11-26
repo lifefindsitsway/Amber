@@ -21,7 +21,7 @@ export interface ContentDraft {
   /** `undefined` while the user still has to pick a target among several candidates. */
   action: "skip" | "import" | "merge" | undefined;
   targetContentId?: string;
-  /** Picked through 「合并到其它内容…」 rather than suggested by the preview. */
+  /** Picked through 「合并到其它内容」 rather than suggested by the preview. */
   manualTarget?: boolean;
   /** The title and duration of a target picked by hand, which the preview's candidates do not know. */
   targetTitle?: string;

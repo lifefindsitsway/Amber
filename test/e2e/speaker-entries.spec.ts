@@ -4,8 +4,8 @@ import { createdSpeakerId, SPEAKER_STUDENT, SPEAKER_TEACHER, SPEAKERS_CONTENT, S
 
 /*
  * Ways into speaker editing from the reading view, and what the editor opens once its list is
- * in place: the review panel's 「管理发言人…」 and the toolbar's 「标注发言人」 open the speaker
- * panel; a sentence's 「更改发言人…」 opens that sentence's speaker menu. Also deleting a speaker
+ * in place: the review panel's 「管理发言人」 and the toolbar's 「标注发言人」 open the speaker
+ * panel; a sentence's 「更改发言人」 opens that sentence's speaker menu. Also deleting a speaker
  * the undo history still names: the confirmation says those steps go, and undo cannot bring
  * back sentences naming nobody.
  */
@@ -20,7 +20,7 @@ async function editorInPlace(page: Page): Promise<void> {
   await expect(page.getByTestId("sentence-rows")).toHaveAttribute("data-initial-scroll", /settled|edge|capped/);
 }
 
-test("「管理发言人…」 in the review panel opens the editor with the speaker panel open", async ({ page }) => {
+test("「管理发言人」 in the review panel opens the editor with the speaker panel open", async ({ page }) => {
   await installMockBackend(page);
   await page.goto(READER);
   await page.getByRole("button", { name: /^发言人核对状态：/ }).click();
@@ -44,12 +44,12 @@ test("「标注发言人」 appears for a text nobody is assigned in and opens t
   await expect(lead(page, 0)).toBeVisible();
 });
 
-test("「更改发言人…」 on a sentence opens the editor on it with its speaker menu", async ({ page }) => {
+test("「更改发言人」 on a sentence opens the editor on it with its speaker menu", async ({ page }) => {
   await installMockBackend(page);
   await page.goto(READER);
   const sentence = page.locator(`[data-segment-id="${segmentId(SPEAKERS_REVISION, 3)}"]`);
   await sentence.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "更改发言人…" }).click();
+  await page.getByRole("menuitem", { name: "更改发言人" }).click();
   await editorInPlace(page);
   const menu = page.getByTestId("speaker-menu");
   await expect(menu).toBeVisible();

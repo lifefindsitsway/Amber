@@ -821,7 +821,7 @@ function PlayerModeMenu(props: { playback: PlaybackControls }) {
 }
 
 /**
- * 「另存为…」 (desktop client): copies an available platform cache out of the
+ * 「另存为」 (desktop client): copies an available platform cache out of the
  * cache directory. With several caches a menu names each file, a video with its quality; cancelling the
  * save dialog says nothing. Owned by the toolbar, so its outcome stays visible while the button
  * sits in the "⋯" menu.
@@ -886,7 +886,7 @@ function SaveCacheButton(props: { save: SaveCache }) {
   );
 }
 
-/** 「另存为…」 inside the "⋯" menu: one cache is a plain entry, several open a submenu naming each file. */
+/** 「另存为」 inside the "⋯" menu: one cache is a plain entry, several open a submenu naming each file. */
 function SaveCacheMenu(props: { save: SaveCache }) {
   const { t } = useTranslation();
   const { caches, mutation, label } = props.save;

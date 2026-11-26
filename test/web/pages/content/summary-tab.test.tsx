@@ -308,7 +308,7 @@ describe("summary copy and context menu", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBe(copy));
 
     expect(rightClick(within(body).getByText(/讲了重排序/))).toBe(true);
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["复制全文", "导出…"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["复制全文", "导出"]);
     fireEvent.click(screen.getByTestId("context-menu-item-copy-all"));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(writeText).toHaveBeenLastCalledWith("## 摘要\n讲了重排序 [1:15]。");
@@ -378,7 +378,7 @@ describe("summary copy and context menu", () => {
     fireEvent.mouseUp(document);
     expect(await screen.findByTestId("selection-toolbar")).toBeTruthy();
     expect(rightClick(before.parentElement as HTMLElement)).toBe(true);
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["复制选中内容", "解释选中内容", "复制全文", "导出…"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["复制选中内容", "解释选中内容", "复制全文", "导出"]);
     fireEvent.click(screen.getByTestId("context-menu-item-explain-selection"));
     await waitFor(() => expect((screen.getByTestId("chat-input") as HTMLTextAreaElement).value).toBe("解释一下「讲了重排序。」"));
     expect(screen.queryByTestId("chat-quote")).toBeNull();

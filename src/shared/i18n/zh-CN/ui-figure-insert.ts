@@ -9,7 +9,7 @@ export const figureInsert = {
   menu: {
     trigger: "插入图片",
     capture: "截取当前画面",
-    upload: "上传图片…",
+    upload: "上传图片",
     uploadFormats: "PNG、JPEG、WebP，不超过 {{size}} MB",
     recent: "最近删除（{{count}}）",
     /** Said under 「最近删除（0）」, which is off then. */

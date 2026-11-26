@@ -90,7 +90,7 @@ export const speakerEditor = {
     noneInDraft: "这份稿还没有句子指定发言人。可以逐句手动指定，也可以从另一份带发言人的转录稿套用。",
     start: "标注发言人",
     edit: "编辑发言人：{{name}}",
-    merge: "合并到…",
+    merge: "合并到",
     mergeFor: "把 {{name}} 合并到其他发言人",
     mergeHint: "{{name}} 的句子都归给：",
     noSentences: "尚未分配句子",
@@ -103,7 +103,7 @@ export const speakerEditor = {
     inUse: "TA 刚被某个版本或草稿引用，无法删除；名单已刷新",
     showMore: "再显示 {{count}} 位",
     showLess: "收起",
-    apply: "从转录稿套用…",
+    apply: "从转录稿套用",
   },
   /** The notice over a draft some of whose sentences name a speaker that no longer exists. */
   missing: {
@@ -113,7 +113,7 @@ export const speakerEditor = {
   /** The ways into speaker editing from the reading view. */
   entry: {
     labelSpeakers: "标注发言人",
-    changeSpeaker: "更改发言人…",
+    changeSpeaker: "更改发言人",
   },
   apply: {
     title: "套用发言人",

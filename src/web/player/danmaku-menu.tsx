@@ -329,7 +329,7 @@ export function DanmakuMenu(props: {
 }
 
 /**
- * The settings-menu entry 「弹幕…」 of a narrow player. It opens the popover once the menu has
+ * The settings-menu entry 「弹幕」 of a narrow player. It opens the popover once the menu has
  * closed and handed the focus back, so that hand-back does not close the popover again.
  */
 export function DanmakuSettingsItem(props: { openState: DanmakuOpenState }) {

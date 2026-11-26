@@ -552,7 +552,7 @@ describe("ContentPage in the desktop client", () => {
     });
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     const save = (await screen.findByTestId("save-cache")) as HTMLButtonElement;
-    expect(save.textContent).toBe("另存为…");
+    expect(save.textContent).toBe("另存为");
     expect(save.getAttribute("title")).toBe("视频 1080P：第一讲 [1080P].mp4");
     fireEvent.click(save);
     await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledTimes(1));
@@ -985,22 +985,22 @@ describe("ContentPage toolbar overflow", () => {
     return screen.findByRole("menu");
   };
 
-  it("keeps only 「重新获取简介」, 「导出内容包…」 and 「删除」 in the menu of a platform video while every control fits", async () => {
+  it("keeps only 「重新获取简介」, 「导出内容包」 and 「删除」 in the menu of a platform video while every control fits", async () => {
     mockApi(contentRoutes());
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     await screen.findByTestId("toolbar-row");
     expect(document.querySelectorAll("[data-toolbar-item][inert]")).toHaveLength(0);
     const menu = await openMenu();
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["重新获取简介", "导出内容包…", "删除"]);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["重新获取简介", "导出内容包", "删除"]);
     expect(within(menu).getByRole("separator")).toBeTruthy();
   });
 
-  it("keeps only 「导出内容包…」 and 「删除」 in the menu of a local file while every control fits", async () => {
+  it("keeps only 「导出内容包」 and 「删除」 in the menu of a local file while every control fits", async () => {
     mockApi(contentRoutes(contentDetail({ source: { kind: "local" } })));
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     await screen.findByTestId("toolbar-row");
     const menu = await openMenu();
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["导出内容包…", "删除"]);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["导出内容包", "删除"]);
     expect(within(menu).getByRole("separator")).toBeTruthy();
   });
 
@@ -1064,7 +1064,7 @@ describe("ContentPage toolbar overflow in the desktop client", () => {
         disconnect(): void {}
       },
     );
-    // 「另存为…」 and 「管理合集」 wrapped onto the second line.
+    // 「另存为」 and 「管理合集」 wrapped onto the second line.
     vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
       return ["save-cache", "collections"].includes(this.dataset["toolbarItem"] ?? "") ? 36 : 4;
     });
@@ -1084,7 +1084,7 @@ describe("ContentPage toolbar overflow in the desktop client", () => {
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     fireEvent.keyDown(await screen.findByTestId("content-menu"), { key: "Enter" });
     const item = await screen.findByTestId("overflow-save-cache");
-    expect(item.textContent).toBe("另存为…视频 1080P：第一讲 [1080P].mp4");
+    expect(item.textContent).toBe("另存为视频 1080P：第一讲 [1080P].mp4");
     fireEvent.click(item);
     await waitFor(() => expect(fakeShell.saveCachedMedia).toHaveBeenCalledWith(SAVE_GRANT(VIDEO_CACHE.localPath as string).grant, "第一讲 [1080P].mp4"));
     expect((await screen.findByTestId("save-cache-saved")).textContent).toBe("已保存到 D:\\视频\\第一讲.mp4");

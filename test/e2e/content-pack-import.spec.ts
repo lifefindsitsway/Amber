@@ -81,7 +81,7 @@ test("server mode: upload, decide, import, read the result and retry the collect
   await expect(rowOf(dialog, "c-media").getByTestId("pack-import-conclusion")).toHaveText("音视频与《录屏（又一份）》相同 · 合并资料");
   await expect(start).toBeEnabled();
 
-  // 「合并到其它内容…」 names a target by hand; a far-off duration is flagged.
+  // 「合并到其它内容」 names a target by hand; a far-off duration is flagged.
   await rowOf(dialog, "c-new").getByTestId("pack-import-details-toggle").click();
   await rowOf(dialog, "c-new").getByTestId("pack-import-merge-other").click();
   const picker = page.getByRole("dialog", { name: "合并到其它内容" });

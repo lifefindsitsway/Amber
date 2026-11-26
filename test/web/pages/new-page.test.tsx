@@ -1340,7 +1340,7 @@ describe("NewPage form checks and settings", () => {
     const { calls } = mockApi({ ...baseRoutes(), "GET /api/collections": { body: { items: [] } } });
     renderApp(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
-    await chooseOption(screen.getByRole("combobox", { name: "加入合集" }), "新建合集…");
+    await chooseOption(screen.getByRole("combobox", { name: "加入合集" }), "新建合集");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -1373,7 +1373,7 @@ describe("NewPage form checks and settings", () => {
     await waitFor(() => expect(template.textContent).toBe("我的模板"));
     expect(language.textContent).toBe("日语");
     expect(target.textContent).toBe("不加入合集");
-    await waitFor(async () => expect(await selectOptionNames(target)).toEqual(["不加入合集", "第一门课", "第二门课", "新建合集…"]));
+    await waitFor(async () => expect(await selectOptionNames(target)).toEqual(["不加入合集", "第一门课", "第二门课", "新建合集"]));
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(calls.some((call) => call.path === "/api/contents/import")).toBe(true));

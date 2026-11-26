@@ -144,19 +144,19 @@ describe("useSentenceMenu", () => {
     expect(rightClick(document.querySelector("[data-segment-id='s1']") as Element)).toEqual(["copy-selection", "explain-selection", "play-from-here", "copy-sentence", "copy-sentence-with-time"]);
   });
 
-  it("offers 「更改发言人…」 for the right-clicked sentence only where the view can change it", () => {
+  it("offers 「更改发言人」 for the right-clicked sentence only where the view can change it", () => {
     const changeSpeaker = vi.fn();
     mount(true, changeSpeaker);
     const sentence = document.querySelector("[data-segment-id='s1']") as Element;
     expect(rightClick(sentence)).toEqual(["play-from-here", "copy-sentence", "copy-sentence-with-time", "change-speaker"]);
-    expect(screen.getByTestId("context-menu-item-change-speaker").textContent).toContain("更改发言人…");
+    expect(screen.getByTestId("context-menu-item-change-speaker").textContent).toContain("更改发言人");
     act(() => {
       screen.getByTestId("context-menu-item-change-speaker").click();
     });
     expect(changeSpeaker).toHaveBeenCalledWith("s1");
   });
 
-  it("has no 「更改发言人…」 without the way to change it", () => {
+  it("has no 「更改发言人」 without the way to change it", () => {
     mount();
     expect(rightClick(document.querySelector("[data-segment-id='s1']") as Element)).toEqual(["play-from-here", "copy-sentence", "copy-sentence-with-time"]);
   });

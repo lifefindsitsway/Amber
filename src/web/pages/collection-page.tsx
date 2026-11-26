@@ -422,7 +422,7 @@ export function CollectionPage() {
 }
 
 /**
- * 「导出内容包…」 in the header's 「⋯」: every member on the page (the trash shows none) and
+ * 「导出内容包」 in the header's 「⋯」: every member on the page (the trash shows none) and
  * this collection. A content pack takes at most `IMPORT_BATCH_MAX` Contents, so a larger
  * collection says so instead of exporting part of it.
  */

@@ -18,14 +18,14 @@ export const contentPack = {
     rowLabel: "选择「{{title}}」",
     pageLabel: "选择本页全部内容",
     count: "已选 {{count}} 项",
-    exportSelected: "导出所选…",
+    exportSelected: "导出所选",
     clear: "取消",
     tooMany: "单个内容包最多 {{max}} 条，请减少到 {{max}} 条以内",
     barLabel: "已选内容的操作",
   },
   /** The 「⋯」 entries on the content and collection pages, the new page and the backup section. */
   entry: {
-    exportPack: "导出内容包…",
+    exportPack: "导出内容包",
     importPack: "导入内容包",
     collectionTooMany: "合集超过 {{max}} 条，请在全部内容页按合集筛选后分批选择",
     collectionEmpty: "合集里还没有内容",
@@ -194,7 +194,7 @@ export const contentPack = {
   import: {
     title: "导入内容包",
     intro: "选择从另一台设备导出的 .amberpack 文件。导入前会先列出每条内容在本机的情况，由你决定怎么处理。",
-    pick: "选择内容包…",
+    pick: "选择内容包",
     fileLabel: "内容包文件",
     uploading: "正在上传 {{name}}",
     cancelUpload: "取消上传",
@@ -237,7 +237,7 @@ export const contentPack = {
       importAsNew: "作为新内容导入",
       skip: "跳过",
       choose: "选择对应的内容",
-      mergeOther: "合并到其它内容…",
+      mergeOther: "合并到其它内容",
     },
     change: {
       revisions: "新增字幕 {{count}} 份",

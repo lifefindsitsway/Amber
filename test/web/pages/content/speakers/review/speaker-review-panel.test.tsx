@@ -202,13 +202,13 @@ describe("SpeakerReviewControl", () => {
   });
 });
 
-describe("SpeakerReviewControl 「管理发言人…」", () => {
+describe("SpeakerReviewControl 「管理发言人」", () => {
   it("is offered beside the roster only with a way to manage speakers, and closes the panel before taking it", async () => {
     routes(REVIEW);
     const manage = vi.fn();
     showControl({ onManageSpeakers: manage });
     const panel = await openPanel();
-    const button = within(panel).getByRole("button", { name: "管理发言人…" });
+    const button = within(panel).getByRole("button", { name: "管理发言人" });
     fireEvent.click(button);
     expect(manage).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByTestId("speaker-review-panel")).toBeNull());

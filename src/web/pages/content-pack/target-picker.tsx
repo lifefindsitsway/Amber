@@ -21,7 +21,7 @@ import { comparePack } from "./pack-api.ts";
 import { sourceLine, titleOf } from "./pack-labels.ts";
 
 /**
- * 「合并到其它内容…」: the user names the local Content a carried one goes into. Nothing here is
+ * 「合并到其它内容」: the user names the local Content a carried one goes into. Nothing here is
  * matched by title or duration; the list is the library's (recent first, or what the search
  * finds), and a duration far from the carried one is flagged before the user commits to it.
  * Picking asks the server for the diff against that Content.

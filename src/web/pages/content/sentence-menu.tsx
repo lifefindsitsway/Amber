@@ -72,7 +72,7 @@ export function useSentenceMenu<T extends Element = HTMLElement>(
      */
     speakerPrefixOf?: (segmentId: string) => string;
     /**
-     * Present where the view can take the user to the sentence's speaker: adds 「更改发言人…」,
+     * Present where the view can take the user to the sentence's speaker: adds 「更改发言人」,
      * which hands over the sentence that was right-clicked (not the one playing).
      */
     onChangeSpeaker?: (segmentId: string) => void;

@@ -837,7 +837,7 @@ function TranscriptReader(props: {
   );
   /**
    * 「编辑」: notes the sentence to open the editor on and the screen to come back to. The speaker
-   * entries go the same way and say what to open in the editor; 「更改发言人…」 names the sentence
+   * entries go the same way and say what to open in the editor; 「更改发言人」 names the sentence
    * it was asked on, which then is the target ahead of the playing one.
    */
   const startEdit = (intent?: SpeakerIntent): void => {

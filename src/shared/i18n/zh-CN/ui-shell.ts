@@ -160,7 +160,7 @@ export const shell = {
     outputLanguage: "输出语言",
     collection: "加入合集",
     collectionNone: "不加入合集",
-    collectionNew: "新建合集…",
+    collectionNew: "新建合集",
     collectionNewName: "新合集名称",
     autoProofread: "自动校对",
     submit: "开始处理",

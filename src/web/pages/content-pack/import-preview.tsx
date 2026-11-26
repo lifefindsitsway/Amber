@@ -423,7 +423,7 @@ function targetTitle(item: PackPreviewContent, draft: ContentDraft, t: (key: "co
   return title === undefined || title.trim() === "" ? t("contentPack.untitled") : title;
 }
 
-/** Which local Content the carried one goes into: candidates to pick from, 「合并到其它内容…」, a hand-picked target. */
+/** Which local Content the carried one goes into: candidates to pick from, 「合并到其它内容」, a hand-picked target. */
 function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: ContentDraft; candidates: PackPreviewContent["candidates"]; onChange: (draft: ContentDraft) => void }) {
   const { t } = useTranslation();
   const client = useApi();

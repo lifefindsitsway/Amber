@@ -29,7 +29,7 @@ export interface SpeakerReviewTarget {
   onLocate: (segmentId: string) => void;
   /** The cross-recognition summary shown under 「辅助核对」, when there is one to show. */
   crossCheck?: ReactNode;
-  /** Takes the user to the editor's speaker panel; present where that way is open, which adds 「管理发言人…」 beside the roster. */
+  /** Takes the user to the editor's speaker panel; present where that way is open, which adds 「管理发言人」 beside the roster. */
   onManageSpeakers?: () => void;
 }
 

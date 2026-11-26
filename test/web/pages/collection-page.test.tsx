@@ -501,7 +501,7 @@ describe("CollectionPage", () => {
     routes();
     render();
     fireEvent.keyDown(await screen.findByRole("button", { name: "更多操作" }), { key: "Enter" });
-    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["删除合集", "导出合集 Markdown", "导出内容包…"]);
+    expect((await screen.findAllByRole("menuitem")).map((item) => item.textContent)).toEqual(["删除合集", "导出合集 Markdown", "导出内容包"]);
   });
 
   it("reads the lectures and summary again on task events only, and content lists once a task finishes", async () => {
@@ -639,7 +639,7 @@ describe("CollectionPage selection", () => {
     pick("第1讲");
     const bar = screen.getByTestId("collection-selection-bar");
     const buttons = within(bar).getAllByRole("button").map((button) => button.textContent);
-    expect(buttons).toEqual(["取消", "移出合集", "删除…"]);
+    expect(buttons).toEqual(["取消", "移出合集", "删除"]);
     expect(within(bar).getByTestId("collection-remove-selected").className).toContain("border-line bg-surface");
     expect(within(bar).getByTestId("collection-delete-selected").className).toContain("text-danger");
     expect(within(bar).getByTestId("collection-delete-selected").className).not.toContain("bg-danger");

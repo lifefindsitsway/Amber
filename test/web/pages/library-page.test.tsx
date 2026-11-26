@@ -908,7 +908,7 @@ describe("LibraryPage selection", () => {
     const header = (): HTMLElement => screen.getByTestId("library-select-page");
     fireEvent.click(header());
     const bar = screen.getByTestId("library-selection-bar");
-    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "删除…", "导出所选…"]);
+    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "删除", "导出所选"]);
     const remove = screen.getByTestId("library-delete-selected") as HTMLButtonElement;
     const exportButton = screen.getByTestId("library-export-selected") as HTMLButtonElement;
     expect(remove.className).toContain("text-danger");

@@ -414,12 +414,12 @@ test.describe("danmaku", () => {
     await setPlayerWidth(player, DANMAKU_NARROW_PICTURE_PX - 20);
     await expect(player.locator("[data-control='danmaku']")).toHaveCount(0);
     await expect(player.getByTestId("player-danmaku")).toHaveCount(0);
-    // Keyboard only: to the settings button, open the menu, pick 「弹幕…」.
+    // Keyboard only: to the settings button, open the menu, pick 「弹幕」.
     await player.getByTestId("player-settings").focus();
     await page.keyboard.press("Enter");
     const entry = page.getByTestId("player-settings-danmaku");
     await expect(entry).toBeVisible();
-    await expect(entry).toContainText("弹幕…");
+    await expect(entry).toContainText("弹幕");
     await expect(entry).toContainText("关");
     await entry.focus();
     await page.keyboard.press("Enter");

@@ -94,7 +94,7 @@ function cacheButtons() {
   return {
     block,
     open: within(block).getByRole("button", { name: "打开文件夹" }),
-    change: within(block).getByRole("button", { name: "更改位置…" }),
+    change: within(block).getByRole("button", { name: "更改位置" }),
     restore: within(block).queryByRole("button", { name: "恢复默认" }),
   };
 }
@@ -139,11 +139,11 @@ describe("StorageSection in the desktop client", () => {
     expect(first?.textContent).toContain("3.0 MB");
     expect(second?.textContent).toContain("未命名内容");
     expect(screen.getAllByTestId("burn-output-format").map((item) => item.textContent)).toEqual(["MKV", "MP4"]);
-    fireEvent.click(within(first as HTMLElement).getByRole("button", { name: "另存为…" }));
+    fireEvent.click(within(first as HTMLElement).getByRole("button", { name: "另存为" }));
     await waitFor(() => expect(fakeShell.saveBurnOutput).toHaveBeenCalledTimes(1));
     expect(fakeShell.saveBurnOutput).toHaveBeenCalledWith(GRANT, "第一讲.mkv");
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
-    fireEvent.click(within(first as HTMLElement).getByRole("button", { name: "另存为…" }));
+    fireEvent.click(within(first as HTMLElement).getByRole("button", { name: "另存为" }));
     expect((await screen.findByTestId("burn-output-saved")).textContent).toBe("已保存到 D:\\第一讲.mkv");
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(1));
     expect(calls.filter((call) => call.method === "DELETE").map((call) => call.path)).toEqual(["/api/media/m1"]);
@@ -153,7 +153,7 @@ describe("StorageSection in the desktop client", () => {
     fakeShell.saveBurnOutput.mockResolvedValueOnce({ savedPath: "D:\\第一讲.mkv" }).mockResolvedValueOnce({ savedPath: "D:\\未命名内容.mp4" });
     desktop();
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(2));
-    fireEvent.click(within(screen.getAllByTestId("burn-output")[0] as HTMLElement).getByRole("button", { name: "另存为…" }));
+    fireEvent.click(within(screen.getAllByTestId("burn-output")[0] as HTMLElement).getByRole("button", { name: "另存为" }));
     fireEvent.click(within(await screen.findByTestId("burn-output-saved")).getByRole("button", { name: "关闭" }));
     expect(screen.queryByTestId("burn-output-saved")).toBeNull();
     await waitFor(() => expect(screen.getAllByTestId("burn-output")).toHaveLength(1));
@@ -162,7 +162,7 @@ describe("StorageSection in the desktop client", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     onTestFinished(() => void vi.useRealTimers());
     const tick = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
-    fireEvent.click(within(screen.getByTestId("burn-output")).getByRole("button", { name: "另存为…" }));
+    fireEvent.click(within(screen.getByTestId("burn-output")).getByRole("button", { name: "另存为" }));
     for (let round = 0; round < 50 && screen.queryByTestId("burn-output-saved") === null; round += 1) await tick(0);
     expect(screen.getByTestId("burn-output-saved").textContent).toBe("已保存到 D:\\未命名内容.mp4");
     await tick(SAVE_NOTICE_DISMISS_MS - 1);

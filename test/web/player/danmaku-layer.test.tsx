@@ -62,7 +62,7 @@ describe("useDanmakuExtension", () => {
 });
 
 describe("a narrow picture", () => {
-  it("moves the button into the settings menu as 「弹幕…」 and opens the popover from the picture's corner", () => {
+  it("moves the button into the settings menu as 「弹幕」 and opens the popover from the picture's corner", () => {
     mockApi({ "GET /api/contents/c3/danmaku": { body: { supported: true } } });
     const { result } = renderHook(() => useDanmakuExtension(contentDetail({ id: "c3", danmaku: {} })), { wrapper });
     const extension = result.current;
