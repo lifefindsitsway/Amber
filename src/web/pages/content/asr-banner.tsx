@@ -48,8 +48,9 @@ export function AsrBanner(props: {
   primaryId: string | undefined;
   /**
    * Called with the new recognition's revision when the user chooses to apply its speakers to
-   * the current version. Given, the banner offers that as its main action when the new
-   * recognition names at least two speakers; absent, the banner is as it always was.
+   * the current version. Given, the banner offers that first when the new recognition names at
+   * least two speakers; absent, the banner is as it always was. Like every banner action, these
+   * are outlined buttons: a side suggestion never outshines the page's own main action.
    */
   onApplySpeakers?: (sourceRevisionId: string) => void;
 }) {
@@ -97,12 +98,12 @@ export function AsrBanner(props: {
             {applySpeakers === undefined ? null : (
               <>
                 <span className="text-note text-muted">{t("speakerEditor.banner.speakers", { count: speakerCount })}</span>
-                <Button size="sm" variant="primary" onClick={() => applySpeakers(asr.id)} data-testid="asr-banner-apply-speakers">
+                <Button size="sm" onClick={() => applySpeakers(asr.id)} data-testid="asr-banner-apply-speakers">
                   {t("speakerEditor.banner.apply")}
                 </Button>
               </>
             )}
-            <Button size="sm" variant={applySpeakers === undefined ? "primary" : "secondary"} loading={setPrimary.isPending} onClick={() => setPrimary.mutate(asr.id)} data-testid="asr-banner-set-primary">
+            <Button size="sm" loading={setPrimary.isPending} onClick={() => setPrimary.mutate(asr.id)} data-testid="asr-banner-set-primary">
               {t("contentView.revisions.asrBannerSetPrimary")}
             </Button>
             <Button

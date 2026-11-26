@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Users } from "lucide-react";
+import { Plus, Users } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -59,7 +59,8 @@ export function UsersSection() {
       <SettingsBlock
         intro={t("admin.users.intro")}
         actions={
-          <Button variant="primary" size="sm" onClick={() => setDialog({ kind: "create" })}>
+          <Button size="sm" onClick={() => setDialog({ kind: "create" })}>
+            <Plus size={14} aria-hidden="true" />
             {t("admin.users.create")}
           </Button>
         }
@@ -73,6 +74,7 @@ export function UsersSection() {
             title={t("admin.users.empty")}
             action={
               <Button variant="primary" onClick={() => setDialog({ kind: "create" })}>
+                <Plus size={14} aria-hidden="true" />
                 {t("admin.users.create")}
               </Button>
             }
@@ -139,7 +141,7 @@ export function UsersSection() {
                         <Button size="sm" onClick={() => setDialog({ kind: "reset", user })}>
                           {t("admin.users.resetPassword")}
                         </Button>
-                        <Button size="sm" variant="danger" onClick={() => setDialog({ kind: "delete", user })}>
+                        <Button size="sm" onClick={() => setDialog({ kind: "delete", user })}>
                           {t("admin.users.delete")}
                         </Button>
                       </div>

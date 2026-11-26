@@ -631,7 +631,7 @@ describe("CollectionPage selection", () => {
     expect(screen.queryByRole("checkbox", { name: "选择「第2讲」" })).toBeNull();
   });
 
-  it("offers leaving the collection as a plain button and deleting as the outlined destructive one", async () => {
+  it("offers leaving the collection and deleting as plain outlined buttons", async () => {
     routes();
     render();
     fireEvent.click(await screen.findByTestId("collection-select-mode"));
@@ -641,8 +641,9 @@ describe("CollectionPage selection", () => {
     const buttons = within(bar).getAllByRole("button").map((button) => button.textContent);
     expect(buttons).toEqual(["取消", "移出合集", "删除"]);
     expect(within(bar).getByTestId("collection-remove-selected").className).toContain("border-line bg-surface");
-    expect(within(bar).getByTestId("collection-delete-selected").className).toContain("text-danger");
-    expect(within(bar).getByTestId("collection-delete-selected").className).not.toContain("bg-danger");
+    // Deleting opens the delete dialog, whose final button is the red one; the entry stays neutral.
+    expect(within(bar).getByTestId("collection-delete-selected").className).toContain("border-line bg-surface");
+    expect(within(bar).getByTestId("collection-delete-selected").className).not.toContain("danger");
   });
 
   it("removes the picked lectures from this collection in one request, says so and drops them from the selection", async () => {

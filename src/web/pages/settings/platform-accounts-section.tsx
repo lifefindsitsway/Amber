@@ -137,7 +137,7 @@ function AccountBlock(props: { account: PlatformAccountDto; server: boolean; des
             />
           ) : null}
           {props.desktop && platform === "bilibili" ? (
-            <Button size="sm" variant="primary" loading={login.isPending} onClick={() => login.mutate()} data-testid="bilibili-login">
+            <Button size="sm" loading={login.isPending} onClick={() => login.mutate()} data-testid="bilibili-login">
               {t("settings.platformAccounts.desktopLogin.open")}
             </Button>
           ) : null}
@@ -149,7 +149,7 @@ function AccountBlock(props: { account: PlatformAccountDto; server: boolean; des
               <ConfirmButton
                 label={t("settings.platformAccounts.remove")}
                 confirmLabel={t("settings.platformAccounts.remove")}
-                variant="danger"
+                destructive
                 pending={remove.isPending}
                 message={t("settings.platformAccounts.removeConfirm", { platform: label })}
                 onConfirm={() => remove.mutate()}
@@ -249,7 +249,7 @@ function BrowserImport(props: { onImported: () => void }) {
             </option>
           ))}
         </NativeSelect>
-        <Button size="sm" variant="primary" loading={read.isPending} onClick={() => read.mutate()} data-testid="browser-import">
+        <Button size="sm" loading={read.isPending} onClick={() => read.mutate()} data-testid="browser-import">
           {t("settings.platformAccounts.browserImport.read")}
         </Button>
       </div>

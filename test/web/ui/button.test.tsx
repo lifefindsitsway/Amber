@@ -15,7 +15,7 @@ describe("Button", () => {
   });
 
   it("shows a visible focus ring on keyboard focus for every variant", () => {
-    for (const variant of ["primary", "secondary", "ghost", "danger", "danger-solid"] as const) {
+    for (const variant of ["primary", "secondary", "ghost", "danger-solid"] as const) {
       const { unmount } = render(<Button variant={variant}>操作</Button>);
       expect(screen.getByRole("button", { name: "操作" }).className).toContain("focus-visible:outline-accent");
       unmount();
@@ -57,15 +57,14 @@ describe("Button", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "删除" }).disabled).toBe(true);
   });
 
-  it("fills the final destructive confirmation with the danger colour", () => {
+  it("fills the final destructive confirmation with the danger colour, and nothing else is red", () => {
     render(
       <>
-        <Button variant="danger">删除</Button>
+        <Button>删除</Button>
         <Button variant="danger-solid">永久删除</Button>
       </>,
     );
-    expect(screen.getByRole("button", { name: "删除" }).className).toContain("text-danger");
-    expect(screen.getByRole("button", { name: "删除" }).className).not.toContain("bg-danger");
+    expect(screen.getByRole("button", { name: "删除" }).className).not.toContain("danger");
     const solid = screen.getByRole("button", { name: "永久删除" });
     expect(solid.className).toContain("bg-danger");
     expect(solid.className).toContain("text-surface");

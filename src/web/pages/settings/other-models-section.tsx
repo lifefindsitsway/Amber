@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Boxes, ChevronDown, GripVertical } from "lucide-react";
+import { Boxes, ChevronDown, GripVertical, Plus } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -49,6 +49,7 @@ export function OtherModelsSection() {
             hint={t("settings.otherModels.emptyHint")}
             action={
               <Button variant="primary" onClick={() => setCreating(true)}>
+                <Plus size={14} aria-hidden="true" />
                 {t("settings.otherModels.addProfile")}
               </Button>
             }
@@ -57,7 +58,8 @@ export function OtherModelsSection() {
       ) : (
         <>
           <div className="mb-6">
-            <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-other-model-profile">
+            <Button onClick={() => setCreating(true)} data-testid="add-other-model-profile">
+              <Plus size={14} aria-hidden="true" />
               {t("settings.otherModels.addProfile")}
             </Button>
           </div>
@@ -180,7 +182,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Ot
           </Button>
           <ConfirmButton
             label={t("common.action.delete")}
-            variant="danger"
+            destructive
             confirmLabel={t("settings.otherModels.deleteProfileConfirm")}
             pending={mutations.remove.isPending && mutations.remove.variables === profile.id}
             message={t("settings.otherModels.deleteConfirm", { name: profile.name })}

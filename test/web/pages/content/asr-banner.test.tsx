@@ -29,9 +29,11 @@ describe("AsrBanner and speakers", () => {
     expect(apply.textContent).toBe("套用发言人到当前版本");
     expect(screen.getByTestId("asr-banner").textContent).toContain("新转录稿识别出 2 位发言人。");
     expect(screen.getByTestId("asr-banner-set-primary").textContent).toBe("设为当前");
-    // The speaker action is the main one; switching is the quieter choice.
-    expect(apply.className).toContain("bg-accent-glow");
+    // A banner's actions are outlined, never brand-coloured; the speaker action comes first.
+    expect(apply.className).toContain("border-line");
+    expect(apply.className).not.toContain("bg-accent-glow");
     expect(screen.getByTestId("asr-banner-set-primary").className).not.toContain("bg-accent-glow");
+    expect(apply.compareDocumentPosition(screen.getByTestId("asr-banner-set-primary")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(apply);
     expect(onApply).toHaveBeenCalledWith("r5");
   });
@@ -42,7 +44,8 @@ describe("AsrBanner and speakers", () => {
     await waitFor(() => expect(calls.some((call) => call.path.startsWith("/api/transcript/revisions/r5/segments"))).toBe(true));
     await screen.findByTestId("asr-banner");
     expect(screen.queryByTestId("asr-banner-apply-speakers")).toBeNull();
-    expect(screen.getByTestId("asr-banner-set-primary").className).toContain("bg-accent-glow");
+    expect(screen.getByTestId("asr-banner-set-primary").className).toContain("border-line");
+    expect(screen.getByTestId("asr-banner-set-primary").className).not.toContain("bg-accent-glow");
   });
 
   it("without the callback it is unchanged and reads no sentences", async () => {

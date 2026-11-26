@@ -34,7 +34,6 @@ export function QrLoginButton(props: { onConfirmed: () => void }) {
     <>
       <Button
         size="sm"
-        variant="primary"
         onClick={() => {
           setOpen(true);
           begin();

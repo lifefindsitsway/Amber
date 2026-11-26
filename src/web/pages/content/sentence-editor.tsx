@@ -767,7 +767,7 @@ function FindSection(props: {
                     {t("editor.find.replaceSelected")}
                   </Button>
                 ) : null}
-                <Button size="sm" variant="danger" disabled={props.disabled || chosen.length === 0} onClick={() => props.onDeleteMatches(chosen)} data-testid="find-delete-selected">
+                <Button size="sm" disabled={props.disabled || chosen.length === 0} onClick={() => props.onDeleteMatches(chosen)} data-testid="find-delete-selected">
                   {t("editor.find.deleteSelected")}
                 </Button>
               </div>

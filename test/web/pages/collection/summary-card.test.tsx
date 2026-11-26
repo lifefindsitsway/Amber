@@ -78,6 +78,7 @@ describe("SummaryCard", () => {
     expect(screen.queryByText("合集的脉络")).toBeNull();
     expect(screen.queryByRole("button", { name: "查看详细归纳" })).toBeNull();
     expect(within(screen.getByTestId("collection-summary-actions")).getAllByRole("button").map((button) => button.textContent)).toEqual(["重新归纳", "删除归纳"]);
+    expect(within(screen.getByTestId("collection-summary-actions")).getByRole("button", { name: "删除归纳" }).className).not.toContain("danger");
     expect(screen.getByText("内容顺序已调整，归纳可能已过时")).toBeTruthy();
   });
 

@@ -100,7 +100,7 @@ export function SummaryCard(props: {
             <Button size="sm" disabled={busy || props.generating === true} onClick={props.onGenerate}>
               {t("library.summary.regenerate")}
             </Button>
-            <Button size="sm" variant="ghost" className="text-danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmDelete(true)}>
               {t("library.summary.delete")}
             </Button>
           </div>

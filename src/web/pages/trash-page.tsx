@@ -135,7 +135,7 @@ export function TrashPage() {
       <PageHeader
         title={t("trash.title")}
         actions={
-          <Button variant="danger" data-testid="trash-empty-all" disabled={total === 0} onClick={() => setEmptying(true)}>
+          <Button data-testid="trash-empty-all" disabled={total === 0} onClick={() => setEmptying(true)}>
             <Trash2 size={14} aria-hidden="true" />
             {t("trash.emptyAll")}
           </Button>
@@ -145,7 +145,6 @@ export function TrashPage() {
         <InlineNote className="min-w-0 flex-1">{t("trash.hint", { days: TRASH_RETENTION_DAYS })}</InlineNote>
         <Button
           size="md"
-          variant={selecting ? "primary" : "secondary"}
           aria-pressed={selecting}
           disabled={!selecting && total === 0}
           onClick={() => setSelected(selecting ? undefined : [])}
@@ -233,7 +232,6 @@ export function TrashPage() {
         >
           <Button
             size="md"
-            variant="primary"
             loading={restoreMany.isPending}
             disabled={restoreBlock !== undefined}
             aria-describedby={restoreBlock === "tooMany" ? "trash-restore-limit" : undefined}
@@ -369,7 +367,7 @@ function TrashRow(props: {
             <RotateCcw size={14} aria-hidden="true" />
             {t("trash.restore")}
           </Button>
-          <Button size="sm" variant="ghost" className="text-danger" data-testid="trash-purge" onClick={props.onPurge}>
+          <Button size="sm" variant="ghost" data-testid="trash-purge" onClick={props.onPurge}>
             <Trash2 size={14} aria-hidden="true" />
             {t("trash.purge")}
           </Button>

@@ -2,11 +2,13 @@ import { LoaderCircle } from "lucide-react";
 import type { ButtonHTMLAttributes } from "react";
 
 /**
- * `primary` is the one main action of a view; `danger` (outlined) offers a destructive action;
- * `danger-solid` is reserved for the final confirmation of one, e.g. the confirm button of a
- * delete dialog, so a filled red button always means "this is the step that destroys".
+ * `primary` submits or confirms the one step of an area (a dialog, a form, an editor, an empty
+ * state); `secondary` is every other labelled button, entry points to destructive actions
+ * included; `ghost` is for icon buttons, dense toolbars and dismissals. `danger-solid` is kept
+ * for the final step of a destructive action, e.g. the confirm button of a delete dialog, so red
+ * always means "this is the step that destroys", never "this opens something that might".
  */
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger-solid";
 
 // A pressed toggle sinks (darker fill, firmer outline) instead of turning to the brand colour, so
 // the one main action of a view stays the only brand-coloured button. `danger-solid` carries a
@@ -15,7 +17,6 @@ const VARIANTS: Record<ButtonVariant, string> = {
   primary: "bg-accent-glow text-accent-ink hover:brightness-105",
   secondary: "border border-line bg-surface hover:bg-sunken aria-pressed:border-ink/25 aria-pressed:bg-sunken",
   ghost: "hover:bg-sunken aria-pressed:bg-sunken",
-  danger: "border border-line text-danger hover:bg-sunken",
   "danger-solid": "border border-danger bg-danger text-surface hover:brightness-110",
 };
 
@@ -24,7 +25,6 @@ const SPINNER_TONE: Record<ButtonVariant, string> = {
   primary: "text-accent-ink",
   secondary: "text-ink",
   ghost: "text-ink",
-  danger: "text-danger",
   "danger-solid": "text-surface",
 };
 

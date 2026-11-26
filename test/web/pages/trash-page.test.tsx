@@ -139,6 +139,9 @@ describe("TrashPage", () => {
     expect(within(expired).getByTestId("trash-status").textContent).toBe("已到期，等待清理");
     expect((within(expired).getByTestId("trash-restore") as HTMLButtonElement).disabled).toBe(true);
     expect((within(expired).getByTestId("trash-purge") as HTMLButtonElement).disabled).toBe(false);
+    // An entry to a confirmation, so not red; the dialog's final button is.
+    expect(within(expired).getByTestId("trash-purge").className).not.toContain("danger");
+    expect(screen.getByTestId("trash-empty-all").className).not.toContain("danger");
     // Trashed Contents cannot be opened.
     expect(within(screen.getByTestId("trash-page")).queryAllByRole("link")).toHaveLength(0);
     expect((screen.getByTestId("trash-empty-all") as HTMLButtonElement).disabled).toBe(false);
@@ -373,7 +376,11 @@ describe("TrashPage", () => {
     expect(screen.getByTestId("trash-selection-count").textContent).toBe("已选 4 项");
     const bar = screen.getByTestId("trash-selection-bar");
     expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "恢复所选"]);
-    expect(within(bar).getByTestId("trash-restore-selected").className).toContain("bg-accent-glow");
+    // Bar actions are outlined; the page keeps no brand-coloured button of its own.
+    expect(within(bar).getByTestId("trash-restore-selected").className).toContain("border-line");
+    expect(within(bar).getByTestId("trash-restore-selected").className).not.toContain("bg-accent-glow");
+    expect(screen.getByTestId("trash-select-mode").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("trash-select-mode").className).not.toContain("bg-accent-glow");
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(screen.queryByTestId("trash-selection-bar")).toBeNull());
     expect(screen.queryByRole("checkbox")).toBeNull();

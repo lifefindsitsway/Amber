@@ -37,7 +37,7 @@ export function WebSearchSection() {
             <ConfirmButton
               label={t("settings.webSearch.remove")}
               confirmLabel={t("settings.webSearch.remove")}
-              variant="danger"
+              destructive
               pending={mutations.remove.isPending}
               message={t("settings.webSearch.removeConfirm")}
               onConfirm={() => mutations.remove.mutate()}

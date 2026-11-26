@@ -293,6 +293,8 @@ describe("PlatformAccountsSection in the desktop client", () => {
     expect(screen.getAllByText("选择 cookies.txt 文件")).toHaveLength(2);
     // A real button, reachable by Tab and opened by Enter or Space like any other.
     expect(screen.getAllByRole("button", { name: "选择 cookies.txt 文件" })).toHaveLength(2);
+    // Reading from the browser is one of several ways in, so it is outlined; only a form's submit is brand-coloured.
+    expect(screen.getByTestId("browser-import").className).not.toContain("bg-accent-glow");
     fireEvent.change(select, { target: { value: "chrome" } });
     unavailable = false;
     fireEvent.click(screen.getByTestId("browser-import"));

@@ -212,7 +212,7 @@ function ExportCard() {
         </ul>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" disabled={disabled} loading={start.isPending} onClick={() => start.mutate()} data-testid="backup-export-start">
+        <Button disabled={disabled} loading={start.isPending} onClick={() => start.mutate()} data-testid="backup-export-start">
           <Download size={14} aria-hidden="true" />
           {t("backup.export.start")}
         </Button>

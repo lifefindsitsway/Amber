@@ -73,7 +73,7 @@ export function CredentialsSection(props: { title?: string }) {
           {rotateFailed === "" ? null : <p className={`mt-1 break-all ${NOTE_TEXT_CLASS}`}>{rotateFailed}</p>}
         </Callout>
       )}
-      <Button variant="danger" onClick={() => setOpen(true)}>
+      <Button onClick={() => setOpen(true)}>
         {t("admin.credentials.action")}
       </Button>
       <ConfirmDialog

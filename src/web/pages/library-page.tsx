@@ -206,7 +206,6 @@ export function LibraryPage() {
         )}
         <Button
           size="md"
-          variant={selecting ? "primary" : "secondary"}
           className="ml-auto"
           aria-pressed={selecting}
           onClick={() => setSelected(selecting ? undefined : [])}
@@ -396,7 +395,6 @@ export function LibraryPage() {
           }
         >
           <Button
-            variant="danger"
             size="md"
             disabled={deleteBlock !== undefined}
             aria-describedby={deleteBlock === "tooMany" ? "library-delete-limit" : undefined}
@@ -407,7 +405,6 @@ export function LibraryPage() {
             {t("library.selection.delete")}
           </Button>
           <Button
-            variant="primary"
             size="md"
             disabled={block !== undefined}
             aria-describedby={block === "tooMany" ? "library-selection-limit" : undefined}

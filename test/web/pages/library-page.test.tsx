@@ -911,9 +911,15 @@ describe("LibraryPage selection", () => {
     expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["取消", "删除", "导出所选"]);
     const remove = screen.getByTestId("library-delete-selected") as HTMLButtonElement;
     const exportButton = screen.getByTestId("library-export-selected") as HTMLButtonElement;
-    expect(remove.className).toContain("text-danger");
-    expect(remove.className).not.toContain("bg-danger");
-    expect(exportButton.className).toContain("bg-accent-glow");
+    // Entry points, not the final step: outlined and neutral; the delete dialog holds the red button.
+    for (const button of [remove, exportButton]) {
+      expect(button.className).toContain("border-line");
+      expect(button.className).not.toContain("danger");
+      expect(button.className).not.toContain("bg-accent-glow");
+      expect(button.className).toContain("h-8");
+    }
+    expect(screen.getByTestId("library-select-mode").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("library-select-mode").className).not.toContain("bg-accent-glow");
     expect(remove.disabled).toBe(false);
     expect(exportButton.disabled).toBe(false);
 

@@ -24,7 +24,7 @@ export function TurnSelectBar(props: { count: number; busy: boolean; onDelete: (
     <div className="flex items-center gap-2 rounded-md border border-line bg-sunken px-2 py-1.5 text-xs" data-testid="chat-select-bar">
       <span data-testid="chat-select-count">{t("chat.select.count", { count: props.count })}</span>
       <div className="ml-auto flex items-center gap-1">
-        <Button size="sm" variant="danger" disabled={props.count === 0 || props.busy} onClick={props.onDelete} data-testid="chat-select-delete">
+        <Button size="sm" disabled={props.count === 0 || props.busy} onClick={props.onDelete} data-testid="chat-select-delete">
           {t("chat.select.delete")}
         </Button>
         <Button size="sm" variant="ghost" onClick={props.onCancel} data-testid="chat-select-cancel">

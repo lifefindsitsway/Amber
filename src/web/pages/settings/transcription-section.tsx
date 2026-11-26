@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AudioLines, ChevronDown, GripVertical } from "lucide-react";
+import { AudioLines, ChevronDown, GripVertical, Plus } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ASR_MODEL_ID_PATTERN, ASR_PRESETS, type AsrPreset } from "../../../shared/asr-presets.ts";
@@ -56,6 +56,7 @@ export function TranscriptionSection() {
             hint={t("settings.transcription.emptyHint")}
             action={
               <Button variant="primary" onClick={() => setCreating(true)}>
+                <Plus size={14} aria-hidden="true" />
                 {t("settings.transcription.addProfile")}
               </Button>
             }
@@ -66,7 +67,8 @@ export function TranscriptionSection() {
           <DefaultModelBlock profiles={items} />
           <DiarizationBlock />
           <div className="mb-6">
-            <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-asr-profile">
+            <Button onClick={() => setCreating(true)} data-testid="add-asr-profile">
+              <Plus size={14} aria-hidden="true" />
               {t("settings.transcription.addProfile")}
             </Button>
           </div>
@@ -287,7 +289,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: As
           <ConfirmButton
             label={t("common.action.delete")}
             confirmLabel={t("common.action.delete")}
-            variant="danger"
+            destructive
             disabled={profile.inUse}
             pending={mutations.remove.isPending}
             message={t("settings.transcription.deleteConfirm", { name: profile.name })}

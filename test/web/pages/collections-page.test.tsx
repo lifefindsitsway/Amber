@@ -13,9 +13,26 @@ describe("CollectionsPage", () => {
     });
     renderApp(<CollectionsPage />, { route: "/collections", path: "/collections" });
     expect(await screen.findByText("6 项", { exact: false })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "新合集" }));
+    fireEvent.click(screen.getByTestId("collections-create"));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("合集名称"), { target: { value: "  新课 " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "新建" }));
+    await waitFor(() => expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({ name: "新课" }));
+  });
+
+  it("keeps the header's 新合集 outlined, and gives an empty list its own main 新合集", async () => {
+    const api = mockApi({
+      "GET /api/collections": { body: { items: [] } },
+      "POST /api/collections": { status: 201, body: { id: "k2", name: "新课", itemCount: 0, createdAt: 0, updatedAt: 0, items: [] } },
+    });
+    renderApp(<CollectionsPage />, { route: "/collections", path: "/collections" });
+    const empty = await screen.findByTestId("collections-empty-create");
+    expect(empty.className).toContain("bg-accent-glow");
+    expect(screen.getByTestId("collections-create").className).toContain("border-line");
+    expect(screen.getByTestId("collections-create").className).not.toContain("bg-accent-glow");
+    fireEvent.click(empty);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("合集名称"), { target: { value: "新课" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "新建" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "POST")?.body).toEqual({ name: "新课" }));
   });

@@ -38,8 +38,8 @@ export function CollectionsPage() {
       <PageHeader
         title={t("library.collections.title")}
         actions={
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            <Plus size={14} />
+          <Button onClick={() => setCreating(true)} data-testid="collections-create">
+            <Plus size={14} aria-hidden="true" />
             {t("library.collections.create")}
           </Button>
         }
@@ -50,7 +50,17 @@ export function CollectionsPage() {
         ) : collections.isError ? (
           <ErrorView error={appErrorOf(collections.error)} />
         ) : collections.data.items.length === 0 ? (
-          <EmptyState icon={<FolderOpen size={28} />} title={t("library.collections.empty")} hint={t("library.collections.emptyHint")} />
+          <EmptyState
+            icon={<FolderOpen size={28} />}
+            title={t("library.collections.empty")}
+            hint={t("library.collections.emptyHint")}
+            action={
+              <Button variant="primary" onClick={() => setCreating(true)} data-testid="collections-empty-create">
+                <Plus size={14} aria-hidden="true" />
+                {t("library.collections.create")}
+              </Button>
+            }
+          />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {pager.slice(collections.data.items).map((collection) => (

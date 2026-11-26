@@ -153,7 +153,7 @@ function PromptEditor({ prompt, onClose }: { prompt: PromptDto; onClose: () => v
             <ConfirmButton
               label={t("settings.systemPrompts.restore")}
               confirmLabel={t("settings.systemPrompts.restore")}
-              variant="danger"
+              destructive
               size="lg"
               disabled={!prompt.customized}
               pending={restore.isPending}

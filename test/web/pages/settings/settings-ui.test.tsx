@@ -1,8 +1,8 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppError } from "../../../../src/shared/errors.ts";
 import { ApiError } from "../../../../src/web/api/client.ts";
-import { TestConnectionError } from "../../../../src/web/pages/settings/settings-ui.tsx";
+import { ConfirmButton, TestConnectionError } from "../../../../src/web/pages/settings/settings-ui.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
 
 const PIPELINE_WORDING = "已按服务端要求等待并自动重试仍未成功；可稍后从这步重跑";
@@ -56,5 +56,31 @@ describe("TestConnectionError", () => {
   it("shows nothing for a non-API error", () => {
     show(new Error("boom"));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("ConfirmButton", () => {
+  function open(props: { destructive?: boolean; onConfirm?: () => void }) {
+    mockApi({});
+    renderApp(<ConfirmButton label="移除记录" confirmLabel="移除" message="确定移除？" onConfirm={props.onConfirm ?? (() => {})} {...(props.destructive === undefined ? {} : { destructive: props.destructive })} />);
+    const trigger = screen.getByRole("button", { name: "移除记录" });
+    fireEvent.click(trigger);
+    return { trigger, confirm: screen.getByRole("button", { name: "移除" }) };
+  }
+
+  it("keeps a destructive trigger neutral and saves the filled red for the dialog's final button", () => {
+    const onConfirm = vi.fn();
+    const { trigger, confirm } = open({ destructive: true, onConfirm });
+    expect(trigger.className.split(" ")).toEqual(expect.arrayContaining(["border-line", "bg-surface"]));
+    expect(trigger.className).not.toContain("danger");
+    expect(confirm.className.split(" ")).toContain("bg-danger");
+    fireEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirms a non-destructive action with the primary button", () => {
+    const { confirm } = open({});
+    expect(confirm.className.split(" ")).toContain("bg-accent-glow");
+    expect(confirm.className).not.toContain("danger");
   });
 });

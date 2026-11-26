@@ -140,14 +140,19 @@ export function TestConnectionError({ error }: { error: unknown }) {
 
 /**
  * A button that asks before acting. Used for paid probes and deletions so nothing that
- * costs money or loses data runs on a single click. For a deletion (`variant: "danger"`) the
- * dialog's final button is the filled destructive one; `confirmLabel` names what it does.
+ * costs money or loses data runs on a single click. The trigger only opens the dialog, so it
+ * keeps the neutral look of `variant` even for a deletion: red is kept for the step that
+ * actually destroys something. With `destructive` the dialog's final button is the filled
+ * destructive one, otherwise the primary one; `confirmLabel` names what it does.
  */
 export function ConfirmButton(props: {
   label: string;
   message: string;
   onConfirm: () => void;
-  variant?: "secondary" | "danger" | "primary" | "ghost";
+  /** The trigger's look; secondary when absent. */
+  variant?: "secondary" | "primary" | "ghost";
+  /** The confirmed action deletes or discards data. */
+  destructive?: boolean;
   /** The dialog's confirm button; "confirm" when absent. Say what happens, e.g. "delete". */
   confirmLabel?: string;
   disabled?: boolean;
@@ -178,7 +183,7 @@ export function ConfirmButton(props: {
           <>
             <Button onClick={() => setOpen(false)}>{t("common.action.cancel")}</Button>
             <Button
-              variant={props.variant === "danger" ? "danger-solid" : "primary"}
+              variant={props.destructive === true ? "danger-solid" : "primary"}
               onClick={() => {
                 setOpen(false);
                 props.onConfirm();

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -88,7 +89,8 @@ export function TemplatesSection() {
         title={t("settings.systemPrompts.blocks.summaryTemplates")}
         intro={t("settings.templates.intro")}
         actions={
-          <Button size="sm" variant="primary" onClick={() => setEditing("new")}>
+          <Button size="sm" onClick={() => setEditing("new")}>
+            <Plus size={14} aria-hidden="true" />
             {t("settings.templates.create")}
           </Button>
         }
@@ -135,7 +137,7 @@ function TemplateRow({ template, onEdit }: { template: SummaryTemplateDto; onEdi
           <ConfirmButton
             label={t("common.action.delete")}
             confirmLabel={t("common.action.delete")}
-            variant="danger"
+            destructive
             pending={remove.isPending}
             message={t("settings.templates.deleteConfirm", { name: template.name })}
             onConfirm={() => remove.mutate()}

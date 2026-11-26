@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, GripVertical, Server } from "lucide-react";
+import { ChevronDown, GripVertical, Plus, Server } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { z } from "zod";
@@ -59,6 +59,7 @@ export function ModelsSection() {
             hint={t("settings.models.wizardHint")}
             action={
               <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-first-profile">
+                <Plus size={14} aria-hidden="true" />
                 {t("settings.models.addProfile")}
               </Button>
             }
@@ -68,7 +69,8 @@ export function ModelsSection() {
         <>
           <DefaultModelBlock profiles={items} />
           <div className="mb-6">
-            <Button variant="primary" onClick={() => setCreating(true)} data-testid="add-profile">
+            <Button onClick={() => setCreating(true)} data-testid="add-profile">
+              <Plus size={14} aria-hidden="true" />
               {t("settings.models.addProfile")}
             </Button>
           </div>
@@ -299,7 +301,7 @@ function ProfileCard({ profile, collapsed, onToggle, dragHandle }: { profile: Pr
           </Button>
           <ConfirmButton
             label={t("common.action.delete")}
-            variant="danger"
+            destructive
             confirmLabel={t("settings.models.deleteProfileConfirm")}
             pending={remove.isPending}
             message={t("settings.models.deleteConfirm", { name: profile.name })}

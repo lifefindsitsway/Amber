@@ -314,7 +314,7 @@ export function CollectionPage() {
                     </Button>
                   )}
                   {collection.items.length === 0 ? null : (
-                    <Button size="md" variant={selecting ? "primary" : "secondary"} aria-pressed={selecting} onClick={() => setSelected(selecting ? undefined : [])} data-testid="collection-select-mode">
+                    <Button size="md" aria-pressed={selecting} onClick={() => setSelected(selecting ? undefined : [])} data-testid="collection-select-mode">
                       <CheckSquare size={14} aria-hidden="true" />
                       {selecting ? t("contentPack.select.exit") : t("contentPack.select.enter")}
                     </Button>
@@ -391,7 +391,6 @@ export function CollectionPage() {
           </Button>
           <Button
             size="md"
-            variant="danger"
             disabled={deleteBlock !== undefined || removeItems.isPending}
             aria-describedby={deleteBlock === "tooMany" ? "collection-delete-limit" : undefined}
             onClick={() => setDeleting([...picked])}

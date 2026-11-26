@@ -329,11 +329,12 @@ function LowWaterRatioHint({ settings }: { settings: InstanceSettingsDto }) {
       testId="low-water-hint"
       actions={
         <>
-          <Button size="sm" variant="primary" loading={apply.isPending} data-testid="low-water-hint-apply" onClick={() => apply.mutate()}>
+          <Button size="sm" loading={apply.isPending} data-testid="low-water-hint-apply" onClick={() => apply.mutate()}>
             {t("settings.storage.lowWaterHint.apply", { gb })}
           </Button>
           <Button
             size="sm"
+            variant="ghost"
             data-testid="low-water-hint-dismiss"
             onClick={() => {
               setDismissed(true);
@@ -472,7 +473,7 @@ function CacheHolds({ holds }: { holds: readonly CacheHoldDto[] }) {
               <ConfirmButton
                 label={t("settings.storage.cache.holds.keep")}
                 message={t("settings.storage.cache.holds.keepConfirm", { fileName: hold.fileName })}
-                variant="danger"
+                destructive
                 confirmLabel={t("settings.storage.cache.holds.keep")}
                 disabled={settle.isPending}
                 testId={`cache-hold-keep-${hold.assetId}`}
@@ -657,7 +658,7 @@ function BurnOutputsBlock() {
                 </Button>
                 <ConfirmButton
                   label={t("common.action.delete")}
-                  variant="danger"
+                  destructive
                   confirmLabel={t("common.action.delete")}
                   disabled={save.isPending || remove.isPending}
                   message={t("settings.storage.burnOutputs.deleteConfirm", { title })}
