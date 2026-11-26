@@ -605,7 +605,7 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
       <PackFooter>
         {job.status === "running" ? (
           <Button loading={props.cancelling} onClick={props.onCancel} data-testid="pack-export-cancel">
-            {props.cancelling ? t("contentPack.export.cancelling") : t("contentPack.export.cancel")}
+            {t("contentPack.export.cancel")}
           </Button>
         ) : null}
         {(job.status === "failed" || job.status === "cancelled") && props.onBack !== undefined ? <Button onClick={props.onBack}>{t("contentPack.export.back")}</Button> : null}

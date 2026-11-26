@@ -4,7 +4,6 @@ export const figureInsert = {
     /** The player's control-bar button (its name and tooltip) and its settings-menu entry in a narrow player. */
     buttonTitle: "截取当前画面，插入原文细读",
     menuItem: "截取当前画面",
-    pending: "正在截取画面…",
     done: "已截图，插入原文细读",
   },
   menu: {

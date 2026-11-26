@@ -7,7 +7,6 @@ export const modelReadiness = {
   suggestions: "常用值",
   suggestionFill: "填入 {{label}}（{{value}} tokens）",
   save: "保存",
-  saving: "保存中…",
   settings: "去设置",
   invalid: "请填写正整数，例如 128000 或 128K",
   elsewhere: "「{{model}}」还没有填写上下文窗口，在旁边的提示里填好即可使用。",

@@ -250,7 +250,7 @@ function BrowserImport(props: { onImported: () => void }) {
           ))}
         </NativeSelect>
         <Button size="sm" variant="primary" loading={read.isPending} onClick={() => read.mutate()} data-testid="browser-import">
-          {read.isPending ? t("settings.platformAccounts.browserImport.reading") : t("settings.platformAccounts.browserImport.read")}
+          {t("settings.platformAccounts.browserImport.read")}
         </Button>
       </div>
       <RequestError error={read.error} />

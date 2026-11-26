@@ -255,7 +255,7 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
                 onClick={() => fileInput.current?.click()}
                 data-testid="speaker-photo-choose"
               >
-                {reading ? null : <ImagePlus size={14} aria-hidden="true" />}
+                <ImagePlus size={14} aria-hidden="true" />
                 {showsPhoto ? t("speakerIdentity.edit.photoChange") : t("speakerIdentity.edit.photoChoose")}
               </Button>
               {showsPhoto ? (
@@ -292,7 +292,7 @@ export function SpeakerEditForm(props: { contentId: string; speaker: SpeakerDto;
           {t("speakerIdentity.edit.cancel")}
         </Button>
         <Button type="submit" variant="primary" loading={patch.isPending} disabled={!changed || tooLong || cropping !== undefined} data-testid="speaker-edit-save">
-          {patch.isPending ? t("speakerIdentity.edit.saving") : t("speakerIdentity.edit.save")}
+          {t("speakerIdentity.edit.save")}
         </Button>
       </div>
     </form>

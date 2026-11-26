@@ -33,6 +33,10 @@ describe("Button", () => {
     expect(button.disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("true");
     expect(screen.getByTestId("button-spinner").getAttribute("aria-hidden")).toBe("true");
+    // The label stays where it was, only transparent, so neither the width nor the name changes.
+    expect(button.textContent).toBe("保存");
+    expect(button.className).toContain("text-transparent!");
+    expect(screen.getByTestId("button-spinner").className).toContain("absolute");
     fireEvent.click(button);
     expect(onClick).not.toHaveBeenCalled();
     rerender(
@@ -43,6 +47,7 @@ describe("Button", () => {
     expect(button.disabled).toBe(false);
     expect(button.hasAttribute("aria-busy")).toBe(false);
     expect(screen.queryByTestId("button-spinner")).toBeNull();
+    expect(button.className).not.toContain("text-transparent");
     fireEvent.click(button);
     expect(onClick).toHaveBeenCalledTimes(1);
   });

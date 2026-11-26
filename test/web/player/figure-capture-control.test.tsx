@@ -169,7 +169,8 @@ describe("useFigureCaptureExtension", () => {
     });
     const button = screen.getByTestId("player-figure-capture");
     expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(button.getAttribute("aria-label")).toBe("正在截取画面…");
+    // The name stays; only the busy state says a capture is under way.
+    expect(button.getAttribute("aria-label")).toBe("截取当前画面，插入原文细读");
     fireEvent.click(button);
     expect(captures(server.calls)).toHaveLength(0);
   });

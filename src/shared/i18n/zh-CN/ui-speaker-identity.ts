@@ -42,7 +42,6 @@ export const speakerIdentity = {
     suggestions: "使用其它内容里的发言人",
     suggestionsHint: "复制名字、颜色和照片，之后互不影响。",
     save: "保存",
-    saving: "保存中…",
     cancel: "取消",
   },
   crop: {

@@ -71,7 +71,7 @@ export function NewSpeakerForm(props: { contentId: string; nextOrdinal: number; 
           data-testid="speaker-panel-add-input"
         />
         <Button size="sm" variant="primary" loading={create.isPending} disabled={tooLong} onClick={submit} data-testid="speaker-panel-add-confirm">
-          {create.isPending ? t("speakerEditor.panel.creating") : t("speakerEditor.panel.create")}
+          {t("speakerEditor.panel.create")}
         </Button>
         <Button size="sm" variant="ghost" disabled={create.isPending} onClick={props.onCancel} data-testid="speaker-panel-add-cancel">
           {t("speakerEditor.panel.cancel")}

@@ -129,7 +129,9 @@ describe("the speaker panel", () => {
     const confirm = await within(panel).findByTestId("speaker-panel-add-confirm");
     fireEvent.click(confirm);
     await waitFor(() => expect((within(panel).getByTestId("speaker-panel-add-confirm") as HTMLButtonElement).disabled).toBe(true));
-    expect(within(panel).getByTestId("speaker-panel-add-confirm").textContent).toContain("添加中");
+    // The label stays while busy.
+    expect(within(panel).getByTestId("speaker-panel-add-confirm").textContent).toBe("添加");
+    expect(within(panel).getByTestId("speaker-panel-add-confirm").getAttribute("aria-busy")).toBe("true");
     fireEvent.keyDown(within(panel).getByTestId("speaker-panel-add-input"), { key: "Enter" });
     release();
     await waitFor(() => expect(within(panel).getByText("本稿未使用 · 2")).toBeTruthy());

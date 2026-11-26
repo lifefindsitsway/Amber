@@ -287,7 +287,11 @@ describe("CacheMediaDialog", () => {
     const release = holdRequests(isStart);
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
     const button = within(dialog).getByTestId("cache-inspect") as HTMLButtonElement;
-    await waitFor(() => expect(button.textContent).toBe("正在开始缓存…"));
+    // The button keeps its label while busy; the step under way is said beside it.
+    await waitFor(() => expect(within(dialog).getByTestId("cache-progress").textContent).toBe("正在开始缓存…"));
+    expect(within(dialog).getByTestId("cache-progress").getAttribute("role")).toBe("status");
+    expect(button.textContent).toBe("开始缓存");
+    expect(button.getAttribute("aria-busy")).toBe("true");
     expect(button.disabled).toBe(true);
     expect((within(dialog).getByTestId("cache-file-name") as HTMLInputElement).disabled).toBe(true);
     expect((within(dialog).getByTestId("cache-quality") as HTMLSelectElement).disabled).toBe(true);
@@ -324,8 +328,12 @@ describe("CacheMediaDialog", () => {
     expect(preflight(dialog)).toBe(CHECKING);
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
     const button = within(dialog).getByTestId("cache-inspect") as HTMLButtonElement;
-    expect(button.textContent).toBe("正在核对文件大小与磁盘空间…");
+    expect(button.textContent).toBe("开始缓存");
+    expect(button.getAttribute("aria-busy")).toBe("true");
     expect(button.disabled).toBe(true);
+    const progress = within(dialog).getByTestId("cache-progress");
+    expect(progress.getAttribute("role")).toBe("status");
+    expect(progress.textContent).toBe("正在核对文件大小与磁盘空间…");
     expect((within(dialog).getByTestId("cache-file-name") as HTMLInputElement).disabled).toBe(true);
     expect(within(dialog).getByTestId("cache-cancel-wait").textContent).toBe("取消等待");
     expect(within(dialog).queryByText(PROBING)).toBeNull();
@@ -344,6 +352,7 @@ describe("CacheMediaDialog", () => {
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
     fireEvent.click(within(dialog).getByTestId("cache-cancel-wait"));
     expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("开始缓存");
+    expect(within(dialog).queryByTestId("cache-progress")).toBeNull();
     expect((within(dialog).getByTestId("cache-file-name") as HTMLInputElement).disabled).toBe(false);
     expect(within(dialog).queryByTestId("cache-cancel-wait")).toBeNull();
     answerInspection(inspections[0]);
@@ -366,7 +375,7 @@ describe("CacheMediaDialog", () => {
     await settled(dialog);
     await waitFor(() => expect(inspections).toHaveLength(1));
     fireEvent.click(within(dialog).getByTestId("cache-inspect"));
-    expect(within(dialog).getByTestId("cache-inspect").textContent).toBe("正在核对文件大小与磁盘空间…");
+    expect(within(dialog).getByTestId("cache-progress").textContent).toBe("正在核对文件大小与磁盘空间…");
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "缓存本视频" })).toBeNull());
     expect(inspections[0]?.signal?.aborted).toBe(true);

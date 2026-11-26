@@ -162,6 +162,49 @@ describe("NewPage", () => {
     expect(screen.queryByRole("tab", { name: "选择本地文件" })).toBeNull();
   });
 
+  it("keeps the submit label while busy and says beside it whether a file uploads or links are submitted", async () => {
+    mockApi({
+      ...baseRoutes({ mode: "server" }),
+      "POST /api/contents/upload": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c7"] } },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b2", taskIds: ["t2"], contentIds: ["c8"] } },
+    });
+    // Each request waits until released, so the busy state is seen.
+    const base = globalThis.fetch;
+    const gates = new Map<string, () => void>();
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/contents/upload" || path === "/api/contents/import") await new Promise<void>((resolve) => gates.set(path, resolve));
+      return base(input, init);
+    });
+    const { unmount } = renderApp(page(), { route: "/new", mode: "server" });
+    const tab = await screen.findByRole("tab", { name: "上传本地文件" });
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+    fireEvent.change(await screen.findByTestId("upload-file"), { target: { files: [new File([new Uint8Array([1])], "lecture.mp4", { type: "video/mp4" })] } });
+    expect(screen.queryByTestId("new-submit-status")).toBeNull();
+    fireEvent.click(screen.getByTestId("new-submit"));
+    const button = screen.getByTestId("new-submit");
+    await waitFor(() => expect(button.getAttribute("aria-busy")).toBe("true"));
+    expect(button.textContent).toBe("开始处理");
+    const uploading = screen.getByTestId("new-submit-status");
+    expect(uploading.getAttribute("role")).toBe("status");
+    expect(uploading.textContent).toBe("上传中…");
+    await waitFor(() => expect(gates.has("/api/contents/upload")).toBe(true));
+    gates.get("/api/contents/upload")?.();
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c7"));
+    expect(screen.queryByTestId("new-submit-status")).toBeNull();
+    unmount();
+    renderApp(page(), { route: "/new", mode: "server" });
+    fireEvent.change(await screen.findByTestId("new-url-input"), { target: { value: VIDEO } });
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("new-submit").getAttribute("aria-busy")).toBe("true"));
+    expect(screen.getByTestId("new-submit").textContent).toBe("开始处理");
+    expect(screen.getByTestId("new-submit-status").textContent).toBe("提交中…");
+    await waitFor(() => expect(gates.has("/api/contents/import")).toBe(true));
+    gates.get("/api/contents/import")?.();
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c8"));
+  });
+
   it("uploads a file with its subtitle in the fixed part order and offers a duplicate retry", async () => {
     let duplicate = true;
     const { calls } = mockApi({

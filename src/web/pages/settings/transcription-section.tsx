@@ -360,7 +360,7 @@ function ModelRow({ profile, model }: { profile: AsrProfileDto; model: AsrProfil
   const familyName = useFamilyName();
   const test = useAsrModelTest(profile.id);
   const pricing = useSetModelPricing("asr-profiles");
-  const label = test.isPending ? t("settings.transcription.testingModel") : t("settings.transcription.testModel");
+  const label = t("settings.transcription.testModel");
   return (
     <li className="py-2" data-testid="asr-profile-model" data-model={model.modelId}>
       <div className="flex flex-wrap items-center justify-between gap-2">

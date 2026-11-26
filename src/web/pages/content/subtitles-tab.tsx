@@ -686,7 +686,7 @@ function ImportSubtitleForm(props: { onClose: () => void; defaultLanguage: strin
     <>
       <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
       <Button variant="primary" loading={upload.isPending} disabled={!ready || stale} onClick={() => upload.mutate()} data-testid="subtitle-import-submit">
-        {upload.isPending ? t("subtitleImport.dialog.submitting") : plain && preview === undefined ? t("subtitleImport.dialog.submitPlain") : t("subtitleImport.dialog.submit")}
+        {plain && preview === undefined ? t("subtitleImport.dialog.submitPlain") : t("subtitleImport.dialog.submit")}
       </Button>
     </>,
   );

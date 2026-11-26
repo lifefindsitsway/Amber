@@ -104,7 +104,6 @@ export const subtitleImport = {
     needLanguage: "请选择字幕语言",
     submit: "导入",
     submitPlain: "按普通字幕导入",
-    submitting: "导入中…",
     done: "完成",
     stale: "字幕文件或内容在预览之后有变化，请重新预览后再导入",
   },

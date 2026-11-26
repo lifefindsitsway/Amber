@@ -510,7 +510,9 @@ describe("TranscriptionSection", () => {
     fireEvent.click(within(row).getByRole("button", { name: "测试连接 · fun-asr" }));
     // No confirmation: the hint already says what it costs.
     expect(screen.queryByRole("dialog")).toBeNull();
-    const running = (await within(row).findByRole("button", { name: "测试中… · fun-asr" })) as HTMLButtonElement;
+    // The label stays while the test runs; the button is busy instead.
+    const running = within(row).getByRole("button", { name: "测试连接 · fun-asr" }) as HTMLButtonElement;
+    await waitFor(() => expect(running.getAttribute("aria-busy")).toBe("true"));
     expect(running.disabled).toBe(true);
     // The other model stays testable meanwhile.
     expect((screen.getByRole("button", { name: `测试连接 · ${QWEN}` }) as HTMLButtonElement).disabled).toBe(false);

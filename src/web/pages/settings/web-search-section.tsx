@@ -90,7 +90,7 @@ export function WebSearchSection() {
             aria-describedby="web-search-test-hint"
             data-testid="web-search-test"
           >
-            {mutations.test.isPending ? t("settings.webSearch.testing") : t("settings.webSearch.test")}
+            {t("settings.webSearch.test")}
           </Button>
           {mutations.test.data === undefined || mutations.test.isPending ? null : (
             <span className="text-xs text-ok" role="status" data-testid="web-search-test-result">

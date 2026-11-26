@@ -195,7 +195,6 @@ export const contentView = {
     existing: "本内容的缓存",
     audioLabel: "音频",
     delete: "删除",
-    deleting: "正在核对文件…",
     deleteTitle: "删除这份缓存？",
     deleteHint: "将从缓存目录删除 {{name}}；之后可以重新缓存。",
     deleteBlocked: "这条内容还有未结束的任务，结束后才能删除缓存",

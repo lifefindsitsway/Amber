@@ -381,7 +381,7 @@ function ModelRow({ profile, model, regionHint }: { profile: ProviderProfileDto;
         </p>
         <div className="flex gap-2">
           <Button size="sm" loading={probe.isPending} disabled={!profile.hasCredential} title={t("settings.models.testHint")} onClick={() => probe.mutate()}>
-            {probe.isPending ? t("settings.models.testing") : t("settings.models.testConnection")}
+            {t("settings.models.testConnection")}
           </Button>
           <Button size="sm" onClick={() => setShowOverride(!showOverride)} aria-expanded={showOverride}>
             {t("settings.models.override")}

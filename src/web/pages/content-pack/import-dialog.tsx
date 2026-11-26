@@ -432,7 +432,7 @@ function ImportResult(props: { job: ContentPackImportJobDto; onClose: () => void
           {summary.collectionsFailed > 0 && props.job.status === "finished" ? (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <Button size="sm" loading={retry.isPending} onClick={() => retry.mutate()} data-testid="pack-import-retry-collections">
-                {retry.isPending ? t("contentPack.import.result.retrying") : t("contentPack.import.result.retryCollections")}
+                {t("contentPack.import.result.retryCollections")}
               </Button>
               {retry.error === null ? null : <ErrorView error={appErrorOf(retry.error)} />}
             </div>

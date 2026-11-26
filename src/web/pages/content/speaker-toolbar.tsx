@@ -221,8 +221,8 @@ function DeleteConfirm(props: { name: string; warnUndo: boolean; pending: boolea
           {t("speakerEditor.panel.cancel")}
         </Button>
         <Button size="sm" variant="danger-solid" loading={props.pending} onClick={props.onConfirm} data-testid="speaker-panel-delete-confirm-button">
-          {props.pending ? null : <Trash2 size={13} aria-hidden="true" />}
-          {props.pending ? t("speakerEditor.panel.deleting") : t("speakerEditor.panel.delete")}
+          <Trash2 size={14} aria-hidden="true" />
+          {t("speakerEditor.panel.delete")}
         </Button>
       </div>
     </div>

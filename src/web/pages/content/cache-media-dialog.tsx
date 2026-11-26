@@ -506,6 +506,7 @@ function CacheMediaForm(props: {
   const checkable = type === "audio" || (probe.kind === "ready" && probe.status !== "audio_only");
   const phase = !checkable ? undefined : current !== undefined ? current.status : autoPaused ? undefined : "checking";
   const error = start.error ?? (check?.status === "failed" ? check.error : undefined);
+  const progress = start.isPending ? t("contentView.cache.starting") : intent !== undefined ? t("contentView.cache.waiting") : undefined;
   return (
     <Modal
       open
@@ -514,6 +515,12 @@ function CacheMediaForm(props: {
       description={t("contentView.cache.hint")}
       footer={
         <>
+          {/* The primary button keeps its label while busy; what it waits for is said here. */}
+          {progress === undefined ? null : (
+            <span role="status" className="mr-auto text-xs text-muted" data-testid="cache-progress">
+              {progress}
+            </span>
+          )}
           <Button onClick={props.onClose}>{t("common.action.cancel")}</Button>
           {shown === undefined ? (
             <>
@@ -523,7 +530,7 @@ function CacheMediaForm(props: {
                 </Button>
               )}
               <Button variant="primary" loading={locked} disabled={type === "video" && videoBlocked} onClick={begin} data-testid="cache-inspect">
-                {start.isPending ? t("contentView.cache.starting") : intent !== undefined ? t("contentView.cache.waiting") : t("contentView.cache.start")}
+                {t("contentView.cache.start")}
               </Button>
             </>
           ) : (
@@ -534,7 +541,7 @@ function CacheMediaForm(props: {
               onClick={() => submit(shown, { type, quality, fileName }, { ...(overwriteConfirmed && overwrite !== undefined ? { overwriteAssetId: overwrite.assetId } : {}), confirmed: true, retried: false })}
               data-testid="cache-confirm"
             >
-              {start.isPending ? t("contentView.cache.starting") : t("contentView.cache.confirm")}
+              {t("contentView.cache.confirm")}
             </Button>
           )}
         </>
@@ -769,7 +776,7 @@ function CacheList(props: { contentId: string; rows: readonly CacheRow[]; onDele
               data-testid={`cache-delete-${row.assetId}`}
             >
               <Trash2 size={14} aria-hidden="true" />
-              {remove.isPending && remove.variables === row.assetId ? t("contentView.cache.deleting") : t("contentView.cache.delete")}
+              {t("contentView.cache.delete")}
             </Button>
           </li>
         ))}
@@ -781,7 +788,7 @@ function CacheList(props: { contentId: string; rows: readonly CacheRow[]; onDele
         }}
         title={t("contentView.cache.deleteTitle")}
         description={t("contentView.cache.deleteHint", { name: confirming?.fileName ?? "" })}
-        confirmLabel={remove.isPending ? t("contentView.cache.deleting") : t("contentView.cache.delete")}
+        confirmLabel={t("contentView.cache.delete")}
         danger
         onConfirm={async () => {
           if (confirming !== undefined) await remove.mutateAsync(confirming.assetId);

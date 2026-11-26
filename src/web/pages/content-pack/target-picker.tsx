@@ -90,6 +90,7 @@ function PickerBody(props: { jobId: string; item: PackPreviewContent; onPicked: 
         <ul className="flex max-h-80 flex-col divide-y divide-line overflow-auto rounded-md border border-line">
           {items.map((content) => {
             const warn = durationsDiffer(props.item.durationMs, content.durationMs, CONTENT_PACK_MERGE_DURATION_WARN_MS);
+            const picking = pick.isPending && pick.variables?.id === content.id;
             return (
               <li key={content.id} className="flex items-start gap-3 px-3 py-2" data-testid="pack-target-option">
                 <div className="min-w-0 flex-1">
@@ -106,8 +107,13 @@ function PickerBody(props: { jobId: string; item: PackPreviewContent; onPicked: 
                     </p>
                   ) : null}
                 </div>
-                <Button size="sm" loading={pick.isPending && pick.variables?.id === content.id} disabled={pick.isPending} onClick={() => pick.mutate(content)} aria-label={`${t("contentPack.import.mergeOther.choose")} · ${titleOf(content.title, t)}`}>
-                  {pick.isPending && pick.variables?.id === content.id ? t("contentPack.import.mergeOther.comparing") : t("contentPack.import.mergeOther.choose")}
+                {picking ? (
+                  <span role="status" className="shrink-0 text-xs leading-7 text-muted" data-testid="pack-target-comparing">
+                    {t("contentPack.import.mergeOther.comparing")}
+                  </span>
+                ) : null}
+                <Button size="sm" loading={picking} disabled={pick.isPending} onClick={() => pick.mutate(content)} aria-label={`${t("contentPack.import.mergeOther.choose")} · ${titleOf(content.title, t)}`}>
+                  {t("contentPack.import.mergeOther.choose")}
                 </Button>
               </li>
             );

@@ -19,6 +19,15 @@ const VARIANTS: Record<ButtonVariant, string> = {
   "danger-solid": "border border-danger bg-danger text-surface hover:brightness-110",
 };
 
+/** The spinner keeps the colour the label had, since the label itself turns transparent. */
+const SPINNER_TONE: Record<ButtonVariant, string> = {
+  primary: "text-accent-ink",
+  secondary: "text-ink",
+  ghost: "text-ink",
+  danger: "text-danger",
+  "danger-solid": "text-surface",
+};
+
 /**
  * Three heights matching the form controls: `lg` 36 px (the default: page headers, dialog
  * footers, forms), `md` 32 px (list toolbars, selection bars, pagers), `sm` 28 px (inline, cards,
@@ -54,8 +63,9 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
   size?: ButtonSize;
   /**
-   * Work started by this button is under way: a spinner joins the label, the button is disabled
-   * and marked `aria-busy`. The label stays, so the button keeps its width and accessible name.
+   * Work started by this button is under way: a spinner takes the middle of the button, the
+   * button is disabled and marked `aria-busy`. The label stays in place, only made transparent,
+   * so the button keeps its width and its accessible name; callers keep the label unchanged.
    */
   loading?: boolean;
 };
@@ -65,12 +75,18 @@ export function Button({ variant = "secondary", size = "lg", className = "", typ
   return (
     <button
       type={type}
-      className={`${buttonClass(variant, size)} ${className}`}
+      // The label turns transparent rather than hidden or removed: hiding it would drop the
+      // accessible name, removing it would change the width. Icons follow through `currentColor`.
+      className={`${buttonClass(variant, size)} ${loading ? "relative text-transparent!" : ""} ${className}`}
       disabled={loading || disabled}
       {...(loading ? { "aria-busy": true } : {})}
       {...rest}
     >
-      {loading ? <LoaderCircle size={size === "sm" ? 12 : 14} className="shrink-0 animate-spin" aria-hidden="true" data-testid="button-spinner" /> : null}
+      {loading ? (
+        <span aria-hidden="true" className={`absolute inset-0 flex items-center justify-center ${SPINNER_TONE[variant]}`} data-testid="button-spinner">
+          <LoaderCircle size={size === "sm" ? 12 : 14} className="animate-spin" />
+        </span>
+      ) : null}
       {children}
     </button>
   );

@@ -162,7 +162,6 @@ export const settings = {
     },
     credentialUnavailableHint: "Key 已保存但当前无法解密，请重设",
     testConnection: "测试连接",
-    testing: "测试中…",
     testHint: "会向服务发送几次很短的请求，可能产生少量费用",
     observedAt: "实测于 {{time}}",
     override: "手动覆盖",
@@ -272,7 +271,6 @@ export const settings = {
       },
     },
     testModel: "测试连接",
-    testingModel: "测试中…",
     testModelHint: "测试连接会发送 {{seconds}} 秒测试音频，可能产生少量费用。",
     testResult: {
       transcribed: "可用 · 延迟 {{ms}} ms",
@@ -345,7 +343,6 @@ export const settings = {
     remove: "移除",
     removeConfirm: "移除联网搜索服务和已保存的 API Key？移除后对话不能联网搜索。",
     test: "测试",
-    testing: "测试中…",
     testHint: "发送一次真实搜索检查 Key 是否可用；按服务的计费口径，会消耗一次搜索额度。",
     testOk: "测试成功，返回 {{count}} 条结果",
     privacyTitle: "隐私",
@@ -390,7 +387,6 @@ export const settings = {
       hint: "先在所选浏览器里登录 YouTube。推荐 Firefox；Chrome / Edge 在 Windows 上常因 cookie 加密而读取失败，请先完全退出浏览器再试，仍不行就在下方导入 cookies.txt。",
       notice: "读取时会临时导出该浏览器中所有网站的登录信息（cookie），只保留 YouTube 相关的部分并加密保存，其余随即删除。",
       read: "从浏览器读取",
-      reading: "读取中…",
       done: "已从浏览器读取登录信息，可点「检测」确认登录是否有效",
       browser: {
         firefox: "Firefox",

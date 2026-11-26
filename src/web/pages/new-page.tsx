@@ -1137,7 +1137,13 @@ export function NewPage() {
           </ErrorView>
         )}
         {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} onSaved={windowSaved} testId="new-context-window" /> : null}
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-3">
+          {/* An upload can take long, so which step is under way is said beside the button, whose label stays. */}
+          {upload.isPending || linkPending || localImport.isPending ? (
+            <span role="status" className="text-xs text-muted" data-testid="new-submit-status">
+              {upload.isPending ? t("shell.newPage.uploading") : t("shell.newPage.submitting")}
+            </span>
+          ) : null}
           <Button
             id={submitId}
             type="submit"
@@ -1146,7 +1152,7 @@ export function NewPage() {
             loading={linkPending || upload.isPending || localImport.isPending}
             disabled={windowMissing}
           >
-            {upload.isPending ? t("shell.newPage.uploading") : linkPending || localImport.isPending ? t("shell.newPage.submitting") : t("shell.newPage.submit")}
+            {t("shell.newPage.submit")}
           </Button>
         </div>
       </form>

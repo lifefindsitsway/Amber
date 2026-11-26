@@ -104,7 +104,8 @@ function CaptureButton(props: { contentId: string; hasTranscript: boolean }) {
   const pending = useFigureInsertStatuses(props.contentId, "player").some((entry) => entry.phase === "pending");
   const blocked = useCaptureBlock(props.contentId, props.hasTranscript);
   const reasonId = useId();
-  const label = pending ? t("figureInsert.capture.pending") : t("figureInsert.capture.buttonTitle");
+  // The name stays while a capture runs; the spinner and `aria-busy` say it is under way.
+  const label = t("figureInsert.capture.buttonTitle");
   const off = pending || blocked !== undefined || source?.kind !== "video";
   return (
     <>

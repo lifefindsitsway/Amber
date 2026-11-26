@@ -207,8 +207,8 @@ export function ContextWindowNotice(props: {
                 {t("modelReadiness.unit")}
               </span>
             </span>
-            <Button size="sm" variant="primary" disabled={save.isPending || text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
-              {save.isPending ? t("modelReadiness.saving") : t("modelReadiness.save")}
+            <Button size="sm" variant="primary" loading={save.isPending} disabled={text.trim() === ""} onClick={submit} data-testid={`${testId}-save`}>
+              {t("modelReadiness.save")}
             </Button>
             {minimal ? null : (
               <span role="group" aria-label={t("modelReadiness.suggestions")} className="flex flex-wrap items-center gap-0.5">
