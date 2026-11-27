@@ -298,6 +298,7 @@ describe("renderThirdPartyNotices for works copied into the source tree", () => 
   const TEXTS = runtimeLicenseTexts(licensesZip({ "node/LICENSE": "Node license", "ffmpeg/LICENSE.txt": "GPL text", "noto-sans-sc/OFL.txt": "OFL text" }));
   const REPO = join(import.meta.dirname, "../..");
   const ICONS_LICENSE = readFileSync(join(REPO, "src/web/ui/vendor-icons/LICENSE"), "utf8");
+  const PLATFORM_ICONS_LICENSE = readFileSync(join(REPO, "src/web/ui/platform-icons/LICENSE.md"), "utf8");
 
   it("lists the vendor icons with their source and embeds the MIT text kept beside them", () => {
     const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest(), shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true, vendored: collectVendoredNotices(REPO) });
@@ -307,6 +308,17 @@ describe("renderThirdPartyNotices for works copied into the source tree", () => 
     expect(notices).toContain("适用于：LobeHub Icons (@lobehub/icons-static-svg) 1.104.0（LICENSE）");
     expect(ICONS_LICENSE).toContain("Copyright (c) 2023 LobeHub");
     expect(notices).toContain(ICONS_LICENSE.trim());
+  });
+
+  it("lists Simple Icons for the platform marks, CC0 1.0, with the license text kept beside them", () => {
+    const notices = renderThirdPartyNotices({ amberVersion: "0.1.0", runtime: manifest(), shippedAssets: SHIPPED, runtimeTexts: TEXTS, npm: [], cargo: [], cargoComplete: true, vendored: collectVendoredNotices(REPO) });
+    expect(notices).toContain("| Simple Icons | 16.38.1 | CC0-1.0 | 视频平台图标 | https://github.com/simple-icons/simple-icons |");
+    expect(notices).toContain("适用于：Simple Icons 16.38.1（LICENSE.md）");
+    expect(PLATFORM_ICONS_LICENSE).toMatch(/^# CC0 1\.0 Universal\n/u);
+    expect(notices).toContain(PLATFORM_ICONS_LICENSE.trim());
+    // The trademark note covers the platform marks too.
+    expect(VENDOR_MARKS_NOTE).toContain("平台图标");
+    expect(notices).toContain(VENDOR_MARKS_NOTE);
   });
 
   it("shares one copy of a license text an npm package also carries", () => {
@@ -328,7 +340,12 @@ describe("renderThirdPartyNotices for works copied into the source tree", () => 
     const root = dir();
     expect(() => collectVendoredNotices(root, VENDORED_COMPONENTS)).toThrow(/license text of vendored LobeHub Icons .* is missing: src\/web\/ui\/vendor-icons\/LICENSE$/u);
     write(root, "src/web/ui/vendor-icons/LICENSE", "MIT text");
-    expect(collectVendoredNotices(root)).toEqual([{ ...VENDORED_COMPONENTS[0], texts: [{ file: "LICENSE", text: "MIT text" }] }]);
+    expect(() => collectVendoredNotices(root, VENDORED_COMPONENTS)).toThrow(/license text of vendored Simple Icons is missing: src\/web\/ui\/platform-icons\/LICENSE\.md$/u);
+    write(root, "src/web/ui/platform-icons/LICENSE.md", "CC0 text");
+    expect(collectVendoredNotices(root)).toEqual([
+      { ...VENDORED_COMPONENTS[0], texts: [{ file: "LICENSE", text: "MIT text" }] },
+      { ...VENDORED_COMPONENTS[1], texts: [{ file: "LICENSE.md", text: "CC0 text" }] },
+    ]);
   });
 });
 

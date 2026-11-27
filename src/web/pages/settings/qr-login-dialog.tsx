@@ -21,7 +21,7 @@ const QR_PATH = "/api/platform-accounts/bilibili/qr";
  * attempt starts from the click, not from a mount effect, so a remount never creates a
  * second one.
  */
-export function QrLoginButton(props: { onConfirmed: () => void }) {
+export function QrLoginButton(props: { onConfirmed: () => void; variant?: "primary" | "secondary"; label?: string }) {
   const { t } = useTranslation();
   const client = useApi();
   const [open, setOpen] = useState(false);
@@ -34,12 +34,13 @@ export function QrLoginButton(props: { onConfirmed: () => void }) {
     <>
       <Button
         size="sm"
+        variant={props.variant ?? "secondary"}
         onClick={() => {
           setOpen(true);
           begin();
         }}
       >
-        {t("settings.platformAccounts.qr.open")}
+        {props.label ?? t("settings.platformAccounts.qr.open")}
       </Button>
       <Modal open={open} onOpenChange={setOpen} title={t("settings.platformAccounts.qr.title")}>
         {start.data === undefined ? (

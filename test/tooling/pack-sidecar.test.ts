@@ -132,6 +132,7 @@ function fixture(options: { version?: string; artifacts?: unknown[]; licenses?: 
   put(root, "server/node_modules/zod/package.json", '{"name":"zod","version":"4.6.5","license":"MIT"}');
   put(root, "server/node_modules/zod/LICENSE", "zod MIT text");
   put(root, "src/web/ui/vendor-icons/LICENSE", "LobeHub MIT text");
+  put(root, "src/web/ui/platform-icons/LICENSE.md", "Simple Icons CC0 text");
   const assetsDir = join(root, "assets");
   const manifest = JSON.stringify({ version: options.version ?? VERSION, assets: ASSETS, artifacts: options.artifacts ?? ARTIFACTS });
   const licenses = makeZip(Object.entries(options.licenses ?? LICENSES).map(([name, text]) => ({ name, data: Buffer.from(text), method: 8 as const })));

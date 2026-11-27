@@ -357,18 +357,7 @@ export const settings = {
       "Tavily 按 credit 计费：Amber 固定使用 basic 搜索深度，每次查询消耗 1 credit，一轮回答最多 {{queries}} 次查询，另外每轮还有一次规划用的模型调用；免费档每月 1,000 credit；失败的请求是否计费，官方未说明（2026-10-26 查阅 Tavily 官方文档）。",
   },
   platformAccounts: {
-    intro: "登录平台账号后，可以取得需要登录才能看到的字幕，取源也更不容易被平台限制。登录信息加密保存，页面只显示状态。",
-    status: {
-      none: "未登录",
-      valid: "登录有效",
-      expired: "登录已失效，请重新登录",
-      unknown: "已保存，尚未检测",
-    },
-    checkedAt: "上次检测：{{time}}",
-    check: "检测",
     checkResult: {
-      valid: "检测通过，登录有效",
-      expired: "登录已失效，请重新登录",
       unknown: "暂时无法确认登录状态（网络或平台临时问题），已保留原状态，稍后再试",
     },
     remove: "移除登录",
@@ -377,18 +366,15 @@ export const settings = {
     importHint: "粘贴浏览器导出的 cookies.txt（Netscape 格式）或整段 Cookie 请求头，只保留该平台域名下的 cookie；导入后页面不再显示内容。",
     importFile: "选择 cookies.txt 文件",
     importSubmit: "导入",
-    imported: "已导入，可点「检测」确认登录是否有效",
     serverTrust: "登录信息保存在当前 Amber 服务器，仅在信任该服务器管理员时导入",
     desktopLogin: {
       open: "登录",
-      done: "登录成功，可点「检测」确认登录是否有效",
     },
     browserImport: {
       label: "从浏览器读取登录信息",
       hint: "先在所选浏览器里登录 YouTube。推荐 Firefox；Chrome / Edge 在 Windows 上常因 cookie 加密而读取失败，请先完全退出浏览器再试，仍不行就在下方导入 cookies.txt。",
       notice: "读取时会临时导出该浏览器中所有网站的登录信息（cookie），只保留 YouTube 相关的部分并加密保存，其余随即删除。",
       read: "从浏览器读取",
-      done: "已从浏览器读取登录信息，可点「检测」确认登录是否有效",
       browser: {
         firefox: "Firefox",
         chrome: "Chrome",
@@ -406,6 +392,50 @@ export const settings = {
       refresh: "刷新二维码",
       confirmed: "登录成功",
     },
+    lead: "登录后，Amber 能直接读取 B 站字幕，也能处理需要验证身份的视频；不登录也能处理大多数公开视频。",
+    listLabel: "平台账号",
+    /** The status beside each platform's row. */
+    state: {
+      none: "未登录",
+      valid: "登录有效",
+      expired: "登录已失效",
+      unknown: "尚未确认",
+      unavailable: "无法读取",
+      checking: "正在确认…",
+      notRequired: "无需登录",
+    },
+    /** The second line of each row: what the platform's login state means for processing. */
+    impact: {
+      none: {
+        bilibili: "字幕会用语音转录获取，消耗转录额度。登录后直接读取平台字幕，缓存清晰度也更高",
+        youtube: "公开视频可以直接处理；平台要求验证身份时需要登录",
+        xiaohongshu: "公开视频笔记可以直接处理；只在访问受限时才使用登录信息",
+        douyin: "公开视频与合集可以直接处理",
+      },
+      /** Only the platforms a login can be stored for. */
+      valid: {
+        bilibili: "直接读取平台字幕 · {{time}}确认",
+        youtube: "平台要求验证身份时使用 · {{time}}确认",
+        xiaohongshu: "只在访问受限时使用 · {{time}}确认",
+      },
+      expired: {
+        bilibili: "登录已失效，字幕会改用语音转录。重新登录即可恢复",
+        youtube: "登录已失效，需要验证身份的视频会处理失败",
+        xiaohongshu: "登录已失效；公开视频笔记不受影响",
+      },
+    },
+    unconfirmed: "已保存，正在确认是否有效…",
+    /** Read out when a row's state changes in place. */
+    announce: "{{platform}}：{{state}}。{{detail}}",
+    manage: "管理",
+    moreWays: "更多登录方式",
+    otherWays: "其他方式",
+    importLogin: "导入登录信息",
+    reimport: "重新导入",
+    relogin: "重新登录",
+    recheck: "重新检测",
+    xiaohongshuRisk: "使用登录信息访问可能触发小红书对账号的风控，建议使用不常用的账号",
+    browserImportSubmit: "读取",
   },
   templates: {
     intro: "总结模板决定总结的结构。内置模板只读；自定义模板修改提示词会新增一个版本，已生成的总结仍指向原版本。",

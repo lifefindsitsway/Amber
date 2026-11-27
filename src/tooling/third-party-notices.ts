@@ -342,10 +342,19 @@ export const VENDORED_COMPONENTS: readonly VendoredComponent[] = [
     source: "https://github.com/lobehub/lobe-icons",
     licenseFile: "src/web/ui/vendor-icons/LICENSE",
   },
+  {
+    name: "Simple Icons",
+    version: "16.38.1",
+    license: "CC0-1.0",
+    usage: "视频平台图标",
+    source: "https://github.com/simple-icons/simple-icons",
+    licenseFile: "src/web/ui/platform-icons/LICENSE.md",
+  },
 ];
 
-/** Said under the vendored works: the vendor marks among them are trademarks, used only to name the service. */
-export const VENDOR_MARKS_NOTE = "厂商图标是其各自所有者的商标，Amber 只用它们标示对应的模型与转录服务，并始终与服务或模型名称一同显示；这不表示这些厂商认可 Amber 或与之存在合作关系。";
+/** Said under the vendored works: the vendor and platform marks among them are trademarks, used only to name the service or platform. */
+export const VENDOR_MARKS_NOTE =
+  "厂商图标与平台图标是其各自所有者的商标，Amber 只用它们标示对应的模型、转录服务与视频平台，并始终与服务、模型或平台名称一同显示；这不表示这些厂商或平台认可 Amber 或与之存在合作关系。";
 
 export interface VendoredNotice extends VendoredComponent {
   texts: LicenseText[];
