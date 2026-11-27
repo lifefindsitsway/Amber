@@ -11,13 +11,14 @@ import { buildInputs, DOC_INPUTS, fileSha256, ignoredInputs, MIRROR_INPUTS_FILE,
  *
  *   pnpm verify:mirror -- --dest <mirror directory> [--ref <git ref>]
  *
- * A candidate is built and tested from a mirror of a possibly uncommitted tree; once the
- * work is committed, `--ref HEAD` shows whether that commit holds exactly the sources the
- * tested build was made from, before anything is pushed. The `tracked` inputs are compared
- * file by file with the working tree (by default) or with the tree of the given commit. The
- * ignored `local` inputs exist in no commit, so they are compared with the mirror's current
- * files, and the Runtime Assets also with the pinned `SHA256SUMS`. Every missing, extra or
- * changed file is listed; the exit code is 0 only when everything matches.
+ * A release is built from a mirror of a committed tree, and `--ref HEAD` shows that the
+ * mirror holds exactly the sources of the commit its tag will point to. A candidate is built
+ * from an uncommitted tree, so its mirror is checked against the working tree. The
+ * `tracked` inputs are compared file by file with the working tree (by default) or with the
+ * tree of the given commit. The ignored `local` inputs exist in no commit, so they are
+ * compared with the mirror's current files, and the Runtime Assets also with the pinned
+ * `SHA256SUMS`. Every missing, extra or changed file is listed; the exit code is 0 only when
+ * everything matches.
  */
 
 export interface InputDifferences {

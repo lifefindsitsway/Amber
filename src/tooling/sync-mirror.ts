@@ -15,12 +15,13 @@ import { RUNTIME_LICENSES_ASSET } from "./third-party-notices.ts";
  * tests, scratch files and review notes never reach the mirror.
  *
  * The mirror is never given a version of its own: package.json is the single version
- * source, so a candidate's version is raised and committed in the repository before the
- * mirror is taken, and a server built from the repository reports the same number.
+ * source, so the mirror carries whatever version the repository holds when it is taken (a
+ * release's committed version, or a candidate's version raised only in the working tree),
+ * and a server built from the repository reports the same number.
  *
  * The mirror root gets `mirror-source.json`: the source commit, whether the working tree
  * was clean, the lockfile digest and the mirror's version, so the build report can name
- * what an installer was built from. A candidate may be built from an uncommitted tree, so
+ * what an installer was built from. A candidate is built from an uncommitted tree, so
  * the commit alone does not say which sources went in: `mirror-inputs.json` lists the
  * SHA256 of every input as it lies in the mirror after the copy, split into the inputs git
  * can vouch for (`tracked`, checked later against a commit with `pnpm verify:mirror`) and
