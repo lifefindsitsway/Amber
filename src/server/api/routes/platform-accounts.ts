@@ -8,7 +8,8 @@ import {
   platformQrStatusDtoSchema,
   importBrowserRequestSchema,
 } from "../../../shared/dto/platform-account.ts";
-import { PLATFORMS, type Platform, type RunMode } from "../../../shared/enums.ts";
+import type { Platform, RunMode } from "../../../shared/enums.ts";
+import { LOGIN_PLATFORMS } from "../../../shared/platforms.ts";
 import type { PlatformAccountService } from "../../application/platform-accounts.ts";
 import type { PlatformQrLoginService } from "../../application/platform-qr-login.ts";
 import { amberError } from "../../domain/errors.ts";
@@ -23,15 +24,16 @@ const putCookiesRequestSchema = z.object({ value: z.string().min(1) }).strict();
 
 function platformOf(params: unknown): Platform {
   const { platform } = parseInput(platformParamsSchema, params, "params");
-  if (!(PLATFORMS as readonly string[]).includes(platform)) {
+  // A platform without login support has no account routes: the same 404 as an unknown one.
+  if (!(LOGIN_PLATFORMS as readonly string[]).includes(platform)) {
     throw amberError("not_found", "no such platform");
   }
   return platform as Platform;
 }
 
 /**
- * `/api/platform-accounts*`; an unsupported platform is a 404 like any
- * unknown path. The QR login routes exist in server mode only; the desktop client logs in
+ * `/api/platform-accounts*`; an unsupported platform, or one without login support, is a 404
+ * like any unknown path. The QR login routes exist in server mode only; the desktop client logs in
  * through its own window instead.
  */
 export function registerPlatformAccountRoutes(

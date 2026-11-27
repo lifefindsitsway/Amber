@@ -287,6 +287,12 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "asr_failed.diarization_unavailable": { retryDisposition: "never", detailsKeys: ["reason"] },
   // The account's free quota for the model is used up and it is set to stop there.
   "asr_quota.free_tier_exhausted": { retryDisposition: "never" },
+  // A visitor request the platform refused or rate limited (412 / 429). Logging in is not
+  // offered as the way out: the platform may not support it, and visitors usually recover.
+  "platform_blocked.visitor_refused": { action: "none" },
+  // The platform clearly rejected the request signature even with a fresh visitor session:
+  // the way Amber reads it has changed and only a newer Amber can fix it.
+  "platform_blocked.access_changed": { action: "none" },
   // Answered with HTTP 416 instead of the 400 of its class.
   "invalid_request.range_not_satisfiable": {},
   "invalid_request.subtitle_encoding": {},
@@ -298,6 +304,13 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "invalid_request.batch_too_large": { detailsKeys: ["itemCount", "limit"] },
   // An import that asked to confirm collections named one without choosing its entries.
   "invalid_request.collection_choice_required": { detailsKeys: ["urls"] },
+  // The import check found a note that is not a video (an image post); `urls` are the links.
+  "invalid_request.not_video": { detailsKeys: ["urls"] },
+  // The link lacks the platform's access parameter, or the platform treats it as expired.
+  "invalid_request.link_expired": { detailsKeys: ["urls"] },
+  // The import check could not tell whether the link is a playable video; the user may
+  // resubmit with `acceptUnverified` and let the source stage decide.
+  "invalid_request.link_unverified": { detailsKeys: ["urls"] },
   "invalid_request.collection_summary_missing": { detailsKeys: ["missingContentIds"] },
   "invalid_request.cookie_format": {},
   "invalid_request.allowlist_entry": {},

@@ -77,7 +77,7 @@ function leaksPublicIpv4(line: string): boolean {
 
 /** Session and signature parameters of signed media and object-storage URLs, as query parameters. */
 const SIGNED_QUERY =
-  /[?&](?:signature|sig|lsig|sign|upsig|auth_key|ei|expires?|deadline|X-Amz-Signature|X-Amz-Credential|OSSAccessKeyId)=([^&\s"'#]+)/gi;
+  /[?&](?:signature|sig|lsig|sign|upsig|auth_key|ei|expires?|deadline|X-Amz-Signature|X-Amz-Credential|OSSAccessKeyId|xsec_token|x-secsdk-web-signature|uifid)=([^&\s"'#]+)/gi;
 /** The same parameters encoded as path segments, as manifest URLs of some media CDNs do; a query-string cut misses them. */
 const SIGNED_PATH = /\/(?:expire|ei|ip|signature|sig|lsig|sparams|lsparams)\/([^/\s"'?#]+)/g;
 

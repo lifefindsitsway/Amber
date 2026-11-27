@@ -91,6 +91,8 @@ export const common = {
   source: {
     bilibili: "B 站",
     youtube: "YouTube",
+    xiaohongshu: "小红书",
+    douyin: "抖音",
     local: "本地文件",
   },
   theme: {

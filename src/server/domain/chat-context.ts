@@ -68,6 +68,8 @@ const SECTION = {
 const SOURCE_NAMES: Readonly<Record<ContentSourceKind, string>> = {
   youtube: "YouTube",
   bilibili: "哔哩哔哩",
+  xiaohongshu: "小红书",
+  douyin: "抖音",
   local: "本地文件",
 };
 

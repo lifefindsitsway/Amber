@@ -3,7 +3,8 @@ import { PLATFORM_COOKIE_BROWSER_DEFAULT } from "../../shared/defaults.ts";
 import type { PlatformAccountDto, PlatformAccountListDto, PlatformCheckDto } from "../../shared/dto/platform-account.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import { canonicalPlatformCookies } from "../domain/platform-cookie.ts";
-import { PLATFORMS, type Platform } from "../domain/platform.ts";
+import type { Platform } from "../domain/platform.ts";
+import { LOGIN_PLATFORMS } from "../../shared/platforms.ts";
 import type { PlatformAccount } from "../domain/provider-profile.ts";
 import type { CookieBrowser } from "../domain/runtime-support.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
@@ -40,15 +41,14 @@ export class PlatformAccountService {
   list(principal: RequestPrincipal): PlatformAccountListDto {
     const owner = principal.userId;
     return this.options.repository.withTransaction((scope) => ({
-      accounts: PLATFORMS.map((platform) => this.dto(owner, platform, scope.platformAccounts.get(owner, platform))),
+      accounts: LOGIN_PLATFORMS.map((platform) => this.dto(owner, platform, scope.platformAccounts.get(owner, platform))),
     }));
   }
 
   /** `PUT cookies`: stored with status `unknown`; checking is a separate, explicit action. */
   putCookies(principal: RequestPrincipal, platform: Platform, value: string): PlatformAccountDto {
     const owner = principal.userId;
-    const adapter = this.options.platforms.adapterFor(platform);
-    const cookies = canonicalPlatformCookies(value, adapter.cookieDomains, this.now());
+    const cookies = canonicalPlatformCookies(value, this.cookieDomainsOf(platform), this.now());
     return this.storeUnchecked(owner, platform, cookies);
   }
 
@@ -72,7 +72,7 @@ export class PlatformAccountService {
    * right now, so the account is `valid` as of this moment.
    */
   saveConfirmedLogin(ownerUserId: string, platform: Platform, cookies: string): void {
-    const canonical = canonicalPlatformCookies(cookies, this.options.platforms.adapterFor(platform).cookieDomains, this.now());
+    const canonical = canonicalPlatformCookies(cookies, this.cookieDomainsOf(platform), this.now());
     this.options.repository.withTransaction((scope) => {
       const existing = scope.platformAccounts.get(ownerUserId, platform);
       const checkedAt = this.now();
@@ -110,7 +110,11 @@ export class PlatformAccountService {
     if (credential === undefined) {
       throw amberError("not_found", "no account for this platform");
     }
-    const status = await this.options.platforms.adapterFor(platform).checkCredential(credential, signal);
+    const adapter = this.options.platforms.adapterFor(platform);
+    if (adapter.checkCredential === undefined) {
+      throw amberError("not_found", "this platform has no login");
+    }
+    const status = await adapter.checkCredential(credential, signal);
     if (status !== "unknown") {
       const checkedAt = this.now();
       this.options.repository.withTransaction((scope) => {
@@ -143,7 +147,7 @@ export class PlatformAccountService {
     const exported = await adapter.importBrowserCookies(chosen, signal);
     let cookies: string;
     try {
-      cookies = canonicalPlatformCookies(exported, adapter.cookieDomains, this.now());
+      cookies = canonicalPlatformCookies(exported, this.cookieDomainsOf(platform), this.now());
     } catch (error) {
       // Nothing of the platform in the profile means the user is not logged in there: to
       // the user that is the same "could not read the login" as an unreadable profile.
@@ -178,6 +182,15 @@ export class PlatformAccountService {
       platform,
       cookies: async () => secrets.reveal(ownerUserId, account.credentialRef),
     };
+  }
+
+  /** The platform's cookie domains; a platform without login support has no account at all. */
+  private cookieDomainsOf(platform: Platform): readonly string[] {
+    const domains = this.options.platforms.adapterFor(platform).cookieDomains;
+    if (domains === undefined) {
+      throw amberError("not_found", "this platform has no login");
+    }
+    return domains;
   }
 
   private dto(owner: string, platform: Platform, account: PlatformAccount | undefined): PlatformAccountDto {

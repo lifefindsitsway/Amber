@@ -27,7 +27,7 @@ async function setup() {
 }
 
 describe("/api/platform-accounts", () => {
-  it("lists both platforms, stores cookies as unknown, checks them and deletes the account", async () => {
+  it("lists the login platforms, stores cookies as unknown, checks them and deletes the account", async () => {
     const { h, app } = await setup();
     const empty = await app.inject({ method: "GET", url: "/api/platform-accounts", headers: auth });
     expect(empty.statusCode).toBe(200);
@@ -35,6 +35,7 @@ describe("/api/platform-accounts", () => {
       accounts: [
         { platform: "bilibili", credentialStatus: "missing", hasCredential: false },
         { platform: "youtube", credentialStatus: "missing", hasCredential: false },
+        { platform: "xiaohongshu", credentialStatus: "missing", hasCredential: false },
       ],
     });
 
@@ -68,6 +69,19 @@ describe("/api/platform-accounts", () => {
       { method: "PUT" as const, url: "/api/platform-accounts/vimeo/cookies", payload: { value: COOKIE } },
       { method: "POST" as const, url: "/api/platform-accounts/vimeo/check" },
       { method: "DELETE" as const, url: "/api/platform-accounts/vimeo" },
+    ]) {
+      const response = await app.inject({ ...request, headers: auth });
+      expect(response.statusCode, request.url).toBe(404);
+      expect(response.json().error.class).toBe("not_found");
+    }
+  });
+
+  it("answers 404 for a supported platform without login support, like an unknown one", async () => {
+    const { app } = await setup();
+    for (const request of [
+      { method: "PUT" as const, url: "/api/platform-accounts/douyin/cookies", payload: { value: COOKIE } },
+      { method: "POST" as const, url: "/api/platform-accounts/douyin/check" },
+      { method: "DELETE" as const, url: "/api/platform-accounts/douyin" },
     ]) {
       const response = await app.inject({ ...request, headers: auth });
       expect(response.statusCode, request.url).toBe(404);

@@ -19,7 +19,7 @@ export type RunMode = (typeof RUN_MODES)[number];
  * Application and pipeline code must not branch on these literals; platform-specific
  * behavior lives in `adapters/platform/<name>/` behind `PlatformSourceAdapter`.
  */
-export const PLATFORMS = ["bilibili", "youtube"] as const;
+export const PLATFORMS = ["bilibili", "youtube", "xiaohongshu", "douyin"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 export const CONTENT_SOURCE_KINDS = [...PLATFORMS, "local"] as const;

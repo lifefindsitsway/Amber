@@ -1,40 +1,15 @@
-import { createServer, type IncomingHttpHeaders, type RequestListener, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import type { RequestListener } from "node:http";
+import { describe, expect, it } from "vitest";
+import type { OutboundTransport, PinnedAddress } from "../../../../src/server/adapters/outbound-http/direct.ts";
 import { PolicyOutboundHttpClient, type HostResolver } from "../../../../src/server/adapters/outbound-http/policy-client.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { FORBIDDEN_ADDRESS_RANGES } from "../../../../src/server/domain/network-policy.ts";
-import { OutboundHttpError, type OutboundRequest } from "../../../../src/server/ports/outbound-http.ts";
+import { OutboundHttpError, type OutboundRequest, type OutboundResponse } from "../../../../src/server/ports/outbound-http.ts";
+import { useLocalServers } from "../../../fixtures/http/local-server.ts";
 
 // Every request goes to servers on 127.0.0.1 / 127.0.0.2 started by the test; host names are
 // answered by a stub resolver, so nothing leaves the machine.
-const servers: Server[] = [];
-afterEach(() => {
-  for (const server of servers.splice(0)) server.close();
-});
-
-interface TestServer {
-  port: number;
-  /** Requests received: method, path and headers. */
-  received: Array<{ method: string; path: string; headers: IncomingHttpHeaders }>;
-  connections: number;
-}
-
-async function serve(host: "127.0.0.1" | "127.0.0.2", handler: RequestListener, port = 0): Promise<TestServer> {
-  const state: TestServer = { port: 0, received: [], connections: 0 };
-  const server = createServer((request, response) => {
-    state.received.push({ method: request.method ?? "", path: request.url ?? "", headers: request.headers });
-    handler(request, response);
-  });
-  server.on("connection", () => (state.connections += 1));
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, resolve);
-  });
-  state.port = (server.address() as AddressInfo).port;
-  return state;
-}
+const serve = useLocalServers();
 
 const ok: RequestListener = (_request, response) => response.end("ok");
 
@@ -259,6 +234,130 @@ describe("PolicyOutboundHttpClient redirects", () => {
     const client = new PolicyOutboundHttpClient({ mode: "permissive", resolve });
     expect(await (await client.request(get(`http://localhost:${local.port}/`))).text()).toBe("ok");
     await expect(client.check("http://169.254.169.254")).resolves.toBeUndefined();
+    expect(resolve.calls).toEqual([]);
+  });
+});
+
+/** A transport that answers every hop itself and records where the policy let it connect. */
+function recordingTransport(): OutboundTransport & { sent: Array<{ url: string; pinned: PinnedAddress | undefined }> } {
+  const sent: Array<{ url: string; pinned: PinnedAddress | undefined }> = [];
+  return {
+    sent,
+    async send(request: OutboundRequest, pinned?: PinnedAddress): Promise<OutboundResponse> {
+      sent.push({ url: request.url, pinned });
+      return { status: 200, headers: new Map(), body: (async function* () {})(), text: async () => "ok" };
+    },
+  };
+}
+
+const publicOnly = (url: string, extra: Partial<OutboundRequest> = {}) => get(url, { publicOnly: true, ...extra });
+
+describe("PolicyOutboundHttpClient publicOnly requests", () => {
+  const modes = ["strict", "permissive"] as const;
+
+  it("refuses private, loopback and link-local targets in both modes before sending anything", async () => {
+    const resolve = stubResolver({
+      "private.test": "10.0.0.5",
+      "loopback.test": "127.0.0.1",
+      "link-local.test": "169.254.10.1",
+      "loopback6.test": "::1",
+      "shared.test": "100.64.0.9",
+      "home.test": "192.168.1.20",
+    });
+    for (const mode of modes) {
+      const transport = recordingTransport();
+      const client = new PolicyOutboundHttpClient({ mode, resolve, transport });
+      for (const host of ["private.test", "loopback.test", "link-local.test", "loopback6.test", "shared.test", "home.test"]) {
+        expect(await codeOf(client.request(publicOnly(`https://${host}/media`))), `${mode} ${host}`).toBe("network_blocked_by_policy.dns_rebinding");
+      }
+      for (const literal of ["https://127.0.0.1/", "https://10.1.2.3/", "https://169.254.169.254/", "https://[fe80::1]/", "https://[::1]/"]) {
+        expect(await codeOf(client.request(publicOnly(literal))), `${mode} ${literal}`).toBe("network_blocked_by_policy.private_address");
+      }
+      expect(transport.sent).toEqual([]);
+    }
+  });
+
+  it("re-checks every redirect hop in local mode too", async () => {
+    const internal = await serve("127.0.0.2", ok);
+    const origin = await serve("127.0.0.1", (_request, response) => {
+      response.statusCode = 302;
+      response.setHeader("Location", `http://internal.test:${internal.port}/`);
+      response.end();
+    });
+    const resolve = stubResolver({ "public.test": "127.0.0.1", "internal.test": "127.0.0.2" });
+    const client = new PolicyOutboundHttpClient({ mode: "permissive", resolve, forbidden: TEST_RANGES });
+    expect(await codeOf(client.request(publicOnly(`http://public.test:${origin.port}/`)))).toBe("network_blocked_by_policy.redirect");
+    expect(origin.received).toHaveLength(1);
+    expect(internal.received).toHaveLength(0);
+  });
+
+  it("pins the checked address in both modes, so a changed DNS answer cannot divert the connection", async () => {
+    for (const mode of modes) {
+      // Both servers share one port number, so only the connected address tells them apart.
+      const internal = await serve("127.0.0.2", ok);
+      const target = await serve("127.0.0.1", ok, internal.port);
+      let answers = 0;
+      const resolve = stubResolver({ "rebind.test": () => (answers++ === 0 ? "127.0.0.1" : "127.0.0.2") });
+      const client = new PolicyOutboundHttpClient({ mode, resolve, forbidden: TEST_RANGES });
+      expect(await (await client.request(publicOnly(`http://rebind.test:${target.port}/`))).text()).toBe("ok");
+      expect(resolve.calls, mode).toEqual(["rebind.test"]);
+      expect(target.received, mode).toHaveLength(1);
+      expect(internal.received, mode).toHaveLength(0);
+
+      // The next request is resolved and checked afresh; its forbidden answer is refused.
+      expect(await codeOf(client.request(publicOnly(`http://rebind.test:${target.port}/`)))).toBe("network_blocked_by_policy.dns_rebinding");
+      expect(internal.received, mode).toHaveLength(0);
+    }
+  });
+
+  it("admits the proxy fake-IP range only in local mode", async () => {
+    const resolve = stubResolver({ "cdn.test": "198.18.0.7", "edge.test": "198.19.255.254" });
+
+    const local = recordingTransport();
+    const localClient = new PolicyOutboundHttpClient({ mode: "permissive", resolve, transport: local });
+    await localClient.request(publicOnly("https://cdn.test/a"));
+    await localClient.request(publicOnly("https://edge.test/b"));
+    await localClient.request(publicOnly("https://198.18.3.4/c"));
+    expect(local.sent).toEqual([
+      { url: "https://cdn.test/a", pinned: { address: "198.18.0.7", family: 4 } },
+      { url: "https://edge.test/b", pinned: { address: "198.19.255.254", family: 4 } },
+      { url: "https://198.18.3.4/c", pinned: { address: "198.18.3.4", family: 4 } },
+    ]);
+    // The neighbouring forbidden ranges stay forbidden.
+    expect(await codeOf(localClient.request(publicOnly("https://198.51.100.1/")))).toBe("network_blocked_by_policy.private_address");
+    expect(await codeOf(localClient.request(publicOnly("https://192.0.2.1/")))).toBe("network_blocked_by_policy.private_address");
+
+    const server = recordingTransport();
+    const serverClient = new PolicyOutboundHttpClient({ mode: "strict", resolve, transport: server });
+    expect(await codeOf(serverClient.request(publicOnly("https://cdn.test/a")))).toBe("network_blocked_by_policy.dns_rebinding");
+    expect(await codeOf(serverClient.request(publicOnly("https://198.18.3.4/c")))).toBe("network_blocked_by_policy.private_address");
+    // Without publicOnly the server mode refuses the range as before.
+    expect(await codeOf(serverClient.request(get("https://cdn.test/a")))).toBe("network_blocked_by_policy.dns_rebinding");
+    expect(server.sent).toEqual([]);
+  });
+
+  it("is not exempted by the allowlist, which still admits the same origin without publicOnly", async () => {
+    const internal = await serve("127.0.0.2", ok);
+    const resolve = stubResolver({ "relay.lan": "127.0.0.2" });
+    const allowlist = new Set([`http://relay.lan:${internal.port}`, `http://127.0.0.2:${internal.port}`]);
+    const client = new PolicyOutboundHttpClient({ mode: "strict", resolve, forbidden: TEST_RANGES, allowlist: () => allowlist });
+    expect(await codeOf(client.request(publicOnly(`http://relay.lan:${internal.port}/`)))).toBe("network_blocked_by_policy.dns_rebinding");
+    expect(await codeOf(client.request(publicOnly(`http://127.0.0.2:${internal.port}/`)))).toBe("network_blocked_by_policy.private_address");
+    expect(internal.received).toHaveLength(0);
+    expect(await (await client.request(get(`http://relay.lan:${internal.port}/`))).text()).toBe("ok");
+    expect(internal.received).toHaveLength(1);
+  });
+
+  it("leaves requests without publicOnly in local mode unchecked and unpinned", async () => {
+    const resolve = stubResolver({});
+    const transport = recordingTransport();
+    const client = new PolicyOutboundHttpClient({ mode: "permissive", resolve, transport });
+    await client.request(get("http://10.0.0.5/v1"));
+    await client.request(get("http://relay.lan/v1"));
+    expect(transport.sent).toEqual([
+      { url: "http://10.0.0.5/v1", pinned: undefined },
+      { url: "http://relay.lan/v1", pinned: undefined },
+    ]);
     expect(resolve.calls).toEqual([]);
   });
 });

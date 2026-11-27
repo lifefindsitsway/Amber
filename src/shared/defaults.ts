@@ -239,6 +239,42 @@ export const YTDLP_SOCKET_TIMEOUT_S = 30;
 export const CONTENT_DESCRIPTION_MAX_CHARS = 10000;
 /** Maximum hops when expanding a platform short link. */
 export const SHORTLINK_MAX_HOPS = 3;
+/** Bytes of a platform web page Amber reads itself (share pages, short-link hops); a larger body fails the read. */
+export const PLATFORM_PAGE_MAX_BYTES = 4194304;
+/** Bytes of a platform JSON response Amber reads itself; a larger body fails the read. */
+export const PLATFORM_JSON_MAX_BYTES = 4194304;
+/** Code points kept of a title or platform chapter title read from Xiaohongshu or Douyin, cut at a grapheme boundary. */
+export const PLATFORM_TITLE_MAX_CHARS = 200;
+/** How long metadata read by an import check stays in memory for the paste check, the import and the source stage. */
+export const PLATFORM_DETAIL_REUSE_MS = 600000;
+/** Entries of reused platform metadata kept at once; the oldest is dropped first. */
+export const PLATFORM_DETAIL_REUSE_MAX = 256;
+/** A platform media download that receives nothing for this long is stopped. */
+export const PLATFORM_DOWNLOAD_STALL_TIMEOUT_MS = 30000;
+/** Resumptions within one platform media download (only on a strong ETag). */
+export const PLATFORM_DOWNLOAD_RESUME_MAX = 3;
+/** Opening the platform accounts page re-checks a stored login last checked longer ago than this. */
+export const PLATFORM_LOGIN_RECHECK_MS = 86400000;
+/** Lifetime of the process-wide Douyin visitor session before it is rebuilt. */
+export const DOUYIN_VISITOR_TTL_MS = 3600000;
+/** After Douyin refuses the request signature even with a fresh visitor session, no request goes to it for this long. */
+export const DOUYIN_BLOCK_COOLDOWN_MS = 600000;
+/** The new-item form checks a pasted link once typing has paused this long. */
+export const IMPORT_CHECK_DEBOUNCE_MS = 400;
+/** The new-item form quietly gives up a link check that has not answered within this long. */
+export const IMPORT_CHECK_QUIET_MS = 8000;
+/** Total time to download and process one cover image. */
+export const COVER_FETCH_TIMEOUT_MS = 20000;
+/** Bytes of a platform cover image downloaded at most. */
+export const COVER_DOWNLOAD_MAX_BYTES = 10485760;
+/** Longest edge of a stored cover copy. */
+export const COVER_LONG_EDGE_MAX_PX = 1280;
+/** Bytes of a stored cover copy (WebP); quality steps down like a figure's to fit. */
+export const COVER_IMAGE_MAX_BYTES = 524288;
+/** Local cover images the interface requests at once. */
+export const COVER_LOAD_CONCURRENCY = 6;
+/** How long the interface keeps a loaded cover image cached. */
+export const COVER_CACHE_GC_MS = 600000;
 
 /**
  * Longest wait from handing the encoded request to outbound HTTP until the model first

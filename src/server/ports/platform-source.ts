@@ -20,6 +20,12 @@ export interface PlatformContentRef {
   platformContentId: string;
   platformPartId?: string;
   platformCollectionId?: string;
+  /**
+   * The stored canonical source link. Some platforms (Xiaohongshu) need the access parameters
+   * it carries to read the page at all. An adapter uses it only when its own `parse` accepts
+   * it and names the same `platformContentId`; otherwise it is ignored as if absent.
+   */
+  sourceUrl?: string;
 }
 
 /**
@@ -106,8 +112,36 @@ export interface VideoQuality {
   height: number;
 }
 
-/** Why a listed entry cannot be imported, as far as the platform's listing tells. */
-export type PlatformEntryUnavailableReason = "private" | "removed" | "unknown";
+/**
+ * Why a listed entry cannot be imported, as far as the platform's listing tells: `not_video`
+ * is an image post in a collection of a platform that mixes both.
+ */
+export type PlatformEntryUnavailableReason = "private" | "removed" | "unknown" | "not_video";
+
+/** The platform collection a single video belongs to, as the video's own metadata names it. */
+export interface PlatformRelatedCollection {
+  platformCollectionId: string;
+  title: string;
+  /** Entries the collection has, when the platform says. */
+  itemCount?: number;
+  /** 1-based episode number of this video in the collection, when the platform says. */
+  index?: number;
+  canonicalUrl: string;
+}
+
+/**
+ * What checking a single link before import found. `video`: a playable video, with the
+ * metadata read on the way (kept briefly so the source stage need not ask again). `rejected`:
+ * known not to work (`not_video`: an image post; `link_expired`: the access parameter is
+ * missing or the platform treats it as expired). `unverified`: the platform did not let us
+ * tell (network failure, rate limit, hidden for an unknown reason); the user decides.
+ * Refusals that name their own error (a changed signature check, a cooldown) are thrown
+ * instead of being reported as `unverified`.
+ */
+export type PlatformImportCheck =
+  | { result: "video"; metadata: PlatformMetadata; relatedCollection?: PlatformRelatedCollection }
+  | { result: "rejected"; reason: "not_video" | "link_expired" }
+  | { result: "unverified" };
 
 /**
  * One entry of a listed platform collection, before anything per entry is asked of the
@@ -164,8 +198,11 @@ export interface PlatformCollectionItem {
  */
 export interface PlatformSourceAdapter {
   readonly kind: Platform;
-  /** Domains whose cookies belong to this platform; pasted or imported cookies are filtered to these. */
-  readonly cookieDomains: readonly string[];
+  /**
+   * Domains whose cookies belong to this platform; pasted or imported cookies are filtered to
+   * these. Present exactly when the platform supports a login (with `checkCredential`).
+   */
+  readonly cookieDomains?: readonly string[];
   /**
    * Pure: accepts only canonical URLs on the platform's supported hosts and returns `null`
    * otherwise. Arbitrary URLs are never handed to yt-dlp.
@@ -195,7 +232,19 @@ export interface PlatformSourceAdapter {
    * `expired` when the platform clearly says the login is gone, `valid` when it clearly
    * works, `unknown` for network or transient platform errors (the old credential is kept).
    */
-  checkCredential(auth: PlatformCredential, signal: AbortSignal): Promise<"valid" | "expired" | "unknown">;
+  checkCredential?(auth: PlatformCredential, signal: AbortSignal): Promise<"valid" | "expired" | "unknown">;
+  /**
+   * Present on platforms whose single links are checked before import. Reads the platform
+   * once; `auth` follows the adapter's own login policy (a visitor first where that works).
+   */
+  precheck?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformImportCheck>;
+  /**
+   * Downloads a cover image to `output.path` (a file in the caller's scratch directory) without
+   * any login. Only an https URL on this platform's trusted image hosts is fetched; anything
+   * else, or more than `options.maxBytes` bytes, fails without writing a usable file. Decoding
+   * and re-encoding are the caller's job.
+   */
+  fetchCover?(coverUrl: string, output: { path: string }, options: { maxBytes: number }, signal: AbortSignal): Promise<{ sizeBytes: number }>;
   /**
    * Lists a collection's entries in the platform's order, at most `limit` of them, in as few
    * requests as the platform allows and without asking anything per entry.

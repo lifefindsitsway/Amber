@@ -1,7 +1,9 @@
 import ts from "typescript";
+import { PLATFORMS } from "../../../src/shared/enums.ts";
 import { lineOf, listFiles, parseSource, TS_EXTENSIONS, visit, type Violation } from "./files.ts";
 
-const PLATFORM_LITERALS = new Set(["bilibili", "youtube"]);
+/** Taken from the enumeration itself, so a newly added platform is guarded without touching this file. */
+const PLATFORM_LITERALS: ReadonlySet<string> = new Set(PLATFORMS);
 
 /**
  * Platform-literal guard: application and pipeline code never branch on platform identity.

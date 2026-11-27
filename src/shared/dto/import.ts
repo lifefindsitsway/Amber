@@ -55,6 +55,11 @@ export const importItemSchema = z
       .exactOptional(),
     /** The `previewId` the entries were chosen from; reused while valid, otherwise the collection is listed again. */
     previewId: z.string().min(1).exactOptional(),
+    /**
+     * The user chose to import a link the import check could not verify
+     * (`invalid_request.link_unverified`); the source stage decides instead.
+     */
+    acceptUnverified: z.boolean().exactOptional(),
   })
   .strict();
 export type ImportItem = z.infer<typeof importItemSchema>;
@@ -83,6 +88,9 @@ export const importRequestSchema = z
   .strict();
 export type ImportRequest = z.infer<typeof importRequestSchema>;
 
+export const SOURCE_URL_UPDATE_RESULTS = ["updated", "kept"] as const;
+export type SourceUrlUpdateResult = (typeof SOURCE_URL_UPDATE_RESULTS)[number];
+
 /**
  * 202 body; one Task and Content id per imported item, in item order.
  * `skippedTrashedContentIds` lists Contents in the trash that an expanded collection or an
@@ -95,6 +103,12 @@ export const importResponseSchema = z.object({
   skippedTrashedContentIds: z.array(z.string().min(1)).exactOptional(),
   /** Collections the imported Contents joined: platform collections in input order, then the chosen target. Absent from older servers. */
   collectionIds: z.array(z.string().min(1)).exactOptional(),
+  /**
+   * Existing Contents whose stored source link the import offered to replace (a new link with
+   * access parameters): `updated` once the new link was verified to name the same Content,
+   * `kept` when it could not be verified and the old link stays. Absent when there were none.
+   */
+  sourceUrlUpdates: z.array(z.object({ contentId: z.string().min(1), result: z.enum(SOURCE_URL_UPDATE_RESULTS) })).exactOptional(),
 });
 export type ImportResponse = z.infer<typeof importResponseSchema>;
 
@@ -114,6 +128,34 @@ export const inspectRequestSchema = z
 export type InspectRequest = z.infer<typeof inspectRequestSchema>;
 
 const durationSchema = z.number().int().nonnegative();
+
+/** Why a collection entry cannot be chosen; `not_video` marks an image post in a collection that mixes both. */
+export const ENTRY_UNAVAILABLE_REASONS = ["private", "removed", "unknown", "not_video"] as const;
+
+export const IMPORT_CHECK_RESULTS = ["video", "rejected", "unverified"] as const;
+export const IMPORT_CHECK_REJECTIONS = ["not_video", "link_expired"] as const;
+
+/**
+ * What checking a single link before import found, for platforms that check (see the shared
+ * platform capabilities). Only a hint for the form: the import checks again.
+ */
+export const importCheckSchema = z.discriminatedUnion("result", [
+  z.object({ result: z.literal("video"), title: z.string(), durationMs: durationSchema }),
+  z.object({ result: z.literal("rejected"), reason: z.enum(IMPORT_CHECK_REJECTIONS) }),
+  z.object({ result: z.literal("unverified") }),
+]);
+export type ImportCheck = z.infer<typeof importCheckSchema>;
+
+/** The platform collection a single video belongs to, to offer choosing from it. */
+export const relatedCollectionSchema = z.object({
+  platformCollectionId: z.string().min(1),
+  title: z.string(),
+  itemCount: z.number().int().positive().exactOptional(),
+  /** 1-based episode number of this video, when the platform says. */
+  index: z.number().int().positive().exactOptional(),
+  canonicalUrl: z.string().min(1),
+});
+export type RelatedCollection = z.infer<typeof relatedCollectionSchema>;
 
 /**
  * What choosing a collection entry would do, most binding first: `unavailable` (private or
@@ -155,7 +197,7 @@ export const inspectResponseSchema = z.object({
         state: z.enum(COLLECTION_ENTRY_STATES).exactOptional(),
         /** The existing Content for `in_library`, `processing`, `in_collection` and `trashed`. */
         contentId: z.string().min(1).exactOptional(),
-        unavailableReason: z.enum(["private", "removed", "unknown"]).exactOptional(),
+        unavailableReason: z.enum(ENTRY_UNAVAILABLE_REASONS).exactOptional(),
       }),
     )
     .exactOptional(),
@@ -171,5 +213,11 @@ export const inspectResponseSchema = z.object({
   nextOffset: z.number().int().positive().exactOptional(),
   /** The local collection the entry states were compared against, when there is one. */
   localCollection: z.object({ id: z.string().min(1), name: z.string() }).exactOptional(),
+  /** A single link of a checking platform that is already in the library; the platform was not asked. */
+  contentId: z.string().min(1).exactOptional(),
+  /** A single link of a checking platform: what the import check found. */
+  check: importCheckSchema.exactOptional(),
+  /** With `check.result` `video`: the platform collection the video belongs to. */
+  relatedCollection: relatedCollectionSchema.exactOptional(),
 });
 export type InspectResponse = z.infer<typeof inspectResponseSchema>;

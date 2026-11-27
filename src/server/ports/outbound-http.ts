@@ -28,6 +28,16 @@ export interface OutboundRequest {
    * the chain itself, every request still checked.
    */
   redirect?: "follow" | "manual";
+  /**
+   * The target must be a public address in every run mode: private, loopback, link-local and
+   * other reserved ranges are refused and the connection is pinned to the checked IP, even
+   * where the mode otherwise trusts the network (the desktop client) and even for an origin an
+   * administrator allowlisted. Set by platform adapters, whose targets are fixed public
+   * platform hosts; user-configured endpoints never set it. The desktop client additionally
+   * admits the fake-IP range proxy tools resolve every domain into, or platform requests behind
+   * such a proxy would always fail.
+   */
+  publicOnly?: boolean;
 }
 
 export interface OutboundResponse {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_USER_AGENT, platformGet, platformGetBytes, platformGetJson } from "../../../../src/server/adapters/platform/http.ts";
+import { BROWSER_USER_AGENT, platformGet, platformGetBytes, platformGetJson, platformGetText } from "../../../../src/server/adapters/platform/http.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { OutboundHttpError } from "../../../../src/server/ports/outbound-http.ts";
 import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
@@ -119,5 +119,78 @@ describe("platformGetBytes", () => {
     });
     expect(await classOf(platformGetBytes(broken("network"), { url: DM, signal: signal(), maxBytes: 10 }))).toBe("source_unreachable");
     await expect(platformGetBytes(broken("aborted"), { url: DM, signal: signal(), maxBytes: 10 })).rejects.toBeInstanceOf(OutboundHttpError);
+  });
+});
+
+describe("platform requests", () => {
+  it("are always marked public-only, whatever the helper", async () => {
+    const http = new ScriptedHttp(() => ({ body: { code: 0 } }));
+    await platformGetJson(http, { url: PAGELIST, signal: signal() });
+    await platformGet(http, { url: PAGELIST, signal: signal() });
+    await platformGetBytes(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 });
+    await platformGetText(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 });
+    expect(http.requests.map((request) => request.publicOnly)).toEqual([true, true, true, true]);
+  });
+});
+
+describe("platformGetText", () => {
+  const PAGE = "https://www.example.com/discovery/item/0123";
+
+  it("returns status, text and the resolved redirect target without following it", async () => {
+    const http = new ScriptedHttp(() => ({ status: 302, body: "", headers: { location: "/login?redirectPath=x" } }));
+    const answer = await platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 });
+    expect(answer).toMatchObject({ status: 302, location: "https://www.example.com/login?redirectPath=x", text: "" });
+    expect(http.requests[0]?.redirect).toBe("manual");
+  });
+
+  it("does not map error statuses: the adapter decides", async () => {
+    const http = new ScriptedHttp(() => ({ status: 403, body: "refused" }));
+    expect(await platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 })).toMatchObject({ status: 403, text: "refused" });
+  });
+
+  it("refuses a body longer than the cap", async () => {
+    const http = new ScriptedHttp(() => ({ body: "x".repeat(2048) }));
+    expect(await classOf(platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 }))).toBe("source_html_error_page");
+  });
+
+  it("maps a transport failure to source_unreachable", async () => {
+    const http = new ScriptedHttp(() => new OutboundHttpError("before_send", "network"));
+    expect(await classOf(platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 }))).toBe("source_unreachable");
+  });
+
+  it("gives up a body that stops sending for the request's timeout, and ends it", async () => {
+    let ended = false;
+    const trickle = {
+      async request() {
+        return {
+          status: 200,
+          headers: new Map<string, string>(),
+          body: {
+            [Symbol.asyncIterator]() {
+              let sent = false;
+              return {
+                next: () => {
+                  if (!sent) {
+                    sent = true;
+                    return Promise.resolve({ done: false as const, value: new Uint8Array([120]) });
+                  }
+                  // Never another chunk, never the end.
+                  return new Promise<IteratorResult<Uint8Array>>(() => undefined);
+                },
+                return: () => {
+                  ended = true;
+                  return Promise.resolve({ done: true as const, value: undefined });
+                },
+              };
+            },
+          },
+          text: async () => "",
+        };
+      },
+    };
+    const started = Date.now();
+    expect(await classOf(platformGetText(trickle, { url: PAGE, signal: signal(), maxBytes: 1024, timeoutMs: 50 }))).toBe("source_unreachable");
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(ended).toBe(true);
   });
 });

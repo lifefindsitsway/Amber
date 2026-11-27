@@ -57,6 +57,7 @@ describe("PlatformAccountService", () => {
       accounts: [
         { platform: "bilibili", credentialStatus: "missing", hasCredential: false },
         { platform: "youtube", credentialStatus: "missing", hasCredential: false },
+        { platform: "xiaohongshu", credentialStatus: "missing", hasCredential: false },
       ],
     });
     h.platformAccounts.putCookies(LOCAL, "youtube", "amber_test_cookie=<placeholder>");

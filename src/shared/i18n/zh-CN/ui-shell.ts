@@ -182,6 +182,8 @@ export const shell = {
     platform: {
       bilibili: "B 站合集",
       youtube: "YouTube 播放列表",
+      xiaohongshu: "小红书合集",
+      douyin: "抖音合集",
     },
     step: "合集 {{index}} / {{count}}",
     total: "共 {{count}} 项",
@@ -232,6 +234,7 @@ export const shell = {
       private: "平台标为私享",
       removed: "平台上已删除",
       unknown: "平台未说明原因",
+      not_video: "图文，不支持",
     },
     openTrash: "打开回收站",
     noneChosen: "没有选择内容，这个合集不会导入",

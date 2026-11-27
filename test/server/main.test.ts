@@ -106,7 +106,7 @@ describe("sidecar entry point", () => {
     });
     expect(imported.status).toBe(422);
     expect((await json(imported)).error.class).toBe("source_unsupported_url");
-    expect((await json(await api("/api/platform-accounts"))).accounts.map((account: { platform: string }) => account.platform)).toEqual(["bilibili", "youtube"]);
+    expect((await json(await api("/api/platform-accounts"))).accounts.map((account: { platform: string }) => account.platform)).toEqual(["bilibili", "youtube", "xiaohongshu"]);
 
     const exited = exitCode(proc);
     proc.stdin.end();

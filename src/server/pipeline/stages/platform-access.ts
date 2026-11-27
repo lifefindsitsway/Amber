@@ -1,7 +1,7 @@
 import type { Content } from "../../domain/content.ts";
 import { isAmberError } from "../../domain/errors.ts";
 import { isPlatform, type Platform } from "../../domain/platform.ts";
-import type { PlatformContentRef, PlatformCredential, PlatformSourceAdapter } from "../../ports/platform-source.ts";
+import type { PlatformContentRef, PlatformCredential, PlatformMetadata, PlatformSourceAdapter } from "../../ports/platform-source.ts";
 import type { Repository } from "../../ports/repository.ts";
 import type { StageExecutionContext } from "../executor.ts";
 
@@ -14,6 +14,12 @@ export interface PlatformAccess {
   credentialFor(ownerUserId: string, platform: Platform): PlatformCredential | undefined;
   /** Records that the platform turned the user's login away. */
   markExpired(ownerUserId: string, platform: Platform): void;
+  /**
+   * Metadata an import check read for this user and link a moment ago, so the source stage
+   * need not ask the platform again; `undefined` when there is none or it has gone stale.
+   * Only platforms that check links before import ever have any.
+   */
+  recentMetadata?(ownerUserId: string, platform: Platform, ref: PlatformContentRef): PlatformMetadata | undefined;
 }
 
 /**
@@ -67,6 +73,7 @@ export function platformTarget(access: PlatformAccess, content: Content): Platfo
       platformContentId: source.platformContentId,
       ...(source.platformPartId === undefined ? {} : { platformPartId: source.platformPartId }),
       ...(source.platformCollectionId === undefined ? {} : { platformCollectionId: source.platformCollectionId }),
+      ...(source.sourceUrl === undefined ? {} : { sourceUrl: source.sourceUrl }),
     },
   };
 }

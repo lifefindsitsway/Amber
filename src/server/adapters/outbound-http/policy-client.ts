@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import { OUTBOUND_MAX_REDIRECTS } from "../../../shared/defaults.ts";
 import type { RefinedErrorCode } from "../../../shared/errors.ts";
 import { amberError } from "../../domain/errors.ts";
-import { FORBIDDEN_ADDRESS_RANGES, isForbiddenAddress, originOf } from "../../domain/network-policy.ts";
+import { FORBIDDEN_ADDRESS_RANGES, isForbiddenAddress, originOf, parseAddress } from "../../domain/network-policy.ts";
 import type { NetworkTargetCheck } from "../../ports/network-target-check.ts";
 import {
   OutboundHttpError,
@@ -20,7 +20,8 @@ export interface PolicyOutboundHttpClientOptions {
   /**
    * `strict` (server mode): forbidden ranges, allowlist and IP pinning apply to every
    * hop. `permissive` (local mode): no address checks and no pinning, so keep-alive stays;
-   * redirect semantics and header stripping are the same in both.
+   * redirect semantics and header stripping are the same in both. A `publicOnly` request is
+   * checked and pinned in both modes (see `PolicyOutboundHttpClient`).
    */
   mode: "strict" | "permissive";
   /** Normalized allowlisted origins (exact `scheme://host[:port]`), read on every request. */
@@ -36,6 +37,13 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** The only request headers a hop to another origin keeps (RFC 9110 §15.4). */
 const CROSS_ORIGIN_HEADERS = new Set(["accept", "accept-language", "user-agent", "range"]);
 
+/**
+ * The range proxy tools in fake-IP mode (Clash and its kin) resolve every domain into. On the
+ * user's own machine a public platform host behind such a proxy resolves here, so local mode
+ * admits it for `publicOnly` requests; a server has no business reaching it.
+ */
+const PROXY_FAKE_IP_RANGE = "198.18.0.0/15";
+
 const defaultResolve: HostResolver = (hostname) => lookup(hostname, { all: true, verbatim: true });
 
 /**
@@ -49,6 +57,11 @@ const defaultResolve: HostResolver = (hostname) => lookup(hostname, { all: true,
  * and `redirect: "manual"` get the 3xx back: a non-GET request may be a paid call, and
  * following its redirect would send it a second time. A hop to another origin keeps
  * only harmless headers, so credentials never travel to a host the caller did not name.
+ *
+ * A `publicOnly` request (platform adapters, whose targets are fixed public hosts) gets the
+ * strict checks and pinning in both modes, and the allowlist never exempts it: an
+ * administrator's allowlisted relay is no reason for a platform host to reach the private
+ * network. Local mode alone additionally admits `PROXY_FAKE_IP_RANGE` for it.
  */
 export class PolicyOutboundHttpClient implements OutboundHttpClient, NetworkTargetCheck {
   private readonly options: PolicyOutboundHttpClientOptions;
@@ -67,7 +80,7 @@ export class PolicyOutboundHttpClient implements OutboundHttpClient, NetworkTarg
     let url = parseTarget(request.url);
     let hop: OutboundRequest = request;
     for (let redirects = 0; ; redirects++) {
-      const pinned = await this.admit(url, redirects === 0 ? undefined : "network_blocked_by_policy.redirect");
+      const pinned = await this.admit(url, redirects === 0 ? undefined : "network_blocked_by_policy.redirect", request.publicOnly === true);
       const response = await this.transport.send({ ...hop, url: url.toString() }, pinned);
       const location = response.headers.get("location");
       if (!follows || !REDIRECT_STATUSES.has(response.status) || location === undefined) {
@@ -99,7 +112,7 @@ export class PolicyOutboundHttpClient implements OutboundHttpClient, NetworkTarg
       return;
     }
     try {
-      await this.admit(url, undefined);
+      await this.admit(url, undefined, false);
     } catch (error) {
       if (error instanceof OutboundHttpError) {
         return;
@@ -112,16 +125,19 @@ export class PolicyOutboundHttpClient implements OutboundHttpClient, NetworkTarg
    * Decides where one hop may connect. `refusal` replaces the specific code for hops
    * reached by following a redirect.
    */
-  private async admit(url: URL, refusal: RefinedErrorCode | undefined): Promise<PinnedAddress | undefined> {
-    if (this.options.mode === "permissive") {
+  private async admit(url: URL, refusal: RefinedErrorCode | undefined, publicOnly: boolean): Promise<PinnedAddress | undefined> {
+    const permissive = this.options.mode === "permissive";
+    if (permissive && !publicOnly) {
       return undefined;
     }
-    const forbidden = this.options.forbidden ?? FORBIDDEN_ADDRESS_RANGES;
-    const allowlisted = this.options.allowlist?.().has(originOf(url)) ?? false;
+    const ranges = this.options.forbidden ?? FORBIDDEN_ADDRESS_RANGES;
+    const fakeIpAdmitted = permissive && publicOnly;
+    const forbidden = (address: string): boolean => isForbiddenAddress(address, ranges) && !(fakeIpAdmitted && isProxyFakeIp(address));
+    const allowlisted = !publicOnly && (this.options.allowlist?.().has(originOf(url)) ?? false);
     const host = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
     const literal = isIP(host);
     if (literal !== 0) {
-      if (!allowlisted && isForbiddenAddress(host, forbidden)) {
+      if (!allowlisted && forbidden(host)) {
         throw blocked(refusal ?? "network_blocked_by_policy.private_address", "target address is in a forbidden range");
       }
       return { address: host, family: literal as 4 | 6 };
@@ -136,11 +152,16 @@ export class PolicyOutboundHttpClient implements OutboundHttpClient, NetworkTarg
     if (first === undefined) {
       throw new OutboundHttpError("before_send", "network");
     }
-    if (!allowlisted && addresses.some((entry) => isForbiddenAddress(entry.address, forbidden))) {
+    if (!allowlisted && addresses.some((entry) => forbidden(entry.address))) {
       throw blocked(refusal ?? "network_blocked_by_policy.dns_rebinding", "target host resolves to a forbidden range");
     }
     return { address: first.address, family: first.family === 6 ? 6 : 4 };
   }
+}
+
+/** Only a literal address inside the fake-IP range; anything unparsable stays refused. */
+function isProxyFakeIp(address: string): boolean {
+  return parseAddress(address) !== undefined && isForbiddenAddress(address, [PROXY_FAKE_IP_RANGE]);
 }
 
 function parseTarget(text: string): URL {

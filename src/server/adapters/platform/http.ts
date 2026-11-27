@@ -22,6 +22,9 @@ async function send(http: OutboundHttpClient, request: PlatformGet, timeoutMs = 
       headers: { "User-Agent": BROWSER_USER_AGENT, ...request.headers },
       signal: request.signal,
       timeoutMs,
+      // Platform hosts are fixed public names: a platform request never reaches a private or
+      // reserved address, whatever the run mode trusts otherwise.
+      publicOnly: true,
       ...(request.redirect === undefined ? {} : { redirect: request.redirect }),
     });
   } catch (error) {
@@ -62,7 +65,7 @@ export async function platformGetJsonWithCookies<T>(http: OutboundHttpClient, re
 export interface PlatformGetBytes extends PlatformGet {
   /** Most body bytes read; a longer answer is abandoned as soon as it shows. */
   maxBytes: number;
-  /** Bounds each hop up to its response headers; `PLATFORM_METADATA_TIMEOUT_MS` when absent. */
+  /** Bounds each hop up to its response headers, and each wait for the next body chunk; `PLATFORM_METADATA_TIMEOUT_MS` when absent. */
   timeoutMs?: number;
 }
 
@@ -81,13 +84,29 @@ function statusError(status: number): Error | undefined {
   return undefined;
 }
 
-/** The body's bytes, `maxBytes` at most; leaving the loop early ends the iterator, which drops the connection. */
-async function readCapped(response: OutboundResponse, maxBytes: number): Promise<Uint8Array> {
+/**
+ * The body's bytes, `maxBytes` at most; leaving the loop early ends the iterator, which drops
+ * the connection. A body that goes `stallMs` without a byte is given up as unreachable: a
+ * request's own time limit ends at the response headers, and a trickling answer must not hold
+ * a caller (and the heavy slot it may hold) for ever.
+ */
+async function readCapped(response: OutboundResponse, maxBytes: number, stallMs: number): Promise<Uint8Array> {
   const declared = Number(response.headers.get("content-length") ?? Number.NaN);
   const chunks: Uint8Array[] = [];
   let total = 0;
+  const iterator = response.body[Symbol.asyncIterator]();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // The next chunk, or a stall error once `stallMs` passes without one.
+  const nextChunk = (): Promise<IteratorResult<Uint8Array>> =>
+    new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(amberError("source_unreachable", `platform response sent nothing for ${stallMs} ms`)), stallMs);
+      iterator.next().then(resolve, reject);
+    }).finally(() => clearTimeout(timer)) as Promise<IteratorResult<Uint8Array>>;
   try {
-    for await (const chunk of response.body) {
+    for (;;) {
+      const next = await nextChunk();
+      if (next.done === true) break;
+      const chunk = next.value;
       total += chunk.byteLength;
       if (total > maxBytes || declared > maxBytes) {
         throw tooLarge(maxBytes);
@@ -95,6 +114,8 @@ async function readCapped(response: OutboundResponse, maxBytes: number): Promise
       chunks.push(chunk);
     }
   } catch (error) {
+    // Ends the body (and drops the connection) without waiting for a stalled read to settle.
+    void Promise.resolve(iterator.return?.()).catch(() => undefined);
     if (error instanceof OutboundHttpError && error.reason !== "aborted") {
       throw amberError("source_unreachable", error.message);
     }
@@ -116,7 +137,7 @@ export async function platformGetBytes(http: OutboundHttpClient, request: Platfo
   const refused = statusError(response.status);
   if (refused !== undefined) {
     try {
-      await readCapped(response, maxBytes);
+      await readCapped(response, maxBytes, timeoutMs ?? PLATFORM_METADATA_TIMEOUT_MS);
     } catch (error) {
       if (get.signal.aborted) {
         throw error;
@@ -124,5 +145,50 @@ export async function platformGetBytes(http: OutboundHttpClient, request: Platfo
     }
     throw refused;
   }
-  return { headers: response.headers, bytes: await readCapped(response, maxBytes) };
+  return { headers: response.headers, bytes: await readCapped(response, maxBytes, timeoutMs ?? PLATFORM_METADATA_TIMEOUT_MS) };
+}
+
+export interface PlatformGetText extends PlatformGet {
+  /** Most body bytes read (`PLATFORM_PAGE_MAX_BYTES` for pages, `PLATFORM_JSON_MAX_BYTES` for JSON). */
+  maxBytes: number;
+  /** Bounds the request up to its response headers, and each wait for the next body chunk; `PLATFORM_METADATA_TIMEOUT_MS` when absent. */
+  timeoutMs?: number;
+}
+
+/** One platform answer read whole as UTF-8 text, with what deciding about it needs. */
+export interface PlatformTextResponse {
+  status: number;
+  headers: ReadonlyMap<string, string>;
+  /** The `Location` of a 3xx, resolved against the request URL; absent otherwise. */
+  location?: string;
+  setCookies: readonly string[];
+  text: string;
+}
+
+/**
+ * GETs one response without following redirects and returns its status and text, the body
+ * read within `maxBytes` (a longer one fails with `source_html_error_page`). Statuses are not
+ * mapped: adapters that must tell a login redirect, a signature refusal or an empty answer
+ * apart decide themselves. A transport failure is `source_unreachable`; an abort passes through.
+ */
+export async function platformGetText(http: OutboundHttpClient, request: PlatformGetText): Promise<PlatformTextResponse> {
+  const { maxBytes, timeoutMs, ...get } = request;
+  const response = await send(http, { ...get, redirect: "manual" }, timeoutMs);
+  const bytes = await readCapped(response, maxBytes, timeoutMs ?? PLATFORM_METADATA_TIMEOUT_MS);
+  const rawLocation = response.status >= 300 && response.status < 400 ? response.headers.get("location") : undefined;
+  let location: string | undefined;
+  if (rawLocation !== undefined) {
+    try {
+      location = new URL(rawLocation, request.url).toString();
+    } catch {
+      location = undefined;
+    }
+  }
+  return {
+    status: response.status,
+    headers: response.headers,
+    ...(location === undefined ? {} : { location }),
+    setCookies: response.setCookies ?? [],
+    text: new TextDecoder("utf-8").decode(bytes),
+  };
 }

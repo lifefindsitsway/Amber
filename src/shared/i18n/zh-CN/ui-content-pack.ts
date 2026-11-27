@@ -9,6 +9,8 @@ export const contentPack = {
   source: {
     bilibili: "B 站",
     youtube: "YouTube",
+    xiaohongshu: "小红书",
+    douyin: "抖音",
     local: "本地文件",
   },
   /** The library's selection mode. */
