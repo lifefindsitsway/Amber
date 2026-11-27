@@ -6,8 +6,9 @@ import type { PackWriteEntry } from "../../../src/server/ports/content-pack.ts";
 import { tarHeader, tarPadding, TAR_END_BYTES } from "../../../src/server/adapters/backup/pack-tar.ts";
 import type { PackExportBuild } from "../../../src/server/application/content-pack-engine.ts";
 import {
+  CONTENT_PACK_BASE_FORMAT_VERSION,
+  CONTENT_PACK_COVER_FORMAT_VERSION,
   CONTENT_PACK_FORMAT,
-  CONTENT_PACK_FORMAT_VERSION,
   PACK_COLLECTIONS_ENTRY,
   type ContentDocument,
   type ContentPackHeader,
@@ -15,14 +16,18 @@ import {
 
 /**
  * Content packs built for tests: valid documents (one revision, one figure, one speaker
- * photo, one media file per Content), the real writer, and a raw tar writer for archives the
- * real writer would never produce.
+ * photo, one media file per Content, and with `cover` a platform source and a cover copy), the
+ * real writer, and a raw tar writer for archives the real writer would never produce.
  */
 
 const IMAGES = join(import.meta.dirname, "../images");
 export const FIGURE_WEBP = new Uint8Array(readFileSync(join(IMAGES, "lossy.webp")));
 export const AVATAR_WEBP = new Uint8Array(readFileSync(join(IMAGES, "lossless.webp")));
 export const ANIMATED_WEBP = new Uint8Array(readFileSync(join(IMAGES, "animated.webp")));
+/** The cover samples carry: the lossy sample image, 64 × 48 as its VP8 header states. */
+export const COVER_WEBP = FIGURE_WEBP;
+export const COVER_WIDTH = 64;
+export const COVER_HEIGHT = 48;
 
 /** The leading `ftyp` box of an MP4 file (brand `isom`). */
 export const MP4_HEAD = Buffer.from("000000186674797069736f6d0000020069736f6d69736f32", "hex");
@@ -44,7 +49,10 @@ export interface SamplePack {
 }
 
 /** `count` Contents, each with a media file of `mediaBytes` random bytes written under `dir`. */
-export function sampleBuild(dir: string, options: { count?: number; mediaBytes?: number; cacheFileName?: (index: number) => string } = {}): SamplePack {
+export function sampleBuild(
+  dir: string,
+  options: { count?: number; mediaBytes?: number; cacheFileName?: (index: number) => string; cover?: (index: number) => boolean } = {},
+): SamplePack {
   const count = options.count ?? 1;
   const media: SampleMedia[] = [];
   const contents: PackExportBuild["contents"] = [];
@@ -58,9 +66,13 @@ export function sampleBuild(dir: string, options: { count?: number; mediaBytes?:
     writeFileSync(path, bytes);
     const mediaSha = sha256(bytes);
     media.push({ entry: mediaEntry, path, sizeBytes: bytes.length, sha256: mediaSha, contentId, key: `${key}-media` });
+    const covered = options.cover?.(index) === true;
+    const coverEntry = `contents/${index}/cover.webp`;
+    const platformId = `BV1${String(index).padStart(9, "0")}`;
     const document: ContentDocument = {
       key,
-      source: { kind: "local" },
+      source: covered ? { kind: "bilibili", platformContentId: platformId, sourceUrl: `https://www.bilibili.com/video/${platformId}` } : { kind: "local" },
+      ...(covered ? { cover: { entry: coverEntry, width: COVER_WIDTH, height: COVER_HEIGHT, bytes: COVER_WEBP.length, sha256: sha256(COVER_WEBP) } } : {}),
       title: `内容 ${index}`,
       fingerprint: `sha256:${mediaSha}`,
       speakers: [{ originContentKey: key, originSpeakerId: "0", ordinal: 1, name: "主讲", colorIndex: 0, avatar: { entry: `contents/${index}/avatars/1.webp`, mime: "image/webp" } }],
@@ -111,6 +123,7 @@ export function sampleBuild(dir: string, options: { count?: number; mediaBytes?:
       document,
       revisions: [{ entry: `contents/${index}/revisions/1.json`, document: { key: `${key}-rev`, segments: [{ startMs: 0, endMs: 1000, text: "你好" }] } }],
       images: [
+        ...(covered ? [{ entry: coverEntry, bytes: COVER_WEBP }] : []),
         { entry: `contents/${index}/avatars/1.webp`, bytes: AVATAR_WEBP },
         { entry: `contents/${index}/figures/1.webp`, bytes: FIGURE_WEBP },
       ],
@@ -123,7 +136,7 @@ export function sampleBuild(dir: string, options: { count?: number; mediaBytes?:
 export function headerOf(build: PackExportBuild): Omit<ContentPackHeader, "entries"> {
   return {
     format: CONTENT_PACK_FORMAT,
-    formatVersion: CONTENT_PACK_FORMAT_VERSION,
+    formatVersion: build.contents.some((content) => content.document.cover !== undefined) ? CONTENT_PACK_COVER_FORMAT_VERSION : CONTENT_PACK_BASE_FORMAT_VERSION,
     amberVersion: "0.0.0-test",
     encryption: "none",
     createdAt: 1_700_000_000_000,

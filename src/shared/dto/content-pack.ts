@@ -183,6 +183,8 @@ export const contentPackExportJobDtoSchema = z
         fileName: z.string(),
         sizeBytes: countSchema,
         contents: countSchema,
+        /** Exported Contents that had no local cover copy, so the pack carries only their cover URL. */
+        coversLeftOut: countSchema.exactOptional(),
         downloadPath: z.string().exactOptional(),
         expiresAt: msSchema.exactOptional(),
       })

@@ -206,6 +206,8 @@ export const contentPack = {
     jobBusy: "已有一个内容包导入或导出正在进行，等它结束后再导入。",
     pack: "内容包创建于 {{time}}（Amber {{version}}）· {{size}}",
     expires: "预览保留到 {{time}}，之后需要重新选择文件。",
+    /** Shown when the pack holds platform Contents: their links are imported as the pack has them. */
+    sourceLinks: "平台内容的来源链接按包里的原样导入，可能带有平台的访问参数（例如小红书链接里的访问令牌）。",
     expired: "预览已过期，暂存的文件已清理。请重新选择内容包。",
     pickAgain: "重新选择",
     contentsTitle: "内容",

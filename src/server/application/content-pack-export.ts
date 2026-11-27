@@ -14,10 +14,11 @@ import type {
   ContentPackSelection,
 } from "../../shared/dto/content-pack.ts";
 import type { FileGrant } from "../../shared/dto/local-media.ts";
-import { CONTENT_PACK_FORMAT, CONTENT_PACK_FORMAT_VERSION, PACK_COLLECTIONS_ENTRY } from "../domain/content-pack/document.ts";
+import { CONTENT_PACK_BASE_FORMAT_VERSION, CONTENT_PACK_COVER_FORMAT_VERSION, CONTENT_PACK_FORMAT, PACK_COLLECTIONS_ENTRY } from "../domain/content-pack/document.ts";
 import { AmberError, amberError, appError } from "../domain/errors.ts";
 import { exportFilename } from "../domain/export/filename.ts";
 import { inspectPackAvatar } from "../domain/figure-image.ts";
+import { isPlatform } from "../domain/platform.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { CacheGate } from "../pipeline/cache-gate.ts";
 import type { CachePathLocks } from "../pipeline/cache-path-locks.ts";
@@ -101,6 +102,16 @@ interface ExportJob {
 function freeBytesOf(path: string): number {
   const stats = statfsSync(path);
   return Number(stats.bavail) * Number(stats.bsize);
+}
+
+/** Only a pack that carries a cover needs the format that has them; any other stays readable by older builds. */
+function formatVersionOf(build: PackExportBuild): number {
+  return build.contents.some((content) => content.document.cover !== undefined) ? CONTENT_PACK_COVER_FORMAT_VERSION : CONTENT_PACK_BASE_FORMAT_VERSION;
+}
+
+/** Platform Contents that travel with their cover URL only, having no local copy to carry. */
+function coversLeftOut(build: PackExportBuild): number {
+  return build.contents.filter((content) => isPlatform(content.document.source.kind) && content.document.cover === undefined).length;
 }
 
 function notFound(): AmberError {
@@ -349,7 +360,7 @@ export class ContentPackExportService {
         target: destination,
         header: {
           format: CONTENT_PACK_FORMAT,
-          formatVersion: CONTENT_PACK_FORMAT_VERSION,
+          formatVersion: formatVersionOf(build),
           amberVersion: this.options.appVersion,
           encryption: "none",
           createdAt: startedAt,
@@ -377,7 +388,7 @@ export class ContentPackExportService {
         target === undefined
           ? exportFilename(build.contents.length === 1 ? build.contents[0]?.title : undefined, `Amber-${localStamp(startedAt)}`, CONTENT_PACK_FILE_EXTENSION)
           : win32.basename(target.replace(/\\/g, "/"));
-      job.dto.result = { fileName, sizeBytes: written.sizeBytes, contents: build.contents.length };
+      job.dto.result = { fileName, sizeBytes: written.sizeBytes, contents: build.contents.length, coversLeftOut: coversLeftOut(build) };
       if (target === undefined) {
         const expiresAt = this.now() + CONTENT_PACK_EXPORT_TTL_MS;
         job.file = serverFile;

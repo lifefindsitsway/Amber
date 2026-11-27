@@ -5,11 +5,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openPackFile, TarPackWriter } from "../../../../src/server/adapters/backup/pack-archive.ts";
 import { readTarHeader, tarHeader } from "../../../../src/server/adapters/backup/pack-tar.ts";
-import { CONTENT_PACK_FORMAT_VERSION } from "../../../../src/server/domain/content-pack/document.ts";
+import { CONTENT_PACK_BASE_FORMAT_VERSION, CONTENT_PACK_FORMAT_VERSION, type ContentDocument } from "../../../../src/server/domain/content-pack/document.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { CONTENT_PACK_DOCUMENT_MAX_BYTES, CONTENT_PACK_DOCUMENTS_TOTAL_MAX_BYTES, CONTENT_PACK_ENTRIES_MAX } from "../../../../src/shared/defaults.ts";
 import {
   ANIMATED_WEBP,
+  COVER_HEIGHT,
+  COVER_WEBP,
+  COVER_WIDTH,
   entriesOf,
   headerOf,
   rawEntriesOf,
@@ -355,5 +358,150 @@ describe("content pack archive", () => {
     const file = read.imageFiles.get("contents/2/figures/1.webp") ?? "";
     expect(readFileSync(file)).toEqual(Buffer.from(build.contents[1]?.images[1]?.bytes ?? []));
     expect(readdirSync(imageDir)).toHaveLength(1);
+  });
+
+  describe("cover images", () => {
+    type Cover = NonNullable<ContentDocument["cover"]>;
+    const coverOf = (build: ReturnType<typeof sampleBuild>["build"], index = 0): Cover => build.contents[index]?.document.cover as Cover;
+
+    /** A pack whose first Content carries a cover, after `tamper` changed its build or raw entries. */
+    async function coverRefusal(
+      read: "preview" | "full",
+      tamper: { build?: (build: ReturnType<typeof sampleBuild>["build"]) => void; entries?: (entries: RawEntry[]) => void },
+      count = 1,
+    ): Promise<{ code: string; details?: Record<string, unknown> }> {
+      const dir = tempDir();
+      const { build, media } = sampleBuild(dir, { count, cover: () => true });
+      tamper.build?.(build);
+      const entries = rawEntriesOf(build, media);
+      tamper.entries?.(entries);
+      const path = writeRaw(dir, entries);
+      if (read === "preview") return refusal(() => openPackFile(path).readDocuments(never));
+      const documents = await openPackFile(path).readDocuments(never);
+      return refusal(() => openPackFile(path).readAll(documents.digests, new Map(), () => undefined, never));
+    }
+
+    function patchHeader(entries: RawEntry[], patch: (header: Record<string, unknown>) => void): void {
+      const header = JSON.parse(Buffer.from(entries[0]?.bytes ?? []).toString()) as Record<string, unknown>;
+      patch(header);
+      entries[0] = { name: "header.json", bytes: Buffer.from(JSON.stringify(header)) };
+    }
+
+    it("round-trips a version 2 pack: the cover entry beside its document, checked and handed back", async () => {
+      const dir = tempDir();
+      const { build } = sampleBuild(dir, { count: 2, cover: (index) => index === 1 });
+      const target = join(dir, "out.amberpack");
+      await writeSamplePack(target, build);
+      const source = openPackFile(target);
+      const documents = await source.readDocuments(never);
+      expect(documents.header.formatVersion).toBe(CONTENT_PACK_FORMAT_VERSION);
+      expect(documents.contents[0]?.document.cover).toEqual({ entry: "contents/1/cover.webp", width: COVER_WIDTH, height: COVER_HEIGHT, bytes: COVER_WEBP.length, sha256: sha256(COVER_WEBP) });
+      expect(documents.contents[1]?.document.cover).toBeUndefined();
+      const read = await source.readAll(documents.digests, new Map(), () => undefined, never, { keepImages: new Set(["contents/1/cover.webp"]) });
+      expect([...read.images.keys()]).toEqual(["contents/1/cover.webp"]);
+      expect(Buffer.from(read.images.get("contents/1/cover.webp") ?? [])).toEqual(Buffer.from(COVER_WEBP));
+    });
+
+    it("still reads a version 1 pack without covers", async () => {
+      const dir = tempDir();
+      const { build } = sampleBuild(dir);
+      const target = join(dir, "v1.amberpack");
+      await writeSamplePack(target, build);
+      expect((await openPackFile(target).readDocuments(never)).header.formatVersion).toBe(CONTENT_PACK_BASE_FORMAT_VERSION);
+    });
+
+    it("refuses a cover in a version 1 document", async () => {
+      expect(await coverRefusal("preview", { entries: (entries) => patchHeader(entries, (header) => (header["formatVersion"] = CONTENT_PACK_BASE_FORMAT_VERSION)) })).toEqual({
+        code: "backup_invalid.pack_entry",
+        details: { reason: "cover", entry: "contents/1/content.json" },
+      });
+    });
+
+    it("refuses a cover entry the pack does not hold", async () => {
+      const refused = await coverRefusal("preview", {
+        build: (build) => {
+          const content = build.contents[0] as (typeof build.contents)[0];
+          content.images = content.images.filter((image) => image.entry !== "contents/1/cover.webp");
+        },
+      });
+      expect(refused).toEqual({ code: "backup_invalid.pack_entry", details: { reason: "missing", entry: "contents/1/cover.webp" } });
+    });
+
+    it("refuses a cover entry held twice", async () => {
+      const refused = await coverRefusal("preview", {
+        entries: (entries) => {
+          const at = entries.findIndex((entry) => entry.name === "contents/1/cover.webp");
+          entries.splice(at, 0, entries[at] as RawEntry);
+        },
+      });
+      expect(refused).toEqual({ code: "backup_invalid.pack_entry", details: { reason: "duplicate", entry: "contents/1/cover.webp" } });
+    });
+
+    it("refuses a cover that points into another Content's directory", async () => {
+      // Both covers exist; the first document names the second one's.
+      const refused = await coverRefusal(
+        "preview",
+        {
+          build: (build) => {
+            const first = build.contents[0]?.document as ContentDocument;
+            first.cover = { ...coverOf(build, 1) };
+          },
+        },
+        2,
+      );
+      expect(refused).toEqual({ code: "backup_invalid.pack_entry", details: { reason: "cover", entry: "contents/1/content.json" } });
+    });
+
+    it.each([
+      ["sha256", (cover: Cover) => ({ ...cover, sha256: "0".repeat(64) })],
+      ["byte count", (cover: Cover) => ({ ...cover, bytes: cover.bytes + 1 })],
+    ])("refuses a cover whose declared %s differs from the entry", async (_label, change) => {
+      const refused = await coverRefusal("preview", {
+        build: (build) => {
+          const document = build.contents[0]?.document as ContentDocument;
+          document.cover = change(coverOf(build));
+        },
+      });
+      expect(refused).toEqual({ code: "backup_invalid.pack_entry", details: { reason: "digest", entry: "contents/1/cover.webp" } });
+    });
+
+    it.each([
+      ["width", (cover: Cover) => ({ ...cover, width: cover.width + 1 })],
+      ["height", (cover: Cover) => ({ ...cover, height: cover.height - 1 })],
+    ])("refuses a cover whose declared %s differs from the image (found by the full read)", async (_label, change) => {
+      const refused = await coverRefusal("full", {
+        build: (build) => {
+          const document = build.contents[0]?.document as ContentDocument;
+          document.cover = change(coverOf(build));
+        },
+      });
+      expect(refused).toEqual({ code: "backup_invalid.pack_entry", details: { reason: "digest", entry: "contents/1/cover.webp" } });
+    });
+
+    it("refuses a cover that fails the structural WebP check (animated) as pack_image", async () => {
+      const refused = await coverRefusal("full", {
+        build: (build) => {
+          const content = build.contents[0] as (typeof build.contents)[0];
+          content.images = content.images.map((image) => (image.entry === "contents/1/cover.webp" ? { entry: image.entry, bytes: ANIMATED_WEBP } : image));
+          content.document.cover = { ...coverOf(build), bytes: ANIMATED_WEBP.length, sha256: sha256(ANIMATED_WEBP) };
+        },
+      });
+      expect(refused).toEqual({ code: "backup_invalid.pack_image", details: { entry: "contents/1/cover.webp" } });
+    });
+
+    it("never decodes a cover: damaged picture data inside a well-formed WebP passes the structural check", async () => {
+      const dir = tempDir();
+      const { build, media } = sampleBuild(dir, { cover: () => true });
+      const damaged = Buffer.from(COVER_WEBP);
+      // Past the frame header: the compressed picture itself, which only a decoder would read.
+      for (let at = 40; at < damaged.length - 8; at += 1) damaged[at] = 0xff;
+      const content = build.contents[0] as (typeof build.contents)[0];
+      content.images = content.images.map((image) => (image.entry === "contents/1/cover.webp" ? { entry: image.entry, bytes: damaged } : image));
+      content.document.cover = { ...coverOf(build), sha256: sha256(damaged) };
+      const path = writeRaw(dir, rawEntriesOf(build, media));
+      const documents = await openPackFile(path).readDocuments(never);
+      const read = await openPackFile(path).readAll(documents.digests, new Map(), () => undefined, never, { keepImages: new Set(["contents/1/cover.webp"]) });
+      expect(Buffer.from(read.images.get("contents/1/cover.webp") ?? [])).toEqual(damaged);
+    });
   });
 });

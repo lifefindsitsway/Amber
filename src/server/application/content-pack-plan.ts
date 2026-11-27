@@ -1,6 +1,7 @@
 import { monotonicFactory } from "ulid";
 import { packContentDecisionSchema, type PackContentDiff, type PackContentResult } from "../../shared/dto/content-pack.ts";
 import { originOf } from "../domain/content-pack/identity.ts";
+import { isPlatform } from "../domain/platform.ts";
 import { amberError, appError, isAmberError } from "../domain/errors.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -27,12 +28,14 @@ import {
   type FigureFields,
   type NoteFields,
 } from "./content-pack-preview.ts";
-import { checkTarget, choicesOf, failedResult, skippedResult, writePackContent, type ParsedDecision, type TargetSnapshot } from "./content-pack-write.ts";
+import { checkTarget, choicesOf, failedResult, skippedResult, writePackContent, type PackSourceLinks, type ParsedDecision, type TargetSnapshot } from "./content-pack-write.ts";
 
 export interface ContentPackEngineOptions {
   mode: "server" | "local";
   repository: Repository;
   collections: PackCollectionsEngine;
+  /** Checks the source link of a carried platform Content against its platform's rules before it is stored. */
+  sourceLinks?: PackSourceLinks;
   logger?: Logger;
   /** New local ids (ULIDs: sentence ids must be). */
   newId?: () => string;
@@ -232,6 +235,11 @@ export function createContentPackEngine(options: ContentPackEngineOptions): Cont
           media.push(...plans);
           if (decision.figures) for (const figure of analysis.figures) if (figure.state === "new") imageEntries.add(figure.pack.entry);
           for (const speaker of speakersToCreate(analysis)) if (speaker.pack.avatar !== undefined) imageEntries.add(speaker.pack.avatar.entry);
+          // A merge target that has a cover keeps it, so the carried one is not even read back.
+          const cover = document.cover;
+          if (cover !== undefined && isPlatform(document.source.kind) && (target === undefined || scope.contentCovers.get(owner, target.id) === undefined)) {
+            imageEntries.add(cover.entry);
+          }
 
           const rememberMerge = target !== undefined && originOf(target) !== document.key;
           hand(target === undefined ? "import" : "merge", { contentId, isNew: target === undefined, ...(target === undefined ? {} : { snapshot }), rememberMerge, media: plans });
@@ -258,6 +266,7 @@ export function createContentPackEngine(options: ContentPackEngineOptions): Cont
             media: memo.media,
             images: inputs.images,
             placed: inputs.media,
+            ...(options.sourceLinks === undefined ? {} : { sourceLinks: options.sourceLinks }),
             newId,
             now: inputs.now,
           }),

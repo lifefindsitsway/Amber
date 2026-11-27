@@ -10,12 +10,20 @@ import type { MediaAsset } from "../../../src/server/domain/media-asset.ts";
 import { IMPORTED_ORIGINALS_DIR_PREFIX } from "../../../src/shared/backup-names.ts";
 import { CONTENT_PACK_PREVIEW_TTL_MS } from "../../../src/shared/defaults.ts";
 import type { ContentPackImportDecisions } from "../../../src/shared/dto/content-pack.ts";
-import { sampleBuild, sha256, writeSamplePack, type SampleMedia } from "../../fixtures/content-pack/pack.ts";
+import { CONTENT_PACK_BASE_FORMAT_VERSION, CONTENT_PACK_COVER_FORMAT_VERSION, CONTENT_PACK_FORMAT_VERSION } from "../../../src/server/domain/content-pack/document.ts";
+import type { PackExportBuild } from "../../../src/server/application/content-pack-engine.ts";
+import type { ContentSource } from "../../../src/server/domain/content.ts";
+import type { PackContentDecision, PackPreviewContent } from "../../../src/shared/dto/content-pack.ts";
+import { addPlatformContent, bareSelection, NO_HOOKS, openLibrary, putCover, type Library } from "../../fixtures/content-pack/library.ts";
+import { AVATAR_WEBP, COVER_WEBP, rawEntriesOf, rawTar, sampleBuild, sha256, writeSamplePack, type SampleMedia } from "../../fixtures/content-pack/pack.ts";
+import { countRows } from "../../tools/sqlite.ts";
 import { createEnv, principal, until, type Env, type EngineScript } from "../../fixtures/content-pack/services.ts";
 
 const envs: Env[] = [];
+const libraries: Library[] = [];
 afterEach(() => {
   for (const env of envs.splice(0)) env.close();
+  for (const library of libraries.splice(0)) library.close();
 });
 
 const alice = principal("alice");
@@ -724,3 +732,190 @@ describe("ContentPackImportService.recover (T07)", () => {
     expect(existsSync(file.tempPath)).toBe(false);
   });
 });
+
+describe("ContentPackImportService over a library: covers and source links", () => {
+  const never = new AbortController().signal;
+  const bilibili = (id: string): ContentSource => ({ kind: "bilibili", platformContentId: id, sourceUrl: `https://www.bilibili.com/video/${id}` });
+  const XHS_NOTE = "0123456789abcdef01234567";
+  const XHS_OTHER = "89abcdef0123456789abcdef";
+  /** A share link with its access parameters, as the platform hands it out (the token is a placeholder). */
+  const XHS_LINK = `https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=TESTONLY_xxxxtok&xsec_source=pc_feed`;
+
+  function library(): Library {
+    const opened = openLibrary();
+    libraries.push(opened);
+    return opened;
+  }
+
+  function environment(): Env {
+    const env = createEnv();
+    envs.push(env);
+    return env;
+  }
+
+  let packs = 0;
+  /** Alice's `contentIds` on `source` as a pack file, its documents changed by `tamper` first. */
+  async function packOf(env: Env, source: Library, contentIds: readonly string[], tamper?: (build: PackExportBuild) => void): Promise<string> {
+    const build = await source.engine.buildExport("alice", bareSelection(contentIds), NO_HOOKS);
+    tamper?.(build);
+    packs += 1;
+    const path = join(env.outside, `pack-${packs}.amberpack`);
+    await writeSamplePack(path, build);
+    return path;
+  }
+
+  const importAll = (item: PackPreviewContent): PackContentDecision => ({ key: item.key, action: "import", revisions: true, figures: true, notes: false, mediaKeys: [] });
+  const mergeSuggested = (item: PackPreviewContent): PackContentDecision => ({ ...importAll(item), action: "merge", ...(item.diff.targetContentId === undefined ? {} : { targetContentId: item.diff.targetContentId }) });
+
+  /** Previews `pack` into `target` and commits `decide` for every Content; returns the finished job. */
+  async function importInto(env: Env, target: Library, pack: string, decide: (item: PackPreviewContent) => PackContentDecision = importAll) {
+    const service = env.imports("local", { repository: target.repository, engine: target.engine });
+    const jobId = await previewed(service, env, pack);
+    const preview = service.get(alice, jobId).preview;
+    await service.commit(alice, jobId, { contents: (preview?.contents ?? []).map(decide), collections: [] });
+    const job = await settled(service, jobId);
+    expect(job.status).toBe("finished");
+    return { job, preview };
+  }
+
+  const coverOf = (lib: Library, contentId: string) => lib.repository.withTransaction((scope) => scope.contentCovers.get("alice", contentId));
+  const contentOf = (lib: Library, contentId: string) => lib.repository.withTransaction((scope) => scope.contents.get("alice", contentId));
+
+  it("previews and imports version 1 and version 2 packs, and refuses a newer format as pack_newer", async () => {
+    const env = environment();
+    const a = library();
+    const covered = addPlatformContent(a, "alice", bilibili("BV1Ver20c7mA"));
+    putCover(a, "alice", covered, COVER_WEBP);
+    const bare = addPlatformContent(a, "alice", bilibili("BV1Ver10c7mB"));
+    const b = library();
+    for (const [contentId, version] of [
+      [covered, CONTENT_PACK_COVER_FORMAT_VERSION],
+      [bare, CONTENT_PACK_BASE_FORMAT_VERSION],
+    ] as const) {
+      const { job, preview } = await importInto(env, b, await packOf(env, a, [contentId]));
+      expect(preview?.pack.formatVersion).toBe(version);
+      expect(job.result?.contents.map((content) => content.status)).toEqual(["imported"]);
+    }
+
+    // A pack from a later format: refused before its documents are believed.
+    const { build, media } = sampleBuild(env.outside, { cover: () => true });
+    const entries = rawEntriesOf(build, media);
+    const header = JSON.parse(Buffer.from(entries[0]?.bytes ?? []).toString()) as Record<string, unknown>;
+    entries[0] = { name: "header.json", bytes: Buffer.from(JSON.stringify({ ...header, formatVersion: CONTENT_PACK_FORMAT_VERSION + 1 })) };
+    const newer = join(env.outside, "newer.amberpack");
+    writeFileSync(newer, rawTar(entries));
+    const service = env.imports("local", { repository: b.repository, engine: b.engine });
+    const { jobId } = await service.startFromFile(alice, { grant: env.grant(newer, "pack_input") });
+    await until(() => service.get(alice, jobId).status !== "previewing");
+    expect(service.get(alice, jobId)).toMatchObject({ status: "failed", error: { code: "invalid_request.pack_newer" } });
+  });
+
+  it("refuses at preview a version 1 pack whose document carries a cover", async () => {
+    const env = environment();
+    const { build, media } = sampleBuild(env.outside, { cover: () => true });
+    const entries = rawEntriesOf(build, media);
+    const header = JSON.parse(Buffer.from(entries[0]?.bytes ?? []).toString()) as Record<string, unknown>;
+    entries[0] = { name: "header.json", bytes: Buffer.from(JSON.stringify({ ...header, formatVersion: CONTENT_PACK_BASE_FORMAT_VERSION })) };
+    const pack = join(env.outside, "v1-cover.amberpack");
+    writeFileSync(pack, rawTar(entries));
+    const service = env.imports();
+    const { jobId } = await service.startFromFile(alice, { grant: env.grant(pack, "pack_input") });
+    await until(() => service.get(alice, jobId).status !== "previewing");
+    expect(service.get(alice, jobId)).toMatchObject({ status: "failed", error: { code: "backup_invalid.pack_entry", details: { reason: "cover" } } });
+  });
+
+  it("gives a new Content the carried cover, version 1, in the transaction that creates it", async () => {
+    const env = environment();
+    const a = library();
+    const covered = addPlatformContent(a, "alice", bilibili("BV1New10c7mA"), { coverUrl: "https://i0.hdslb.com/bfs/archive/new-a.jpg" });
+    putCover(a, "alice", covered, COVER_WEBP);
+    const pack = await packOf(env, a, [covered]);
+
+    const b = library();
+    const { job } = await importInto(env, b, pack);
+    const imported = job.result?.contents[0]?.contentId ?? "";
+    expect(job.result?.contents[0]?.status).toBe("imported");
+    const cover = coverOf(b, imported);
+    expect(Buffer.from(cover?.bytes ?? [])).toEqual(Buffer.from(COVER_WEBP));
+    expect(cover).toMatchObject({ version: 1, sha256: sha256(COVER_WEBP) });
+    expect(contentOf(b, imported)).toMatchObject({ coverImageVersion: 1, coverUrl: "https://i0.hdslb.com/bfs/archive/new-a.jpg" });
+
+    // A cover that fails at the commit takes the new Content with it: the two stand or fall together.
+    const c = library();
+    const source = openPackFile(pack);
+    const documents = await source.readDocuments(never);
+    const analysed = c.engine.analyzeImport("alice", documents);
+    const prepared = c.engine.prepareImport("alice", documents, analysed.state, { contents: analysed.contents.map(importAll), collections: [] });
+    expect([...prepared.imageEntries]).toEqual(["contents/0/cover.webp"]);
+    const item = prepared.contents[0];
+    if (item === undefined) throw new Error("nothing prepared");
+    const failed = c.engine.commitContent("alice", documents, item, { images: new Map([["contents/0/cover.webp", AVATAR_WEBP]]), media: new Map(), now: 1 });
+    expect(failed).toMatchObject({ status: "failed", error: { code: "backup_invalid.pack_entry" } });
+    expect(countRows(c.db, "content")).toBe(0);
+    expect(countRows(c.db, "content_cover_image")).toBe(0);
+  });
+
+  it("merging never replaces a local cover, and gives one to a Content that has none", async () => {
+    const env = environment();
+    const a = library();
+    const first = addPlatformContent(a, "alice", bilibili("BV1Mrg10c7mA"));
+    const second = addPlatformContent(a, "alice", bilibili("BV1Mrg20c7mB"));
+    putCover(a, "alice", first, COVER_WEBP);
+    putCover(a, "alice", second, COVER_WEBP);
+    const pack = await packOf(env, a, [first, second]);
+
+    const b = library();
+    const kept = addPlatformContent(b, "alice", bilibili("BV1Mrg10c7mA"));
+    const filled = addPlatformContent(b, "alice", bilibili("BV1Mrg20c7mB"));
+    putCover(b, "alice", kept, AVATAR_WEBP);
+    const before = coverOf(b, kept);
+
+    const { job } = await importInto(env, b, pack, mergeSuggested);
+    expect(job.result?.contents.map((content) => [content.status, content.contentId])).toEqual([
+      ["merged", kept],
+      ["merged", filled],
+    ]);
+    const after = coverOf(b, kept);
+    expect(Buffer.from(after?.bytes ?? [])).toEqual(Buffer.from(AVATAR_WEBP));
+    expect(after?.version).toBe(before?.version);
+    expect(contentOf(b, kept)?.coverImageVersion).toBe(before?.version);
+    const added = coverOf(b, filled);
+    expect(Buffer.from(added?.bytes ?? [])).toEqual(Buffer.from(COVER_WEBP));
+    expect(added?.version).toBe(1);
+  });
+
+  it("checks carried source links against their platform: a valid one stays as it is, anything else becomes the identity's canonical link", async () => {
+    const env = environment();
+    const a = library();
+    const ids = {
+      foreignHost: addPlatformContent(a, "alice", bilibili("BV1Src10c7mA")),
+      otherVideo: addPlatformContent(a, "alice", bilibili("BV1Src20c7mB")),
+      withToken: addPlatformContent(a, "alice", { kind: "xiaohongshu", platformContentId: XHS_NOTE, sourceUrl: XHS_LINK }),
+      script: addPlatformContent(a, "alice", { kind: "xiaohongshu", platformContentId: XHS_OTHER, sourceUrl: `https://www.xiaohongshu.com/explore/${XHS_OTHER}` }),
+      untouched: addPlatformContent(a, "alice", { kind: "douyin", platformContentId: "7300000000000000001", sourceUrl: "https://www.douyin.com/video/7300000000000000001" }),
+    };
+    const forged: Record<number, string> = {
+      0: "https://evil.example.com/video/BV1Src10c7mA",
+      1: "https://www.bilibili.com/video/BV1Oth10c7mZ",
+      3: "javascript:alert(1)",
+    };
+    const pack = await packOf(env, a, Object.values(ids), (build) => {
+      build.contents.forEach((content, index) => {
+        const url = forged[index];
+        if (url !== undefined) content.document.source.sourceUrl = url;
+      });
+    });
+
+    const b = library();
+    const { job } = await importInto(env, b, pack);
+    const stored = (job.result?.contents ?? []).map((content) => contentOf(b, content.contentId ?? "")?.source.sourceUrl);
+    expect(stored).toEqual([
+      "https://www.bilibili.com/video/BV1Src10c7mA",
+      "https://www.bilibili.com/video/BV1Src20c7mB",
+      XHS_LINK,
+      `https://www.xiaohongshu.com/explore/${XHS_OTHER}`,
+      "https://www.douyin.com/video/7300000000000000001",
+    ]);
+  });
+});
+

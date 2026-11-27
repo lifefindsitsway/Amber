@@ -13,7 +13,19 @@ import type {
 import type { SpeakerAvatarMime } from "../../shared/dto/speaker.ts";
 import { isComparisonRevision } from "../domain/comparison-revision.ts";
 import { displayTitle, type Content } from "../domain/content.ts";
-import type { CollectionsDocument, ContentDocument, PackFigure, PackMedia, PackNote, PackRevision, PackSegment, PackSpeaker, RevisionDocument } from "../domain/content-pack/document.ts";
+import {
+  PACK_COVER_LIMITS,
+  packCoverEntry,
+  type CollectionsDocument,
+  type ContentDocument,
+  type PackFigure,
+  type PackMedia,
+  type PackNote,
+  type PackRevision,
+  type PackSegment,
+  type PackSpeaker,
+  type RevisionDocument,
+} from "../domain/content-pack/document.ts";
 import { packGenerationOf } from "../domain/content-pack/generation.ts";
 import { originOf, speakerOriginOf } from "../domain/content-pack/identity.ts";
 import { amberError } from "../domain/errors.ts";
@@ -224,6 +236,7 @@ interface ReadContent {
   document: Omit<ContentDocument, "speakers" | "media">;
   speakers: PackSpeaker[];
   revisions: Array<{ entry: string; document: RevisionDocument }>;
+  /** The local cover copy and figure images, in archive order. */
   figureImages: Array<{ entry: string; bytes: Uint8Array }>;
   avatars: PendingAvatar[];
   media: PendingMedia[];
@@ -341,6 +354,31 @@ async function packAvatar(avatar: PendingAvatar, hooks: PackExportBuildHooks): P
   return inspectPackAvatar(webp, "image/webp").ok ? { bytes: webp, mime: "image/webp" } : undefined;
 }
 
+/**
+ * A platform Content's local cover copy as the pack carries it, beside the Content's document.
+ * Every stored cover was made by Amber, so one that fails the pack's own check means a damaged
+ * row: the cover is left out and the Content travels with its cover URL alone.
+ */
+function packCover(
+  scope: RepositoryScope,
+  owner: string,
+  content: Content,
+  entryOfDocument: string,
+  logger: Logger | undefined,
+): { entry: string; bytes: Uint8Array; document: NonNullable<ContentDocument["cover"]> } | undefined {
+  if (isLocalSource(content)) return undefined;
+  const stored = scope.contentCovers.get(owner, content.id);
+  if (stored === undefined) return undefined;
+  const checked = inspectPackWebp(stored.bytes, PACK_COVER_LIMITS);
+  if (!checked.ok) {
+    logger?.warn("content_pack.cover_left_out", { contentId: content.id });
+    return undefined;
+  }
+  const entry = packCoverEntry(entryOfDocument);
+  const sha256 = createHash("sha256").update(stored.bytes).digest("hex");
+  return { entry, bytes: stored.bytes, document: { entry, width: checked.width, height: checked.height, bytes: stored.bytes.length, sha256 } };
+}
+
 function readContent(scope: RepositoryScope, mode: RunMode, owner: string, picked: ContentPackSelection["contents"][number], index: number, logger: Logger | undefined): ReadContent {
   const content = ownedContent(scope, owner, picked.contentId);
   const contentKey = originOf(content);
@@ -456,8 +494,11 @@ function readContent(scope: RepositoryScope, mode: RunMode, owner: string, picke
     }
   }
 
-  const figures: PackFigure[] = [];
   const figureImages: Array<{ entry: string; bytes: Uint8Array }> = [];
+  const cover = packCover(scope, owner, content, `${prefix}/content.json`, logger);
+  if (cover !== undefined) figureImages.push({ entry: cover.entry, bytes: cover.bytes });
+
+  const figures: PackFigure[] = [];
   if (picked.figures) {
     for (const figure of scope.figures.listByContent(owner, content.id)) {
       if (figure.deletedAt !== undefined) continue;
@@ -543,6 +584,7 @@ function readContent(scope: RepositoryScope, mode: RunMode, owner: string, picke
       ...(content.customTitle === undefined ? {} : { customTitle: content.customTitle }),
       // Only a platform Content has a cover on the web; a local file's is never carried.
       ...(content.coverUrl === undefined || isLocalSource(content) ? {} : { coverUrl: content.coverUrl }),
+      ...(cover === undefined ? {} : { cover: cover.document }),
       ...(content.durationMs === undefined ? {} : { durationMs: content.durationMs }),
       ...(content.publishedAt === undefined ? {} : { publishedAt: content.publishedAt }),
       ...(content.rawLanguage === undefined ? {} : { rawLanguage: content.rawLanguage }),

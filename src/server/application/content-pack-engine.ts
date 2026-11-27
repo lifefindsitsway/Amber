@@ -44,7 +44,7 @@ export interface PackExportBuild {
     entry: string;
     document: ContentDocument;
     revisions: Array<{ entry: string; document: RevisionDocument }>;
-    /** Figure images and speaker photos, already passing the pack's structural checks. */
+    /** The cover copy, figure images and speaker photos, already passing the pack's structural checks. */
     images: Array<{ entry: string; bytes: Uint8Array }>;
     media: PackExportMedia[];
   }>;
@@ -104,7 +104,7 @@ export interface PreparedPackImport {
   contents: PreparedPackContent[];
   /** Media entries to stage during the single read. */
   media: PackImportMediaPlan[];
-  /** Image entries (figures, photos) whose bytes the commits need. */
+  /** Image entries (figures, photos, covers) whose bytes the commits need. */
   imageEntries: ReadonlySet<string>;
   /** Contents refused before any read (target in the trash, busy, …), already as results. */
   refused: PackContentResult[];

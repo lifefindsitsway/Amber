@@ -91,6 +91,19 @@ describe("ImportPackDialog preview", () => {
     expect(screen.queryByText(/[0-9A-Z]{20,}/)).toBeNull();
   });
 
+  it("says platform source links may carry access parameters, only when the pack holds a platform Content", async () => {
+    routes("server", () => job({ preview: { ...PREVIEW, contents: [item("note", { sourceKind: "xiaohongshu" }), item("file")] } }));
+    const view = renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
+    await screen.findByTestId("pack-import-preview");
+    expect(screen.getByTestId("pack-import-source-links").textContent).toBe("平台内容的来源链接按包里的原样导入，可能带有平台的访问参数（例如小红书链接里的访问令牌）。");
+    view.unmount();
+
+    routes("server", () => job());
+    renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
+    await screen.findByTestId("pack-import-preview");
+    expect(screen.queryByTestId("pack-import-source-links")).toBeNull();
+  });
+
   it("blocks 「开始导入」 until a target is chosen and the over-limit category is unticked, then sends the decisions", async () => {
     let state = job();
     const commits: RecordedCall[] = [];

@@ -12,14 +12,17 @@ import {
 import type { SpeakerAvatarMime } from "../../../shared/dto/speaker.ts";
 import {
   collectionsDocumentSchema,
+  CONTENT_PACK_COVER_FORMAT_VERSION,
   CONTENT_PACK_FORMAT,
   CONTENT_PACK_FORMAT_VERSION,
   contentDocumentSchema,
   contentPackHeaderSchema,
   PACK_COLLECTIONS_ENTRY,
+  PACK_COVER_LIMITS,
   PACK_ENTRY_NAME,
   PACK_HEADER_ENTRY,
   PACK_MANIFEST_ENTRY,
+  packCoverEntry,
   packManifestSchema,
   revisionDocumentSchema,
   type CollectionsDocument,
@@ -90,6 +93,8 @@ export const PACK_ENTRY_PROBLEMS = [
   "documents_too_large",
   /** A media file whose leading bytes are not the container its document declares. */
   "container",
+  /** A cover outside its own Content's directory, or in a format version that has no covers. */
+  "cover",
 ] as const;
 export type PackEntryProblem = (typeof PACK_ENTRY_PROBLEMS)[number];
 
@@ -113,7 +118,7 @@ const CHUNK_BYTES = 1024 * 1024;
 /** Zero padding a tar writer may leave after the end marker (npm `tar` pads to 10 KiB records). */
 const TRAILING_MAX_BYTES = 1024 * 1024;
 
-type EntryKind = "header" | "collections" | "manifest" | "content" | "revision" | "avatar" | "figure" | "media";
+type EntryKind = "header" | "collections" | "manifest" | "content" | "cover" | "revision" | "avatar" | "figure" | "media";
 
 function kindOf(name: string): EntryKind {
   if (name === PACK_HEADER_ENTRY) return "header";
@@ -121,6 +126,7 @@ function kindOf(name: string): EntryKind {
   if (name === PACK_MANIFEST_ENTRY) return "manifest";
   if (name.startsWith("media/")) return "media";
   if (name.endsWith("/content.json")) return "content";
+  if (name.endsWith("/cover.webp")) return "cover";
   if (name.includes("/revisions/")) return "revision";
   if (name.includes("/avatars/")) return "avatar";
   return "figure";
@@ -376,6 +382,8 @@ interface References {
   avatars: Map<string, SpeakerAvatarMime>;
   /** Figure entry → declared bytes and SHA-256. */
   figures: Map<string, { bytes: number; sha256: string }>;
+  /** Cover entry → what its document declares of it. */
+  covers: Map<string, { width: number; height: number; bytes: number; sha256: string }>;
 }
 
 function addReferences(refs: References, document: ContentDocument): void {
@@ -384,6 +392,10 @@ function addReferences(refs: References, document: ContentDocument): void {
   }
   for (const figure of document.figures) {
     refs.figures.set(figure.entry, { bytes: figure.image.bytes, sha256: figure.image.sha256 });
+  }
+  if (document.cover !== undefined) {
+    const { entry, ...declared } = document.cover;
+    refs.covers.set(entry, declared);
   }
 }
 
@@ -415,6 +427,18 @@ function crossCheck(header: ContentPackHeader, documents: PackDocuments, manifes
     }
     for (const speaker of content.document.speakers) {
       if (speaker.avatar !== undefined) use(speaker.avatar.entry, "avatar");
+    }
+    const cover = content.document.cover;
+    if (cover !== undefined) {
+      // A version 1 reader would skip the field and drop the image unseen; a cover elsewhere
+      // than beside its own document could belong to, or be taken for, another Content's.
+      if (header.formatVersion < CONTENT_PACK_COVER_FORMAT_VERSION || cover.entry !== packCoverEntry(item.entry)) {
+        throw packEntryError("cover", item.entry);
+      }
+      use(cover.entry, "cover");
+      if (declared.get(cover.entry) !== cover.bytes || manifestDigests.get(cover.entry) !== cover.sha256) {
+        throw packEntryError("digest", cover.entry);
+      }
     }
     for (const figure of content.document.figures) {
       use(figure.entry, "figure");
@@ -541,7 +565,7 @@ export class PackFileSource implements ContentPackSource {
           throw packChanged();
         }
         // Each content document precedes its images, so the references are known when they are read.
-        const refs: References = { avatars: new Map(), figures: new Map() };
+        const refs: References = { avatars: new Map(), figures: new Map(), covers: new Map() };
         const seen = new Set<string>([PACK_HEADER_ENTRY]);
         const read = new Map<string, StagedPackFile>();
         const images = new Map<string, Uint8Array>();
@@ -563,7 +587,7 @@ export class PackFileSource implements ContentPackSource {
             }
             read.set(declared.name, { sizeBytes: declared.size, sha256 });
             await yieldToLoop();
-          } else if (kind === "avatar" || kind === "figure") {
+          } else if (kind === "avatar" || kind === "figure" || kind === "cover") {
             const bytes = await this.readImage(cursor, declared, kind, refs);
             read.set(declared.name, { sizeBytes: declared.size, sha256: sha256Hex(bytes) });
             if (options.keepImages === undefined || options.keepImages.has(declared.name)) {
@@ -620,13 +644,23 @@ export class PackFileSource implements ContentPackSource {
     }
   }
 
-  private async readImage(cursor: Cursor, declared: { name: string; size: number }, kind: "avatar" | "figure", refs: References): Promise<Buffer> {
-    const limit = kind === "figure" ? FIGURE_IMAGE_MAX_BYTES : SPEAKER_AVATAR_MAX_BYTES;
+  private async readImage(cursor: Cursor, declared: { name: string; size: number }, kind: "avatar" | "figure" | "cover", refs: References): Promise<Buffer> {
+    const limit = kind === "figure" ? FIGURE_IMAGE_MAX_BYTES : kind === "cover" ? PACK_COVER_LIMITS.maxBytes : SPEAKER_AVATAR_MAX_BYTES;
     if (declared.size > limit) {
       throw packImage(declared.name);
     }
     const bytes = await cursor.readExact(declared.size, declared.name);
-    if (kind === "figure") {
+    if (kind === "cover") {
+      const cover = refs.covers.get(declared.name);
+      const checked = inspectPackWebp(bytes, PACK_COVER_LIMITS);
+      if (!checked.ok) {
+        throw packImage(declared.name);
+      }
+      // Structurally a still WebP, but not the picture its document describes.
+      if (cover === undefined || cover.sha256 !== sha256Hex(bytes) || cover.bytes !== bytes.length || cover.width !== checked.width || cover.height !== checked.height) {
+        throw packEntryError("digest", declared.name);
+      }
+    } else if (kind === "figure") {
       const figure = refs.figures.get(declared.name);
       if (figure === undefined || !inspectPackWebp(bytes).ok || figure.sha256 !== sha256Hex(bytes)) {
         throw packImage(declared.name);

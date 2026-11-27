@@ -136,6 +136,7 @@ export function ImportPreview(props: {
           })}
         </p>
         {props.job.expiresAt === undefined ? null : <p data-testid="pack-import-expires">{t("contentPack.import.expires", { time: formatDateTime(props.job.expiresAt, i18n.language) })}</p>}
+        {preview.contents.some((item) => item.sourceKind !== "local") ? <p data-testid="pack-import-source-links">{t("contentPack.import.sourceLinks")}</p> : null}
       </div>
 
       <section>

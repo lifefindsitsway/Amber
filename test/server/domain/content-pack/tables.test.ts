@@ -15,4 +15,8 @@ describe("content pack table roles", () => {
     expect(tables.filter((name) => !placed.includes(name as never)), "tables without a role").toEqual([]);
     expect(placed.filter((name) => !tables.includes(name)), "roles for tables that do not exist").toEqual([]);
   });
+
+  it("carries a Content's cover copy with the Content", () => {
+    expect(PACK_TABLE_ROLES.carried).toContain("content_cover_image");
+  });
 });

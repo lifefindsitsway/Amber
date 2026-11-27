@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   CONTENT_DESCRIPTION_MAX_CHARS,
+  COVER_IMAGE_MAX_BYTES,
+  COVER_LONG_EDGE_MAX_PX,
   FIGURE_CAPTION_MAX_CHARS,
   IMPORT_BATCH_MAX,
   NOTE_COMMENT_MAX_CHARS,
@@ -11,6 +13,7 @@ import { FIGURE_ANCHOR_SIDES, FIGURE_SOURCES, figureWidthSchema } from "../../..
 import { SPEAKER_AVATAR_MIMES } from "../../../shared/dto/speaker.ts";
 import { CONTENT_SOURCE_KINDS, NOTE_COLORS, NOTE_MARKS, TIMING_FIDELITIES, TRANSCRIPT_KINDS } from "../../../shared/enums.ts";
 import { normalizeSpeakerName } from "../../../shared/speakers.ts";
+import type { PackImageLimits } from "../figure-image.ts";
 
 /**
  * The documents inside a content pack (`.amberpack`, an uncompressed tar). Entries, in order:
@@ -18,6 +21,7 @@ import { normalizeSpeakerName } from "../../../shared/speakers.ts";
  *   header.json                         ContentPackHeader: what the pack holds, every entry with its size
  *   collections.json                    CollectionsDocument
  *   contents/<n>/content.json           ContentDocument
+ *   contents/<n>/cover.webp             the Content's local cover copy (format version 2 on)
  *   contents/<n>/revisions/<m>.json     RevisionDocument, one per carried revision
  *   contents/<n>/avatars/<k>.<ext>      speaker photos
  *   contents/<n>/figures/<k>.webp       figure images
@@ -32,14 +36,34 @@ import { normalizeSpeakerName } from "../../../shared/speakers.ts";
  */
 
 export const CONTENT_PACK_FORMAT = "amber-content-pack";
-export const CONTENT_PACK_FORMAT_VERSION = 1;
+/** The newest format this build reads. */
+export const CONTENT_PACK_FORMAT_VERSION = 2;
+/**
+ * A pack is written in the oldest format that holds what it carries, so a build that predates
+ * covers still reads a pack without any: version 1 unless a cover entry is in it.
+ */
+export const CONTENT_PACK_BASE_FORMAT_VERSION = 1;
+/** The first format whose content documents may name a cover entry. */
+export const CONTENT_PACK_COVER_FORMAT_VERSION = 2;
+
+/** What a carried cover may be: the same bounds a cover made here has. */
+export const PACK_COVER_LIMITS: PackImageLimits = {
+  maxBytes: COVER_IMAGE_MAX_BYTES,
+  maxLongEdge: COVER_LONG_EDGE_MAX_PX,
+  maxPixels: COVER_LONG_EDGE_MAX_PX * COVER_LONG_EDGE_MAX_PX,
+};
+
+/** The one place a Content's cover may sit in a pack: beside its own document. */
+export function packCoverEntry(contentEntry: string): string {
+  return `${contentEntry.slice(0, contentEntry.lastIndexOf("/"))}/cover.webp`;
+}
 
 export const PACK_HEADER_ENTRY = "header.json";
 export const PACK_COLLECTIONS_ENTRY = "collections.json";
 export const PACK_MANIFEST_ENTRY = "manifest.json";
 
 /** Entry names a pack may hold; anything else is refused before it is read. */
-export const PACK_ENTRY_NAME = /^(header\.json|collections\.json|manifest\.json|contents\/\d{1,4}\/content\.json|contents\/\d{1,4}\/revisions\/\d{1,4}\.json|contents\/\d{1,4}\/avatars\/\d{1,4}\.(webp|png|jpg)|contents\/\d{1,4}\/figures\/\d{1,4}\.webp|media\/\d{1,4}\/\d{1,4}\.[a-z0-9]{1,8})$/;
+export const PACK_ENTRY_NAME = /^(header\.json|collections\.json|manifest\.json|contents\/\d{1,4}\/content\.json|contents\/\d{1,4}\/cover\.webp|contents\/\d{1,4}\/revisions\/\d{1,4}\.json|contents\/\d{1,4}\/avatars\/\d{1,4}\.(webp|png|jpg)|contents\/\d{1,4}\/figures\/\d{1,4}\.webp|media\/\d{1,4}\/\d{1,4}\.[a-z0-9]{1,8})$/;
 
 const keySchema = z.string().min(1).max(128);
 const msSchema = z.number().int().nonnegative();
@@ -215,6 +239,14 @@ export const contentDocumentSchema = z
     title: z.string().max(1000).exactOptional(),
     customTitle: z.string().max(1000).exactOptional(),
     coverUrl: z.string().max(4096).exactOptional(),
+    /**
+     * The local cover copy, always `contents/<n>/cover.webp` of this document's own `<n>`; the
+     * cover URL is carried as well. Only in format version 2 and later.
+     */
+    cover: z
+      .object({ entry: entrySchema, width: z.number().int().positive(), height: z.number().int().positive(), bytes: z.number().int().positive(), sha256: sha256Schema })
+      .strict()
+      .exactOptional(),
     durationMs: msSchema.exactOptional(),
     publishedAt: z.number().int().exactOptional(),
     rawLanguage: z.string().max(35).exactOptional(),

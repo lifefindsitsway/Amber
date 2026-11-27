@@ -1036,7 +1036,14 @@ export class ContentPackImportService {
   /** The image bytes one carried Content needs, read from the files `readAll` wrote. */
   private async imagesOf(documents: PackDocuments, key: string, imageFiles: ReadonlyMap<string, string>): Promise<Map<string, Uint8Array>> {
     const document = documents.contents.find((item) => item.document.key === key)?.document;
-    const entries = document === undefined ? [] : [...document.speakers.flatMap((speaker) => (speaker.avatar === undefined ? [] : [speaker.avatar.entry])), ...document.figures.map((figure) => figure.entry)];
+    const entries =
+      document === undefined
+        ? []
+        : [
+            ...document.speakers.flatMap((speaker) => (speaker.avatar === undefined ? [] : [speaker.avatar.entry])),
+            ...document.figures.map((figure) => figure.entry),
+            ...(document.cover === undefined ? [] : [document.cover.entry]),
+          ];
     const images = new Map<string, Uint8Array>();
     for (const entry of entries) {
       const path = imageFiles.get(entry);

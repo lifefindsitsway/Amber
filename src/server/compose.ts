@@ -24,6 +24,7 @@ import { BundledSubtitleFont, bundledReaderFonts, SUBTITLE_FONT_FILE } from "./a
 import { FfmpegMediaIngest } from "./adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { PolicyOutboundHttpClient } from "./adapters/outbound-http/policy-client.ts";
 import { BilibiliAdapter } from "./adapters/platform/bilibili/index.ts";
+import { platformContentUrl } from "./adapters/platform/content-url.ts";
 import { downloadPlatformMedia } from "./adapters/platform/download.ts";
 import { BilibiliQrLogin } from "./adapters/platform/bilibili/qr-login.ts";
 import { YoutubeAdapter } from "./adapters/platform/youtube/index.ts";
@@ -541,6 +542,12 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     mode: config.mode,
     repository,
     collections: createPackCollections({ repository, logger: lateLogger(() => appLogger?.child({ component: "content_pack_collections" })) }),
+    // A carried source link is checked by its platform's own parser; an adapter that is not
+    // registered accepts nothing, so the link falls back to the canonical one.
+    sourceLinks: {
+      parse: (platform, url) => platforms.all.find((adapter) => adapter.kind === platform)?.parse(url) ?? null,
+      canonicalUrl: platformContentUrl,
+    },
     logger: lateLogger(() => appLogger?.child({ component: "content_pack_engine" })),
   });
   // One job per user across export and import; both work in `tmp/content-packs`, which the

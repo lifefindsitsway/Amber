@@ -121,6 +121,7 @@ export function fakeEngine(script: EngineScript = {}): FakeEngine {
         if (action === "skip") continue;
         for (const figure of content.document.figures) images.add(figure.entry);
         for (const speaker of content.document.speakers) if (speaker.avatar !== undefined) images.add(speaker.avatar.entry);
+        if (content.document.cover !== undefined) images.add(content.document.cover.entry);
         for (const item of content.document.media) {
           if (!(decision.mediaKeys ?? []).includes(item.key)) continue;
           const fill = engine.script.fills?.get(item.entry);

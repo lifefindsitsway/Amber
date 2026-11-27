@@ -6,12 +6,16 @@ import { openPackFile } from "../../../src/server/adapters/backup/pack-archive.t
 import { isAmberError } from "../../../src/server/domain/errors.ts";
 import { CONTENT_PACK_EXPORT_TTL_MS } from "../../../src/shared/defaults.ts";
 import type { ContentPackSelection } from "../../../src/shared/dto/content-pack.ts";
-import { sampleBuild } from "../../fixtures/content-pack/pack.ts";
+import { CONTENT_PACK_BASE_FORMAT_VERSION, CONTENT_PACK_COVER_FORMAT_VERSION } from "../../../src/server/domain/content-pack/document.ts";
+import { addPlatformContent, bareSelection, openLibrary, putCover, type Library } from "../../fixtures/content-pack/library.ts";
+import { COVER_HEIGHT, COVER_WEBP, COVER_WIDTH, sampleBuild, sha256 } from "../../fixtures/content-pack/pack.ts";
 import { createEnv, principal, until, type Env } from "../../fixtures/content-pack/services.ts";
 
 const envs: Env[] = [];
+const libraries: Library[] = [];
 afterEach(() => {
   for (const env of envs.splice(0)) env.close();
+  for (const library of libraries.splice(0)) library.close();
 });
 function setup(): Env {
   const env = createEnv();
@@ -239,5 +243,65 @@ describe("ContentPackExportService", () => {
     await until(() => nearlyFull.get(owner, jobId).status !== "running");
     expect(nearlyFull.get(owner, jobId)).toMatchObject({ status: "failed", error: { code: "storage_quota_exceeded" } });
     expect(existsSync(join(env.workDir, "exports", jobId))).toBe(false);
+  });
+});
+
+describe("ContentPackExportService over a library: cover copies", () => {
+  const never = new AbortController().signal;
+  const bilibili = (id: string) => ({ kind: "bilibili" as const, platformContentId: id, sourceUrl: `https://www.bilibili.com/video/${id}` });
+
+  /** Exports `contentIds` of Alice's library to a pack file; returns the finished job and the pack. */
+  async function exportFrom(library: Library, contentIds: readonly string[]) {
+    const env = setup();
+    const service = env.exports("local", { repository: library.repository, engine: library.engine });
+    const target = join(env.outside, "covers.amberpack");
+    const { jobId } = await service.start(alice, { selection: bareSelection(contentIds), grant: env.grant(target, "pack_output") });
+    await until(() => service.get(alice, jobId).status !== "running");
+    const job = service.get(alice, jobId);
+    expect(job.status).toBe("succeeded");
+    return { job, pack: openPackFile(target) };
+  }
+
+  function library(): Library {
+    const opened = openLibrary();
+    libraries.push(opened);
+    return opened;
+  }
+
+  it("writes a local cover beside its document with matching fields, keeps the cover URL, and marks the pack version 2", async () => {
+    const lib = library();
+    const covered = addPlatformContent(lib, "alice", bilibili("BV1Cov41c7mA"), { coverUrl: "https://i0.hdslb.com/bfs/archive/cover-a.jpg" });
+    const bare = addPlatformContent(lib, "alice", bilibili("BV1Bar41c7mB"), { coverUrl: "https://i0.hdslb.com/bfs/archive/cover-b.jpg" });
+    putCover(lib, "alice", covered, COVER_WEBP);
+
+    const { job, pack } = await exportFrom(lib, [covered, bare]);
+    const documents = await pack.readDocuments(never);
+    expect(documents.header.formatVersion).toBe(CONTENT_PACK_COVER_FORMAT_VERSION);
+    const [first, second] = documents.contents;
+    expect(first?.document.cover).toEqual({ entry: "contents/0/cover.webp", width: COVER_WIDTH, height: COVER_HEIGHT, bytes: COVER_WEBP.length, sha256: sha256(COVER_WEBP) });
+    expect(first?.document.coverUrl).toBe("https://i0.hdslb.com/bfs/archive/cover-a.jpg");
+    expect(second?.document.cover).toBeUndefined();
+    expect(second?.document.coverUrl).toBe("https://i0.hdslb.com/bfs/archive/cover-b.jpg");
+    expect(documents.header.entries.map((entry) => entry.name).filter((name) => name.endsWith("/cover.webp"))).toEqual(["contents/0/cover.webp"]);
+    const read = await pack.readAll(documents.digests, new Map(), () => undefined, never, { keepImages: new Set(["contents/0/cover.webp"]) });
+    expect(Buffer.from(read.images.get("contents/0/cover.webp") ?? [])).toEqual(Buffer.from(COVER_WEBP));
+    // Only the platform Content without a local copy travels with its cover URL alone.
+    expect(job.result?.coversLeftOut).toBe(1);
+  });
+
+  it("writes version 1 with no cover field or entry when no chosen Content has a local cover", async () => {
+    const lib = library();
+    const first = addPlatformContent(lib, "alice", bilibili("BV1One41c7mC"), { coverUrl: "https://i0.hdslb.com/bfs/archive/cover-c.jpg" });
+    const second = addPlatformContent(lib, "alice", bilibili("BV1Two41c7mD"));
+    // Another Content's cover never makes this pack carry one.
+    const other = addPlatformContent(lib, "alice", bilibili("BV1Oth41c7mE"));
+    putCover(lib, "alice", other, COVER_WEBP);
+
+    const { job, pack } = await exportFrom(lib, [first, second]);
+    const documents = await pack.readDocuments(never);
+    expect(documents.header.formatVersion).toBe(CONTENT_PACK_BASE_FORMAT_VERSION);
+    expect(documents.contents.map((content) => "cover" in content.document)).toEqual([false, false]);
+    expect(documents.header.entries.some((entry) => entry.name.endsWith("/cover.webp"))).toBe(false);
+    expect(job.result?.coversLeftOut).toBe(2);
   });
 });

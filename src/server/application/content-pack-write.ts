@@ -4,15 +4,18 @@ import type { z } from "zod";
 import type { PackContentResult, packContentDecisionSchema } from "../../shared/dto/content-pack.ts";
 import type { SegmentId } from "../../shared/ids.ts";
 import type { Content } from "../domain/content.ts";
+import { PACK_COVER_LIMITS } from "../domain/content-pack/document.ts";
 import { inspectPackAvatar, inspectPackWebp } from "../domain/figure-image.ts";
 import { amberError } from "../domain/errors.ts";
 import type { ContentFigure } from "../domain/figure.ts";
 import type { MediaAsset } from "../domain/media-asset.ts";
+import { isPlatform, type Platform } from "../domain/platform.ts";
 import { noteAnchorProblem, noteQuote } from "../domain/note.ts";
 import { normalizePlatformChapters } from "../domain/platform-subtitle.ts";
 import { capDescription, normalizeDescription } from "../domain/content-description.ts";
 import { cacheRowsAt } from "../pipeline/cache-swap.ts";
 import type { TranscriptRevision, TranscriptSegment } from "../domain/transcript.ts";
+import type { ParsedPlatformUrl } from "../ports/platform-source.ts";
 import type { RepositoryScope } from "../ports/repository.ts";
 import type { PackImportMediaPlan, PlacedPackMedia } from "./content-pack-engine.ts";
 import {
@@ -38,6 +41,18 @@ import {
  * and the transaction takes everything back.
  */
 
+/**
+ * Each platform's own rules for its source links, through which a carried link is checked
+ * before it is stored: the pack is untrusted, and a source link is opened and handed to the
+ * platform's adapter later.
+ */
+export interface PackSourceLinks {
+  /** The platform adapter's `parse`; `null` when it does not accept the URL. */
+  parse(platform: Platform, url: string): ParsedPlatformUrl | null;
+  /** The canonical link of a platform Content, from its identity alone. */
+  canonicalUrl(platform: Platform, platformContentId: string): string;
+}
+
 /** A decision with its defaults applied. */
 export type ParsedDecision = z.output<typeof packContentDecisionSchema>;
 
@@ -60,6 +75,8 @@ export interface PackContentWrite {
   media: readonly PackImportMediaPlan[];
   images: ReadonlyMap<string, Uint8Array>;
   placed: ReadonlyMap<string, PlacedPackMedia>;
+  /** Absent: a carried source link is stored as it is. */
+  sourceLinks?: PackSourceLinks;
   newId: () => string;
   now: number;
 }
@@ -399,6 +416,13 @@ export function writePackContent(scope: RepositoryScope, owner: string, input: P
     }
   }
 
+  // The cover: a new Content gets the carried one; a local copy is never replaced.
+  const cover = carriedCover(document, input.images);
+  if (cover !== undefined) {
+    if (input.isNew) scope.contentCovers.put(owner, target.id, cover, now);
+    else scope.contentCovers.putIfAbsent(owner, target.id, cover, now);
+  }
+
   // Media rows for the files the job has put in place.
   result.conflicts.media = analysis.media.filter((item) => item.state === "conflict").length;
   for (const plan of input.media) {
@@ -416,9 +440,50 @@ export function writePackContent(scope: RepositoryScope, owner: string, input: P
   return result;
 }
 
+/**
+ * The carried cover of a platform Content, checked once more against its document: the bytes
+ * were checked when the pack was read, and are only taken as what the document says they are.
+ */
+function carriedCover(document: CheckedContent["document"], images: ReadonlyMap<string, Uint8Array>): { bytes: Uint8Array; width: number; height: number; sha256: string } | undefined {
+  const declared = document.cover;
+  // A local file has no cover; a pack claiming one for it is not believed.
+  if (declared === undefined || !isPlatform(document.source.kind)) return undefined;
+  const bytes = images.get(declared.entry);
+  if (bytes === undefined) return undefined;
+  const checked = inspectPackWebp(bytes, PACK_COVER_LIMITS);
+  if (!checked.ok) {
+    throw amberError("backup_invalid", "a carried cover fails its structural check", { code: "backup_invalid.pack_image", details: { entry: declared.entry } });
+  }
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (sha256 !== declared.sha256 || bytes.length !== declared.bytes || checked.width !== declared.width || checked.height !== declared.height) {
+    throw amberError("backup_invalid", "a carried cover does not match its document", { code: "backup_invalid.pack_entry", details: { entry: declared.entry, reason: "digest" } });
+  }
+  return { bytes, width: checked.width, height: checked.height, sha256 };
+}
+
+/**
+ * The source link a new Content keeps. A platform Content's link must be one its platform's
+ * `parse` accepts and must name the Content's own identity; anything else (only an altered
+ * pack has it) becomes the canonical link of that identity, or no link when the identity is
+ * not one the platform could name. A valid link is kept as carried,
+ * access parameters included: some platforms cannot open the page without them.
+ */
+function checkedSourceUrl(source: CheckedContent["document"]["source"], links: PackSourceLinks | undefined): string | undefined {
+  const { kind, sourceUrl, platformContentId } = source;
+  if (links === undefined || !isPlatform(kind)) return sourceUrl;
+  if (platformContentId === undefined) return undefined;
+  const parsed = sourceUrl === undefined ? null : links.parse(kind, sourceUrl);
+  if (parsed !== null && parsed.platformContentId === platformContentId) return sourceUrl;
+  // The identity is carried too: a link made from one the platform would not name is none.
+  const canonical = links.canonicalUrl(kind, platformContentId);
+  return links.parse(kind, canonical)?.platformContentId === platformContentId ? canonical : undefined;
+}
+
 function insertContent(scope: RepositoryScope, owner: string, input: PackContentWrite): Content {
   const { document } = input.checked;
-  const source = { ...document.source };
+  const { sourceUrl: _carried, ...rest } = document.source;
+  const sourceUrl = checkedSourceUrl(document.source, input.sourceLinks);
+  const source = { ...rest, ...(sourceUrl === undefined ? {} : { sourceUrl }) };
   const cover = carriedCoverUrl(document);
   const holder = scope.contents.findByPlatformIdentity(owner, source);
   if (holder !== undefined) targetChanged(holder.id, "the platform identity is taken");
