@@ -24,6 +24,8 @@ import type {
   VideoQuality,
   VideoTarget,
 } from "../../../ports/platform-source.ts";
+import { fetchPlatformCover } from "../cover.ts";
+import { downloadPlatformMedia, type PlatformMediaDownload } from "../download.ts";
 import { platformGet } from "../http.ts";
 import {
   downloadAudio,
@@ -72,8 +74,10 @@ export function ytcfgLoggedIn(html: string): boolean | undefined {
 
 export interface YoutubeAdapterOptions {
   ytDlp: YtDlp;
-  /** Login checks read the youtube.com page with the stored cookies. */
+  /** Login checks read the youtube.com page with the stored cookies; covers are fetched through it too. */
   http?: OutboundHttpClient;
+  /** Fetches cover images; the platform media downloader by default. */
+  download?: PlatformMediaDownload;
   newId?: () => string;
   now?: () => number;
 }
@@ -382,6 +386,17 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
   /** Everything is in the listing already: no request is made. */
   async resolveCollectionEntries(_platformCollectionId: string, entries: readonly PlatformCollectionEntry[]): Promise<PlatformCollectionItem[]> {
     return entries.map(({ index: _index, ...entry }) => entry);
+  }
+
+  /** A thumbnail on YouTube's image hosts, fetched without the login. */
+  async fetchCover(coverUrl: string, output: { path: string }, options: { maxBytes: number }, signal: AbortSignal): Promise<{ sizeBytes: number }> {
+    return fetchPlatformCover(this.options.http, this.options.download ?? downloadPlatformMedia, {
+      coverUrl,
+      domains: YOUTUBE_IMAGE_DOMAINS,
+      output,
+      maxBytes: options.maxBytes,
+      signal,
+    });
   }
 
   async fetchAudio(

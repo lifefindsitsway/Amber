@@ -5,6 +5,7 @@ import { API_PAGE_SIZE_DEFAULT, API_PAGE_SIZE_MAX, CONTENT_LIST_IDS_MAX, SUBTITL
 import {
   contentDescriptionFetchDtoSchema,
   contentDetailDtoSchema,
+  contentCoverFetchDtoSchema,
   contentDtoSchema,
   contentListDtoSchema,
   contentPatchRequestSchema,
@@ -19,6 +20,7 @@ import { asrModelRefSchema } from "../../../shared/dto/model-ref.ts";
 import { diarizationRequestSchema } from "../../../shared/dto/speaker.ts";
 import { taskAcceptedDtoSchema } from "../../../shared/dto/task.ts";
 import { CONTENT_PROCESSING_STATUSES, CONTENT_SOURCE_KINDS } from "../../../shared/enums.ts";
+import type { ContentCoverService } from "../../application/content-covers.ts";
 import type { ContentDescriptionService } from "../../application/content-description.ts";
 import type { ContentService } from "../../application/contents.ts";
 import type { ImportContentService } from "../../application/import-content.ts";
@@ -28,6 +30,7 @@ import type { TrashService } from "../../application/trash.ts";
 import { FileTooLargeError } from "../../ports/file-store.ts";
 import { principalOf } from "../auth.ts";
 import { idempotencyKeyOf, parseInput, sendValidated } from "../validation.ts";
+import { coverFetchRequestSchema, sendCoverImage } from "./covers.ts";
 
 /** Subtitle and cookie texts may reach `SUBTITLE_IMPORT_MAX_BYTES`; JSON escaping can double them. */
 export const TEXT_BODY_LIMIT_BYTES = SUBTITLE_IMPORT_MAX_BYTES * 2;
@@ -89,11 +92,13 @@ export interface ContentRouteDeps {
   retranscribe?: RetranscribeService;
   /** `POST /api/contents/:id/description/fetch`. */
   contentDescription?: ContentDescriptionService;
+  /** `GET /api/contents/:id/cover` and `POST /api/contents/:id/cover/fetch`. */
+  covers?: ContentCoverService;
 }
 
 /** `/api/contents*` for links and existing Contents. */
 export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDeps): void {
-  const { importContent, contents, trash, retranscribe, contentDescription } = deps;
+  const { importContent, contents, trash, retranscribe, contentDescription, covers } = deps;
   if (importContent !== undefined) {
     app.post("/api/contents/import", { bodyLimit: TEXT_BODY_LIMIT_BYTES }, async (request, reply) => {
       const body = parseInput(importRequestSchema, request.body, "body");
@@ -149,6 +154,20 @@ export function registerContentRoutes(app: FastifyInstance, deps: ContentRouteDe
       const { id } = parseInput(contentParamsSchema, request.params, "params");
       parseInput(descriptionFetchRequestSchema, request.body ?? {}, "body");
       return sendValidated(reply, 200, contentDescriptionFetchDtoSchema, await contentDescription.fetch(principalOf(request), id, requestSignal(reply)));
+    });
+  }
+
+  if (covers !== undefined) {
+    app.get("/api/contents/:id/cover", async (request, reply) => {
+      const { id } = parseInput(contentParamsSchema, request.params, "params");
+      return sendCoverImage(request, reply, covers.cover(principalOf(request), id));
+    });
+
+    // Downloads the cover again on the user's request; the download stops when the client goes away.
+    app.post("/api/contents/:id/cover/fetch", async (request, reply) => {
+      const { id } = parseInput(contentParamsSchema, request.params, "params");
+      parseInput(coverFetchRequestSchema, request.body ?? {}, "body");
+      return sendValidated(reply, 200, contentCoverFetchDtoSchema, await covers.fetch(principalOf(request), id, requestSignal(reply)));
     });
   }
 

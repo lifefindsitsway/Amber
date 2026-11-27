@@ -41,6 +41,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "GET", path: "/contents/:id", modes: BOTH },
   { method: "DELETE", path: "/contents/:id", modes: BOTH },
   { method: "POST", path: "/contents/:id/description/fetch", modes: BOTH },
+  { method: "GET", path: "/contents/:id/cover", modes: BOTH },
+  { method: "POST", path: "/contents/:id/cover/fetch", modes: BOTH },
   // tasks
   { method: "GET", path: "/tasks", modes: BOTH },
   { method: "GET", path: "/tasks/:id", modes: BOTH },
@@ -109,6 +111,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "DELETE", path: "/collections/:id/summary", modes: BOTH },
   // trash
   { method: "GET", path: "/trash", modes: BOTH },
+  { method: "GET", path: "/trash/:id/cover", modes: BOTH },
   { method: "POST", path: "/trash/:id/restore", modes: BOTH },
   { method: "POST", path: "/trash/restore", modes: BOTH },
   { method: "DELETE", path: "/trash/:id", modes: BOTH },

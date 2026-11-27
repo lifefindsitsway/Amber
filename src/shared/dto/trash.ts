@@ -14,6 +14,8 @@ export const trashItemDtoSchema = z.object({
   title: z.string().exactOptional(),
   source: contentSourceDtoSchema,
   coverUrl: z.string().exactOptional(),
+  /** Version of the local cover copy, read through the trash cover route; absent when there is none. */
+  coverImageVersion: z.number().int().positive().exactOptional(),
   durationMs: z.number().int().nonnegative().exactOptional(),
   trashedAt: epochMsSchema,
   purgeAt: epochMsSchema,

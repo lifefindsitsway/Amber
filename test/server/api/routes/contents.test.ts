@@ -14,9 +14,12 @@ import { BYTES_PER_GB, BYTES_PER_MB } from "../../../../src/shared/units.ts";
 import { mediaFixtures } from "../../../fixtures/media/index.ts";
 import { multipartBody, paddedMp4, zeroStream } from "../../../fixtures/media/multipart.ts";
 import { createMediaStack, type MediaStack, type MediaStackOptions } from "../../../fixtures/pipeline/media-stack.ts";
-import { BOB_TOKEN, createHarness, gate, LOCAL, LOCAL_TOKEN, stageStatuses, taskOf, waitFor, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { BOB_TOKEN, createHarness, createLocalContent, gate, LOCAL, LOCAL_TOKEN, stageStatuses, taskOf, waitFor, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { configureLlm } from "../../../fixtures/pipeline/harness.ts";
 import { countRows, tempDataDir } from "../../../tools/sqlite.ts";
+import { platformContentWithCover, scriptedCovers, TINY_WEBP, type ScriptedCover } from "../../../fixtures/platform/covers.ts";
+import { amberError } from "../../../../src/server/domain/errors.ts";
+import { contentListDtoSchema } from "../../../../src/shared/dto/content.ts";
 
 const LINK = "https://www.bilibili.com/video/BV1xx411c7mD";
 const MEMORY_PROBE = join(import.meta.dirname, "../../../fixtures/media/upload-memory-probe.ts");
@@ -620,5 +623,109 @@ describe("POST /api/contents/upload [server] and /api/contents/local-file [clien
     expect(forged.json().error.code).toBe("unauthenticated.file_grant");
     const malformed = await app.inject({ method: "POST", url: "/api/contents/local-file", headers: auth, payload: { path: withAudio.path } });
     expect(malformed.statusCode).toBe(400);
+  });
+});
+
+describe("the local cover over HTTP", () => {
+  const bob = { authorization: `Bearer ${BOB_TOKEN}` };
+
+  async function coverSetup(answer?: () => ScriptedCover) {
+    const h = createHarness();
+    open.push(h);
+    const { covers, fetched } = scriptedCovers(h, answer);
+    const { app } = await h.app({ covers });
+    return { h, app, covers, fetched };
+  }
+
+  const fetchCover = (app: Awaited<ReturnType<typeof coverSetup>>["app"], id: string, headers = auth, payload?: unknown) =>
+    app.inject({ method: "POST", url: `/api/contents/${id}/cover/fetch`, headers, ...(payload === undefined ? {} : { payload: payload as object }) });
+
+  it("serves the copy as WebP with a versioned ETag, revalidates to 304, and answers 404 without a copy", async () => {
+    const { h, app, covers } = await coverSetup();
+    const id = platformContentWithCover(h);
+    const missing = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth });
+    expect([missing.statusCode, missing.json().error.class]).toEqual([404, "not_found"]);
+
+    await covers.saveIfAbsent(LOCAL.userId, id, "https://i0.hdslb.com/bfs/archive/cover.jpg", new AbortController().signal);
+    const served = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth });
+    expect(served.statusCode).toBe(200);
+    expect(served.headers["content-type"]).toBe("image/webp");
+    expect(served.headers["cache-control"]).toBe("private, no-cache");
+    expect(served.rawPayload.equals(TINY_WEBP)).toBe(true);
+    const etag = served.headers.etag as string;
+    expect(etag).toMatch(/^"v1-[0-9a-f]{32}"$/);
+    for (const header of [etag, `W/${etag}`, `"other", ${etag}`]) {
+      const revalidated = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: { ...auth, "if-none-match": header } });
+      expect([header, revalidated.statusCode, revalidated.body]).toEqual([header, 304, ""]);
+    }
+    expect((await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: { ...auth, "if-none-match": '"v0-old"' } })).statusCode).toBe(200);
+
+    // Another user's Content, or one in the trash, is unknown here.
+    const foreign = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: bob });
+    expect([foreign.statusCode, foreign.json().error.class]).toEqual([404, "not_found"]);
+    h.trash.trash(LOCAL, id);
+    expect((await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth })).statusCode).toBe(404);
+  });
+
+  it("fetches again on request: a success raises the version and changes the ETag", async () => {
+    let bytes = TINY_WEBP;
+    const { h, app, covers } = await coverSetup(() => bytes);
+    const id = platformContentWithCover(h);
+    await covers.saveIfAbsent(LOCAL.userId, id, "https://i0.hdslb.com/bfs/archive/cover.jpg", new AbortController().signal);
+    const before = (await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth })).headers.etag;
+
+    bytes = Buffer.concat([TINY_WEBP, Buffer.from([0])]);
+    for (const payload of [{}, undefined]) {
+      const response = await fetchCover(app, id, auth, payload);
+      expect(response.statusCode).toBe(200);
+      expect(Object.keys(response.json())).toEqual(["content"]);
+    }
+    const detail = (await app.inject({ method: "GET", url: `/api/contents/${id}`, headers: auth })).json();
+    expect(detail).toMatchObject({ id, coverImageVersion: 3, updatedAt: 1 });
+    const after = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: { ...auth, "if-none-match": before as string } });
+    expect(after.statusCode).toBe(200);
+    expect(after.headers.etag).toMatch(/^"v3-/);
+    expect((await fetchCover(app, id, auth, { extra: true })).statusCode).toBe(400);
+  });
+
+  it("keeps the copy and the version when the fetch fails, answering the platform's error", async () => {
+    let answer: ScriptedCover = TINY_WEBP;
+    const { h, app, covers } = await coverSetup(() => answer);
+    const id = platformContentWithCover(h);
+    await covers.saveIfAbsent(LOCAL.userId, id, "https://i0.hdslb.com/bfs/archive/cover.jpg", new AbortController().signal);
+    answer = amberError("platform_blocked", "refused");
+    const failed = await fetchCover(app, id);
+    expect([failed.statusCode, failed.json().error.class]).toEqual([422, "platform_blocked"]);
+    const served = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth });
+    expect([served.statusCode, served.headers.etag]).toEqual([200, expect.stringMatching(/^"v1-/)]);
+    expect((await app.inject({ method: "GET", url: `/api/contents/${id}`, headers: auth })).json().coverImageVersion).toBe(1);
+  });
+
+  it("refuses a local Content and answers not_found for another user's", async () => {
+    const { h, app, fetched } = await coverSetup();
+    const local = createLocalContent(h);
+    const refused = await fetchCover(app, local);
+    expect([refused.statusCode, refused.json().error.class]).toEqual([400, "invalid_request"]);
+    const foreign = await fetchCover(app, platformContentWithCover(h), bob);
+    expect([foreign.statusCode, foreign.json().error.class]).toEqual([404, "not_found"]);
+    expect(fetched).toEqual([]);
+  });
+
+  it("carries coverImageVersion in the list and the detail only for a Content with a copy", async () => {
+    const { h, app, covers } = await coverSetup();
+    const [withCopy, without] = [platformContentWithCover(h), platformContentWithCover(h)];
+    await covers.saveIfAbsent(LOCAL.userId, withCopy, "https://i0.hdslb.com/bfs/archive/cover.jpg", new AbortController().signal);
+    const list = contentListDtoSchema.parse((await app.inject({ method: "GET", url: "/api/contents", headers: auth })).json());
+    expect(list.items.find((item) => item.id === withCopy)?.coverImageVersion).toBe(1);
+    expect(list.items.find((item) => item.id === without)).not.toHaveProperty("coverImageVersion");
+    expect((await app.inject({ method: "GET", url: `/api/contents/${withCopy}`, headers: auth })).json().coverImageVersion).toBe(1);
+    expect((await app.inject({ method: "GET", url: `/api/contents/${without}`, headers: auth })).json()).not.toHaveProperty("coverImageVersion");
+
+    // A collection's items carry it too.
+    const collection = h.collections.create(LOCAL, { name: "c" });
+    for (const contentId of [withCopy, without]) await h.collections.addItem(LOCAL, collection.id, { contentId });
+    const items = h.collections.get(LOCAL, collection.id).items;
+    expect(items.find((item) => item.contentId === withCopy)?.coverImageVersion).toBe(1);
+    expect(items.find((item) => item.contentId === without)).not.toHaveProperty("coverImageVersion");
   });
 });

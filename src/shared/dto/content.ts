@@ -34,6 +34,8 @@ export const contentDtoSchema = z.object({
   /** When the user pinned the Content; pinned Contents list first. */
   pinnedAt: epochMsSchema.exactOptional(),
   coverUrl: z.string().exactOptional(),
+  /** Version of the local cover copy; absent when the Content has none. A changed version means a new picture. */
+  coverImageVersion: z.number().int().positive().exactOptional(),
   durationMs: z.number().int().nonnegative().exactOptional(),
   publishedAt: z.number().int().exactOptional(),
   rawLanguage: z.string().exactOptional(),
@@ -96,6 +98,10 @@ export const contentDescriptionFetchDtoSchema = z.object({
   content: contentDetailDtoSchema,
 });
 export type ContentDescriptionFetchDto = z.infer<typeof contentDescriptionFetchDtoSchema>;
+
+/** `POST /contents/:id/cover/fetch`: the Content as it stands with its new cover version. */
+export const contentCoverFetchDtoSchema = z.object({ content: contentDetailDtoSchema });
+export type ContentCoverFetchDto = z.infer<typeof contentCoverFetchDtoSchema>;
 
 export const contentListDtoSchema = z.object({
   items: z.array(contentDtoSchema),

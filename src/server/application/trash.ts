@@ -596,6 +596,7 @@ export class TrashService {
           ...(title === undefined ? {} : { title }),
           source: { ...content.source },
           ...(content.coverUrl === undefined ? {} : { coverUrl: content.coverUrl }),
+          ...(content.coverImageVersion === undefined ? {} : { coverImageVersion: content.coverImageVersion }),
           ...(content.durationMs === undefined ? {} : { durationMs: content.durationMs }),
           trashedAt,
           purgeAt,

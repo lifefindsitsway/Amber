@@ -353,7 +353,7 @@ function TrashRow(props: {
         {onPick === undefined ? null : (
           <Checkbox aria-label={t("contentPack.select.rowLabel", { title })} checked={picked} onChange={(event) => onPick(event.target.checked)} data-testid="trash-select-row" />
         )}
-        <Cover url={item.coverUrl} />
+        <Cover url={item.coverUrl} contentId={item.id} version={item.coverImageVersion} trashed />
         {/* Not a link: a Content in the trash cannot be opened. */}
         <div className="min-w-0 flex-1">
           <p className="line-clamp-2 text-sm font-medium">{title}</p>

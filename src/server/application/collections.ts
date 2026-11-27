@@ -417,6 +417,7 @@ function itemDto(scope: RepositoryScope, owner: string, item: CollectionItem): C
     addedAt: item.addedAt,
     ...(title === undefined ? {} : { title }),
     ...(content.coverUrl === undefined ? {} : { coverUrl: content.coverUrl }),
+    ...(content.coverImageVersion === undefined ? {} : { coverImageVersion: content.coverImageVersion }),
     ...(content.durationMs === undefined ? {} : { durationMs: content.durationMs }),
     processingStatus: content.processingStatus,
     ...(content.pinnedAt === undefined ? {} : { pinnedAt: content.pinnedAt }),

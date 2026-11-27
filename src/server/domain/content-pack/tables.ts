@@ -20,6 +20,7 @@ export const PACK_TABLE_ROLES = {
     "note",
     "content_figure",
     "content_figure_image",
+    "content_cover_image",
     "chapter_artifact",
     "chapter_revision",
     "media_asset",

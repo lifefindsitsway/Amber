@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { COOKIES_DIR, PLATFORM_SCRATCH_DIR } from "../../../../../src/server/adapters/platform/yt-dlp.ts";
 import { captionTracks, YOUTUBE_EXTRACTORS, YoutubeAdapter, ytcfgLoggedIn } from "../../../../../src/server/adapters/platform/youtube/index.ts";
+import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { selectSubtitleTrack } from "../../../../../src/server/domain/platform-subtitle.ts";
 import { OutboundHttpError } from "../../../../../src/server/ports/outbound-http.ts";
@@ -616,5 +617,38 @@ describe("YoutubeAdapter.fetchVideo", () => {
     expect(failure.code).toBe("invalid_request.cache_quality_unavailable");
     expect(runner.specs).toHaveLength(1);
     expect(runner.specs[0]?.args).not.toContain("--cookies");
+  });
+});
+
+describe("YoutubeAdapter.fetchCover", () => {
+  it("downloads only from YouTube's image hosts, without the login", async () => {
+    const { ytDlp } = scriptedYtDlp();
+    const http = new ScriptedHttp();
+    const requests: PlatformDownloadRequest[] = [];
+    const download: PlatformMediaDownload = async (_http, request) => {
+      requests.push(request);
+      return { sizeBytes: 5, mimeType: "image/webp" };
+    };
+    const adapter = new YoutubeAdapter({ ytDlp, http, download });
+    const output = { path: "/data/tmp/figures/job/input" };
+    expect(await adapter.fetchCover(`https://i.ytimg.com/vi_webp/${ID}/maxresdefault.webp`, output, { maxBytes: 77 }, signal())).toEqual({ sizeBytes: 5 });
+    expect(requests.map((request) => [request.url, request.kind, request.maxBytes, request.allowedHosts])).toEqual([
+      [`https://i.ytimg.com/vi_webp/${ID}/maxresdefault.webp`, "image", 77, ["ytimg.com"]],
+    ]);
+    expect(JSON.stringify(requests[0]?.headers ?? {}).toLowerCase()).not.toContain("cookie");
+    for (const foreign of [`http://i.ytimg.com/vi/${ID}/hq.jpg`, "https://i0.hdslb.com/a.jpg", "https://www.youtube.com/favicon.ico", "https://ytimg.com.evil.example/a.jpg"]) {
+      const error = await adapter.fetchCover(foreign, output, { maxBytes: 77 }, signal()).catch((caught: unknown) => caught);
+      expect([foreign, isAmberError(error)]).toEqual([foreign, true]);
+    }
+    expect(requests).toHaveLength(1);
+    expect(http.requests).toEqual([]);
+  });
+
+  it("fails without an HTTP client rather than reaching out some other way", async () => {
+    const { ytDlp, runner } = scriptedYtDlp();
+    const download: PlatformMediaDownload = () => Promise.reject(new Error("must not be called"));
+    const error = await new YoutubeAdapter({ ytDlp, download }).fetchCover(`https://i.ytimg.com/vi/${ID}/hq.jpg`, { path: "/tmp/x" }, { maxBytes: 1 }, signal()).catch((caught: unknown) => caught);
+    expect(isAmberError(error) && error.appError.class).toBe("source_unreachable");
+    expect(runner.specs).toEqual([]);
   });
 });

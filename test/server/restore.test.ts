@@ -832,6 +832,30 @@ describe("backup export → restore round trip", () => {
     expect(draft.segments[0]).toMatchObject({ speakerId: named, speakerReview: "needs_review" });
   });
 
+  it("restores the local cover with its version", async () => {
+    const coverOf = (bytes: number[]) => ({ bytes: new Uint8Array(bytes), width: 16, height: 9, sha256: sha256Of(Buffer.from(bytes)) });
+    const cover = coverOf([0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4]);
+    const { library, archive } = await exportLibrary({ includeOriginals: false, includeCache: false }, (h, seeded) => {
+      h.repository.withTransaction((scope) => {
+        // Replaced once, so the version that must survive is 2.
+        scope.contentCovers.put(LOCAL.userId, seeded.contentId, coverOf([9]), 3);
+        scope.contentCovers.put(LOCAL.userId, seeded.contentId, cover, 4);
+      });
+    });
+    const dataDir = await composedFreshTarget();
+    const report = applyRestore({ archive, dataDir });
+    if (!report.ok) throw new Error(JSON.stringify(report.error));
+
+    const { db } = openDatabase(join(dataDir, "amber.db"), { backupDir: join(dataDir, "backups") });
+    try {
+      const repository = new SqliteRepository(db);
+      expect(repository.withTransaction((scope) => scope.contentCovers.get(LOCAL.userId, library.contentId))).toEqual({ ...cover, version: 2 });
+      expect(repository.withTransaction((scope) => scope.contents.get(LOCAL.userId, library.contentId))).toMatchObject({ coverImageVersion: 2 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("restores without the files: the original is missing and the cache evicted", async () => {
     const { library, archive } = await exportLibrary({ includeOriginals: false, includeCache: false });
     const dataDir = await composedFreshTarget();

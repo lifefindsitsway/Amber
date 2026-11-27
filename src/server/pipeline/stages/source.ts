@@ -5,12 +5,15 @@ import { normalizePlatformChapters } from "../../domain/platform-subtitle.ts";
 import type { Repository } from "../../ports/repository.ts";
 import type { StageExecutionContext, StageExecutor, StageOutcome } from "../executor.ts";
 import { platformTarget, taskContent, type PlatformAccess } from "./platform-access.ts";
+import type { SourceCoverSaver } from "./source-cover.ts";
 
 export interface SourceStageDeps {
   repository: Repository;
   platforms: PlatformAccess;
   /** The process's one issuer of description request times, shared with the manual description fetch. */
   descriptionClock: DescriptionClock;
+  /** Keeps a local copy of the platform's cover; without it only the cover URL is stored. */
+  covers?: SourceCoverSaver;
   now?: () => number;
   newId?: () => string;
 }
@@ -55,6 +58,11 @@ export class SourceStageExecutor implements StageExecutor {
     }
     const chapters = normalizePlatformChapters(metadata.chapters ?? [], metadata.durationMs);
     const owner = content.userId;
+    // Outside the heavy slot: an image download is not extractor work. It never throws and
+    // does nothing when a copy exists, so re-running the stage keeps the stored version.
+    if (metadata.coverUrl !== undefined) {
+      await this.deps.covers?.saveIfAbsent(owner, content.id, metadata.coverUrl, context.signal);
+    }
     return {
       resultJson: { reasons: [] },
       publish: (scope) => {

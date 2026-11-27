@@ -304,7 +304,7 @@ export function LibraryPage() {
                         </td>
                       ) : null}
                       <td className={`${COMPACT_UP} ${coverEdge} py-2 pr-4`}>
-                        <Cover url={item.coverUrl} />
+                        <Cover url={item.coverUrl} contentId={item.id} version={item.coverImageVersion} />
                       </td>
                       <td className={`py-2 pr-4 ${titleEdge}`}>
                         <div className="flex items-start gap-1">

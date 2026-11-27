@@ -145,6 +145,8 @@ const MATRIX: Record<string, Entry> = {
   ]),
   "DELETE /api/contents/:id": owned((ids) => [{ method: "DELETE", url: `/api/contents/${ids.contentId}` }]),
   "POST /api/contents/:id/description/fetch": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/description/fetch`, payload: {} }]),
+  "GET /api/contents/:id/cover": owned((ids) => [get(`/api/contents/${ids.contentId}/cover`)]),
+  "POST /api/contents/:id/cover/fetch": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/cover/fetch`, payload: {} }]),
   "POST /api/contents/:id/subtitle-import": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/subtitle-import`, payload: { text: "1\n00:00:00,000 --> 00:00:01,000\nx\n", format: "srt", language: "en" } },
   ]),
@@ -361,6 +363,7 @@ const MATRIX: Record<string, Entry> = {
   "GET /api/trash": { kind: "self", reason: "lists the caller's own trash", requests: () => [get("/api/trash")] },
   "DELETE /api/trash": { kind: "self", reason: "empties the caller's own trash", requests: () => [{ method: "DELETE", url: "/api/trash" }] },
   "POST /api/trash/restore": { kind: "self", reason: "restores only the caller's Contents; A's ids are reported missing (see the batch test below)" },
+  "GET /api/trash/:id/cover": owned((ids) => [get(`/api/trash/${ids.contentId}/cover`)]),
   "POST /api/trash/:id/restore": owned((ids) => [{ method: "POST", url: `/api/trash/${ids.contentId}/restore` }]),
   "DELETE /api/trash/:id": owned((ids) => [{ method: "DELETE", url: `/api/trash/${ids.contentId}` }]),
   "GET /api/asr-profiles": { kind: "self", reason: "lists the caller's ASR profiles", requests: () => [get("/api/asr-profiles")] },
@@ -665,6 +668,22 @@ function seedAliceFigure(userId: string): string {
   return figureId;
 }
 
+/** A local cover copy of Alice's Content, written with plain SQL so no attempt of B's can be the one that created it. */
+function seedAliceCover(userId: string, contentId: string): void {
+  const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
+  const image = Buffer.from("RIFF\x1a\x00\x00\x00WEBPVP8L\x0d\x00\x00\x00\x2f\x00\x00\x00\x10\x07\x10\x11\x11\x88\x88\xfe\x07\x00", "latin1");
+  const now = Date.now();
+  try {
+    db.prepare(
+      `INSERT INTO content_cover_image (content_id, user_id, image, width, height, bytes, sha256, created_at, updated_at)
+       VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?)`,
+    ).run(contentId, userId, image, image.length, createHash("sha256").update(image).digest("hex"), now, now);
+    db.prepare("UPDATE content SET cover_image_version = 1 WHERE id = ? AND user_id = ?").run(contentId, userId);
+  } finally {
+    db.close();
+  }
+}
+
 /** Every row of every table except the session bookkeeping that logins legitimately touch. */
 function databaseDump(): string {
   const { db } = openDatabase(join(stack.dataDir, "amber.db"), { backupDir: join(stack.dataDir, "backups") });
@@ -691,6 +710,7 @@ beforeAll(async () => {
   bobCookie = bob.cookie;
   ids = { ...seedAlice(alice.id, bob.id), figureId: seedAliceFigure(alice.id) };
   seedAliceUsage(ids);
+  seedAliceCover(alice.id, ids.contentId);
 }, 60_000);
 
 afterAll(async () => {
@@ -830,6 +850,8 @@ describe("user B against every server route holding user A's ids", () => {
     expect(speakers.json()).toMatchObject({ items: [{ id: ids.speakerId, name: `${MARK} host`, avatarVersion: 1 }] });
     const avatar = await stack.send(get(`/api/contents/${ids.contentId}/speakers/${ids.speakerId}/avatar`), alice);
     expect([avatar.statusCode, avatar.headers["content-type"]]).toEqual([200, "image/png"]);
+    const cover = await stack.send(get(`/api/contents/${ids.contentId}/cover`), alice);
+    expect([cover.statusCode, cover.headers["content-type"]]).toEqual([200, "image/webp"]);
     expect((await stack.send(get(`/api/speakers/suggestions?q=${MARK}`), alice)).json()).toMatchObject({
       items: [{ contentId: ids.contentId, speakerId: ids.speakerId, name: `${MARK} host` }],
     });
@@ -854,6 +876,8 @@ describe("A's Content in the trash", () => {
     const trash = await stack.send(get("/api/trash"), alice);
     expect(trash.json()).toMatchObject({ total: 1, items: [{ id: ids.contentId }] });
     expect(trash.body.includes(ids.contentId)).toBe(true);
+    // Its cover is read through the trash, and only there.
+    expect((await stack.send(get(`/api/trash/${ids.contentId}/cover`), alice)).statusCode).toBe(200);
 
     const before = databaseDump();
     const deviations: string[] = [];

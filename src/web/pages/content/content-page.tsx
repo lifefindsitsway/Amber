@@ -10,6 +10,7 @@ import {
   FileText,
   FolderPlus,
   HardDriveDownload,
+  ImageDown,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -77,6 +78,7 @@ import { mergeExtensions } from "../../player/merge-extensions.ts";
 import { useChapters, useContentDetail, useContentTaskRefresh, useHighlights, useUnfinishedCacheTask } from "./content-data.ts";
 import type { QualitySource } from "../../player/player-menus.tsx";
 import { useContentSubtitles } from "./content-subtitles.ts";
+import { CoverFetchStatus, useCoverFetch } from "./content-cover-fetch.tsx";
 import { ContentDescription, DescriptionFetchButton, useDescriptionFetch } from "./content-description.tsx";
 import { visibleHighlights } from "./highlight-items.ts";
 import { OutputTabs } from "./output-tabs.tsx";
@@ -1017,6 +1019,7 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
   const { content } = useContentPage();
   const [deleting, setDeleting] = useState(false);
   const description = useDescriptionFetch(content.id);
+  const cover = useCoverFetch(content.id);
   const packWizard = useExportPackWizard();
   return (
     <>
@@ -1042,6 +1045,17 @@ function ContentMenu(props: { overflow: ToolbarItem[] }) {
               >
                 <FileText size={14} aria-hidden="true" />
                 {t("contentView.description.refetch")}
+              </DropdownMenu.Item>
+            )}
+            {content.source.kind === "local" ? null : (
+              <DropdownMenu.Item
+                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-highlighted:bg-sunken data-disabled:cursor-not-allowed data-disabled:opacity-50"
+                disabled={cover.pending}
+                onSelect={cover.fetch}
+                data-testid="content-menu-refetch-cover"
+              >
+                <ImageDown size={14} aria-hidden="true" />
+                {t("contentView.cover.refetch")}
               </DropdownMenu.Item>
             )}
             <DropdownMenu.Item
@@ -1240,6 +1254,7 @@ function TitleRow(props: { content: ContentDetailDto }) {
         <DescriptionFetchButton content={content} />
       </div>
       <ContentDescription content={content} />
+      <CoverFetchStatus contentId={content.id} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
+import { monotonicFactory } from "ulid";
 import packageJson from "../../package.json" with { type: "json" };
 import { SERVER_PORT_DEFAULT, SETUP_TOKEN_TTL_MIN } from "../shared/defaults.ts";
 import { ensureDataDir } from "./adapters/file-store/data-dir.ts";
@@ -23,6 +24,7 @@ import { BundledSubtitleFont, bundledReaderFonts, SUBTITLE_FONT_FILE } from "./a
 import { FfmpegMediaIngest } from "./adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { PolicyOutboundHttpClient } from "./adapters/outbound-http/policy-client.ts";
 import { BilibiliAdapter } from "./adapters/platform/bilibili/index.ts";
+import { downloadPlatformMedia } from "./adapters/platform/download.ts";
 import { BilibiliQrLogin } from "./adapters/platform/bilibili/qr-login.ts";
 import { YoutubeAdapter } from "./adapters/platform/youtube/index.ts";
 import { YtDlp } from "./adapters/platform/yt-dlp.ts";
@@ -53,6 +55,7 @@ import { TranslationService } from "./application/translations.ts";
 import { TranslationDraftService } from "./application/translation-drafts.ts";
 import { ChatService } from "./application/chat.ts";
 import { NoteService } from "./application/notes.ts";
+import { FigureImageProcessor } from "./application/figure-images.ts";
 import { FigureService } from "./application/figures.ts";
 import { DanmakuService, danmakuSummaryIn } from "./application/danmaku.ts";
 import { ContentPackExportService } from "./application/content-pack-export.ts";
@@ -60,6 +63,7 @@ import { ContentPackImportService } from "./application/content-pack-import.ts";
 import { CONTENT_PACK_WORK_DIR, PackJobSlots } from "./application/content-pack-jobs.ts";
 import { openPackFile, TarPackWriter } from "./adapters/backup/pack-archive.ts";
 import { createPackCollections } from "./application/content-pack-collections.ts";
+import { ContentCoverService } from "./application/content-covers.ts";
 import { createContentPackEngine } from "./application/content-pack-plan.ts";
 import { SpeakerService } from "./application/speakers.ts";
 import { SpeakerLineageReader } from "./application/speaker-lineage.ts";
@@ -346,7 +350,10 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         })
       : new PolicyOutboundHttpClient({ mode: "permissive" });
   const targets = config.mode === "server" ? { targets: http } : {};
-  const platforms = new PlatformRegistry([new BilibiliAdapter({ ytDlp, http }), new YoutubeAdapter({ ytDlp, http })]);
+  const platforms = new PlatformRegistry([
+    new BilibiliAdapter({ ytDlp, http, download: downloadPlatformMedia }),
+    new YoutubeAdapter({ ytDlp, http, download: downloadPlatformMedia }),
+  ]);
   const platformAccounts = new PlatformAccountService({ repository, secrets, platforms });
   const platformAccess: PlatformAccess = {
     adapterFor: (kind) => platforms.adapterFor(kind),
@@ -377,6 +384,18 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       : {}),
   });
   const contentDescription = new ContentDescriptionService({ repository, platforms: platformAccess, descriptionClock, details: contents, heavy });
+  // The process's one image processor: figure uploads, captured frames and platform covers
+  // count against the same decoding limit.
+  const images = new FigureImageProcessor({ ingest, files, newId: monotonicFactory() });
+  const covers = new ContentCoverService({
+    repository,
+    platforms: platformAccess,
+    images,
+    details: contents,
+    logger: lateLogger(() => appLogger?.child({ component: "covers" })),
+    // Declared further down; read only once requests arrive.
+    backgroundReady: () => backgroundReady,
+  });
   // One adapter per `AsrProviderProfile.provider`; a new provider adds an entry here.
   const asrFactories = new Map<AsrProviderId, AsrProviderFactory>(
     [new ElevenLabsAsrProviderFactory({ http, files, secrets }), new DashscopeAsrProviderFactory({ http, files, secrets })].map((factory) => [
@@ -510,6 +529,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   const figures = new FigureService({
     repository,
     ingest,
+    images,
     media,
     files,
     logger: lateLogger(() => appLogger?.child({ component: "figures" })),
@@ -653,6 +673,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     importContent,
     contents,
     contentDescription,
+    covers,
     trash,
     platformAccounts,
     ...(platformQrLogin === undefined ? {} : { platformQrLogin }),
@@ -735,7 +756,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     bus,
     executors: {
       media: new MediaStageExecutor({ repository, files, ingest, mode: config.mode }),
-      source: new SourceStageExecutor({ repository, platforms: platformAccess, descriptionClock }),
+      source: new SourceStageExecutor({ repository, platforms: platformAccess, descriptionClock, covers }),
       subtitle: new SubtitleStageExecutor({ repository, platforms: platformAccess }),
       asr: new AsrStageExecutor({ repository, files, media, ingest, platforms: platformAccess, asr: asrFactoryFor, logger: logger.child({ component: "asr_stage" }) }),
       proofread: new ProofreadStageExecutor({ repository, files, media, ingest, platforms: platformAccess }),

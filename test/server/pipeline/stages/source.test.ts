@@ -1,16 +1,18 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BilibiliAdapter } from "../../../../src/server/adapters/platform/bilibili/index.ts";
 import { COOKIES_DIR, YtDlp } from "../../../../src/server/adapters/platform/yt-dlp.ts";
 import { insertRow } from "../../../tools/sqlite.ts";
+import { ContentCoverService } from "../../../../src/server/application/content-covers.ts";
 import { DescriptionClock } from "../../../../src/server/domain/content-description.ts";
 import { amberError, isAmberError } from "../../../../src/server/domain/errors.ts";
 import type { StageExecutionContext } from "../../../../src/server/pipeline/executor.ts";
 import type { PlatformAccess } from "../../../../src/server/pipeline/stages/platform-access.ts";
 import { SourceStageExecutor } from "../../../../src/server/pipeline/stages/source.ts";
 import type { OutboundHttpClient, OutboundRequest, OutboundResponse } from "../../../../src/server/ports/outbound-http.ts";
-import type { PlatformDescription, PlatformMetadata } from "../../../../src/server/ports/platform-source.ts";
+import type { PlatformDescription, PlatformMetadata, PlatformSourceAdapter } from "../../../../src/server/ports/platform-source.ts";
 import type { ProcessResult, ProcessRunner, ProcessRunOptions, ProcessSpec } from "../../../../src/server/ports/process-runner.ts";
 import { createHarness, LOCAL, type Harness } from "../../../fixtures/pipeline/harness.ts";
 
@@ -364,5 +366,86 @@ describe("a platform login is materialized only for the call that needs it", () 
     const { runner, platforms } = realBilibili(h);
     await runSource(h, platformContent(h, { platformPartId: "111" }), platforms);
     expect(runner.seen).toEqual([{ cookieFile: undefined, mode: undefined, carriesCookie: false }]);
+  });
+});
+
+describe("source stage: the local cover copy", () => {
+  const COVER = "https://i0.hdslb.com/bfs/archive/cover.jpg";
+  const image = { bytes: new Uint8Array([1, 2, 3]), width: 16, height: 9, sha256: "ab".repeat(32) };
+
+  /** The cover service over a stand-in image processor, and the bilibili adapter's scripted `fetchCover`. */
+  function coverSetup(h: Harness, answer: () => Promise<void>, timeoutMs?: number) {
+    const fetched: string[] = [];
+    const fetchCover: NonNullable<PlatformSourceAdapter["fetchCover"]> = async (url, output) => {
+      fetched.push(url);
+      h.platforms.bilibili.calls.push({ method: "fetchCover", target: url, withAuth: false });
+      await answer();
+      await writeFile(output.path, "image");
+      return { sizeBytes: 5 };
+    };
+    Object.assign(h.platforms.bilibili, { fetchCover });
+    const images = {
+      normalizeFetched: async (_owner: string, fill: (input: { path: string }) => Promise<unknown>) => {
+        await fill({ path: join(h.dir, `cover-${h.newId()}`) });
+        return image;
+      },
+    };
+    const covers = new ContentCoverService({ repository: h.repository, platforms: h.platformAccess, images, details: h.contents, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+    return { fetched, covers };
+  }
+
+  async function runWithCovers(h: Harness, contentId: string, covers: ContentCoverService, slotted: string[] = []): Promise<void> {
+    const executor = new SourceStageExecutor({ repository: h.repository, platforms: h.platformAccess, newId: h.newId, descriptionClock: new DescriptionClock(Date.now), covers });
+    const adapter = h.platforms.bilibili;
+    const withHeavySlot = async <T>(work: () => Promise<T>): Promise<T> => {
+      const before = adapter.calls.length;
+      try {
+        return await work();
+      } finally {
+        slotted.push(...adapter.calls.slice(before).map((call) => call.method));
+      }
+    };
+    const context = { task: { userId: LOCAL.userId, contentId }, signal: new AbortController().signal, withHeavySlot } as unknown as StageExecutionContext;
+    const outcome = await executor.run(context);
+    h.repository.withTransaction((scope) => outcome.publish?.(scope));
+  }
+
+  it("downloads the cover once, outside the heavy slot, as version 1; a re-run keeps it", async () => {
+    const h = harness();
+    scriptMetadata(h, { durationMs: DURATION_MS, coverUrl: COVER });
+    const { fetched, covers } = coverSetup(h, async () => undefined);
+    const contentId = platformContent(h);
+    const slotted: string[] = [];
+    await runWithCovers(h, contentId, covers, slotted);
+    expect(slotted).toEqual(["fetchMetadata"]);
+    expect(fetched).toEqual([COVER]);
+    expect(contentOf(h, contentId)).toMatchObject({ coverUrl: COVER, coverImageVersion: 1 });
+
+    await runWithCovers(h, contentId, covers);
+    expect(fetched).toHaveLength(1);
+    expect(contentOf(h, contentId)?.coverImageVersion).toBe(1);
+  });
+
+  it("succeeds without a cover when the download fails or runs past the time limit", async () => {
+    for (const [name, answer] of [
+      ["refused", () => Promise.reject(amberError("platform_blocked", "refused"))],
+      ["never answers", () => new Promise<void>(() => undefined)],
+    ] as const) {
+      const h = harness();
+      scriptMetadata(h, { title: "Lecture", durationMs: DURATION_MS, coverUrl: COVER });
+      const { covers } = coverSetup(h, answer, 30);
+      const contentId = platformContent(h);
+      await runWithCovers(h, contentId, covers);
+      expect([name, contentOf(h, contentId)]).toMatchObject([name, { title: "Lecture", coverUrl: COVER }]);
+      expect([name, contentOf(h, contentId)?.coverImageVersion]).toEqual([name, undefined]);
+    }
+  });
+
+  it("asks for nothing when the platform gives no cover", async () => {
+    const h = harness();
+    scriptMetadata(h, { durationMs: DURATION_MS });
+    const { fetched, covers } = coverSetup(h, async () => undefined);
+    await runWithCovers(h, platformContent(h), covers);
+    expect(fetched).toEqual([]);
   });
 });

@@ -40,6 +40,8 @@ export const collectionItemDtoSchema = z.object({
   addedAt: msSchema,
   title: z.string().exactOptional(),
   coverUrl: z.string().exactOptional(),
+  /** Version of the local cover copy; absent when the Content has none. A changed version means a new picture. */
+  coverImageVersion: z.number().int().positive().exactOptional(),
   durationMs: z.number().int().nonnegative().exactOptional(),
   processingStatus: z.enum(CONTENT_PROCESSING_STATUSES),
   pinnedAt: msSchema.exactOptional(),

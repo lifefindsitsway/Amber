@@ -3,9 +3,11 @@ import { z } from "zod";
 import { API_PAGE_SIZE_DEFAULT, API_PAGE_SIZE_MAX } from "../../../shared/defaults.ts";
 import { contentDtoSchema } from "../../../shared/dto/content.ts";
 import { trashListDtoSchema, trashPurgeAllDtoSchema, trashRestoreRequestSchema, trashRestoreResultDtoSchema } from "../../../shared/dto/trash.ts";
+import type { ContentCoverService } from "../../application/content-covers.ts";
 import type { TrashService } from "../../application/trash.ts";
 import { principalOf } from "../auth.ts";
 import { parseInput, sendValidated } from "../validation.ts";
+import { sendCoverImage } from "./covers.ts";
 
 const idParamsSchema = z.object({ id: z.string().min(1) });
 const listQuerySchema = z
@@ -22,13 +24,21 @@ const listQuerySchema = z
   });
 
 /** The caller's own trash; another user's Content is `not_found`. */
-export function registerTrashRoutes(app: FastifyInstance, deps: { trash: TrashService }): void {
-  const { trash } = deps;
+export function registerTrashRoutes(app: FastifyInstance, deps: { trash: TrashService; covers?: ContentCoverService }): void {
+  const { trash, covers } = deps;
 
   app.get("/api/trash", async (request, reply) => {
     const query = parseInput(listQuerySchema, request.query, "query");
     return sendValidated(reply, 200, trashListDtoSchema, trash.list(principalOf(request), query));
   });
+
+  if (covers !== undefined) {
+    // The local cover of a Content in the trash; one outside it is `not_found` here.
+    app.get("/api/trash/:id/cover", async (request, reply) => {
+      const { id } = parseInput(idParamsSchema, request.params, "params");
+      return sendCoverImage(request, reply, covers.trashedCover(principalOf(request), id));
+    });
+  }
 
   // Each Content on its own; the answer tells restored, already active and failed apart.
   app.post("/api/trash/restore", async (request, reply) => {

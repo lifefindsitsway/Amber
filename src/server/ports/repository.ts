@@ -1146,6 +1146,44 @@ export interface FigureRepository {
   purgeDeleted(before: number, limit: number): Array<{ userId: string; contentId: string; figureId: string }>;
 }
 
+/** A cover image to store: WebP bytes already normalized, with their dimensions and digest. */
+export interface ContentCoverImageInput {
+  bytes: Uint8Array;
+  width: number;
+  height: number;
+  /** Lowercase hex SHA-256 of `bytes`. */
+  sha256: string;
+}
+
+/** A stored cover with the version that names it to caches (`Content.coverImageVersion`). */
+export interface ContentCoverImage extends ContentCoverImageInput {
+  version: number;
+}
+
+/**
+ * Local copies of Content covers, one per Content, going with it on purge. A write stores the
+ * copy and raises `content.cover_image_version` (absent → 1, n → n + 1) together or not at all,
+ * never touching the Content's `updatedAt`. Writes refuse a Content that is in the trash, like
+ * the description; reads follow the trash split of `ContentRepository`.
+ */
+export interface ContentCoverRepository {
+  /** The cover of the owner's Content outside the trash. */
+  get(ownerUserId: string, contentId: string): ContentCoverImage | undefined;
+  /** The cover whether or not the Content is in the trash: for the trash's own cover route. */
+  getIncludingTrashed(ownerUserId: string, contentId: string): ContentCoverImage | undefined;
+  /**
+   * Stores or replaces the cover and returns the new version. Throws `not_found` when the
+   * Content is missing, not the owner's or in the trash; on any failure neither the copy nor
+   * the version changes, even if the caller's transaction carries on.
+   */
+  put(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number): number;
+  /**
+   * Stores the cover only when the Content has none yet (the `source` stage and content pack
+   * merges never replace one); returns whether it wrote. Same refusals and atomicity as `put`.
+   */
+  putIfAbsent(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number): boolean;
+}
+
 export interface DanmakuSnapshotRecord {
   contentId: string;
   platformPartId: string;
@@ -1254,6 +1292,7 @@ export interface RepositoryScope {
   chat: ChatRepository;
   notes: NoteRepository;
   figures: FigureRepository;
+  contentCovers: ContentCoverRepository;
   danmaku: DanmakuRepository;
   transferOrigins: TransferOriginRepository;
   pendingFileDeletes: PendingFileDeleteRepository;

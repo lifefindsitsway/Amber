@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ContentDto } from "../../../shared/dto/content.ts";
 
@@ -13,29 +12,8 @@ export const COLUMN = "px-2 py-2 font-medium";
  */
 export const WIDE_ONLY = "hidden @5xl:table-cell";
 export const COMPACT_UP = "hidden @3xl:table-cell";
-/**
- * Platform covers are loaded without a Referer: some CDNs refuse foreign referrers. The CSP
- * admits images over https only, so a cover stored with plain http is asked for over https;
- * one that still fails shows the empty placeholder instead of a broken image.
- */
-export function Cover({ url, className = "h-12 w-20" }: { url?: string | undefined; className?: string }) {
-  const [failed, setFailed] = useState<string>();
-  const src = url?.replace(/^http:\/\//, "https://");
-  if (src === undefined || src === failed) {
-    return <div data-testid="cover-placeholder" className={`${className} rounded bg-sunken`} />;
-  }
-  return (
-    <img
-      src={src}
-      alt=""
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onError={() => setFailed(src)}
-      // The base style's max-width: 100% lets a shrink-to-fit table column squeeze the image.
-      className={`${className} max-w-none rounded object-cover`}
-    />
-  );
-}
+/** Covers live in the shared component; re-exported where the list columns have always found it. */
+export { Cover } from "../../components/cover.tsx";
 
 const STATUS_TONE: Record<string, string> = {
   // 「已导入」: a Content from a content pack with no processing task; a neutral fact, not a state of work.

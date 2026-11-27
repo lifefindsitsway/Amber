@@ -226,7 +226,7 @@ export function ItemRow(props: {
         {t("library.collection.lecture", { n: props.number })}
       </td>
       <td className={`${COMPACT_UP} px-2 py-2`}>
-        <Cover url={item.coverUrl} className="h-10 w-16" />
+        <Cover url={item.coverUrl} contentId={item.contentId} version={item.coverImageVersion} className="h-10 w-16" />
       </td>
       <td className="px-2 py-2">
         <Link

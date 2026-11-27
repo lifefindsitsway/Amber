@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../../../../src/server/adapters/sqlite/database.ts";
-import { MIGRATIONS } from "../../../../../src/server/adapters/sqlite/migrations.ts";
+import { migrate, MIGRATIONS } from "../../../../../src/server/adapters/sqlite/migrations.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import { insertRow, tempDataDir } from "../../../../tools/sqlite.ts";
 
@@ -21,6 +21,8 @@ describe("migration 0035: the preset an LLM profile was created from", () => {
     expect({ from, to }).toEqual({ from: 34, to: 35 });
     // An official address is not taken as a vendor: a relay may sit behind the same host name.
     expect(db.prepare("SELECT id, base_url, preset_id FROM provider_profile").all()).toEqual([{ id: "p", base_url: "https://api.moonshot.cn/v1", preset_id: null }]);
+    // The repository is written for the latest schema; later migrations leave `provider_profile` alone.
+    migrate(db);
     const profile = new SqliteRepository(db).withTransaction((scope) => scope.providerProfiles.get("alice", "p"));
     expect(profile).toMatchObject({ id: "p", baseURL: "https://api.moonshot.cn/v1", models: [{ modelId: "m" }] });
     expect(profile).not.toHaveProperty("presetId");

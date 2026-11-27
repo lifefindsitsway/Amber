@@ -44,6 +44,17 @@ export function figureQualities(): number[] {
   return qualities;
 }
 
+/**
+ * What one stored image may be: its longer edge in pixels and the WebP's bytes. Figures and
+ * Content covers differ only here; decoding is equally strict for both.
+ */
+export interface ImageLimits {
+  maxLongEdge: number;
+  maxBytes: number;
+}
+
+const FIGURE_LIMITS: ImageLimits = { maxLongEdge: FIGURE_LONG_EDGE_MAX_PX, maxBytes: FIGURE_IMAGE_MAX_BYTES };
+
 /** A stored-ready figure image: WebP bytes, their size in pixels and their hex SHA-256. */
 export interface FigureImage {
   bytes: Uint8Array;
@@ -76,11 +87,13 @@ async function readAll(stream: AsyncIterable<Uint8Array>): Promise<Buffer> {
 }
 
 /**
- * Turns frames and uploaded images into the one stored form: a WebP within the byte and edge
- * limits, made by FFmpeg from files in a per-job scratch directory (the process interface
- * neither feeds stdin nor returns binary output). At most `concurrency` jobs decode at once;
- * an upload is received before it waits for a slot, so a slow sender holds none. Whatever
- * happens, the job directory is gone when a call returns: a refused image leaves nothing.
+ * Turns frames, uploaded images and fetched images (Content covers) into the one stored form:
+ * a WebP within the byte and edge limits, made by FFmpeg from files in a per-job scratch
+ * directory (the process interface neither feeds stdin nor returns binary output). One
+ * instance serves every kind, so `concurrency` bounds all image decoding of the process; an
+ * upload or a fetch is received before it waits for a slot, so a slow sender holds none.
+ * Whatever happens, the job directory is gone when a call returns: a refused image leaves
+ * nothing.
  */
 export class FigureImageProcessor {
   private readonly options: FigureImageProcessorOptions;
@@ -101,7 +114,7 @@ export class FigureImageProcessor {
   async capture(owner: string, source: { path: string; atMs: number }, signal: AbortSignal): Promise<FigureImage> {
     return this.inJob(async (job) => {
       const image = await this.inSlot(owner, signal, () =>
-        this.encode(job, (quality, output) => this.options.ingest.captureFrame(source, output, { maxLongEdge: FIGURE_LONG_EDGE_MAX_PX, quality }, signal), signal),
+        this.encode(job, FIGURE_LIMITS, (quality, output) => this.options.ingest.captureFrame(source, output, { maxLongEdge: FIGURE_LONG_EDGE_MAX_PX, quality }, signal), signal),
       );
       if (image === undefined) {
         throw figureFrameError("failed", "the frame stays over the byte limit at the lowest quality");
@@ -124,27 +137,64 @@ export class FigureImageProcessor {
       } catch (error) {
         throw error instanceof FileTooLargeError ? figureImageError("too_large", "the image file is over the upload limit") : error;
       }
-      const head = await readAll(this.options.files.read(inputRef, { start: 0, end: HEADER_PREFIX_BYTES - 1 }));
-      const type = sniffImageType(head);
-      if (type === undefined) {
-        throw figureImageError("unsupported", "not a PNG, JPEG or WebP by its signature");
-      }
-      const size = readImageSize(head, type, { fileBytes });
-      if (size === undefined) {
-        throw figureImageError("corrupt", "the image header gives no size");
-      }
-      if (size.width * size.height > FIGURE_PIXELS_MAX) {
-        throw figureImageError("too_many_pixels", `the image declares ${size.width}×${size.height} pixels`);
-      }
-      const input = { path: this.options.files.pathOf(inputRef) };
-      const image = await this.inSlot(owner, signal, () =>
-        this.encode(job, (quality, output) => this.options.ingest.normalizeImage(input, output, { maxLongEdge: FIGURE_LONG_EDGE_MAX_PX, quality }, signal), signal),
-      );
-      if (image === undefined) {
-        throw figureImageError("too_large", "the image stays over the byte limit at the lowest quality");
-      }
-      return image;
+      return this.normalizeInput(owner, job, inputRef, fileBytes, FIGURE_LIMITS, signal);
     });
+  }
+
+  /**
+   * An image someone else serves (a platform's cover): `fill` writes it to the path it is
+   * given, a file in this job's directory (with its own scratch files beside it, if any), at
+   * most `FIGURE_UPLOAD_MAX_BYTES`. Then it is checked and re-encoded exactly like an upload,
+   * within `limits`. The fetch runs before the job waits for a decoding slot.
+   */
+  async normalizeFetched(owner: string, fill: (input: { path: string }) => Promise<unknown>, limits: ImageLimits, signal: AbortSignal): Promise<FigureImage> {
+    return this.inJob(async (job) => {
+      const inputRef = `${job}/input`;
+      let fileBytes: number;
+      try {
+        fileBytes = (
+          await this.options.files.writeAtomic(
+            inputRef,
+            async (partialPath) => {
+              await fill({ path: partialPath });
+            },
+            { maxBytes: FIGURE_UPLOAD_MAX_BYTES },
+          )
+        ).sizeBytes;
+      } catch (error) {
+        throw error instanceof FileTooLargeError ? figureImageError("too_large", "the fetched image is over the upload limit") : error;
+      }
+      signal.throwIfAborted();
+      return this.normalizeInput(owner, job, inputRef, fileBytes, limits, signal);
+    });
+  }
+
+  /**
+   * The input of a job, already complete in its directory: PNG, JPEG or WebP by its signature,
+   * at most `FIGURE_PIXELS_MAX` pixels by its header (checked before any decoding), then
+   * re-encoded strictly within `limits`.
+   */
+  private async normalizeInput(owner: string, job: string, inputRef: string, fileBytes: number, limits: ImageLimits, signal: AbortSignal): Promise<FigureImage> {
+    const head = await readAll(this.options.files.read(inputRef, { start: 0, end: HEADER_PREFIX_BYTES - 1 }));
+    const type = sniffImageType(head);
+    if (type === undefined) {
+      throw figureImageError("unsupported", "not a PNG, JPEG or WebP by its signature");
+    }
+    const size = readImageSize(head, type, { fileBytes });
+    if (size === undefined) {
+      throw figureImageError("corrupt", "the image header gives no size");
+    }
+    if (size.width * size.height > FIGURE_PIXELS_MAX) {
+      throw figureImageError("too_many_pixels", `the image declares ${size.width}×${size.height} pixels`);
+    }
+    const input = { path: this.options.files.pathOf(inputRef) };
+    const image = await this.inSlot(owner, signal, () =>
+      this.encode(job, limits, (quality, output) => this.options.ingest.normalizeImage(input, output, { maxLongEdge: limits.maxLongEdge, quality }, signal), signal),
+    );
+    if (image === undefined) {
+      throw figureImageError("too_large", "the image stays over the byte limit at the lowest quality");
+    }
+    return image;
   }
 
   private async inJob<T>(work: (job: string) => Promise<T>): Promise<T> {
@@ -161,12 +211,13 @@ export class FigureImageProcessor {
   }
 
   /**
-   * Encodes at falling qualities until the WebP fits `FIGURE_IMAGE_MAX_BYTES`; `undefined`
-   * when even the lowest does not. The result is read back and checked: a WebP by signature
-   * whose header agrees with the size the tool reported.
+   * Encodes at falling qualities until the WebP fits `limits.maxBytes`; `undefined` when even
+   * the lowest does not. The result is read back and checked: a WebP by signature whose header
+   * agrees with the size the tool reported and whose longer edge is within `limits`.
    */
   private async encode(
     job: string,
+    limits: ImageLimits,
     run: (quality: number, output: { path: string }) => Promise<{ width: number; height: number; bytes: number }>,
     signal: AbortSignal,
   ): Promise<FigureImage | undefined> {
@@ -177,12 +228,19 @@ export class FigureImageProcessor {
       const stored = await this.options.files.writeAtomic(outputRef, async (partialPath) => {
         reported = await run(quality, { path: partialPath });
       });
-      if (stored.sizeBytes > FIGURE_IMAGE_MAX_BYTES) {
+      if (stored.sizeBytes > limits.maxBytes) {
         continue;
       }
       const bytes = await readAll(this.options.files.read(outputRef));
       const size = sniffImageType(bytes) === "webp" ? readImageSize(bytes, "webp", { fileBytes: bytes.length }) : undefined;
-      if (reported === undefined || size === undefined || size.width !== reported.width || size.height !== reported.height || bytes.length !== stored.sizeBytes) {
+      if (
+        reported === undefined ||
+        size === undefined ||
+        size.width !== reported.width ||
+        size.height !== reported.height ||
+        Math.max(size.width, size.height) > limits.maxLongEdge ||
+        bytes.length !== stored.sizeBytes
+      ) {
         throw amberError("internal", "the encoded figure does not match what the tool reported", { code: "internal.tool_failed" });
       }
       return { bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), width: size.width, height: size.height, sha256: stored.digest.replace(/^sha256:/u, "") };

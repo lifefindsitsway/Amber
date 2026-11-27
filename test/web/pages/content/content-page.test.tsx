@@ -985,13 +985,13 @@ describe("ContentPage toolbar overflow", () => {
     return screen.findByRole("menu");
   };
 
-  it("keeps only 「重新获取简介」, 「导出内容包」 and 「删除」 in the menu of a platform video while every control fits", async () => {
+  it("keeps only 「重新获取简介」, 「重新获取封面」, 「导出内容包」 and 「删除」 in the menu of a platform video while every control fits", async () => {
     mockApi(contentRoutes());
     renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
     await screen.findByTestId("toolbar-row");
     expect(document.querySelectorAll("[data-toolbar-item][inert]")).toHaveLength(0);
     const menu = await openMenu();
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["重新获取简介", "导出内容包", "删除"]);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["重新获取简介", "重新获取封面", "导出内容包", "删除"]);
     expect(within(menu).getByRole("separator")).toBeTruthy();
   });
 
@@ -1012,7 +1012,7 @@ describe("ContentPage toolbar overflow", () => {
     const hidden = [...document.querySelectorAll<HTMLElement>("[data-toolbar-item][inert]")].map((item) => item.dataset["toolbarItem"]);
     expect(hidden).toEqual(["cache-media", "collections"]);
     const menu = await openMenu();
-    expect(within(menu).getAllByRole("menuitem").map((item) => item.dataset["testid"])).toEqual(["overflow-cache-media", "overflow-collections", "content-menu-refetch-description", "content-menu-export-pack", "content-menu-delete"]);
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.dataset["testid"])).toEqual(["overflow-cache-media", "overflow-collections", "content-menu-refetch-description", "content-menu-refetch-cover", "content-menu-export-pack", "content-menu-delete"]);
     expect(within(menu).getByRole("separator")).toBeTruthy();
     // Greyed as the button is, with the reason the button only shows on hover.
     const cache = within(menu).getByTestId("overflow-cache-media");

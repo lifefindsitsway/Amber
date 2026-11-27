@@ -203,6 +203,7 @@ export interface Harness {
     localImport?: AppDeps["localImport"];
     media?: AppDeps["media"];
     trash?: AppDeps["trash"];
+    covers?: AppDeps["covers"];
   }): Promise<BuiltApp>;
   close(): Promise<void>;
 }
@@ -436,6 +437,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
         ...(appOptions.extraRoutes === undefined ? {} : { extraRoutes: appOptions.extraRoutes }),
         ...(appOptions.localImport === undefined ? {} : { localImport: appOptions.localImport }),
         ...(appOptions.media === undefined ? {} : { media: appOptions.media }),
+        ...(appOptions.covers === undefined ? {} : { covers: appOptions.covers }),
       });
       built.push(app);
       return app;

@@ -6,6 +6,7 @@ import { trashListDtoSchema, trashPurgeAllDtoSchema, trashRestoreResultDtoSchema
 import { BOB_TOKEN, createHarness, createLocalContent, createTaskOfKind, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { insertSummary, seedTranscripts } from "../../../fixtures/pipeline/summary-data.ts";
 import { countRows } from "../../../tools/sqlite.ts";
+import { platformContentWithCover, scriptedCovers, TINY_WEBP } from "../../../fixtures/platform/covers.ts";
 
 const T0 = 1_790_000_000_000;
 const auth = { authorization: `Bearer ${LOCAL_TOKEN}` };
@@ -202,5 +203,40 @@ describe("POST /api/trash/restore", () => {
     });
     expect([tooMany.statusCode, tooMany.json().error.code]).toEqual([400, "invalid_request.batch_too_large"]);
     expect((await app.inject({ method: "POST", url: "/api/trash/restore", headers: auth, payload: { contentIds: [] } })).statusCode).toBe(400);
+  });
+});
+
+describe("GET /api/trash/:id/cover", () => {
+  it("serves the cover of a Content in the trash only, with the same caching rules, and lists its version", async () => {
+    const h = createHarness();
+    open.push(h);
+    const { covers } = scriptedCovers(h);
+    const { app } = await h.app({ covers });
+    const [withCopy, without] = [platformContentWithCover(h), platformContentWithCover(h)];
+    await covers.saveIfAbsent(LOCAL.userId, withCopy, "https://i0.hdslb.com/bfs/archive/cover.jpg", new AbortController().signal);
+
+    // Outside the trash the trash route does not know it.
+    const active = await app.inject({ method: "GET", url: `/api/trash/${withCopy}/cover`, headers: auth });
+    expect([active.statusCode, active.json().error.class]).toEqual([404, "not_found"]);
+
+    for (const id of [withCopy, without]) await app.inject({ method: "DELETE", url: `/api/contents/${id}`, headers: auth });
+    const served = await app.inject({ method: "GET", url: `/api/trash/${withCopy}/cover`, headers: auth });
+    expect(served.statusCode).toBe(200);
+    expect([served.headers["content-type"], served.headers["cache-control"]]).toEqual(["image/webp", "private, no-cache"]);
+    expect(served.rawPayload.equals(TINY_WEBP)).toBe(true);
+    const revalidated = await app.inject({ method: "GET", url: `/api/trash/${withCopy}/cover`, headers: { ...auth, "if-none-match": served.headers.etag as string } });
+    expect(revalidated.statusCode).toBe(304);
+    expect((await app.inject({ method: "GET", url: `/api/trash/${without}/cover`, headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/trash/${withCopy}/cover`, headers: bob })).json().error.class).toBe("not_found");
+    expect((await app.inject({ method: "GET", url: `/api/contents/${withCopy}/cover`, headers: auth })).statusCode).toBe(404);
+
+    const items = trashListDtoSchema.parse((await app.inject({ method: "GET", url: "/api/trash", headers: auth })).json()).items;
+    expect(items.find((item) => item.id === withCopy)?.coverImageVersion).toBe(1);
+    expect(items.find((item) => item.id === without)).not.toHaveProperty("coverImageVersion");
+
+    // Restored, it is served by the content route again, unchanged.
+    await app.inject({ method: "POST", url: `/api/trash/${withCopy}/restore`, headers: auth });
+    expect((await app.inject({ method: "GET", url: `/api/contents/${withCopy}/cover`, headers: auth })).headers.etag).toBe(served.headers.etag);
+    expect((await app.inject({ method: "GET", url: `/api/trash/${withCopy}/cover`, headers: auth })).statusCode).toBe(404);
   });
 });

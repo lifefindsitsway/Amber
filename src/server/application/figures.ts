@@ -35,8 +35,13 @@ export interface FigureServiceOptions {
   logger?: Logger;
   now?: () => number;
   newId?: () => string;
-  /** Image jobs at once; `FIGURE_PROCESS_CONCURRENCY` by default. */
+  /** Image jobs at once; `FIGURE_PROCESS_CONCURRENCY` by default. Ignored with `images`. */
   concurrency?: number;
+  /**
+   * The process's one image processor, shared with Content covers so both count against one
+   * decoding limit. Absent: the service makes its own over `ingest` and `files`.
+   */
+  images?: FigureImageProcessor;
   /**
    * False until the start-up sweep has run. It empties the scratch area image jobs work in, so
    * captures and uploads wait for it (`conflict.starting_up`). Absent means ready.
@@ -114,12 +119,14 @@ export class FigureService {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
-    this.images = new FigureImageProcessor({
-      ingest: options.ingest,
-      files: options.files,
-      newId: this.newId,
-      ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-    });
+    this.images =
+      options.images ??
+      new FigureImageProcessor({
+        ingest: options.ingest,
+        files: options.files,
+        newId: this.newId,
+        ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+      });
   }
 
   /** Live figures in no particular order, and the restorable deleted ones, newest deletion first. */

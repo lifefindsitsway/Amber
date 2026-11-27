@@ -25,7 +25,13 @@ export interface Content {
    * the `source` stage (platform) or `media` probe (local) succeeds.
    */
   title?: string;
+  /** The address the platform gave; kept even when a local copy exists. */
   coverUrl?: string;
+  /**
+   * Version of the local cover copy, absent while there is none. Written only together with
+   * the copy, never by `insert`, and only ever raised; it does not touch `updatedAt`.
+   */
+  coverImageVersion?: number;
   durationMs?: number;
   publishedAt?: number;
   rawLanguage?: string;

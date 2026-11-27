@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { BILIBILI_EXTRACTORS, BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
+import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY } from "../../../../../src/shared/defaults.ts";
 import { OutboundHttpError, type OutboundRequest } from "../../../../../src/server/ports/outbound-http.ts";
@@ -737,5 +738,32 @@ describe("BilibiliAdapter.fetchVideo", () => {
     expect(failure.code).toBe("invalid_request.cache_quality_unavailable");
     expect(runner.specs).toHaveLength(1);
     expect(runner.specs[0]?.args).not.toContain("--cookies");
+  });
+});
+
+describe("BilibiliAdapter.fetchCover", () => {
+  it("downloads only from bilibili's image hosts, upgrading a plain-http cover, without the login", async () => {
+    const { ytDlp } = scriptedYtDlp();
+    const http = new ScriptedHttp();
+    const requests: PlatformDownloadRequest[] = [];
+    const download: PlatformMediaDownload = async (_http, request) => {
+      requests.push(request);
+      return { sizeBytes: 7, mimeType: "image/jpeg" };
+    };
+    const adapter = new BilibiliAdapter({ ytDlp, http, download });
+    const output = { path: "/data/tmp/figures/job/input" };
+    expect(await adapter.fetchCover("http://i0.hdslb.com/bfs/archive/a.jpg", output, { maxBytes: 99 }, signal())).toEqual({ sizeBytes: 7 });
+    await adapter.fetchCover("https://archive.biliimg.com/bfs/b.png", output, { maxBytes: 99 }, signal());
+    expect(requests.map((request) => [request.url, request.kind, request.maxBytes, request.allowedHosts])).toEqual([
+      ["https://i0.hdslb.com/bfs/archive/a.jpg", "image", 99, ["hdslb.com", "biliimg.com"]],
+      ["https://archive.biliimg.com/bfs/b.png", "image", 99, ["hdslb.com", "biliimg.com"]],
+    ]);
+    expect(requests.every((request) => !JSON.stringify(request.headers ?? {}).toLowerCase().includes("cookie"))).toBe(true);
+    for (const foreign of ["https://i.ytimg.com/vi/x/hq.jpg", "https://www.bilibili.com/cover.jpg", "https://hdslb.com.evil.example/a.jpg"]) {
+      const error = await adapter.fetchCover(foreign, output, { maxBytes: 99 }, signal()).catch((caught: unknown) => caught);
+      expect([foreign, isAmberError(error)]).toEqual([foreign, true]);
+    }
+    expect(requests).toHaveLength(2);
+    expect(http.requests).toEqual([]);
   });
 });

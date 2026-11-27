@@ -17,6 +17,7 @@ import type { TranslationDraftService } from "./application/translation-drafts.t
 import type { ChatService } from "./application/chat.ts";
 import type { CollectionService } from "./application/collections.ts";
 import type { ClientMediaTaskService } from "./application/client-media-tasks.ts";
+import type { ContentCoverService } from "./application/content-covers.ts";
 import type { ContentDescriptionService } from "./application/content-description.ts";
 import type { ContentService } from "./application/contents.ts";
 import type { DerivedTaskService } from "./application/derived-tasks.ts";
@@ -142,6 +143,8 @@ export interface AppDeps {
   contents?: ContentService;
   /** Reading a platform Content's description on request, `/api/contents/:id/description/fetch`. */
   contentDescription?: ContentDescriptionService;
+  /** Local cover copies: `/api/contents/:id/cover`, its fetch, and `/api/trash/:id/cover`. */
+  covers?: ContentCoverService;
   /** The content trash: `DELETE /api/contents/:id` and `/api/trash*`. */
   trash?: TrashService;
   platformAccounts?: PlatformAccountService;
@@ -320,6 +323,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     ...(deps.trash === undefined ? {} : { trash: deps.trash }),
     ...(deps.retranscribe === undefined ? {} : { retranscribe: deps.retranscribe }),
     ...(deps.contentDescription === undefined ? {} : { contentDescription: deps.contentDescription }),
+    ...(deps.covers === undefined ? {} : { covers: deps.covers }),
   });
   registerTranscriptRoutes(app, {
     ...(deps.transcripts === undefined ? {} : { transcripts: deps.transcripts }),
@@ -339,7 +343,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     ...(deps.derivedTasks === undefined ? {} : { derivedTasks: deps.derivedTasks }),
   });
   if (deps.trash !== undefined) {
-    registerTrashRoutes(app, { trash: deps.trash });
+    registerTrashRoutes(app, { trash: deps.trash, ...(deps.covers === undefined ? {} : { covers: deps.covers }) });
     registerContentTrashRoutes(app, { trash: deps.trash });
   }
   if (deps.exports !== undefined) {

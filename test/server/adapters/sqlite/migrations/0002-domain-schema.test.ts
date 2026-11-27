@@ -186,6 +186,7 @@ function seedUser(db: SqliteConnection, repository: SqliteRepository, dir: strin
     image_sha256: "0".repeat(64), created_at: T0, updated_at: T0,
   });
   row("content_figure_image", { figure_id: figure, bytes: Buffer.from([0]) });
+  row("content_cover_image", { content_id: content, user_id: userId, image: Buffer.from([0]), width: 1, height: 1, bytes: 1, sha256: "0".repeat(64), created_at: T0, updated_at: T0 });
   row("content_danmaku", { content_id: content, user_id: userId, platform_part_id: "1", fetched_at: T0, item_count: 0, items_json: json([]) });
   row("content_origin_map", { user_id: userId, origin_id: "origin-content", content_id: content, created_at: T0 });
   row("collection_origin_map", { user_id: userId, origin_id: "origin-collection", collection_id: collection, created_at: T0 });
@@ -367,7 +368,7 @@ describe("deletion cascades of Content, Collection, Profile, PlatformAccount and
   const contentScoped = [
     "transcript_revision", "transcript_draft", "reference_text", "summary_artifact", "chapter_artifact",
     "highlight_artifact", "translation_artifact", "chat_thread", "media_asset", "note", "transcript_revision_archive",
-    "transcript_revision_speaker_confirmation",
+    "transcript_revision_speaker_confirmation", "content_cover_image",
   ];
 
   it("deleting a Content removes its tasks, transcripts, artifacts, chat and every MediaAsset row, keeps usage unlinked and leaves external_local files alone", () => {

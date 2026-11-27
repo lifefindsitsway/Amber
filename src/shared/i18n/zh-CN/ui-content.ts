@@ -466,6 +466,13 @@ export const contentView = {
     empty: "原平台没有为这个视频填写简介",
     unknown: "这次没能读到简介，可稍后重试",
   },
+  /** The local copy of the platform's cover. */
+  cover: {
+    refetch: "重新获取封面",
+    fetching: "正在重新获取封面…",
+    updated: "封面已更新",
+    failed: "没能重新获取封面：{{reason}}（原封面保留）",
+  },
   highlights: {
     generate: "生成 AI 高光",
     regenerate: "重算",

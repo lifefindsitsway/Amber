@@ -21,6 +21,8 @@ import type {
   VideoTarget,
 } from "../../../ports/platform-source.ts";
 import type { DanmakuItem } from "../../../../shared/dto/danmaku.ts";
+import { fetchPlatformCover } from "../cover.ts";
+import { downloadPlatformMedia, type PlatformMediaDownload } from "../download.ts";
 import { platformGet, platformGetJson } from "../http.ts";
 import {
   downloadAudio,
@@ -56,6 +58,8 @@ const EMPTY_DESCRIPTIONS = ["-"] as const;
 export interface BilibiliAdapterOptions {
   ytDlp: YtDlp;
   http: OutboundHttpClient;
+  /** Fetches cover images; the platform media downloader by default. */
+  download?: PlatformMediaDownload;
   now?: () => number;
 }
 
@@ -405,6 +409,17 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
         ...(coverUrl === undefined ? {} : { coverUrl }),
         partCount: submission.length,
       };
+    });
+  }
+
+  /** A cover on bilibili's image hosts, fetched without the login. */
+  async fetchCover(coverUrl: string, output: { path: string }, options: { maxBytes: number }, signal: AbortSignal): Promise<{ sizeBytes: number }> {
+    return fetchPlatformCover(this.options.http, this.options.download ?? downloadPlatformMedia, {
+      coverUrl: https(coverUrl),
+      domains: BILIBILI_IMAGE_DOMAINS,
+      output,
+      maxBytes: options.maxBytes,
+      signal,
     });
   }
 

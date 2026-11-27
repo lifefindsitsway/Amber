@@ -18,6 +18,7 @@ interface ContentRow {
   pinned_at: number | null;
   trashed_at: number | null;
   cover_url: string | null;
+  cover_image_version: number | null;
   duration_ms: number | null;
   published_at: number | null;
   raw_language: string | null;
@@ -50,6 +51,7 @@ function toContent(row: ContentRow): Content {
     pinnedAt: row.pinned_at,
     trashedAt: row.trashed_at,
     coverUrl: row.cover_url,
+    coverImageVersion: row.cover_image_version,
     durationMs: row.duration_ms,
     publishedAt: row.published_at,
     rawLanguage: row.raw_language,
