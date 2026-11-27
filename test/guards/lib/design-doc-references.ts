@@ -26,8 +26,10 @@ const concat = (...parts: string[]): string => parts.join("");
 
 const PLAN = concat("Pl", "an");
 const STAGE = concat("V", "1");
+// The later stage document is banned by file name only: its bare token is an ordinary identifier.
+const STAGE_FILES = [STAGE, concat("V", "2")];
 const AGENT_RULES = concat("CLA", "UDE");
-const DOC_NAMES = [PLAN, STAGE, AGENT_RULES, concat("vers", "ion"), concat("todo", "list"), concat("analysis", "-result")];
+const DOC_NAMES = [PLAN, ...STAGE_FILES, AGENT_RULES, concat("vers", "ion"), concat("todo", "list"), concat("analysis", "-result")];
 const STAR = String.fromCodePoint(0x2605);
 const CIRCLED_FIRST = String.fromCodePoint(0x2460);
 const CIRCLED_LAST = String.fromCodePoint(0x2473);
@@ -36,7 +38,9 @@ const APPENDIX_CN = concat("附", "录");
 const RULES: readonly Rule[] = [
   {
     id: "design-doc-file",
-    pattern: new RegExp(`\\b(?:${DOC_NAMES.join("|")})\\.md\\b|${concat("checklist_", STAGE)}`, "gu"),
+    // Suffixed names are matched without `\b`: an underscore is a word character, so the
+    // plain alternatives above never see them.
+    pattern: new RegExp(`\\b(?:${DOC_NAMES.join("|")})\\.md\\b|${concat("checklist_", `(?:${STAGE_FILES.join("|")})`)}|${AGENT_RULES}_${STAGE}`, "gu"),
   },
   {
     id: "docs-path",

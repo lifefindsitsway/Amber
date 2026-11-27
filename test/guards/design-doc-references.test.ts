@@ -40,6 +40,9 @@ describe("design-document reference guard", () => {
       { file: FILE, line: 16, rule: "claude-rule" },
       { file: FILE, line: 16, rule: "design-doc-file" },
       { file: FILE, line: 17, rule: "design-doc-file" },
+      { file: FILE, line: 18, rule: "design-doc-file" },
+      { file: FILE, line: 19, rule: "design-doc-file" },
+      { file: FILE, line: 20, rule: "design-doc-file" },
     ]);
     const covered = new Set(violations.map((violation) => violation.rule));
     // The star and the circled numbers cannot sit in a committed template; the next case covers them.
@@ -82,6 +85,6 @@ describe("design-document reference guard", () => {
     ]);
     expect(violations.filter((violation) => violation.rule === "decision-ref")).toEqual([]);
     expect(violations.filter((violation) => violation.rule === "allowlist-unused")).toEqual([{ file: "clean.txt", rule: "allowlist-unused" }]);
-    expect(violations).toHaveLength(19);
+    expect(violations).toHaveLength(22);
   });
 });

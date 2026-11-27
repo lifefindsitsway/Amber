@@ -15,3 +15,6 @@ Done in V{1}-C.
 Shipped in V{1}.
 Per CLA{UDE}.md S7.
 Snapshot in {version}.md.
+Registered in V{2}.md.
+Evidence goes to check{list}_V2 from now on.
+The earlier rules were archived as CLA{UDE}_V1 beside it.
