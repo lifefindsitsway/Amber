@@ -42,6 +42,11 @@ export const contentView = {
     notCached: "缓存本视频后可切换到本地播放器",
     notCachedServer: "没有视频缓存：在客户端缓存后，用内容包导入到这里即可播放",
     none: "该内容没有可播放的来源",
+    noOnlinePlayer: {
+      reason: "{{platform}}的视频不能在 Amber 里在线播放",
+      cacheClientOnly: "缓存后播放只在 Amber 客户端中可用",
+      linkMayExpire: "来源链接里的访问参数会过期，打不开时请在平台里重新分享",
+    },
     rate: "倍速",
     autoplay: "自动播放",
     seek: "播放进度",

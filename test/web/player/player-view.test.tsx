@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlayerController, PlayerControllerProvider } from "../../../src/web/player/player-controller.tsx";
 import { PlayerView } from "../../../src/web/player/player-view.tsx";
@@ -183,6 +183,67 @@ describe("PlayerView", () => {
     show({ source: YOUTUBE, localSources: sources, localSourceId: "hd" });
     await screen.findByTestId("player-failed");
     expect(screen.queryByTestId("player-quality")).toBeNull();
+  });
+});
+
+describe("PlayerView for a platform without an online player", () => {
+  const XHS_URL = "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1";
+  const XIAOHONGSHU = { kind: "no_online_player", platform: "xiaohongshu", originalUrl: XHS_URL } as const;
+  const DOUYIN = { kind: "no_online_player", platform: "douyin", originalUrl: "https://www.douyin.com/video/7300000000000000001" } as const;
+
+  it("shows the panel in place of the player, never an iframe, and reports no player on screen", () => {
+    const onActiveChange = vi.fn();
+    const below = (active: string) => <p data-testid="below">{active}</p>;
+    const { container } = show({ source: DOUYIN, onActiveChange, renderBelow: below });
+    const panel = screen.getByTestId("player-no-online");
+    expect(screen.getByTestId("player-no-online-reason").textContent).toBe("抖音的视频不能在 Amber 里在线播放");
+    const open = within(panel).getByRole("link", { name: "在原平台打开" });
+    expect(open.getAttribute("href")).toBe(DOUYIN.originalUrl);
+    expect(open.getAttribute("target")).toBe("_blank");
+    expect(open.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByTestId("player-unavailable")).toBeNull();
+    expect(screen.queryByTestId("player-failed")).toBeNull();
+    // Douyin links do not expire.
+    expect(screen.queryByTestId("player-link-may-expire")).toBeNull();
+    expect(onActiveChange.mock.calls.map(([active]) => active)).toEqual(["none"]);
+    expect(screen.getByTestId("below").textContent).toBe("none");
+  });
+
+  it("greys out caching outside the desktop client and says where it works", () => {
+    show({ source: XIAOHONGSHU });
+    const cache = screen.getByRole("button", { name: "缓存后播放" }) as HTMLButtonElement;
+    expect(cache.disabled).toBe(true);
+    const note = screen.getByTestId("player-cache-client-only");
+    expect(note.textContent).toBe("缓存后播放只在 Amber 客户端中可用");
+    expect(cache.getAttribute("aria-describedby")).toBe(note.id);
+    expect(screen.getByTestId("player-no-online-reason").textContent).toBe("小红书的视频不能在 Amber 里在线播放");
+    expect(screen.getByTestId("player-link-may-expire").textContent).toBe("来源链接里的访问参数会过期，打不开时请在平台里重新分享");
+  });
+
+  it("opens the cache dialog from the panel where caching exists", () => {
+    const onCache = vi.fn();
+    show({ source: XIAOHONGSHU, onCache });
+    const cache = screen.getByRole("button", { name: "缓存后播放" }) as HTMLButtonElement;
+    expect(cache.disabled).toBe(false);
+    expect(screen.queryByTestId("player-cache-client-only")).toBeNull();
+    fireEvent.click(cache);
+    expect(onCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves out 「在原平台打开」 when there is no source link", () => {
+    show({ source: { kind: "no_online_player", platform: "douyin" } });
+    expect(screen.getByTestId("player-no-online")).toBeTruthy();
+    expect(screen.queryByTestId("player-open-original")).toBeNull();
+  });
+
+  it("plays a playable cache in the local player straight away, without being asked to", () => {
+    const onActiveChange = vi.fn();
+    const { container } = show({ source: DOUYIN, localSrc: "asset://localhost/d.mp4", onActiveChange });
+    expect(screen.getByTestId("player-local").querySelector("video")?.getAttribute("src")).toBe("asset://localhost/d.mp4");
+    expect(screen.queryByTestId("player-no-online")).toBeNull();
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(onActiveChange.mock.calls.map(([active]) => active)).toEqual(["local"]);
   });
 });
 

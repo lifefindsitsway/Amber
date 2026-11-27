@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { bilibiliEmbedUrl, CAPABILITIES, playerSourceOf, youtubeEmbedUrl } from "../../../src/web/player/capabilities.ts";
+import { PLATFORM_CAPABILITIES } from "../../../src/shared/platforms.ts";
+import { PLATFORMS } from "../../../src/shared/enums.ts";
+import { bilibiliEmbedUrl, CAPABILITIES, hasOnlinePlayer, isEmbedded, playerSourceOf, youtubeEmbedUrl } from "../../../src/web/player/capabilities.ts";
 
 describe("player capabilities", () => {
   it("derives the player from the Content source", () => {
@@ -25,6 +27,31 @@ describe("player capabilities", () => {
     expect(CAPABILITIES.local).toEqual({ seekMode: "direct", timeTracking: "supported", remembersPosition: true, rangePlayback: "play" });
     expect(CAPABILITIES.none.remembersPosition).toBe(false);
     expect(CAPABILITIES.none.rangePlayback).toBe("unsupported");
+  });
+
+  it("puts a platform without an online player in its own category, whatever identifiers it has", () => {
+    expect(
+      playerSourceOf({ source: { kind: "xiaohongshu", platformContentId: "64f0c0ffee0000000000abcd", sourceUrl: "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1" } }),
+    ).toEqual({ kind: "no_online_player", platform: "xiaohongshu", originalUrl: "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1" });
+    expect(playerSourceOf({ source: { kind: "douyin", platformContentId: "7300000000000000001", sourceUrl: "https://www.douyin.com/video/7300000000000000001" } })).toEqual({
+      kind: "no_online_player",
+      platform: "douyin",
+      originalUrl: "https://www.douyin.com/video/7300000000000000001",
+    });
+    expect(playerSourceOf({ source: { kind: "douyin" } })).toEqual({ kind: "no_online_player", platform: "douyin" });
+    expect(isEmbedded(playerSourceOf({ source: { kind: "douyin" } }))).toBe(false);
+    expect(CAPABILITIES.no_online_player).toEqual({ seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "unsupported" });
+  });
+
+  it("reads whether a source has an online player from the platform capability table only", () => {
+    for (const platform of PLATFORMS) {
+      expect(hasOnlinePlayer(platform)).toBe(PLATFORM_CAPABILITIES[platform].onlinePlayer);
+      // Every platform either embeds or falls into the cache-only category.
+      const source = playerSourceOf({ source: { kind: platform, platformContentId: "id1" } });
+      expect(source.kind === "no_online_player").toBe(!PLATFORM_CAPABILITIES[platform].onlinePlayer);
+      expect(isEmbedded(source)).toBe(PLATFORM_CAPABILITIES[platform].onlinePlayer);
+    }
+    expect(hasOnlinePlayer("local")).toBe(false);
   });
 
   it("seeks Bilibili by reloading with t= in whole seconds and autoplay", () => {

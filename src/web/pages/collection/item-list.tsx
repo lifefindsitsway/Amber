@@ -166,7 +166,7 @@ export function useItemMenu(items: readonly CollectionItemDto[], actions: Conten
 
 /** The target the Content actions of a member row act on. */
 function targetOf(item: CollectionItemDto) {
-  return actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl });
+  return actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl, sourceKind: item.source.kind });
 }
 
 /**

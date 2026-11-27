@@ -42,6 +42,8 @@ export const common = {
     openInNewTab: "在新标签页中打开",
     openInBrowser: "在浏览器中打开",
     copySourceUrl: "复制来源链接",
+    copiedSourceUrl: "已复制来源链接",
+    sourceUrlMayExpire: "链接里的访问参数会过期，过期后需要在平台里重新分享",
     copyLinkAddress: "复制链接地址",
     copySelection: "复制选中内容",
     explainSelection: "解释选中内容",

@@ -1,6 +1,6 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   openTargetOf,
   useContentActions,
@@ -84,6 +84,46 @@ describe("useContentActions", () => {
     renderApp(<Probe surface="overflow" content={PLATFORM} />);
     fireEvent.click(screen.getByTestId("action-copy-source-url"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(PLATFORM.sourceUrl));
+  });
+
+  it("confirms the copy in a toast, adding the expiry note only for a platform whose links expire", async () => {
+    mockApi({});
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const XHS_URL = "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1";
+    const cases: [ContentActionTarget, string][] = [
+      [{ ...PLATFORM, sourceKind: "youtube" }, "已复制来源链接"],
+      [{ id: "c3", sourceUrl: "https://www.bilibili.com/video/BV1xx411c7mD", sourceKind: "bilibili" }, "已复制来源链接"],
+      [{ id: "c4", sourceUrl: "https://www.douyin.com/video/7300000000000000001", sourceKind: "douyin" }, "已复制来源链接"],
+      [{ id: "c5", sourceUrl: XHS_URL, sourceKind: "xiaohongshu" }, "已复制来源链接链接里的访问参数会过期，过期后需要在平台里重新分享"],
+    ];
+    for (const [content, message] of cases) {
+      const { unmount } = renderApp(<Probe surface="overflow" content={content} />);
+      fireEvent.click(screen.getByTestId("action-copy-source-url"));
+      const toast = await screen.findByTestId("toast");
+      expect(writeText).toHaveBeenLastCalledWith(content.sourceUrl);
+      expect(toast.textContent).toBe(message);
+      expect(within(toast).queryByTestId("copied-source-url-expiry") !== null).toBe(content.sourceKind === "xiaohongshu");
+      unmount();
+    }
+  });
+
+  it("shows no toast when nothing reached the clipboard", async () => {
+    mockApi({});
+    const writeText = vi.fn(async () => Promise.reject(new Error("denied")));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const execCommand = vi.fn(() => false);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    onTestFinished(() => {
+      delete (document as unknown as Record<string, unknown>)["execCommand"];
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    renderApp(<Probe surface="overflow" content={{ ...PLATFORM, sourceKind: "youtube" }} />);
+    fireEvent.click(screen.getByTestId("action-copy-source-url"));
+    await waitFor(() => expect(execCommand).toHaveBeenCalled());
+    // Let the copy settle before looking: a toast would follow it within the same turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("toast")).toBeNull();
   });
 
   it("opens the Content's page, or the place it was asked to open", () => {

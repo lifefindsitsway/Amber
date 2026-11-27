@@ -133,7 +133,7 @@ export function LibraryPage() {
   const failure = searching ? (found.data === undefined && found.isError ? found.error : known.isError ? known.error : null) : list.isError ? list.error : null;
   const setFilter = (key: Parameters<typeof withFilter>[1], value: string): void => setSearch(withFilter(search, key, value));
   const filtered = Object.keys(filters).length > 0 || searching;
-  const targetOf = (item: ContentDto) => actionTarget({ id: item.id, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.source.sourceUrl });
+  const targetOf = (item: ContentDto) => actionTarget({ id: item.id, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.source.sourceUrl, sourceKind: item.source.kind });
   // One target for the whole table: a right click finds its row, search-result rows included.
   const rowsMenuRef = useContextMenuTarget<HTMLTableSectionElement>((hit) => {
     const row = hit.target.closest<HTMLElement>("[data-content-id]");

@@ -45,7 +45,7 @@ import { ErrorView } from "../../components/error-view.tsx";
 import { RenameContentDialog } from "../../components/rename-content-dialog.tsx";
 import { formatDuration, formatPublishedDate, formatPublishedDateTime } from "../../format.ts";
 import { useMainWidth, useWindowWidth } from "../../layout-width.tsx";
-import { playerSourceOf } from "../../player/capabilities.ts";
+import { hasOnlinePlayer, playerSourceOf } from "../../player/capabilities.ts";
 import { saveCachedCopy } from "../../desktop/cached-media.ts";
 import { useDesktop } from "../../desktop/use-desktop.ts";
 import { allPlayableCaches, cacheHeight, isAudioOnly, playableCache, playableVideoCaches, qualityLabel, useCacheReader, usePlaybackMedia, type CacheReader, type LocalAsset } from "../../player/media-url.ts";
@@ -305,7 +305,8 @@ function Columns(props: { subtitleEditRequest: number; onPlayingCache: (assetId:
   const [caching, setCaching] = useState(false);
   const [cacheTaskId, setCacheTaskId] = useState<string | undefined>(undefined);
   const [audioInstead, setAudioInstead] = useState(false);
-  const platform = content.source.kind === "youtube" || content.source.kind === "bilibili";
+  // Every platform Content can be cached, whether or not its platform has an online player.
+  const platform = content.source.kind !== "local";
   // The desktop client plays the caches it keeps; the server mode streams video caches (from content packs).
   const reader = useCacheReader();
   const cache = playableCache(content, reader);
@@ -608,7 +609,8 @@ function Toolbar(props: {
   const { playback } = props;
   const [managing, setManaging] = useState(false);
   const saveCache = useSaveCache();
-  const platform = content.source.kind === "youtube" || content.source.kind === "bilibili";
+  // 「在线 | 本地缓存」 only exists where there is an online player to switch from.
+  const online = hasOnlinePlayer(content.source.kind);
   const items: ToolbarItem[] = [];
   if (props.onCollapseMiddle !== undefined) {
     const icon = props.swapped ? <PanelRightClose size={14} /> : <PanelLeftClose size={14} />;
@@ -647,7 +649,7 @@ function Toolbar(props: {
       menu: <MenuAction testId="swap" icon={<ArrowLeftRight size={14} />} label={t("contentView.toolbar.swap")} onSelect={props.onSwap} />,
     },
   );
-  if (platform) {
+  if (online) {
     items.push({
       key: "switch-player",
       inline: <PlayerModeSwitch playback={playback} />,

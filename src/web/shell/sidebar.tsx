@@ -307,7 +307,7 @@ function RecentRow(props: { content: ContentDto; onDeleted: (contentId: string) 
   const { content } = props;
   const title = content.title ?? t("shell.sidebar.untitled");
   const actions = useContentActions({ onDeleted: props.onDeleted });
-  const target = actionTarget({ id: content.id, title: content.title, pinnedAt: content.pinnedAt, sourceUrl: content.source.sourceUrl });
+  const target = actionTarget({ id: content.id, title: content.title, pinnedAt: content.pinnedAt, sourceUrl: content.source.sourceUrl, sourceKind: content.source.kind });
   const menuRef = useContextMenuTarget<HTMLDivElement>((hit) => actions.menu(target, hit));
   return (
     <div ref={menuRef} className="group relative" data-testid="recent-row">
@@ -452,7 +452,7 @@ function CollectionItems(props: { collectionId: string; contentId: string | unde
   const index = items.findIndex((item) => item.contentId === props.contentId);
   const shown = itemsNear(items, Math.max(0, index), SIDEBAR_COLLECTION_ITEMS);
   const targetOf = (item: CollectionItemDto) =>
-    actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl });
+    actionTarget({ id: item.contentId, title: item.title, pinnedAt: item.pinnedAt, sourceUrl: item.sourceUrl, sourceKind: item.source.kind });
   const menuRef = useContextMenuTarget<HTMLDivElement>((hit) => {
     const row = hit.target.closest<HTMLElement>("[data-item-id]");
     const item = shown.find((candidate) => candidate.id === row?.dataset["itemId"]);

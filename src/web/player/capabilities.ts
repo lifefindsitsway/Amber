@@ -1,4 +1,6 @@
 import type { ContentDto } from "../../shared/dto/content.ts";
+import type { ContentSourceKind, Platform } from "../../shared/enums.ts";
+import { platformCapabilities } from "../../shared/platforms.ts";
 
 /** What a player can do; the UI hides what it cannot. */
 export interface PlayerCapabilities {
@@ -22,7 +24,12 @@ export type PlayerSource =
   | { kind: "youtube"; videoId: string; originalUrl?: string }
   | { kind: "bilibili"; bvid: string; page?: number; cid?: string; originalUrl?: string }
   | { kind: "local" }
+  /** A platform Content whose platform has no embeddable player: it plays only from a cached copy. */
+  | { kind: "no_online_player"; platform: Platform; originalUrl?: string }
   | { kind: "none" };
+
+/** The sources that play in a platform's embedded player (an iframe). */
+export type EmbeddedSource = Extract<PlayerSource, { kind: "youtube" | "bilibili" }>;
 
 export const CAPABILITIES: Readonly<Record<PlayerSource["kind"], PlayerCapabilities>> = {
   // The IFrame API plays, pauses and reports the time.
@@ -30,13 +37,31 @@ export const CAPABILITIES: Readonly<Record<PlayerSource["kind"], PlayerCapabilit
   // The embedded Bilibili player has URL parameters only: no postMessage or JS API.
   bilibili: { seekMode: "reload", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "jump" },
   local: { seekMode: "direct", timeTracking: "supported", remembersPosition: true, rangePlayback: "play" },
+  // Nothing plays until a cached copy does, and that one is the local player.
+  no_online_player: { seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "unsupported" },
   none: { seekMode: "unsupported", timeTracking: "unsupported", remembersPosition: false, rangePlayback: "unsupported" },
 };
+
+/**
+ * Whether Contents from this source can be watched in the platform's own embedded player.
+ * Decided by the platform capability table alone, so a new platform needs no change here.
+ */
+export function hasOnlinePlayer(kind: ContentSourceKind): boolean {
+  return kind !== "local" && platformCapabilities(kind).onlinePlayer;
+}
+
+/** Whether this source is shown in a platform iframe (as opposed to the local player or nothing). */
+export function isEmbedded(source: PlayerSource): source is EmbeddedSource {
+  return source.kind === "youtube" || source.kind === "bilibili";
+}
 
 /** Which player a Content plays in, from its source identifiers. */
 export function playerSourceOf(content: Pick<ContentDto, "source">): PlayerSource {
   const { source } = content;
   const originalUrl = source.sourceUrl === undefined ? {} : { originalUrl: source.sourceUrl };
+  if (source.kind !== "local" && !hasOnlinePlayer(source.kind)) {
+    return { kind: "no_online_player", platform: source.kind, ...originalUrl };
+  }
   if (source.kind === "youtube" && source.platformContentId !== undefined) {
     return { kind: "youtube", videoId: source.platformContentId, ...originalUrl };
   }

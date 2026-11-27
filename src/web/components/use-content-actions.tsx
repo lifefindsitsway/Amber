@@ -2,9 +2,12 @@ import { FileText, FolderPlus, Link2, NotebookPen, Pencil, Pin, PinOff, Trash2 }
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
+import type { ContentSourceKind } from "../../shared/enums.ts";
+import { platformCapabilities } from "../../shared/platforms.ts";
 import { usePatchContent } from "../api/queries.ts";
 import { copyText } from "../ui/clipboard.ts";
 import type { MenuAction, MenuEntry, MenuHit, MenuModel } from "../ui/context-menu.tsx";
+import { useToast } from "../ui/toast.tsx";
 import { CollectionMembershipDialog } from "./collection-membership-dialog.tsx";
 import { DeleteContentDialog } from "./delete-content-dialog.tsx";
 import { RenameContentDialog } from "./rename-content-dialog.tsx";
@@ -16,6 +19,8 @@ export interface ContentActionTarget {
   pinnedAt?: number;
   /** The canonical source URL; local files have none. */
   sourceUrl?: string;
+  /** Where the Content came from; decides whether a copied source link may stop opening. */
+  sourceKind?: ContentSourceKind;
 }
 
 /**
@@ -54,13 +59,28 @@ export function contentPath(contentId: string): string {
 }
 
 /** Builds a target from DTO fields, dropping absent ones. */
-export function actionTarget(fields: { id: string; title?: string | undefined; pinnedAt?: number | undefined; sourceUrl?: string | undefined }): ContentActionTarget {
+export function actionTarget(fields: {
+  id: string;
+  title?: string | undefined;
+  pinnedAt?: number | undefined;
+  sourceUrl?: string | undefined;
+  sourceKind?: ContentSourceKind | undefined;
+}): ContentActionTarget {
   return {
     id: fields.id,
     ...(fields.title === undefined ? {} : { title: fields.title }),
     ...(fields.pinnedAt === undefined ? {} : { pinnedAt: fields.pinnedAt }),
     ...(fields.sourceUrl === undefined ? {} : { sourceUrl: fields.sourceUrl }),
+    ...(fields.sourceKind === undefined ? {} : { sourceKind: fields.sourceKind }),
   };
+}
+
+/**
+ * Whether a copied source link of this origin may stop opening: some platforms put an expiring
+ * access parameter in the link. Unknown origins get no warning.
+ */
+export function sourceLinkMayExpire(kind: ContentSourceKind | undefined): boolean {
+  return kind !== undefined && kind !== "local" && platformCapabilities(kind).linkMayExpire;
 }
 
 /**
@@ -85,10 +105,30 @@ export function useContentActions(options: { onDeleted?: (contentId: string) => 
   const { t } = useTranslation();
   const navigate = useNavigate();
   const patch = usePatchContent();
+  const toast = useToast();
   const [renaming, setRenaming] = useState<string | undefined>(undefined);
   const [deleting, setDeleting] = useState<ContentActionTarget | undefined>(undefined);
   const [managing, setManaging] = useState<string | undefined>(undefined);
   const { onDeleted } = options;
+
+  // A light confirmation once the link is on the clipboard (a failed copy only logs a warning).
+  // Where the link may expire, the same toast says so on a second line.
+  const copySourceUrl = async (sourceUrl: string, kind: ContentSourceKind | undefined): Promise<void> => {
+    if (!(await copyText(sourceUrl))) return;
+    toast.show({
+      tone: "success",
+      message: sourceLinkMayExpire(kind) ? (
+        <>
+          <span className="block">{t("common.menu.copiedSourceUrl")}</span>
+          <span className="block text-note text-muted" data-testid="copied-source-url-expiry">
+            {t("common.menu.sourceUrlMayExpire")}
+          </span>
+        </>
+      ) : (
+        t("common.menu.copiedSourceUrl")
+      ),
+    });
+  };
 
   // Groups in menu order; deleting always comes last, set apart by a separator, in the same
   // colour as every other row: the confirmation dialog is where the warning lives.
@@ -112,7 +152,7 @@ export function useContentActions(options: { onDeleted?: (contentId: string) => 
                 label: t("common.menu.copySourceUrl"),
                 icon: <Link2 size={14} aria-hidden="true" />,
                 surfaces: ["context", "overflow", "row"] as const,
-                onSelect: () => void copyText(sourceUrl),
+                onSelect: () => void copySourceUrl(sourceUrl, content.sourceKind),
               },
             ]),
       ],

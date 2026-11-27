@@ -1587,3 +1587,78 @@ describe("ContentPage remembered position", () => {
     expect(readPlaybackPosition("u1", "c1")).toMatchObject({ positionMs: 310_000 });
   });
 });
+
+describe("ContentPage for a platform without an online player", () => {
+  const XHS_URL = "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1";
+  const DOUYIN_URL = "https://www.douyin.com/video/7300000000000000001";
+  const XIAOHONGSHU = contentDetail({ source: { kind: "xiaohongshu", platformContentId: "64f0c0ffee0000000000abcd", sourceUrl: XHS_URL } });
+  const DOUYIN = contentDetail({ source: { kind: "douyin", platformContentId: "7300000000000000001", sourceUrl: DOUYIN_URL } });
+
+  /** Nothing in the page plays online: no iframe, no 「在线 | 本地缓存」 switch, in the row or the "⋯" menu. */
+  async function expectNoOnlinePlayer(): Promise<void> {
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(screen.queryByTestId("switch-player")).toBeNull();
+    expect(document.querySelector("[data-toolbar-item='switch-player']")).toBeNull();
+    expect(screen.queryByTestId("player-unavailable")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("button", { name: "更多操作" }), { key: "Enter" });
+    await screen.findByRole("menu");
+    expect(screen.queryByTestId("overflow-switch-player-online")).toBeNull();
+    expect(screen.queryByTestId("overflow-switch-player-local")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  }
+
+  it("shows the panel for Xiaohongshu in the server mode, with the expiry note and caching greyed out", async () => {
+    mockApi(contentRoutes(XIAOHONGSHU));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    const panel = await screen.findByTestId("player-no-online");
+    expect(within(panel).getByTestId("player-no-online-reason").textContent).toBe("小红书的视频不能在 Amber 里在线播放");
+    expect(within(panel).getByRole("link", { name: "在原平台打开" }).getAttribute("href")).toBe(XHS_URL);
+    const cache = within(panel).getByRole("button", { name: "缓存后播放" }) as HTMLButtonElement;
+    expect(cache.disabled).toBe(true);
+    expect(within(panel).getByTestId("player-cache-client-only").textContent).toBe("缓存后播放只在 Amber 客户端中可用");
+    expect(within(panel).getByTestId("player-link-may-expire").textContent).toBe("来源链接里的访问参数会过期，打不开时请在平台里重新分享");
+    // The toolbar's cache entry stays client-only, as for every platform.
+    expect((screen.getByTestId("cache-media") as HTMLButtonElement).disabled).toBe(true);
+    await expectNoOnlinePlayer();
+  });
+
+  it("shows the panel for Douyin without the expiry note", async () => {
+    mockApi(contentRoutes(DOUYIN));
+    renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+    const panel = await screen.findByTestId("player-no-online");
+    expect(within(panel).getByTestId("player-no-online-reason").textContent).toBe("抖音的视频不能在 Amber 里在线播放");
+    expect(within(panel).getByRole("link", { name: "在原平台打开" }).getAttribute("href")).toBe(DOUYIN_URL);
+    expect(within(panel).queryByTestId("player-link-may-expire")).toBeNull();
+    await expectNoOnlinePlayer();
+  });
+
+  describe("in the desktop client", () => {
+    beforeEach(() => {
+      fakeShell.desktop = true;
+    });
+
+    it("opens the cache dialog from the panel", async () => {
+      mockApi({ ...contentRoutes(DOUYIN), ...INSPECT });
+      renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+      const panel = await screen.findByTestId("player-no-online");
+      // Whether this is the desktop client is known a moment after the first render.
+      await waitFor(() => expect((within(panel).getByRole("button", { name: "缓存后播放" }) as HTMLButtonElement).disabled).toBe(false));
+      expect(within(panel).queryByTestId("player-cache-client-only")).toBeNull();
+      const cache = within(panel).getByRole("button", { name: "缓存后播放" });
+      fireEvent.click(cache);
+      expect(await screen.findByRole("dialog", { name: "缓存本视频" })).toBeTruthy();
+    });
+
+    it("plays a cached copy in the local player straight away, with no switch to the online player", async () => {
+      for (const detail of [{ ...XIAOHONGSHU, media: [VIDEO_CACHE] }, { ...DOUYIN, media: [VIDEO_CACHE] }]) {
+        mockApi(contentRoutes(detail));
+        const { unmount } = renderApp(<ContentPage />, { route: "/contents/c1", path: "/contents/:id" });
+        const player = await screen.findByTestId("player-local");
+        expect(player.querySelector("video")?.getAttribute("src")).toBe(`asset://localhost/${encodeURIComponent(VIDEO_CACHE.localPath as string)}`);
+        expect(screen.queryByTestId("player-no-online")).toBeNull();
+        await expectNoOnlinePlayer();
+        unmount();
+      }
+    });
+  });
+});

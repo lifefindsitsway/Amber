@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { itemsNear, Sidebar } from "../../../src/web/shell/sidebar.tsx";
 import { requestOpenTasks } from "../../../src/web/shell/task-panel.tsx";
 import { ContextMenuHost } from "../../../src/web/ui/context-menu.tsx";
@@ -134,6 +134,26 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "合集归属" }));
     const dialog = await screen.findByRole("dialog", { name: "管理合集" });
     await waitFor(() => expect((within(dialog).getByRole("checkbox", { name: "Test" }) as HTMLInputElement).checked).toBe(false));
+  });
+
+  it("confirms a copied source link, warning on the detail page of a Xiaohongshu Content that its link may expire", async () => {
+    const XHS_URL = "https://www.xiaohongshu.com/explore/64f0c0ffee0000000000abcd?xsec_token=TESTONLY_token1";
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    onTestFinished(() => {
+      delete (navigator as unknown as Record<string, unknown>)["clipboard"];
+    });
+    mockApi({
+      ...baseRoutes(),
+      "GET /api/contents": { body: { items: [content("c9", { title: "笔记视频", source: { kind: "xiaohongshu", sourceUrl: XHS_URL } })], total: 1 } },
+      "GET /api/contents/c9": { body: { ...content("c9", { title: "笔记视频" }), media: [] } },
+    });
+    renderApp(<Sidebar onOpenOmnibox={() => undefined} onOpenTasks={() => undefined} />, { route: "/contents/c9" });
+    fireEvent.keyDown(await screen.findByRole("button", { name: "「笔记视频」的更多操作" }), { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制来源链接" }));
+    const toast = await screen.findByTestId("toast");
+    expect(writeText).toHaveBeenCalledWith(XHS_URL);
+    expect(toast.textContent).toBe("已复制来源链接链接里的访问参数会过期，过期后需要在平台里重新分享");
   });
 
   it("asks only for Contents in no collection, counts them, folds the group and links to the rest", async () => {
