@@ -16,6 +16,8 @@ const BADGE_TONE: Readonly<Record<string, string>> = {
   in_collection: "text-muted ring-1 ring-line ring-inset",
   trashed: "bg-warn-soft text-warn",
   unavailable: "bg-danger-soft text-danger",
+  // An image post is not broken, only not something Amber processes: a quiet badge.
+  not_video: "bg-sunken text-muted",
 };
 
 export function EntryCover({ entry }: { entry: PreviewEntry }) {
@@ -67,14 +69,25 @@ export function EntryState({ entry, describeId }: { entry: PreviewEntry; describ
       </span>
     );
   }
+  // An image post in a collection is its own state, named as such rather than "cannot be accessed".
+  const imagePost = state === "unavailable" && entry.unavailableReason === "not_video";
+  const label = imagePost ? t("shell.collectionPreview.unavailableReason.not_video") : t(`shell.collectionPreview.state.${state}`);
   const badge = (
-    <span className={`inline-flex w-fit rounded px-1.5 py-0.5 text-xs whitespace-nowrap ${BADGE_TONE[state] ?? ""}`} data-testid="preview-entry-state" data-state={state}>
-      {t(`shell.collectionPreview.state.${state}`)}
+    <span
+      className={`inline-flex w-fit rounded px-1.5 py-0.5 text-xs whitespace-nowrap ${BADGE_TONE[imagePost ? "not_video" : state] ?? ""}`}
+      data-testid="preview-entry-state"
+      data-state={state}
+      {...(imagePost ? { "data-reason": "not_video" } : {})}
+    >
+      {label}
     </span>
   );
   let note: ReactNode;
   let full: string;
-  if (state === "unavailable") {
+  if (imagePost) {
+    full = t("shell.collectionPreview.stateNote.not_video");
+    note = full;
+  } else if (state === "unavailable") {
     full = t(`shell.collectionPreview.unavailableReason.${entry.unavailableReason ?? "unknown"}`);
     note = full;
   } else if (state === "trashed") {
@@ -96,7 +109,7 @@ export function EntryState({ entry, describeId }: { entry: PreviewEntry; describ
       {state === "in_library" ? <Tooltip content={full}>{badge}</Tooltip> : badge}
       <span className="text-note text-muted">{note}</span>
       <span id={describeId} className="sr-only">
-        {`${t(`shell.collectionPreview.state.${state}`)}: ${full}`}
+        {`${label}: ${full}`}
       </span>
     </span>
   );

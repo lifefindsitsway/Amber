@@ -1,6 +1,7 @@
 import { monotonicFactory } from "ulid";
 import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
 import type { CollectionEntryState, ImportItem, ImportRequest, ImportResponse, InspectRequest, InspectResponse } from "../../shared/dto/import.ts";
+import { PLATFORM_CAPABILITIES } from "../../shared/platforms.ts";
 import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
 import { BYTES_PER_MB } from "../../shared/units.ts";
 import { canonicalJson } from "../domain/canonical-json.ts";
@@ -23,7 +24,9 @@ import type {
   ParsedPlatformUrl,
   PlatformCollectionEntry,
   PlatformCollectionItem,
+  PlatformContentRef,
   PlatformCredential,
+  PlatformImportCheck,
   PlatformPart,
   PlatformSourceAdapter,
 } from "../ports/platform-source.ts";
@@ -42,6 +45,7 @@ import { CollectionPreviewCache, type CollectionPreview, type CollectionPreviewB
 import { freezePromptRefs } from "./prompts.ts";
 import { freezeSpeakerContext } from "./speaker-context.ts";
 import { jsonRequestDigest, runIdempotent, type IdempotentResult } from "./idempotency.ts";
+import { PlatformDetailReuse } from "./platform-detail-reuse.ts";
 import type { PlatformRegistry } from "./platforms.ts";
 import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
 import { prepareInitialSubtitle, writeInitialSubtitle, type InitialSubtitle } from "./subtitle-import.ts";
@@ -106,6 +110,12 @@ export interface ImportContentServiceOptions {
   asrDescriptors?: AsrDescriptorSource;
   /** Listed collections kept between a preview's pages and its import; a fresh one per service by default. */
   previews?: CollectionPreviewCache;
+  /**
+   * Metadata import checks read, kept briefly for the paste check, the import and the source
+   * stage to share; the composition hands the same instance to the source stage. A fresh one
+   * per service by default.
+   */
+  details?: PlatformDetailReuse;
   now?: () => number;
   newId?: () => string;
 }
@@ -125,6 +135,14 @@ interface ResolvedItem {
   /** Every platform collection of the request that lists it, in request order. */
   platformCollections: string[];
   initialSubtitle?: InitialSubtitle;
+  /** An existing Content's stored link the request offered to replace, and whether the new link was verified. */
+  sourceUrlUpdate?: { contentId: string; sourceUrl: string; verified: boolean };
+}
+
+/** Links of a request whose import check refused them, by the error each one gets. */
+interface CheckProblems {
+  rejected: Array<{ code: "invalid_request.not_video" | "invalid_request.link_expired"; url: string }>;
+  unverified: string[];
 }
 
 /** A platform collection the request expanded, with its whole listed order for placing new members. */
@@ -240,12 +258,14 @@ export class ImportContentService {
   private readonly now: () => number;
   private readonly newId: () => string;
   private readonly previews: CollectionPreviewCache;
+  private readonly details: PlatformDetailReuse;
 
   constructor(options: ImportContentServiceOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.newId = options.newId ?? monotonicFactory();
     this.previews = options.previews ?? new CollectionPreviewCache({ now: this.now });
+    this.details = options.details ?? new PlatformDetailReuse({ now: this.now });
   }
 
   async import(
@@ -292,6 +312,9 @@ export class ImportContentService {
     if (parsed.platformContentId === undefined) {
       return this.inspectCollection(owner, request, recognized, signal);
     }
+    if (adapter.precheck !== undefined) {
+      return this.inspectChecked(owner, recognized, signal);
+    }
     if (adapter.resolveParts === undefined) {
       return { kind: "single", canonicalUrl: parsed.canonicalUrl };
     }
@@ -311,6 +334,87 @@ export class ImportContentService {
       canonicalUrl: parsed.canonicalUrl,
       parts: parts.map(({ platformPartId, index, title, durationMs }) => ({ platformPartId, index, title, durationMs })),
     };
+  }
+
+  /**
+   * A single link of a platform that checks links before import: the Content it names when
+   * that is in the library already (the platform is not asked), otherwise what the check found.
+   */
+  private async inspectChecked(owner: string, recognized: Recognized, signal: AbortSignal): Promise<InspectResponse> {
+    const { adapter, parsed } = recognized;
+    const source: ContentSource = { kind: adapter.kind, sourceUrl: parsed.canonicalUrl, platformContentId: parsed.platformContentId as string };
+    const existing = this.options.repository.withTransaction((scope) => scope.contents.findByPlatformIdentity(owner, source));
+    if (existing !== undefined && existing.trashedAt === undefined) {
+      return { kind: "single", canonicalUrl: parsed.canonicalUrl, contentId: existing.id };
+    }
+    const check = await this.checkLink(owner, recognized, signal);
+    if (check.result !== "video") {
+      return { kind: "single", canonicalUrl: parsed.canonicalUrl, check };
+    }
+    const { title, durationMs } = check.metadata;
+    const related = check.relatedCollection;
+    return {
+      kind: "single",
+      canonicalUrl: parsed.canonicalUrl,
+      title,
+      check: { result: "video", title, durationMs: Math.max(0, Math.round(durationMs)) },
+      ...(related === undefined
+        ? {}
+        : {
+            relatedCollection: {
+              platformCollectionId: related.platformCollectionId,
+              title: related.title,
+              ...(related.itemCount === undefined ? {} : { itemCount: related.itemCount }),
+              ...(related.index === undefined ? {} : { index: related.index }),
+              canonicalUrl: related.canonicalUrl,
+            },
+          }),
+    };
+  }
+
+  /**
+   * The import check of a single link, answered from the metadata kept from a check moments
+   * ago for this user and link when there is one; a `video` result is kept for the next step.
+   */
+  private async checkLink(owner: string, recognized: Recognized, signal: AbortSignal): Promise<PlatformImportCheck> {
+    const { adapter, auth, parsed } = recognized;
+    const ref: PlatformContentRef = { platformContentId: parsed.platformContentId as string, sourceUrl: parsed.canonicalUrl };
+    const kept = this.details.find(owner, adapter.kind, ref);
+    if (kept !== undefined) {
+      return { result: "video", ...kept };
+    }
+    const precheck = adapter.precheck?.bind(adapter);
+    if (precheck === undefined) {
+      throw new TypeError("the adapter does not check links");
+    }
+    const check = await this.heavyJob(owner, signal, () => precheck(ref, auth, signal));
+    if (check.result === "video") {
+      this.details.remember(owner, adapter.kind, ref, check);
+    }
+    return check;
+  }
+
+  /**
+   * Whether re-importing `existing` from this link replaces its stored link: only on platforms
+   * whose links expire, only when the new link carries access parameters (their canonical
+   * links keep nothing else in the query) and differs from the stored one, and only once the
+   * new link is checked to open the same video. A check that cannot tell, refuses or fails
+   * keeps the stored link; it never fails the import.
+   */
+  private async sourceUrlUpdate(owner: string, link: Recognized, existing: Content, signal: AbortSignal): Promise<ResolvedItem["sourceUrlUpdate"]> {
+    const offered = link.parsed.canonicalUrl;
+    if (!PLATFORM_CAPABILITIES[link.adapter.kind].linkMayExpire || new URL(offered).search === "" || offered === existing.source.sourceUrl) {
+      return undefined;
+    }
+    let verified = false;
+    try {
+      verified = (await this.checkLink(owner, link, signal)).result === "video";
+    } catch (error) {
+      if (signal.aborted || !(error instanceof AmberError)) {
+        throw error;
+      }
+    }
+    return { contentId: existing.id, sourceUrl: offered, verified };
   }
 
   /**
@@ -451,6 +555,7 @@ export class ImportContentService {
     const resolved: ResolvedItem[] = [];
     const collections = new Map<string, ExpandedCollection>();
     const seen = new Map<string, ResolvedItem>();
+    const problems: CheckProblems = { rejected: [], unverified: [] };
     for (const [index, item] of items.entries()) {
       const link = recognized[index] as Recognized;
       let candidates: ResolvedItem[];
@@ -461,7 +566,7 @@ export class ImportContentService {
         }
         candidates = expanded.items;
       } else {
-        candidates = await this.resolveLink(owner, link, item, index, subtitles[index], signal);
+        candidates = await this.resolveLink(owner, link, item, index, subtitles[index], problems, signal);
       }
       for (const candidate of candidates) {
         const key = platformContentKey(owner, candidate.source) as string;
@@ -482,6 +587,7 @@ export class ImportContentService {
         }
       }
     }
+    throwCheckProblems(problems);
     if (resolved.length > IMPORT_BATCH_MAX) {
       throw batchTooLarge(resolved.length);
     }
@@ -513,11 +619,14 @@ export class ImportContentService {
     const listed = new Map(listing.entries.map((entry) => [entry.platformContentId, entry]));
     let chosen: PlatformCollectionEntry[];
     if (item.entries === undefined) {
-      const count = listing.truncated ? Math.max(listing.totalCount ?? 0, listing.entries.length + 1) : listing.entries.length;
+      // Importing the whole collection skips its image posts: they can never become a Content.
+      const importable = listing.entries.filter((entry) => entry.unavailable !== "not_video");
+      const skipped = listing.entries.length - importable.length;
+      const count = listing.truncated ? Math.max((listing.totalCount ?? 0) - skipped, importable.length + 1) : importable.length;
       if (count > IMPORT_BATCH_MAX) {
         throw batchTooLarge(count);
       }
-      chosen = [...listing.entries];
+      chosen = importable;
     } else {
       if (item.entries.some((id) => !listed.has(id))) {
         // A preview that expired may have listed what the collection no longer has.
@@ -529,6 +638,9 @@ export class ImportContentService {
       }
     }
     await this.resolveEntries(owner, adapter, auth, platformCollectionId, chosen, resolved, signal);
+    if (item.entries === undefined) {
+      chosen = chosen.filter((entry) => resolved.get(entry.platformContentId)?.unavailable !== "not_video");
+    }
     if (chosen.some((entry) => entry.unavailable === undefined && resolved.get(entry.platformContentId)?.unavailable !== undefined)) {
       // Found unavailable only by resolving it. Chosen: the preview showed it as not
       // selectable. Not chosen: the collection fails as a whole, as resolving one did before
@@ -564,6 +676,7 @@ export class ImportContentService {
     item: ImportItem,
     index: number,
     initialSubtitle: InitialSubtitle | undefined,
+    problems: CheckProblems,
     signal: AbortSignal,
   ): Promise<ResolvedItem[]> {
     const { adapter, auth, parsed } = link;
@@ -573,15 +686,14 @@ export class ImportContentService {
       if (item.parts !== undefined) {
         throw invalid(`items[${index}].parts`, "this link has no parts to choose from");
       }
-      return [
-        {
-          origin: "direct",
-          firstExpanded: false,
-          source: { kind, sourceUrl: parsed.canonicalUrl, platformContentId },
-          platformCollections: [],
-          ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
-        },
-      ];
+      const single: ResolvedItem = {
+        origin: "direct",
+        firstExpanded: false,
+        source: { kind, sourceUrl: parsed.canonicalUrl, platformContentId },
+        platformCollections: [],
+        ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
+      };
+      return adapter.precheck === undefined ? [single] : [await this.checkedItem(owner, link, item, single, problems, signal)];
     }
     const resolveParts = adapter.resolveParts.bind(adapter);
     const parts = await this.heavyJob(owner, signal, () => resolveParts({ platformContentId }, auth, signal));
@@ -599,6 +711,34 @@ export class ImportContentService {
       platformCollections: [],
       ...(initialSubtitle === undefined ? {} : { initialSubtitle }),
     }));
+  }
+
+  /**
+   * A single link of a platform that checks links before import. A Content already in the
+   * library is not checked (only a new link offered for it is, to replace its stored link). A
+   * new one goes ahead when the check finds a video, starting with the title and duration it
+   * read; a refusal is recorded against the link, and so is a check that could not tell unless
+   * the user chose to import it anyway, leaving the source stage to find out.
+   */
+  private async checkedItem(owner: string, link: Recognized, item: ImportItem, single: ResolvedItem, problems: CheckProblems, signal: AbortSignal): Promise<ResolvedItem> {
+    const existing = this.options.repository.withTransaction((scope) => scope.contents.findByPlatformIdentity(owner, single.source));
+    if (existing !== undefined) {
+      const update = await this.sourceUrlUpdate(owner, link, existing, signal);
+      return update === undefined ? single : { ...single, sourceUrlUpdate: update };
+    }
+    const check = await this.checkLink(owner, link, signal);
+    if (check.result === "rejected") {
+      problems.rejected.push({ code: check.reason === "not_video" ? "invalid_request.not_video" : "invalid_request.link_expired", url: item.url });
+      return single;
+    }
+    if (check.result === "unverified") {
+      if (item.acceptUnverified !== true) {
+        problems.unverified.push(item.url);
+      }
+      return single;
+    }
+    const { title, durationMs } = check.metadata;
+    return { ...single, ...(title === "" ? {} : { title }), ...(durationMs > 0 ? { durationMs: Math.round(durationMs) } : {}) };
   }
 
   /** `p=N` in the link picks one part; a multi-part submission without it needs an explicit choice. */
@@ -683,6 +823,7 @@ export class ImportContentService {
     const created: string[] = [batchId];
     const taskIds: string[] = [];
     const contentIds: string[] = [];
+    const sourceUrlUpdates: NonNullable<ImportResponse["sourceUrlUpdates"]> = [];
     // Members each platform collection gains from this batch, in batch order.
     const joining = new Map<string, Array<{ contentId: string; platformContentId: string }>>();
     const targetMembers: string[] = [];
@@ -701,6 +842,12 @@ export class ImportContentService {
       created.push(...createdIds);
       contentIds.push(content.id);
       taskIds.push(task.id);
+      const update = item.sourceUrlUpdate;
+      if (update !== undefined && update.contentId === content.id) {
+        // Written with the import itself; the stored link is not an edit of the Content, so `updatedAt` stays.
+        const replaced = update.verified && scope.contents.setSourceUrl(owner, content.id, update.sourceUrl);
+        sourceUrlUpdates.push({ contentId: content.id, result: replaced ? "updated" : "kept" });
+      }
       for (const platformCollectionId of item.platformCollections) {
         const members = joining.get(platformCollectionId) ?? [];
         members.push({ contentId: content.id, platformContentId: item.source.platformContentId as string });
@@ -744,7 +891,11 @@ export class ImportContentService {
       if (joined) scope.collections.touch(owner, targetId, now);
       if (!collectionIds.includes(targetId)) collectionIds.push(targetId);
     }
-    return { status: 202, body: { importBatchId: batchId, taskIds, contentIds, skippedTrashedContentIds, collectionIds }, resourceRefs: created };
+    return {
+      status: 202,
+      body: { importBatchId: batchId, taskIds, contentIds, skippedTrashedContentIds, collectionIds, ...(sourceUrlUpdates.length === 0 ? {} : { sourceUrlUpdates }) },
+      resourceRefs: created,
+    };
   }
 
   private createOrReuse(
@@ -853,6 +1004,22 @@ export class ImportContentService {
       newId: this.newId,
     });
     return { task, created: true };
+  }
+}
+
+/**
+ * Refuses a request with links the import check refused: a link known not to work refuses it
+ * first (the first such error, naming every link that has it), then links that could not be
+ * verified and were not accepted anyway, all named at once so one confirmation covers them.
+ */
+function throwCheckProblems(problems: CheckProblems): void {
+  const first = problems.rejected[0];
+  if (first !== undefined) {
+    const urls = problems.rejected.filter((problem) => problem.code === first.code).map((problem) => problem.url);
+    throw amberError("invalid_request", "the import check refused a link", { code: first.code, details: { urls } });
+  }
+  if (problems.unverified.length > 0) {
+    throw amberError("invalid_request", "the import check could not verify a link", { code: "invalid_request.link_unverified", details: { urls: problems.unverified } });
   }
 }
 

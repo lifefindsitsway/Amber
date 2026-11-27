@@ -196,6 +196,11 @@ export interface ContentRepository {
    * `description: null` clears the text and the truncated flag (the platform said there is none).
    */
   setDescription(ownerUserId: string, contentId: string, value: { description: string | null; truncated: boolean; checkedAt: number }, now: number): boolean;
+  /**
+   * Replaces the stored source link (an expiring link refreshed by a verified one) and nothing
+   * else — never `updated_at`, since the Content itself did not change. Returns whether it wrote.
+   */
+  setSourceUrl(ownerUserId: string, contentId: string, sourceUrl: string): boolean;
   /** Points the Content at one of its own revisions; `undefined` clears the pointer. */
   setPrimaryTranscript(ownerUserId: string, contentId: string, revisionId: string | undefined, updatedAt: number): void;
   /**

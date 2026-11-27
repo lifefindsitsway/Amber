@@ -1,12 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Tabs } from "radix-ui";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router";
 import { UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
 import { contentDetailDtoSchema } from "../../shared/dto/content.ts";
-import { importResponseSchema, inspectResponseSchema, type ImportItem, type ImportRequest, type ImportResponse } from "../../shared/dto/import.ts";
+import {
+  importResponseSchema,
+  inspectResponseSchema,
+  type ImportItem,
+  type ImportRequest,
+  type ImportResponse,
+  type InspectResponse,
+  type RelatedCollection,
+} from "../../shared/dto/import.ts";
 import type { LocalFileRequest } from "../../shared/dto/local-media.ts";
 import type { AsrModelRefDto, ModelRefDto } from "../../shared/dto/model-ref.ts";
 import { summaryTemplateListDtoSchema, type SummaryTemplateDto } from "../../shared/dto/summary.ts";
@@ -40,11 +48,13 @@ import { Button, FOCUS_RING } from "../ui/button.tsx";
 import { Checkbox, Radio } from "../ui/checkbox.tsx";
 import { FilePicker } from "../ui/file-picker.tsx";
 import { NativeSelect } from "../ui/native-select.tsx";
-import { Callout, FieldError, FieldHint, InlineNote, TEXT_ACTION_CLASS } from "../ui/notice.tsx";
+import { Callout, FieldError, FieldHint, InlineNote, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 import { Select, type SelectOption } from "../ui/select.tsx";
 import { TextArea, TextInput } from "../ui/text-field.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { PageHeader } from "../ui/feedback.tsx";
+import { useToast } from "../ui/toast.tsx";
+import { checkableLink, ImportCheckNote, importCheckShown, SubtitleLoginNote, useImportCheck, useSubtitleLoginHint } from "./import-check.tsx";
 import { ImportPackButton, PackActiveNotice } from "./content-pack/pack-entry.tsx";
 
 /** Builtin template id used when the user has not chosen a default. */
@@ -69,6 +79,24 @@ interface Problem {
   field: ProblemField;
   message: string;
 }
+
+/**
+ * The box's single video opened as a choice from the platform collection it belongs to: on
+ * confirming the preview, the video's link is sent as that collection with the chosen entries.
+ */
+interface RelatedPick {
+  videoUrl: string;
+  collectionUrl: string;
+}
+
+/** One send of the link (or subtitle) tab: the preview's choice, and the video chosen from its collection, if so. */
+interface LinkSubmit {
+  choices: readonly CollectionChoice[];
+  related?: RelatedPick;
+}
+
+/** Answers that reject a link the import checked, shown under the box as what is wrong with it. */
+const REJECTED_LINK_CODES: ReadonlySet<string> = new Set(["invalid_request.not_video", "invalid_request.link_expired"]);
 
 /** Timed subtitles a new Content can carry; plain text cannot be imported with new media. */
 const SUBTITLE_ACCEPT = ".srt,.vtt,.ass,.ambersub,text/vtt,application/x-subrip";
@@ -171,6 +199,7 @@ export function NewPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const version = useVersion();
   const settings = useSettings();
   const providers = useProviders();
@@ -219,6 +248,15 @@ export function NewPage() {
   const [partPrompts, setPartPrompts] = useState<PartPrompt[]>([]);
   const [partChoices, setPartChoices] = useState<Record<string, PartChoice>>({});
   const [problem, setProblem] = useState<Problem | undefined>(undefined);
+  // The box text an import refused (an image post, an expired link): the refusal holds only
+  // while the box still says that.
+  const [refusedText, setRefusedText] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (refusedText !== undefined && text !== refusedText) {
+      setRefusedText(undefined);
+      setProblem(undefined);
+    }
+  }, [text, refusedText]);
   const [error, setError] = useState<AppError | undefined>(undefined);
   // Items skipped because their Content is in the trash; the page stays so the user sees why.
   const [skipped, setSkipped] = useState<{ count: number; next?: { path: string; openTasks: boolean } } | undefined>(undefined);
@@ -228,6 +266,12 @@ export function NewPage() {
   const [confirmed, setConfirmed] = useState<{ urls: readonly string[]; choices: CollectionChoice[] } | undefined>(undefined);
   // The link import being sent: its frozen body and Idempotency-Key, kept for a retry after a network failure.
   const intent = useRef<ImportIntent | undefined>(undefined);
+  // The box's video opened in the preview of its platform collection, while that preview is the one shown.
+  const [related, setRelated] = useState<RelatedPick | undefined>(undefined);
+  // Links the import could not verify, waiting for 「仍然导入」, and the send they came from.
+  const [unverified, setUnverified] = useState<{ urls: readonly string[]; send: LinkSubmit } | undefined>(undefined);
+  // Links the user chose to import unverified; every later send of them says so.
+  const acceptedUnverified = useRef(new Set<string>());
 
   const modelOptions: ModelSelectEntry[] = (providers.data?.items ?? []).flatMap((profile) =>
     profile.models.map((model) => ({
@@ -277,10 +321,15 @@ export function NewPage() {
   // Collection links are chosen from in the preview first: those recognizable here, and short
   // links the server reported as collections.
   const previewUrls = tab === "link" ? linkUrls.filter((url) => recognizeLink(url)?.kind === "collection" || extraPreviewUrls.includes(url)) : [];
-  const preview = useCollectionPreview({
-    reserved: linkUrls.length - previewUrls.length,
-  });
+  // Opened from the box's single video, the preview's collection takes that video's place in the batch.
+  const reserved = related !== undefined && linkUrls.includes(related.videoUrl) ? linkUrls.length - 1 : linkUrls.length - previewUrls.length;
+  const preview = useCollectionPreview({ reserved });
   const recognitionId = `${formId}-recognition`;
+  const checkUrl = tab === "link" ? checkableLink(parsed) : undefined;
+  const check = useImportCheck(checkUrl, text);
+  const loginHint = useSubtitleLoginHint(parsed, tab === "link");
+  // Links the import could not verify that are still in the box.
+  const shownUnverified = unverified?.urls.filter((url) => urls.includes(url)) ?? [];
   // A choice of parts belongs to the link it was made for; an edited link asks again.
   const shownPartPrompts = partPrompts.filter((prompt) => urls.includes(prompt.url));
 
@@ -471,13 +520,43 @@ export function NewPage() {
   const openPreview = (startUrl?: string, links: readonly string[] = previewUrls): void => {
     setConfirmed(undefined);
     setError(undefined);
+    setRelated(undefined);
     preview.open(links, startUrl);
+  };
+
+  /**
+   * 「选择合集中的视频」: the preview of the collection the box's video belongs to, with that video
+   * alone chosen to start with. Cancelling sends nothing; without confirming, the video goes alone.
+   */
+  const openRelated = (collection: RelatedCollection, answer: InspectResponse): void => {
+    if (checkUrl === undefined) return;
+    setConfirmed(undefined);
+    setError(undefined);
+    setRelated({ videoUrl: checkUrl, collectionUrl: collection.canonicalUrl });
+    preview.open([collection.canonicalUrl], undefined, {
+      [collection.canonicalUrl]: { canonicalUrl: answer.canonicalUrl, ...(collection.index === undefined ? {} : { index: collection.index - 1 }) },
+    });
+  };
+
+  /** Tells once what became of the stored source links the import offered to replace, and drops their stale details. */
+  const reportSourceUrlUpdates = (response: ImportResponse): void => {
+    const updates = response.sourceUrlUpdates ?? [];
+    for (const update of updates) void queryClient.invalidateQueries({ queryKey: queryKeys.content(update.contentId) });
+    for (const result of ["updated", "kept"] as const) {
+      if (updates.some((update) => update.result === result)) {
+        toast.show({ tone: result === "updated" ? "success" : "info", message: t(`shell.newPage.sourceUrlUpdate.${result}`) });
+      }
+    }
   };
 
   /** Sends the links (or the subtitle tab's one), with the entries chosen in the preview. */
   const submit = useMutation({
-    mutationFn: async (choices: readonly CollectionChoice[]): Promise<void> => {
+    mutationFn: async ({ choices, related: pick }: LinkSubmit): Promise<void> => {
       const collection = collectionTarget();
+      const unverifiedChoice = (url: string): Pick<ImportItem, "acceptUnverified"> => (acceptedUnverified.current.has(url) ? { acceptUnverified: true } : {});
+      // The video chosen from its collection is sent as that collection, so it appears once, as an entry.
+      const sentUrls = pick === undefined ? urls : urls.map((url) => (url === pick.videoUrl ? pick.collectionUrl : url));
+      const previewed = new Set(pick === undefined ? previewUrls : [...previewUrls, pick.collectionUrl]);
       let items: ImportItem[];
       if (tab === "subtitle" && subtitle !== undefined) {
         // The previewed text itself, so the digest the options carry is of what is sent.
@@ -488,6 +567,7 @@ export function NewPage() {
         items = [
           {
             url: urls[0] ?? "",
+            ...unverifiedChoice(urls[0] ?? ""),
             initialSubtitle: {
               text: subtitleText,
               language: effectiveSubtitleLanguage,
@@ -497,9 +577,10 @@ export function NewPage() {
           },
         ];
       } else {
-        items = itemsWithChoices(urls, new Set(previewUrls), choices, (url) => ({
+        items = itemsWithChoices(sentUrls, previewed, choices, (url) => ({
           url,
           ...(partChoices[url] === undefined ? {} : { parts: partChoices[url] }),
+          ...unverifiedChoice(url),
         }));
       }
       const body: ImportRequest = {
@@ -521,8 +602,11 @@ export function NewPage() {
         // The page may stay (some items skipped): the links imported are read afresh next time,
         // and the next 「开始处理」 asks again instead of resending this choice.
         preview.close();
-        preview.reset(previewUrls);
+        preview.reset([...previewed]);
         setConfirmed(undefined);
+        setRelated(undefined);
+        setUnverified(undefined);
+        reportSourceUrlUpdates(response);
         void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
         void queryClient.invalidateQueries({ queryKey: queryKeys.collections });
         // A direct link to a trashed Content restores it, back into its collections.
@@ -538,7 +622,7 @@ export function NewPage() {
           await routeAfterImport({
             api,
             response,
-            urls,
+            urls: sentUrls,
             collection,
             collectionImport: items.some((item) => item.entries !== undefined),
           }),
@@ -568,11 +652,33 @@ export function NewPage() {
             return;
           }
         }
+        if (caught instanceof ApiError && caught.error.code === "conflict.collection_preview_stale" && pick !== undefined) {
+          // The collection changed under the preview opened from the video: read it again the same way.
+          preview.open([pick.collectionUrl]);
+          preview.reread();
+          setError(caught.error);
+          return;
+        }
         if (caught instanceof ApiError && caught.error.code === "conflict.collection_preview_stale" && previewUrls.length > 0) {
           // The collection changed under the preview: read it again, keeping what is still there.
           openPreview(preview.urls[preview.step]);
           preview.reread();
           setError(caught.error);
+          return;
+        }
+        if (caught instanceof ApiError && caught.error.code === "invalid_request.link_unverified") {
+          // Nothing was created: offer to import these links anyway, as a new confirmation.
+          const asked = choiceRequiredUrls(caught.error).filter((url) => sentUrls.includes(url));
+          preview.close();
+          setUnverified({ urls: asked.length > 0 ? asked : sentUrls, send: { choices, ...(pick === undefined ? {} : { related: pick }) } });
+          return;
+        }
+        if (caught instanceof ApiError && REJECTED_LINK_CODES.has(caught.error.code)) {
+          // An image post or an expired link: what was pasted is the problem, said under its box.
+          preview.close();
+          const reason = caught.error.code === "invalid_request.not_video" ? "not_video" : "link_expired";
+          fail(tab === "subtitle" ? "subtitleUrl" : "links", caught.error.userMessage !== "" ? caught.error.userMessage : t(`shell.newPage.check.${reason}`));
+          if (tab !== "subtitle") setRefusedText(text);
           return;
         }
         if (caught instanceof ApiError && caught.error.code === "source_unsupported_url" && !preview.isOpen) {
@@ -621,6 +727,7 @@ export function NewPage() {
     setError(undefined);
     setProblem(undefined);
     setSkipped(undefined);
+    setUnverified(undefined);
     if (windowMissing) return;
     if (tab === "upload") {
       if (uploadFile === undefined) return fail("uploadFile", t("shell.newPage.needFile"));
@@ -648,21 +755,35 @@ export function NewPage() {
     if (previewUrls.length > 0) {
       // Chosen in the preview already (the import then asked about parts): sent as chosen.
       if (confirmed !== undefined && previewUrls.every((url) => confirmed.urls.includes(url))) {
-        submit.mutate(confirmed.choices);
+        submit.mutate({ choices: confirmed.choices });
         return;
       }
       openPreview();
       return;
     }
-    submit.mutate([]);
+    // Sent from the form, the box's video goes alone even after its collection was previewed.
+    submit.mutate({ choices: [] });
+  };
+
+  /** 「仍然导入」: the same send again, these links marked as chosen without verification; a new body, so a new key. */
+  const importUnverified = (): void => {
+    if (unverified === undefined) return;
+    for (const url of shownUnverified) acceptedUnverified.current.add(url);
+    const send = unverified.send;
+    setUnverified(undefined);
+    setError(undefined);
+    setProblem(undefined);
+    submit.mutate(send);
   };
 
   /** The preview's 「开始处理」: checks the form, then sends with the choice. */
   const onPreviewConfirm = (choices: CollectionChoice[]): void => {
-    setConfirmed({ urls: previewUrls, choices });
+    const pick = related !== undefined && preview.urls.includes(related.collectionUrl) && urls.includes(related.videoUrl) ? related : undefined;
+    if (pick === undefined) setConfirmed({ urls: previewUrls, choices });
     setError(undefined);
     setProblem(undefined);
     setSkipped(undefined);
+    setUnverified(undefined);
     const found = linkProblem();
     // What is held back lives on the form: show it there; the choice is kept for the next submit.
     if (found !== undefined || windowMissing) {
@@ -670,7 +791,7 @@ export function NewPage() {
       if (found !== undefined) fail(found.field, found.message);
       return;
     }
-    submit.mutate(choices);
+    submit.mutate({ choices, ...(pick === undefined ? {} : { related: pick }) });
   };
 
   const onSubtitleFile = (file: File | undefined): void => {
@@ -743,6 +864,28 @@ export function NewPage() {
     { value: NEW_COLLECTION, label: t("shell.newPage.collectionNew") },
   ];
   const linkPending = submit.isPending;
+  // The rest of the recognition line: what checking the link found, then the login hint.
+  const recognitionExtras = [
+    // Once the import itself refused the link, the field error says it; the check would say it twice.
+    ...(importCheckShown(check) && refusedText === undefined ? [<ImportCheckNote key="check" check={check} onChooseFromCollection={openRelated} />] : []),
+    ...(loginHint === undefined ? [] : [<SubtitleLoginNote key="login" state={loginHint} />]),
+  ];
+  // Under the box: the links the import could not verify, and the choice to import them anyway.
+  const unverifiedPrompt =
+    shownUnverified.length === 0 ? null : (
+      <InlineNote
+        role="status"
+        testId="new-unverified"
+        icon={<CircleAlert size={14} className="text-warn" aria-hidden="true" />}
+        action={
+          <TextAction onClick={importUnverified} disabled={linkPending || windowMissing} data-testid="new-import-unverified">
+            {t("shell.newPage.importAnyway")}
+          </TextAction>
+        }
+      >
+        {shownUnverified.length === 1 ? t("shell.newPage.unverified") : t("shell.newPage.unverifiedMany", { count: shownUnverified.length })}
+      </InlineNote>
+    );
 
   return (
     <div className="flex h-full flex-col">
@@ -780,11 +923,19 @@ export function NewPage() {
               placeholder={t("shell.newPage.urlPlaceholder")}
               rows={6}
               invalid={invalid("links")}
-              aria-describedby={describedBy("links", recognitionId)}
+              aria-describedby={describedBy("links", recognitionId, recognitionExtras.length === 0 ? undefined : `${recognitionId}-more`)}
               className="w-full font-mono"
             />
             {fieldError("links")}
-            <LinkRecognition parsed={parsed} pasted={linkField.note} id={recognitionId} onPreview={() => openPreview()} />
+            {unverifiedPrompt}
+            <LinkRecognition
+              parsed={parsed}
+              pasted={linkField.note}
+              id={recognitionId}
+              onPreview={() => openPreview()}
+              reserve={checkUrl !== undefined}
+              extras={recognitionExtras}
+            />
           </Tabs.Content>
           {server ? (
             <Tabs.Content value="upload" className={FORM_GRID}>
@@ -895,6 +1046,7 @@ export function NewPage() {
                 aria-describedby={describedBy("subtitleUrl", subtitleField.note === undefined ? undefined : `${formId}-subtitle-paste-note`)}
               />
               {fieldError("subtitleUrl")}
+              {tab === "subtitle" ? unverifiedPrompt : null}
               {subtitleField.note === undefined ? null : (
                 <FieldHint id={`${formId}-subtitle-paste-note`} testId="subtitle-paste-note">
                   {t("shell.newPage.pasteNote", { count: subtitleField.note })}
@@ -1161,7 +1313,7 @@ export function NewPage() {
         onConfirm={onPreviewConfirm}
         submitting={linkPending}
         error={preview.isOpen ? error : undefined}
-        reserved={linkUrls.length - previewUrls.length}
+        reserved={reserved}
       />
     </div>
   );

@@ -449,3 +449,49 @@ describe("source stage: the local cover copy", () => {
     expect(fetched).toEqual([]);
   });
 });
+
+describe("source stage after an import check", () => {
+  const NOTE = "64e0a1b2c3d4e5f600112233";
+  const URL_WITH_TOKEN = `https://www.xiaohongshu.com/explore/${NOTE}?xsec_token=xxxxtok1&xsec_source=pc_feed`;
+
+  async function imported(h: Harness, acceptUnverified = false): Promise<string> {
+    const { body } = await h.importContent.import(LOCAL, { items: [{ url: URL_WITH_TOKEN, ...(acceptUnverified ? { acceptUnverified } : {}) }], settings: { autoProofread: true } });
+    return body.contentIds[0] as string;
+  }
+
+  it("publishes the metadata the check read, asking the platform once from paste to source", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.video(NOTE, {
+      metadata: {
+        title: "番茄牛腩面",
+        durationMs: 284_867,
+        coverUrl: "https://sns-webpic-qc.xhscdn.com/x/xxxxcover",
+        publishedAt: 1_794_830_642_000,
+        channelTitle: "厨房里的小王",
+        description: { state: "found", text: "简介 #家常菜" },
+      },
+    });
+    await h.importContent.inspect(LOCAL, { url: URL_WITH_TOKEN });
+    const contentId = await imported(h);
+    await runSource(h, contentId);
+    expect(h.platforms.xiaohongshu.callsOf("precheck")).toHaveLength(1);
+    expect(h.platforms.xiaohongshu.callsOf("fetchMetadata")).toHaveLength(0);
+    expect(contentOf(h, contentId)).toMatchObject({
+      title: "番茄牛腩面",
+      durationMs: 284_867,
+      coverUrl: "https://sns-webpic-qc.xhscdn.com/x/xxxxcover",
+      publishedAt: 1_794_830_642_000,
+      source: { channelTitle: "厨房里的小王" },
+      description: "简介 #家常菜",
+    });
+  });
+
+  it("asks the platform when no check read the link, as for a link imported unverified", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "unverified" });
+    const contentId = await imported(h, true);
+    await runSource(h, contentId);
+    expect(h.platforms.xiaohongshu.callsOf("fetchMetadata")).toHaveLength(1);
+    expect(contentOf(h, contentId)?.title).toBe(`title ${NOTE}`);
+  });
+});

@@ -23,6 +23,8 @@ import { CHAPTER_COUNT_MAX, CONTEXT_SAFETY_RATIO, RETRY_MAX } from "../../../../
 import type { SegmentId } from "../../../../src/shared/ids.ts";
 import type { Logger } from "../../../../src/server/ports/logger.ts";
 import { FakeLlmProvider, reply } from "../../../fixtures/llm/fake-llm.ts";
+import { metadataOf, readDetailResponse } from "../../../../src/server/adapters/platform/douyin/detail.ts";
+import { videoDetail } from "../../../fixtures/platform/douyin/fake-platform.ts";
 import { pipelinePromptKind } from "../../../fixtures/llm/pipeline-llm.ts";
 import * as sc from "../../../fixtures/pipeline/speaker-context.ts";
 import { resolveSpeakerContext } from "../../../../src/server/application/speaker-context.ts";
@@ -351,6 +353,60 @@ describe("chapter stage", () => {
     const current = currentOf(h, contentId);
     expect(current?.origin).toEqual({ kind: "platform" });
     expect(current?.chapters[0]).toMatchObject({ startMs: 0, title: "开篇" });
+  });
+
+  it("keeps the chapters the Douyin adapter reads as the platform chapters, without a model call", async () => {
+    // The stages see only metadata: a scripted video carrying exactly what the Douyin adapter
+    // reads from the recorded detail (six creator chapters) stands for a Douyin video.
+    const read = readDetailResponse(videoDetail());
+    if (read.kind !== "found") {
+      throw new Error("expected the recorded detail");
+    }
+    const metadata = metadataOf(read.detail);
+    const fake = new FakeLlmProvider();
+    const executors = platformPipelineExecutors();
+    const h = createHarness({ llmProviders: [fake], executors });
+    open.push(h);
+    executors.source = Object.assign(new SourceStageExecutor({ repository: h.repository, platforms: h.platformAccess, newId: h.newId, descriptionClock: new DescriptionClock(Date.now) }), { calls: 0 });
+    executors.chapter = Object.assign(new ChapterStageExecutor({ repository: h.repository, newId: h.newId }), { calls: 0 });
+    // Transcription is covered by the subtitle stage's tests; here a transcript is simply there.
+    executors.subtitle = countingExecutor({ verdict: "valid", reasons: [] });
+    const modelRef = configureLlm(h);
+    const bvid = "BV1chp41c002";
+    h.platforms.bilibili.video(bvid, { metadata });
+    const contentId = h.newId();
+    h.repository.withTransaction((scope) =>
+      scope.contents.insert({
+        id: contentId,
+        userId: LOCAL.userId,
+        source: { kind: "bilibili", sourceUrl: `https://www.bilibili.com/video/${bvid}`, platformContentId: bvid, platformPartId: `${bvid}-cid` },
+        processingStatus: "queued",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    const taskId = transact(h.repository, h.bus, (scope, outbox) =>
+      createTask(scope, outbox, {
+        task: {
+          id: h.newId(),
+          userId: LOCAL.userId,
+          contentId,
+          kind: "process_content",
+          requestJson: canonicalJson({ requestSchemaVersion: 1, kind: "process_content", modelRef, autoProofread: false }),
+          createdAt: Date.now(),
+        },
+        sourceKind: "bilibili",
+        newId: h.newId,
+      }).id,
+    );
+    h.scheduler.start();
+    await waitFor(() => ["succeeded", "failed"].includes(stageStatuses(h, taskId)["summary"] ?? ""));
+    expect(stageStatuses(h, taskId)).toMatchObject({ source: "succeeded", chapter: "skipped" });
+    expect(fake.calls).toHaveLength(0);
+    const current = currentOf(h, contentId);
+    expect(current?.origin).toEqual({ kind: "platform" });
+    expect(current?.chapters.map((chapter) => [chapter.startMs, chapter.title])).toEqual(metadata.chapters?.map((chapter) => [chapter.startMs, chapter.title]));
+    expect(current?.chapters).toHaveLength(6);
   });
 
   it("is a no-op without a model call when platform chapters exist even if the stage is reached", async () => {

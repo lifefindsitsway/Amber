@@ -1,6 +1,7 @@
 import { monotonicFactory } from "ulid";
 import { capDescription, type DescriptionClock } from "../../domain/content-description.ts";
 import { amberError } from "../../domain/errors.ts";
+import type { Platform } from "../../domain/platform.ts";
 import { normalizePlatformChapters } from "../../domain/platform-subtitle.ts";
 import type { Repository } from "../../ports/repository.ts";
 import type { StageExecutionContext, StageExecutor, StageOutcome } from "../executor.ts";
@@ -47,12 +48,19 @@ export class SourceStageExecutor implements StageExecutor {
     // Metadata goes through the platform's extractor: managed heavy work that waits for a slot of
     // the shared heavy-job governor.
     let checkedAt = 0;
-    const metadata = await context.withHeavySlot(() => {
-      // The time the request is sent, not when it returns: a manual fetch sent while this one
-      // is out is newer and must win.
+    // An import check read this link's metadata moments ago: it is used instead of asking again.
+    const recent = this.deps.platforms.recentMetadata?.(content.userId, content.source.kind as Platform, target.ref);
+    if (recent !== undefined) {
       checkedAt = this.deps.descriptionClock.issue();
-      return target.adapter.fetchMetadata(target.ref, target.auth, context.signal);
-    });
+    }
+    const metadata =
+      recent ??
+      (await context.withHeavySlot(() => {
+        // The time the request is sent, not when it returns: a manual fetch sent while this one
+        // is out is newer and must win.
+        checkedAt = this.deps.descriptionClock.issue();
+        return target.adapter.fetchMetadata(target.ref, target.auth, context.signal);
+      }));
     if (!(metadata.durationMs > 0)) {
       throw amberError("source_unreachable", "the platform reported no duration");
     }

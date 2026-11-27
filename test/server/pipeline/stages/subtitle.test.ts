@@ -13,6 +13,8 @@ import type { SubtitleTrackRef } from "../../../../src/server/ports/platform-sou
 import type { SegmentId } from "../../../../src/shared/ids.ts";
 import { configureAsr, configureLlm, createHarness, LOCAL, stageRunsOf, stageStatuses, taskOf, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { evenCues, lectureFixtures, VERDICT_DURATION_MS, VERDICT_FIXTURES, type Cue } from "../../../fixtures/platform/subtitles.ts";
+import { metadataOf, readDetailResponse } from "../../../../src/server/adapters/platform/douyin/detail.ts";
+import { videoDetail } from "../../../fixtures/platform/douyin/fake-platform.ts";
 
 const open: Harness[] = [];
 afterEach(async () => {
@@ -204,6 +206,27 @@ describe("subtitle stage verdicts", () => {
     const contentId = platformContent(h, id, VERDICT_DURATION_MS);
     expect(await runSubtitle(h, contentId)).toEqual({ verdict: "valid", reasons: ["subtitle_cue_dropped"] });
     expect(segmentsOf(h, contentOf(h, contentId)?.primaryTranscriptRevisionId as string)).toHaveLength(120);
+  });
+});
+
+describe("a platform without subtitles", () => {
+  it("goes to ASR for the metadata the Douyin adapter reads, which lists no track", async () => {
+    // The stage looks only at the metadata, never at the platform: a scripted video carrying
+    // exactly what the Douyin adapter reads from the recorded detail stands for a Douyin video.
+    const read = readDetailResponse(videoDetail());
+    if (read.kind !== "found") {
+      throw new Error("expected the recorded detail");
+    }
+    const metadata = metadataOf(read.detail);
+    expect(metadata.subtitleTracks).toEqual([]);
+    const h = harness();
+    h.platforms.bilibili.video(bvid(20), { metadata });
+    const [run] = await importAndRun(h, [bvid(20)]);
+    const taskId = run?.taskId as string;
+    expect(subtitleResult(h, taskId).verdict).toBe("none");
+    expect(needsAsr(h, taskId, run?.contentId as string)).toBe(true);
+    expect(stageStatuses(h, taskId).asr).toBe("succeeded");
+    expect(h.platforms.bilibili.callsOf("fetchSubtitle")).toHaveLength(0);
   });
 });
 
@@ -403,5 +426,27 @@ describe("next to a user-imported subtitle", () => {
     expect(subtitleResult(h, taskId)).toEqual({ verdict: "none", reasons: [], platformFetch: "none" });
     expect(stageStatuses(h, taskId).asr).toBe("skipped");
     expect(taskOf(h, taskId).statusProjection).toBe("succeeded");
+  });
+});
+
+describe("platforms without platform subtitles", () => {
+  it("finds no track for a Xiaohongshu note, so its transcript comes from ASR", async () => {
+    const h = harness();
+    const note = "64e0a1b2c3d4e5f600112233";
+    const contentId = h.newId();
+    h.repository.withTransaction((scope) =>
+      scope.contents.insert({
+        id: contentId,
+        userId: LOCAL.userId,
+        source: { kind: "xiaohongshu", sourceUrl: `https://www.xiaohongshu.com/explore/${note}?xsec_token=xxxxtok1`, platformContentId: note },
+        durationMs: 284_867,
+        processingStatus: "running",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    expect(await runSubtitle(h, contentId)).toMatchObject({ verdict: "none", reasons: ["subtitle_none"] });
+    expect(h.platforms.xiaohongshu.callsOf("fetchSubtitle")).toEqual([]);
+    expect(revisionsOf(h, contentId)).toEqual([]);
   });
 });

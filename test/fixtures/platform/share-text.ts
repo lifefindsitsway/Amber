@@ -34,3 +34,17 @@ export const LONG_SHARE = [
   `5. 整个播放列表：${YT_LIST}`,
   "有问题群里说。",
 ].join("\n");
+
+export const XHS_NOTE = "0123456789abcdef01234567";
+export const XHS_VIDEO = `https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=xxxxtoken1=&xsec_source=pc_share`;
+export const XHS_SHORT = "http://xhslink.com/a/AbCdE12345";
+/** The Xiaohongshu app's share: a title, a short link, then a line of instructions. */
+export const XHS_SHARE = `示例课程 第 3 讲 ${XHS_SHORT} 复制本条信息，打开【小红书】App查看精彩内容！`;
+
+export const DOUYIN_ID = "7301234567890123456";
+export const DOUYIN_MIX_ID = "7298765432109876543";
+export const DOUYIN_VIDEO = `https://www.douyin.com/video/${DOUYIN_ID}`;
+export const DOUYIN_COLLECTION = `https://www.douyin.com/collection/${DOUYIN_MIX_ID}`;
+export const DOUYIN_SHORT = "https://v.douyin.com/iAbCdE12/";
+/** The Douyin app's share: a code, a title with tags, the short link, then copy instructions. */
+export const DOUYIN_SHARE = `7.92 aBc:/ 示例课程 第 4 讲 #课程 #示例  ${DOUYIN_SHORT} 复制此链接，打开Dou音搜索，直接观看视频！`;

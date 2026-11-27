@@ -83,6 +83,38 @@ describe("PlatformAccountService", () => {
     expect(countRows(h.db, "platform_account")).toBe(1);
   });
 
+  it("imports a Xiaohongshu login from cookies.txt or a Cookie header, keeping only its domain's cookies", async () => {
+    const h = harness();
+    const cookiesTxt = [
+      "# Netscape HTTP Cookie File",
+      ".xiaohongshu.com\tTRUE\t/\tTRUE\t0\tamber_test_cookie\t<placeholder>",
+      "www.xiaohongshu.com\tFALSE\t/\tTRUE\t0\tamber_web_session\t<placeholder>",
+      ".bilibili.com\tTRUE\t/\tTRUE\t0\tforeign_cookie\t<placeholder>",
+      ".notxiaohongshu.com\tTRUE\t/\tTRUE\t0\tlookalike_cookie\t<placeholder>",
+      "",
+    ].join("\n");
+    expect(h.platformAccounts.putCookies(LOCAL, "xiaohongshu", cookiesTxt)).toEqual({
+      platform: "xiaohongshu",
+      credentialStatus: "configured",
+      hasCredential: true,
+      status: "unknown",
+    });
+    const fromFile = (await h.platformAccounts.credentialFor(LOCAL.userId, "xiaohongshu")?.cookies()) ?? "";
+    expect(fromFile).toContain("amber_test_cookie");
+    expect(fromFile).toContain("amber_web_session");
+    expect(fromFile).not.toContain("foreign_cookie");
+    expect(fromFile).not.toContain("lookalike_cookie");
+
+    expect(h.platformAccounts.putCookies(LOCAL, "xiaohongshu", "Cookie: amber_a1=<placeholder>; amber_web_session=<placeholder>")).toMatchObject({ hasCredential: true, status: "unknown" });
+    const fromHeader = (await h.platformAccounts.credentialFor(LOCAL.userId, "xiaohongshu")?.cookies()) ?? "";
+    expect(fromHeader).toMatch(/^\.xiaohongshu\.com\tTRUE\t\/\tTRUE\t\d+\tamber_a1\t<placeholder>$/m);
+    expect(fromHeader).not.toContain("amber_test_cookie");
+    expect(countRows(h.db, "secret")).toBe(1);
+    expect(everyStoredValue(h)).not.toContain("amber_web_session");
+    expect(JSON.stringify(h.platformAccounts.list(LOCAL))).not.toContain("placeholder");
+    expect(await codeOf(() => h.platformAccounts.putCookies(LOCAL, "xiaohongshu", NETSCAPE))).toBe("invalid_request.cookie_format");
+  });
+
   it("keeps only the platform's cookies, in canonical Netscape form, and rejects input with none", async () => {
     const h = harness();
     h.platformAccounts.putCookies(LOCAL, "bilibili", NETSCAPE);

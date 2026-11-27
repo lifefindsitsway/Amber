@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { ParsedLinkText } from "../links.ts";
 import { NOTE_TEXT_CLASS, TextAction } from "../ui/notice.tsx";
@@ -54,7 +54,7 @@ export function recognitionSummary(parsed: ParsedLinkText, pasted: number | unde
  * The one quiet line under a link box saying what it holds, always read from its current text:
  * how many links (or collections) were recognized, what will not be sent with 「查看」 to list
  * the links left out in place, and 「预览合集」 when collections are present. `id` names the
- * line, for the box's `aria-describedby`.
+ * line, for the box's `aria-describedby`; `${id}-more` names the `extras`.
  */
 export function LinkRecognition(props: {
   parsed: ParsedLinkText;
@@ -63,13 +63,21 @@ export function LinkRecognition(props: {
   id: string;
   /** Opens the collection preview; without it the action is not offered. */
   onPreview?: (() => void) | undefined;
+  /** More of the same line after what was recognized (a check's result, a login hint); pass only parts with something to say. */
+  extras?: ReactNode[] | undefined;
+  /**
+   * Keep the line's height even while it says nothing, for a box whose line is about to say
+   * something (a link being checked), so the form below does not jump.
+   */
+  reserve?: boolean | undefined;
   className?: string | undefined;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const { parsed } = props;
   const summary = recognitionSummary(parsed, props.pasted);
-  if (summary.lead === undefined && summary.rest === undefined) return null;
+  const extras = props.extras ?? [];
+  if (summary.lead === undefined && summary.rest === undefined && extras.length === 0 && props.reserve !== true) return null;
   const listed = parsed.unsupported.length > 0;
   const detailsId = `${props.id}-details`;
   const lead =
@@ -89,7 +97,7 @@ export function LinkRecognition(props: {
   return (
     <div className={`flex flex-col gap-1.5 ${props.className ?? ""}`} data-testid="link-recognition">
       {/* Inline flow, not flex: the actions follow the sentence on its last line instead of wrapping onto a line of their own. */}
-      <p className={NOTE_TEXT_CLASS} aria-live="polite">
+      <p className={`${NOTE_TEXT_CLASS} ${props.reserve === true ? "min-h-[1lh]" : ""}`} aria-live="polite">
         <span id={props.id} data-testid="link-recognition-text">
           {sentence}
         </span>
@@ -109,6 +117,20 @@ export function LinkRecognition(props: {
             </TextAction>
           </>
         ) : null}
+        {extras.length === 0 ? null : (
+          <span id={`${props.id}-more`} data-testid="link-recognition-more">
+            {extras.map((part, index) => (
+              <Fragment key={index}>
+                {index > 0 || sentence !== "" ? (
+                  <span aria-hidden="true" className="mx-1.5">
+                    ·
+                  </span>
+                ) : null}
+                {part}
+              </Fragment>
+            ))}
+          </span>
+        )}
       </p>
       {open && listed ? (
         <div id={detailsId} className={`flex flex-col gap-1 ${NOTE_TEXT_CLASS}`} data-testid="link-recognition-details">

@@ -1,0 +1,14 @@
+{
+  "aweme_detail": null,
+  "filter_detail": {
+    "aweme_id": "7900000000000000009",
+    "detail_msg": "",
+    "filter_reason": "core_dep",
+    "icon": "",
+    "notice": ""
+  },
+  "log_pb": {
+    "impr_id": "<impr>"
+  },
+  "status_code": 0
+}

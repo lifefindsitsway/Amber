@@ -729,3 +729,44 @@ describe("the local cover over HTTP", () => {
     expect(items.find((item) => item.contentId === without)).not.toHaveProperty("coverImageVersion");
   });
 });
+
+describe("links checked before import over HTTP", () => {
+  const NOTE = "64e0a1b2c3d4e5f600112233";
+  const XHS = `https://www.xiaohongshu.com/explore/${NOTE}?xsec_token=xxxxtok1&xsec_source=pc_feed`;
+  const importLink = (app: Awaited<ReturnType<typeof setup>>["app"], item: object) =>
+    app.inject({ method: "POST", url: "/api/contents/import", headers: auth, payload: { items: [item] } });
+
+  it("answers 400 with the refused link and writes nothing, until an unverified link is accepted", async () => {
+    const { h, app } = await setup();
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "rejected", reason: "not_video" });
+    const image = await importLink(app, { url: XHS });
+    expect(image.statusCode).toBe(400);
+    expect(image.json().error).toMatchObject({ code: "invalid_request.not_video", details: { urls: [XHS] }, userMessage: "这是图文笔记，Amber 目前只处理视频" });
+
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "unverified" });
+    const unverified = await importLink(app, { url: XHS });
+    expect(unverified.statusCode).toBe(400);
+    expect(unverified.json().error).toMatchObject({ code: "invalid_request.link_unverified", details: { urls: [XHS] } });
+    expect(countRows(h.db, "content")).toBe(0);
+    expect(countRows(h.db, "task")).toBe(0);
+
+    const accepted = await importLink(app, { url: XHS, acceptUnverified: true });
+    expect(accepted.statusCode).toBe(202);
+    expect(countRows(h.db, "content")).toBe(1);
+    expect(countRows(h.db, "task")).toBe(1);
+  });
+
+  it("inspects a library link without asking the platform, and reports a replaced source link on import", async () => {
+    const { h, app } = await setup();
+    const created = await importLink(app, { url: XHS });
+    const contentId = created.json().contentIds[0];
+    const checks = h.platforms.xiaohongshu.callsOf("precheck").length;
+    const inspected = await app.inject({ method: "POST", url: "/api/contents/inspect", headers: auth, payload: { url: XHS } });
+    expect(inspected.json()).toEqual({ kind: "single", canonicalUrl: XHS, contentId });
+    expect(h.platforms.xiaohongshu.callsOf("precheck")).toHaveLength(checks);
+
+    const renewed = await importLink(app, { url: XHS.replace("xxxxtok1", "xxxxtok2") });
+    expect(renewed.statusCode).toBe(202);
+    expect(renewed.json().sourceUrlUpdates).toEqual([{ contentId, result: "updated" }]);
+  });
+});

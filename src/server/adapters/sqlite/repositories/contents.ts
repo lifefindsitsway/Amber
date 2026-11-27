@@ -175,6 +175,7 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
        AND (description_checked_at IS NULL OR description_checked_at < @checkedAt OR description_checked_at > @now)`,
   );
   const setPinned = db.prepare("UPDATE content SET pinned_at = ? WHERE id = ? AND user_id = ?");
+  const setSourceUrl = db.prepare("UPDATE content SET source_url = ? WHERE id = ? AND user_id = ?");
   const remove = db.prepare("DELETE FROM content WHERE id = ? AND user_id = ?");
   const METADATA_COLUMNS = {
     title: "title",
@@ -323,6 +324,9 @@ export function sqliteContentRepository(db: SqliteConnection): ContentRepository
       return (
         setDescription.run({ id: contentId, owner: ownerUserId, description: value.description, truncated, checkedAt: value.checkedAt, now }).changes > 0
       );
+    },
+    setSourceUrl(ownerUserId, contentId, sourceUrl) {
+      return setSourceUrl.run(sourceUrl, contentId, ownerUserId).changes > 0;
     },
     setPrimaryTranscript(ownerUserId, contentId, revisionId, updatedAt) {
       if (revisionId !== undefined && revisionOfContent.get(revisionId, contentId) === undefined) {

@@ -1,5 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { parseBilibiliUrl } from "../../../src/server/adapters/platform/bilibili/url.ts";
+import { parseDouyinUrl } from "../../../src/server/adapters/platform/douyin/url.ts";
+import { parseXiaohongshuUrl } from "../../../src/server/adapters/platform/xiaohongshu/url.ts";
 import { parseYoutubeUrl } from "../../../src/server/adapters/platform/youtube/url.ts";
 import { amberError } from "../../../src/server/domain/errors.ts";
 import type { Platform } from "../../../src/server/domain/platform.ts";
@@ -12,6 +14,7 @@ import type {
   PlatformContentRef,
   PlatformCredential,
   PlatformDescription,
+  PlatformImportCheck,
   PlatformMetadata,
   PlatformPart,
   PlatformSourceAdapter,
@@ -49,10 +52,25 @@ export interface FakeCall {
   withAuth: boolean;
 }
 
+const PARSERS: Readonly<Record<Platform, (url: string) => ParsedPlatformUrl | null>> = {
+  bilibili: parseBilibiliUrl,
+  youtube: parseYoutubeUrl,
+  xiaohongshu: parseXiaohongshuUrl,
+  douyin: parseDouyinUrl,
+};
+
+const COOKIE_DOMAINS: Readonly<Record<Platform, readonly string[]>> = {
+  bilibili: ["bilibili.com"],
+  youtube: ["youtube.com"],
+  xiaohongshu: [".xiaohongshu.com"],
+  douyin: [],
+};
+
 /**
  * A scripted `PlatformSourceAdapter` for tests: URL recognition is the real adapter's
  * parser; everything that would go online answers from the script and is logged. As
- * bilibili it also resolves part ids and short links.
+ * bilibili it also resolves part ids and short links; as Xiaohongshu or Douyin it checks
+ * links before import (`checks`, else a video with the scripted metadata).
  */
 export class FakePlatformAdapter implements PlatformSourceAdapter {
   readonly kind: Platform;
@@ -63,13 +81,26 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
   /** The video ids of each `resolveCollectionEntries` call, in call order. */
   readonly resolvedEntries: string[][] = [];
   readonly shortLinks = new Map<string, string>();
+  /** What `precheck` answers, by the full link checked first, then by video id. */
+  readonly checks = new Map<string, PlatformImportCheck | Error>();
   credentialStatus: "valid" | "expired" | "unknown" = "valid";
   declare resolveParts?: NonNullable<PlatformSourceAdapter["resolveParts"]>;
   declare resolveUrl?: NonNullable<PlatformSourceAdapter["resolveUrl"]>;
+  declare precheck?: NonNullable<PlatformSourceAdapter["precheck"]>;
 
   constructor(kind: Platform) {
     this.kind = kind;
-    this.cookieDomains = kind === "bilibili" ? ["bilibili.com"] : ["youtube.com"];
+    this.cookieDomains = COOKIE_DOMAINS[kind];
+    if (kind === "xiaohongshu" || kind === "douyin") {
+      this.precheck = async (ref, auth) => {
+        this.log("precheck", ref.platformContentId, auth);
+        const scripted = this.checks.get(ref.sourceUrl ?? "") ?? this.checks.get(ref.platformContentId);
+        if (scripted instanceof Error) {
+          throw scripted;
+        }
+        return scripted ?? { result: "video", metadata: this.metadataOf(ref.platformContentId) };
+      };
+    }
     if (kind === "bilibili") {
       this.resolveParts = async (ref, auth) => {
         this.log("resolveParts", ref.platformContentId, auth);
@@ -83,7 +114,7 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
   }
 
   parse(url: string): ParsedPlatformUrl | null {
-    return this.kind === "bilibili" ? parseBilibiliUrl(url) : parseYoutubeUrl(url);
+    return PARSERS[this.kind](url);
   }
 
   video(id: string, video: FakeVideo): this {
@@ -98,7 +129,12 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
     if (video.metadataError !== undefined) {
       throw video.metadataError;
     }
-    return { title: `title ${ref.platformContentId}`, durationMs: 600_000, subtitleTracks: [], description: { state: "unknown" }, ...video.metadata };
+    return this.metadataOf(ref.platformContentId);
+  }
+
+  private metadataOf(id: string): PlatformMetadata {
+    const video = this.videos.get(id) ?? {};
+    return { title: `title ${id}`, durationMs: 600_000, subtitleTracks: [], description: { state: "unknown" }, ...video.metadata };
   }
 
   async fetchDescription(ref: PlatformContentRef, auth: PlatformCredential | undefined): Promise<PlatformDescription> {

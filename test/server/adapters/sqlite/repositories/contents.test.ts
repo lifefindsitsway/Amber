@@ -162,6 +162,17 @@ describe("content repository metadata", () => {
   });
 });
 
+describe("content repository source link", () => {
+  it("replaces only the owner's stored link, leaving updatedAt and the identity alone", () => {
+    const renewed = "https://www.bilibili.com/video/a1?renewed=1";
+    expect(repository.withTransaction((scope) => scope.contents.setSourceUrl("bob", "a1", renewed))).toBe(false);
+    expect(repository.withTransaction((scope) => scope.contents.setSourceUrl("alice", "a1", renewed))).toBe(true);
+    const stored = repository.withTransaction((scope) => scope.contents.get("alice", "a1"));
+    expect(stored?.source).toEqual({ kind: "bilibili", sourceUrl: renewed, platformContentId: "a1" });
+    expect(stored?.updatedAt).toBe(T0 + 1);
+  });
+});
+
 describe("content repository description", () => {
   const NOW = T0 + 1_000;
   const write = (owner: string, id: string, value: { description: string | null; truncated: boolean; checkedAt: number }, now = NOW) =>

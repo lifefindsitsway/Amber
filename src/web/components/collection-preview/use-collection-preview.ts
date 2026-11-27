@@ -9,6 +9,7 @@ import {
   missingChoice,
   movedToFront,
   platformOrder,
+  preselectAhead,
   processingOrder,
   pruneChoice,
   setChosen,
@@ -16,7 +17,9 @@ import {
   withFirstPage,
   withOrder,
   withPage,
+  withPreselect,
   type CollectionChoice,
+  type EntryPreselect,
   type PreviewSession,
 } from "./state.ts";
 
@@ -44,8 +47,12 @@ export interface CollectionPreview {
   sessions: Readonly<Record<string, PreviewSession>>;
   /** Chosen entries across all the links. */
   totalChosen: number;
-  /** Opens on these links (keeping what was read and chosen for links seen before), at `startUrl` or the first. */
-  open: (urls: readonly string[], startUrl?: string) => void;
+  /**
+   * Opens on these links (keeping what was read and chosen for links seen before), at `startUrl`
+   * or the first. `preselect` gives a link opened from one of its videos that video alone as its
+   * default choice, in place of every entry not yet in the collection.
+   */
+  open: (urls: readonly string[], startUrl?: string, preselect?: Readonly<Record<string, EntryPreselect>>) => void;
   /** Closes and stops every read in flight; the choice stays for the next opening. */
   close: () => void;
   /**
@@ -94,6 +101,8 @@ export function useCollectionPreview(
   const urlsRef = useRef<readonly string[]>([]);
   // Links whose first page is in, waiting for the earlier links' before their defaults are given.
   const pending = useRef(new Set<string>());
+  // Links opened from one of their videos: the default choice is that video.
+  const preselects = useRef(new Map<string, EntryPreselect>());
   const slots = useRef<{ busy: number; queue: Array<() => void> }>({ busy: 0, queue: [] });
   const [isOpen, setOpen] = useState(false);
   const [step, setStep] = useState(0);
@@ -177,7 +186,11 @@ export function useCollectionPreview(
         const others = Object.values(store.current)
           .filter((other) => other.url !== url)
           .reduce((sum, other) => sum + other.selected.size, 0);
-        put(url, (current) => ({ ...withDefaults(current, limitRef.current - others), phase: "ready" }));
+        const preselect = preselects.current.get(url);
+        put(url, (current) => ({
+          ...(preselect === undefined ? withDefaults(current, limitRef.current - others) : withPreselect(current, preselect)),
+          phase: "ready",
+        }));
         continue;
       }
       if (session.chosen || session.phase === "failed") continue;
@@ -204,10 +217,12 @@ export function useCollectionPreview(
             const first = await inspect(url, undefined, controller.signal);
             put(url, (session) => withFirstPage(session, first));
             // Read again after the preview went stale: page on until every chosen entry is seen,
-            // so that only those really gone are dropped.
+            // so that only those really gone are dropped. Opened from one of its videos: page on
+            // until that video is seen, so it can start chosen.
             for (;;) {
               const session = store.current[url];
-              if (session === undefined || !missingChoice(session) || session.nextOffset === undefined || session.previewId === undefined) break;
+              if (session === undefined || session.nextOffset === undefined || session.previewId === undefined) break;
+              if (!missingChoice(session) && !preselectAhead(session, preselects.current.get(url))) break;
               const page = await inspect(url, { previewId: session.previewId, offset: session.nextOffset }, controller.signal);
               put(url, (current) => withPage(current, page));
             }
@@ -301,7 +316,8 @@ export function useCollectionPreview(
     [abort, put],
   );
 
-  const open = useCallback((next: readonly string[], startUrl?: string): void => {
+  const open = useCallback((next: readonly string[], startUrl?: string, preselect?: Readonly<Record<string, EntryPreselect>>): void => {
+    for (const [url, entry] of Object.entries(preselect ?? {})) preselects.current.set(url, entry);
     const kept: Record<string, PreviewSession> = {};
     for (const url of next) kept[url] = store.current[url] ?? emptySession(url);
     store.current = kept;
@@ -334,6 +350,7 @@ export function useCollectionPreview(
       for (const url of links ?? Object.keys(kept)) {
         abort(url);
         pending.current.delete(url);
+        preselects.current.delete(url);
         delete kept[url];
       }
       store.current = kept;

@@ -1,4 +1,4 @@
-import { inspectResponseSchema, type CollectionEntryState, type InspectRequest } from "../../../src/shared/dto/import.ts";
+import { inspectResponseSchema, type CollectionEntryState, type ENTRY_UNAVAILABLE_REASONS, type InspectRequest } from "../../../src/shared/dto/import.ts";
 import type { RecordedCall } from "./render.tsx";
 
 /** One entry of a fake platform collection; made-up ids and titles. */
@@ -8,8 +8,10 @@ export interface FakeEntry {
   state?: CollectionEntryState;
   durationMs?: number;
   partCount?: number;
-  unavailableReason?: "private" | "removed" | "unknown";
+  unavailableReason?: (typeof ENTRY_UNAVAILABLE_REASONS)[number];
   coverUrl?: string;
+  /** The entry's own link; by default the collection link with the id as its fragment. */
+  canonicalUrl?: string;
 }
 
 export interface FakeCollection {
@@ -69,7 +71,7 @@ export function fakeInspect(collections: FakeCollection[]) {
       ...(collection.truncated === undefined ? {} : { truncated: collection.truncated }),
       items: collection.entries.slice(offset, end).map((entry, index) => ({
         platformContentId: entry.id,
-        canonicalUrl: `${collection.url}#${entry.id}`,
+        canonicalUrl: entry.canonicalUrl ?? `${collection.url}#${entry.id}`,
         index: offset + index,
         ...(entry.title === undefined ? {} : { title: entry.title }),
         ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),

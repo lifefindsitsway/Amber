@@ -4,7 +4,7 @@ import { COLLECTION_PREVIEW_FILTER_MIN, COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION
 import type { InspectRequest } from "../../../../src/shared/dto/import.ts";
 import type { AppError } from "../../../../src/shared/errors.ts";
 import { CollectionPreviewDialog } from "../../../../src/web/components/collection-preview/collection-preview-dialog.tsx";
-import type { CollectionChoice } from "../../../../src/web/components/collection-preview/state.ts";
+import type { CollectionChoice, EntryPreselect } from "../../../../src/web/components/collection-preview/state.ts";
 import { useCollectionPreview } from "../../../../src/web/components/collection-preview/use-collection-preview.ts";
 import { fakeInspect, newEntries, STALE_REPLY, type FakeCollection } from "../../../fixtures/web/collection-preview.ts";
 import { mockApi, renderApp, type RecordedCall } from "../../../fixtures/web/render.tsx";
@@ -15,11 +15,18 @@ const SERIES = "https://space.bilibili.com/12345/lists/678?type=season";
 
 beforeEach(stubSelectLayout);
 
-function Harness(props: { urls: string[]; compare?: string; reserved?: number; onConfirm?: (choices: CollectionChoice[]) => void; error?: AppError }) {
+function Harness(props: {
+  urls: string[];
+  compare?: string;
+  reserved?: number;
+  onConfirm?: (choices: CollectionChoice[]) => void;
+  error?: AppError;
+  preselect?: Record<string, EntryPreselect>;
+}) {
   const preview = useCollectionPreview({ compareCollectionId: props.compare, reserved: props.reserved });
   return (
     <>
-      <button type="button" data-testid="open" onClick={() => preview.open(props.urls)} />
+      <button type="button" data-testid="open" onClick={() => preview.open(props.urls, undefined, props.preselect)} />
       <button type="button" data-testid="reread" onClick={() => preview.reread()} />
       <button type="button" data-testid="reset" onClick={() => preview.reset()} />
       <CollectionPreviewDialog preview={preview} onConfirm={props.onConfirm ?? (() => undefined)} submitting={false} error={props.error} {...(props.reserved === undefined ? {} : { reserved: props.reserved })} />
@@ -624,5 +631,84 @@ describe("CollectionPreviewDialog processing order", () => {
     fireEvent.mouseDown(within(dialog()).getByTestId("preview-tab-order"));
     expect(within(dialog()).getByText("还没有选择内容")).toBeTruthy();
     expect(within(dialog()).getByTestId<HTMLButtonElement>("preview-submit").disabled).toBe(true);
+  });
+});
+
+describe("CollectionPreviewDialog image posts", () => {
+  it("names an image post as such, does not let it be chosen, and leaves it out of the defaults", async () => {
+    const DOUYIN = "https://www.douyin.com/collection/7298765432109876543";
+    setup([
+      {
+        url: DOUYIN,
+        title: "示例合集",
+        pageSize: 50,
+        entries: [...newEntries(1), { id: "img1", title: "图文的一集", state: "unavailable", unavailableReason: "not_video" }, ...newEntries(1, "v", 3)],
+      },
+    ]);
+    await loaded(3);
+    expect(chosen()).toEqual(["v1", "v3"]);
+    const state = within(row("img1")).getByTestId("preview-entry-state");
+    expect(state.textContent).toBe("图文，不支持");
+    expect(state.dataset["reason"]).toBe("not_video");
+    // Not reported as broken: the platform shows it, Amber only processes videos.
+    expect(row("img1").textContent).not.toContain("无法访问");
+    expect(row("img1").textContent).toContain("Amber 目前只处理视频，不能选择");
+    expect(document.getElementById(box("img1").getAttribute("aria-describedby") ?? "")?.textContent).toBe("图文，不支持: Amber 目前只处理视频，不能选择");
+    expect(box("img1").disabled).toBe(true);
+    fireEvent.click(row("img1"));
+    expect(chosen()).toEqual(["v1", "v3"]);
+    const all = within(dialog()).getByRole("checkbox", { name: "全选" }) as HTMLInputElement;
+    // Selecting all on screen leaves it out too.
+    fireEvent.click(all);
+    expect(chosen()).toEqual([]);
+    fireEvent.click(all);
+    expect(chosen()).toEqual(["v1", "v3"]);
+  });
+});
+
+describe("useCollectionPreview opened from one of a collection's videos", () => {
+  const COLLECTION = "https://www.douyin.com/collection/7298765432109876543";
+  const video = (id: string): string => `https://www.douyin.com/video/${id}`;
+  const entries = (count: number) => newEntries(count).map((entry) => ({ ...entry, canonicalUrl: video(entry.id) }));
+
+  it("starts with that video alone chosen, whatever its state, and keeps the user's choice after", async () => {
+    const { onConfirm } = setup(
+      [{ url: COLLECTION, pageSize: 50, entries: entries(4).map((entry) => (entry.id === "v2" ? { ...entry, state: "in_library" as const } : entry)) }],
+      { preselect: { [COLLECTION]: { canonicalUrl: video("v2"), index: 1 } } },
+    );
+    await loaded(4);
+    await waitFor(() => expect(chosen()).toEqual(["v2"]));
+    fireEvent.click(row("v4"));
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    expect(onConfirm).toHaveBeenCalledWith([{ url: COLLECTION, entries: ["v2", "v4"], previewId: "pv1" }]);
+  });
+
+  it("reads on to the page holding the video when its episode number says it is further on", async () => {
+    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(6) }], { preselect: { [COLLECTION]: { canonicalUrl: video("v5"), index: 4 } } });
+    await waitFor(() => expect(chosen()).toEqual(["v5"]));
+    expect(rows()).toHaveLength(6);
+    expect(inspect.requests).toEqual([
+      { url: COLLECTION },
+      { url: COLLECTION, previewId: "pv1", offset: 2 },
+      { url: COLLECTION, previewId: "pv1", offset: 4 },
+    ]);
+  });
+
+  it("chooses nothing when the video is not among the entries, rather than another one", async () => {
+    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(4) }], { preselect: { [COLLECTION]: { canonicalUrl: video("gone") } } });
+    await loaded(2);
+    await waitFor(() => expect(within(dialog()).getByTestId("preview-none-chosen")).toBeTruthy());
+    expect(chosen()).toEqual([]);
+    // Without an episode number, the first page decides.
+    expect(inspect.requests).toHaveLength(1);
+  });
+
+  it("does not choose the video when it cannot be chosen", async () => {
+    setup([{ url: COLLECTION, pageSize: 50, entries: entries(3).map((entry) => (entry.id === "v2" ? { ...entry, state: "trashed" as const } : entry)) }], {
+      preselect: { [COLLECTION]: { canonicalUrl: video("v2") } },
+    });
+    await loaded(3);
+    await waitFor(() => expect(within(dialog()).getByTestId("preview-none-chosen")).toBeTruthy());
+    expect(chosen()).toEqual([]);
   });
 });

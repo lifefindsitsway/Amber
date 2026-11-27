@@ -26,6 +26,8 @@ import { PolicyOutboundHttpClient } from "./adapters/outbound-http/policy-client
 import { BilibiliAdapter } from "./adapters/platform/bilibili/index.ts";
 import { platformContentUrl } from "./adapters/platform/content-url.ts";
 import { downloadPlatformMedia } from "./adapters/platform/download.ts";
+import { DouyinAdapter } from "./adapters/platform/douyin/index.ts";
+import { XiaohongshuAdapter } from "./adapters/platform/xiaohongshu/index.ts";
 import { BilibiliQrLogin } from "./adapters/platform/bilibili/qr-login.ts";
 import { YoutubeAdapter } from "./adapters/platform/youtube/index.ts";
 import { YtDlp } from "./adapters/platform/yt-dlp.ts";
@@ -85,6 +87,7 @@ import { SubtitleImportService } from "./application/subtitle-import.ts";
 import { MediaAssetService } from "./application/media-assets.ts";
 import { PlatformAccountService } from "./application/platform-accounts.ts";
 import { PlatformQrLoginService } from "./application/platform-qr-login.ts";
+import { PlatformDetailReuse } from "./application/platform-detail-reuse.ts";
 import { PlatformRegistry } from "./application/platforms.ts";
 import { OtherModelService } from "./application/other-models.ts";
 import { ProviderService } from "./application/providers.ts";
@@ -351,13 +354,21 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
         })
       : new PolicyOutboundHttpClient({ mode: "permissive" });
   const targets = config.mode === "server" ? { targets: http } : {};
+  // Every adapter is one instance for the whole process: the Douyin visitor session and its
+  // cool-down live on its instance, shared by all users.
   const platforms = new PlatformRegistry([
     new BilibiliAdapter({ ytDlp, http, download: downloadPlatformMedia }),
     new YoutubeAdapter({ ytDlp, http, download: downloadPlatformMedia }),
+    new XiaohongshuAdapter({ http, download: downloadPlatformMedia }),
+    new DouyinAdapter({ http, download: downloadPlatformMedia }),
   ]);
   const platformAccounts = new PlatformAccountService({ repository, secrets, platforms });
+  // What an import check read is reused by the import and the source stage that follow it:
+  // one instance, handed to both, or the source stage would ask the platform again.
+  const platformDetails = new PlatformDetailReuse();
   const platformAccess: PlatformAccess = {
     adapterFor: (kind) => platforms.adapterFor(kind),
+    recentMetadata: (owner, platform, ref) => platformDetails.recentMetadata(owner, platform, ref),
     credentialFor: (owner, platform) => platformAccounts.credentialFor(owner, platform),
     markExpired: (owner, platform) => platformAccounts.markExpired(owner, platform),
   };
@@ -373,6 +384,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     control,
     platforms,
     credentials: platformAccounts,
+    details: platformDetails,
     disk: files,
     settings: instanceSettings,
     heavy,

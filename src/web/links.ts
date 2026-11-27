@@ -18,6 +18,17 @@ const DIGITS = /^\d+$/;
 const YOUTUBE_ID = /^[0-9A-Za-z_-]{11}$/;
 const YOUTUBE_LIST = /^[0-9A-Za-z_-]{10,64}$/;
 const SHORT_PATH = /^\/[0-9A-Za-z]+\/?$/;
+const XIAOHONGSHU_HOSTS = new Set(["www.xiaohongshu.com", "xiaohongshu.com"]);
+const XIAOHONGSHU_SHORT_HOSTS = new Set(["xhslink.com", "www.xhslink.com"]);
+/** Note and user ids are 24-character lowercase hex object ids. */
+const OBJECT_ID = /^[0-9a-f]{24}$/;
+const XIAOHONGSHU_SHORT_SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
+const DOUYIN_HOSTS = new Set(["www.douyin.com", "douyin.com"]);
+const DOUYIN_SHARE_HOST = "www.iesdouyin.com";
+const DOUYIN_SHORT_HOST = "v.douyin.com";
+/** Video and collection ids are both long decimal numbers. */
+const DOUYIN_ID = /^\d{15,20}$/;
+const DOUYIN_SHORT_CODE = /^[A-Za-z0-9_-]{1,32}$/;
 
 /**
  * Client-side recognizer for the link shapes the platforms accept. It decides only whether a
@@ -63,6 +74,51 @@ export function recognizeLink(text: string): RecognizedLink | undefined {
   if (host === "youtu.be" && YOUTUBE_ID.test(url.pathname.slice(1))) {
     return { url: href, platform: "youtube", kind: "video", partChosen: true };
   }
+  // A real share link never carries credentials or a port; the server refuses both for these platforms.
+  if (url.username !== "" || url.password !== "" || url.port !== "") return undefined;
+  if (XIAOHONGSHU_HOSTS.has(host)) {
+    return xiaohongshuNote(segments) ? { url: href, platform: "xiaohongshu", kind: "video", partChosen: true } : undefined;
+  }
+  if (XIAOHONGSHU_SHORT_HOSTS.has(host)) {
+    const short = segments.length >= 1 && segments.length <= 2 && segments.every((segment) => XIAOHONGSHU_SHORT_SEGMENT.test(segment));
+    return short ? { url: href, platform: "xiaohongshu", kind: "shortlink", partChosen: true } : undefined;
+  }
+  if (DOUYIN_HOSTS.has(host) || host === DOUYIN_SHARE_HOST) {
+    const kind = douyinKind(url, host, segments);
+    return kind === undefined ? undefined : { url: href, platform: "douyin", kind, partChosen: true };
+  }
+  if (host === DOUYIN_SHORT_HOST) {
+    const short = segments.length === 1 && DOUYIN_SHORT_CODE.test(segments[0] ?? "");
+    return short ? { url: href, platform: "douyin", kind: "shortlink", partChosen: true } : undefined;
+  }
+  return undefined;
+}
+
+/** A note page: `/explore/<id>`, `/discovery/item/<id>` or `/user/profile/<userId>/<id>`. */
+function xiaohongshuNote(segments: readonly string[]): boolean {
+  let noteId: string | undefined;
+  if (segments[0] === "explore" && segments.length === 2) noteId = segments[1];
+  else if (segments[0] === "discovery" && segments[1] === "item" && segments.length === 3) noteId = segments[2];
+  else if (segments[0] === "user" && segments[1] === "profile" && segments.length === 4 && OBJECT_ID.test(segments[2] ?? "")) noteId = segments[3];
+  return noteId !== undefined && OBJECT_ID.test(noteId);
+}
+
+/**
+ * A Douyin video or image post (`/video/<id>`, `/note/<id>`, any page opened with `modal_id`,
+ * the share page `/share/video/<id>`) or collection (`/collection/<id>`,
+ * `/share/mix/detail/<id>`). A `modal_id` decides on its own: an invalid one is no link at all.
+ */
+function douyinKind(url: URL, host: string, segments: readonly string[]): "video" | "collection" | undefined {
+  if (host === DOUYIN_SHARE_HOST) {
+    if (segments[0] !== "share") return undefined;
+    if (segments[1] === "video" && segments.length === 3) return DOUYIN_ID.test(segments[2] ?? "") ? "video" : undefined;
+    if (segments[1] === "mix" && segments[2] === "detail" && segments.length === 4) return DOUYIN_ID.test(segments[3] ?? "") ? "collection" : undefined;
+    return undefined;
+  }
+  const modalId = url.searchParams.get("modal_id");
+  if (modalId !== null) return DOUYIN_ID.test(modalId) ? "video" : undefined;
+  if ((segments[0] === "video" || segments[0] === "note") && segments.length === 2) return DOUYIN_ID.test(segments[1] ?? "") ? "video" : undefined;
+  if (segments[0] === "collection" && segments.length === 2) return DOUYIN_ID.test(segments[1] ?? "") ? "collection" : undefined;
   return undefined;
 }
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DirectOutboundHttpClient } from "../../src/server/adapters/outbound-http/direct.ts";
 import { BilibiliAdapter } from "../../src/server/adapters/platform/bilibili/index.ts";
+import { DouyinAdapter } from "../../src/server/adapters/platform/douyin/index.ts";
 import { YoutubeAdapter } from "../../src/server/adapters/platform/youtube/index.ts";
 import { YtDlp, type YtDlpRun } from "../../src/server/adapters/platform/yt-dlp.ts";
 import { NodeProcessRunner } from "../../src/server/adapters/process-runner/node-process-runner.ts";
@@ -23,6 +24,7 @@ import { toolsBinDir } from "../fixtures/tools.ts";
  * - `AMBER_E2E_BILIBILI_URL` (optional): lecture 3 of the first use-case course's
  *   collection; looked up in the collection by title when unset;
  * - `AMBER_E2E_YOUTUBE_CC_URL`: a public CC-licensed video;
+ * - `AMBER_E2E_DOUYIN_URL`: a public Douyin video, read as a visitor (no login exists);
  * - `AMBER_E2E_RECORD_DIR` (optional): where to write redacted fixtures.
  *
  * Nothing here prints cookies, signed subtitle URLs or response bodies.
@@ -171,5 +173,31 @@ describe.skipIf(!enabled)("real platforms", () => {
       cueCount: subtitle.cues.length,
       head: subtitle.cues.slice(0, 20),
     });
+  }, 300_000);
+
+  it("Douyin as a visitor: precheck, metadata, quality tiers and the collection the video belongs to", async () => {
+    const adapter = new DouyinAdapter({ http: new DirectOutboundHttpClient() });
+    const url = required("AMBER_E2E_DOUYIN_URL");
+    const parsed = adapter.parse(url) ?? adapter.parse((await adapter.resolveUrl(url, signal())) ?? "");
+    expect(parsed?.platformContentId).toBeDefined();
+    const ref = { platformContentId: parsed?.platformContentId as string };
+
+    const check = await adapter.precheck(ref, undefined, signal());
+    expect(check.result).toBe("video");
+    const metadata = await adapter.fetchMetadata(ref, undefined, signal());
+    expect(metadata.title).not.toBe("");
+    expect(metadata.durationMs).toBeGreaterThan(0);
+    expect(metadata.subtitleTracks).toEqual([]);
+    expect((await adapter.listVideoQualities(ref, undefined, signal()))?.length ?? 0).toBeGreaterThan(0);
+    expect((await adapter.inspectAudio(ref, undefined, signal())).sizeBytes ?? 0).toBeGreaterThan(0);
+
+    const related = check.result === "video" ? check.relatedCollection : undefined;
+    if (related !== undefined) {
+      const listing = await adapter.listCollection(related.platformCollectionId, undefined, signal(), COLLECTION_PREVIEW_ITEMS_MAX);
+      expect(listing.entries.map((entry) => entry.platformContentId)).toContain(ref.platformContentId);
+      expect(listing.title).toBe(related.title);
+    }
+    // The cover URL is signed: only its host goes into the record.
+    record("douyin.metadata.json", { ...metadata, coverUrl: metadata.coverUrl === undefined ? undefined : new URL(metadata.coverUrl).hostname });
   }, 300_000);
 });

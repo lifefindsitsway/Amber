@@ -1,5 +1,5 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../../src/web/api/client.ts";
@@ -9,11 +9,32 @@ import { useOpenTasksRequest } from "../../../src/web/shell/task-panel.tsx";
 import { usePasteGuard } from "../../../src/web/shell/paste-guard.ts";
 import { baseRoutes, collection, content, provider, SETTINGS } from "../../fixtures/web/shell-data.ts";
 import { fakeShell, pickedFile } from "../../fixtures/web/desktop-bridge.ts";
-import { mockApi, renderApp } from "../../fixtures/web/render.tsx";
+import { mockApi, renderApp, type RecordedCall } from "../../fixtures/web/render.tsx";
+
+type RecordedCalls = RecordedCall[];
 import { DIGEST, packagePreview, prefixPreview, srtPreview } from "../../fixtures/web/subtitle-preview.ts";
 import { providerWithoutWindow, windowRoutes } from "../../fixtures/web/context-window.ts";
 import { chooseOption, selectOptionNames, stubSelectLayout } from "../../fixtures/web/select.ts";
-import { APP_SHARE, LONG_SHARE, SHORT, UNSUPPORTED, VIDEO_2, WEB_SHARE, WEB_SHARE_LINK, YT_LIST, YT_VIDEO } from "../../fixtures/platform/share-text.ts";
+import {
+  APP_SHARE,
+  DOUYIN_COLLECTION,
+  DOUYIN_ID,
+  DOUYIN_SHARE,
+  DOUYIN_SHORT,
+  DOUYIN_VIDEO,
+  LONG_SHARE,
+  SHORT,
+  UNSUPPORTED,
+  VIDEO_2,
+  WEB_SHARE,
+  WEB_SHARE_LINK,
+  XHS_NOTE,
+  XHS_VIDEO,
+  YT_LIST,
+  YT_VIDEO,
+} from "../../fixtures/platform/share-text.ts";
+import { IMPORT_CHECK_DEBOUNCE_MS, IMPORT_CHECK_QUIET_MS } from "../../../src/shared/defaults.ts";
+import type { InspectRequest } from "../../../src/shared/dto/import.ts";
 import { fakeInspect, newEntries, STALE_REPLY } from "../../fixtures/web/collection-preview.ts";
 
 beforeEach(stubSelectLayout);
@@ -1400,5 +1421,444 @@ describe("NewPage form checks and settings", () => {
       settings: { templateId: "summary.core", outputLanguage: "en" },
       collection: { id: "k1" },
     });
+  });
+});
+
+describe("NewPage checking a pasted link", () => {
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const type = (text: string): void => {
+    fireEvent.change(box(), { target: { value: text } });
+  };
+  const inspected = (calls: RecordedCalls): unknown[] => calls.filter((call) => call.method === "POST" && call.path === "/api/contents/inspect").map((call) => call.body);
+  const imported = (calls: RecordedCalls) => calls.filter((call) => call.method === "POST" && call.path === "/api/contents/import");
+  const line = (): string | null => screen.queryByTestId("link-recognition")?.textContent ?? null;
+  /** Longer than the pause before a check, so a check that was going to be sent has been. */
+  const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, IMPORT_CHECK_DEBOUNCE_MS + 150));
+  const video = (title: string, durationMs: number, extra: Record<string, unknown> = {}) => ({
+    body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, title, check: { result: "video", title, durationMs }, ...extra },
+  });
+  const XHS_OTHER = XHS_VIDEO.replace(XHS_NOTE, "0123456789abcdef0123456f");
+  const importError = (code: string, userMessage: string, urls: string[]) => ({
+    status: 400,
+    body: { error: { class: "invalid_request", code, retryDisposition: "never", userMessage, details: { urls } } },
+  });
+
+  it("checks a single Xiaohongshu or Douyin link once typing pauses, once per link, and shows the video's title and length", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": (call) => {
+        const url = (call.body as InspectRequest).url;
+        return url === XHS_VIDEO ? video("示例笔记", 83_000) : video("另一条", 3_725_000);
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    type(XHS_VIDEO);
+    // Not before the pause.
+    expect(inspected(calls)).toEqual([]);
+    expect(await screen.findByTestId("import-check-video")).toBeTruthy();
+    expect(inspected(calls)).toEqual([{ url: XHS_VIDEO }]);
+    expect(line()).toBe("示例笔记·1:23");
+    // The box is described by what the check found.
+    expect(box().getAttribute("aria-describedby")).toContain("-more");
+    // The same link again, after other edits: the result is reused, not asked for again.
+    type(`${XHS_VIDEO}\n`);
+    type(XHS_OTHER);
+    await waitFor(() => expect(line()).toBe("另一条·1:02:05"));
+    type(XHS_VIDEO);
+    expect(line()).toBe("示例笔记·1:23");
+    await pause();
+    expect(inspected(calls)).toEqual([{ url: XHS_VIDEO }, { url: XHS_OTHER }]);
+  });
+
+  it("restarts the pause on every edit and stops a check under way once the link changes", async () => {
+    mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
+    const base = globalThis.fetch;
+    const sent: Array<{ url: string; signal: AbortSignal | undefined }> = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (String(input) === "/api/contents/inspect") {
+        sent.push({ url: (JSON.parse(String(init.body)) as InspectRequest).url, signal: init.signal ?? undefined });
+        // Never answers; only an abort ends it.
+        return new Promise<Response>((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+      }
+      return base(input, init);
+    });
+    renderApp(page(), { route: "/new" });
+    await screen.findByTestId("new-submit");
+    type("https://www.douyin.com/video/1");
+    type(DOUYIN_VIDEO.slice(0, -1));
+    type(DOUYIN_VIDEO);
+    expect(await screen.findByTestId("import-check-checking")).toBeTruthy();
+    expect(line()).toBe("正在确认链接…");
+    // Only the link standing after the edits was sent.
+    expect(sent.map((request) => request.url)).toEqual([DOUYIN_VIDEO]);
+    // While checking, 「开始处理」 stays usable.
+    expect(screen.getByTestId<HTMLButtonElement>("new-submit").disabled).toBe(false);
+    type(XHS_VIDEO);
+    expect(sent[0]?.signal?.aborted).toBe(true);
+    await waitFor(() => expect(sent.map((request) => request.url)).toEqual([DOUYIN_VIDEO, XHS_VIDEO]));
+    type("");
+    expect(sent[1]?.signal?.aborted).toBe(true);
+    expect(screen.queryByTestId("import-check-checking")).toBeNull();
+  });
+
+  it("does not check bilibili or YouTube links, several links, a collection, or the subtitle tab's link", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
+    renderApp(page(), { route: "/new" });
+    for (const text of [VIDEO, YT_VIDEO, SHORT, YT_LIST, DOUYIN_COLLECTION, `${XHS_VIDEO}\n${DOUYIN_VIDEO}`, `${DOUYIN_VIDEO}\n${UNSUPPORTED}`]) {
+      type(text);
+      await pause();
+    }
+    expect(inspected(calls)).toEqual([]);
+  });
+
+  it("checks the short link of an app share", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
+    renderApp(page(), { route: "/new" });
+    type(DOUYIN_SHARE);
+    await screen.findByTestId("import-check-video");
+    expect(inspected(calls)).toEqual([{ url: DOUYIN_SHORT }]);
+  });
+
+  it.each([
+    ["already in the library", { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId: "c9" } }, "已在资料库·打开"],
+    ["an image post", { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, check: { result: "rejected", reason: "not_video" } } }, "这是图文笔记，Amber 目前只处理视频"],
+    [
+      "an incomplete or expired link",
+      { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, check: { result: "rejected", reason: "link_expired" } } },
+      "链接可能不完整或已经失效，请重新复制完整的分享链接",
+    ],
+  ])("shows a link %s on the line under the box", async (_name, reply, expected) => {
+    mockApi({ ...baseRoutes(), "POST /api/contents/inspect": reply });
+    renderApp(page(), { route: "/new" });
+    type(DOUYIN_VIDEO);
+    await waitFor(() => expect(line()).toBe(expected));
+    if (expected.startsWith("已在资料库")) {
+      expect(screen.getByTestId("import-check-open").getAttribute("href")).toBe("/contents/c9");
+    } else {
+      // Shown as a field error, and still only a hint: the submit stays usable.
+      expect(screen.getByTestId("import-check-rejected").className).toContain("text-danger");
+      expect(screen.getByTestId<HTMLButtonElement>("new-submit").disabled).toBe(false);
+    }
+  });
+
+  it("says nothing when the check could not tell, failed, or found something else", async () => {
+    for (const reply of [
+      { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, check: { result: "unverified" } } },
+      { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO } },
+      { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } },
+    ]) {
+      const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": reply });
+      const { unmount } = renderApp(page(), { route: "/new" });
+      type(DOUYIN_VIDEO);
+      await waitFor(() => expect(inspected(calls)).toHaveLength(1));
+      await waitFor(() => expect(screen.queryByTestId("import-check-checking")).toBeNull());
+      expect(line()).toBe("");
+      unmount();
+    }
+  });
+
+  it("gives up quietly on a check that does not answer in time, and does not ask again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockApi(baseRoutes());
+      const base = globalThis.fetch;
+      const sent: Array<AbortSignal | undefined> = [];
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (String(input) === "/api/contents/inspect") {
+          sent.push(init.signal ?? undefined);
+          return new Promise<Response>((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+        }
+        return base(input, init);
+      });
+      renderApp(page(), { route: "/new" });
+      await screen.findByTestId("new-submit");
+      type(XHS_VIDEO);
+      expect(await screen.findByTestId("import-check-checking")).toBeTruthy();
+      await act(async () => {
+        vi.advanceTimersByTime(IMPORT_CHECK_QUIET_MS);
+      });
+      expect(screen.queryByTestId("import-check-checking")).toBeNull();
+      expect(line()).toBe("");
+      expect(sent[0]?.aborted).toBe(true);
+      type(`${XHS_VIDEO} `);
+      await act(async () => {
+        vi.advanceTimersByTime(IMPORT_CHECK_DEBOUNCE_MS * 2);
+      });
+      expect(sent).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers to import a link the import could not verify, and sends it again marked so under a new key", async () => {
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, check: { result: "unverified" } } },
+      "POST /api/contents/import": () => {
+        attempts += 1;
+        return attempts === 1
+          ? importError("invalid_request.link_unverified", "暂时无法确认这条链接能否处理", [DOUYIN_VIDEO])
+          : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } };
+      },
+    });
+    renderApp(page(), { route: "/new" });
+    type(DOUYIN_VIDEO);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    const prompt = await screen.findByTestId("new-unverified");
+    expect(prompt.textContent).toBe("暂时无法确认这条链接能否处理仍然导入");
+    // Said once, under the box, not as an error at the foot of the form.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(imported(calls)).toHaveLength(1);
+    fireEvent.click(within(prompt).getByRole("button", { name: "仍然导入" }));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    const [first, second] = imported(calls);
+    expect(first?.body).toMatchObject({ items: [{ url: DOUYIN_VIDEO }] });
+    expect((first?.body as { items: object[] }).items[0]).not.toHaveProperty("acceptUnverified");
+    expect(second?.body).toMatchObject({ items: [{ url: DOUYIN_VIDEO, acceptUnverified: true }] });
+    expect(second?.headers["idempotency-key"]).toBeTruthy();
+    expect(second?.headers["idempotency-key"]).not.toBe(first?.headers["idempotency-key"]);
+  });
+
+  it("drops the offer once the link leaves the box", async () => {
+    mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/import": importError("invalid_request.link_unverified", "暂时无法确认这条链接能否处理", [XHS_VIDEO]),
+    });
+    renderApp(page(), { route: "/new" });
+    type(XHS_VIDEO);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await screen.findByTestId("new-unverified");
+    type(YT_VIDEO);
+    expect(screen.queryByTestId("new-unverified")).toBeNull();
+  });
+
+  it.each([
+    ["invalid_request.not_video", "这是图文笔记，Amber 目前只处理视频"],
+    ["invalid_request.link_expired", "链接可能不完整或已经失效，请重新复制完整的分享链接"],
+  ])("shows %s under the box and sends nothing more", async (code, message) => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/import": importError(code, message, [XHS_VIDEO]) });
+    renderApp(page(), { route: "/new" });
+    type(XHS_VIDEO);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    expect((await screen.findByTestId("new-problem-links")).textContent).toBe(message);
+    expect(box().getAttribute("aria-invalid")).toBe("true");
+    await pause();
+    expect(imported(calls)).toHaveLength(1);
+    expect(screen.queryByTestId("new-unverified")).toBeNull();
+    expect(screen.getByTestId("where").textContent).toBe("/new");
+  });
+
+  it("drops a refusal once the box says something else, and never says it twice", async () => {
+    mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: XHS_VIDEO, check: { result: "rejected", reason: "not_video" } } },
+      "POST /api/contents/import": importError("invalid_request.not_video", "这是图文笔记，Amber 目前只处理视频", [XHS_VIDEO]),
+    });
+    renderApp(page(), { route: "/new" });
+    type(XHS_VIDEO);
+    await screen.findByTestId("import-check-rejected");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await screen.findByTestId("new-problem-links");
+    expect(screen.queryByTestId("import-check-rejected")).toBeNull();
+    type(YT_VIDEO);
+    expect(screen.queryByTestId("new-problem-links")).toBeNull();
+    expect(box().getAttribute("aria-invalid")).not.toBe("true");
+  });
+
+  it.each([
+    ["updated", "已更新保存的来源链接", "success"],
+    ["kept", "新链接暂时无法确认，保留了原来的链接", "info"],
+  ])("tells once after the import that the stored source link was %s, and reads the Content afresh", async (result, message, tone) => {
+    mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: [], contentIds: ["c1"], sourceUrlUpdates: [{ contentId: "c1", result }] } },
+    });
+    let client: QueryClient | undefined;
+    renderApp(
+      page(undefined, (found) => {
+        client = found;
+      }),
+      { route: "/new" },
+    );
+    client?.setQueryData(queryKeys.content("c1"), content("c1"));
+    type(XHS_VIDEO);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    const toasts = screen.getAllByTestId("toast");
+    expect(toasts.map((toast) => toast.textContent)).toEqual([message]);
+    expect(toasts[0]?.dataset["tone"]).toBe(tone);
+    expect(client?.getQueryState(queryKeys.content("c1"))?.isInvalidated).toBe(true);
+  });
+
+  it("shows no source link notice when the import did not touch one", async () => {
+    mockApi({ ...baseRoutes(), "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } } });
+    renderApp(page(), { route: "/new" });
+    type(XHS_VIDEO);
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    expect(screen.queryAllByTestId("toast")).toHaveLength(0);
+  });
+});
+
+describe("NewPage choosing from the collection of a pasted video", () => {
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const dialog = (): HTMLElement => screen.getByTestId("collection-preview");
+  const rows = (): HTMLElement[] => within(dialog()).queryAllByTestId("preview-entry");
+  const chosen = (): string[] => rows().filter((element) => element.dataset["chosen"] === "true").map((element) => element.dataset["entryId"] ?? "");
+  const imported = (calls: RecordedCalls) => calls.filter((call) => call.method === "POST" && call.path === "/api/contents/import");
+  const OTHER_1 = "7301234567890123401";
+  const OTHER_2 = "7301234567890123402";
+  const RELATED = { platformCollectionId: `douyin:${DOUYIN_COLLECTION.split("/").pop() ?? ""}`, title: "示例合集", itemCount: 3, index: 2, canonicalUrl: DOUYIN_COLLECTION };
+  const entryUrl = (id: string): string => `https://www.douyin.com/video/${id}`;
+
+  /** The inspect route: the video's check (with `related`, if any), and the collection's preview. */
+  function routes(related: Record<string, unknown> | undefined) {
+    const collection = fakeInspect([
+      {
+        url: DOUYIN_COLLECTION,
+        title: "示例合集",
+        pageSize: 50,
+        entries: [
+          { id: OTHER_1, title: "第 1 集", canonicalUrl: entryUrl(OTHER_1) },
+          { id: DOUYIN_ID, title: "第 2 集", canonicalUrl: DOUYIN_VIDEO, state: "in_library" },
+          { id: OTHER_2, title: "第 3 集", canonicalUrl: entryUrl(OTHER_2) },
+        ],
+      },
+    ]);
+    const single = {
+      kind: "single",
+      canonicalUrl: DOUYIN_VIDEO,
+      title: "第 2 集",
+      check: { result: "video", title: "第 2 集", durationMs: 60_000 },
+      ...(related === undefined ? {} : { relatedCollection: related }),
+    };
+    return {
+      collection,
+      routes: {
+        ...baseRoutes(),
+        "POST /api/contents/inspect": (call: RecordedCalls[number]) => ((call.body as InspectRequest).url === DOUYIN_COLLECTION ? collection.reply(call) : { body: single }),
+        "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1", "t2"], contentIds: ["c1", "c2"], collectionIds: ["k5"] } },
+      },
+    };
+  }
+
+  it("names the collection on the line under the box, and without choosing sends the video alone", async () => {
+    const { routes: table } = routes(RELATED);
+    const { calls } = mockApi(table);
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    await screen.findByTestId("import-check-collection");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·共 3 集·选择合集中的视频");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(imported(calls)).toHaveLength(1));
+    expect((imported(calls)[0]?.body as { items: unknown[] }).items).toEqual([{ url: DOUYIN_VIDEO }]);
+    expect(screen.queryByTestId("collection-preview")).toBeNull();
+  });
+
+  it("leaves the count out when the platform does not give it, and the sentence out for a video in no collection", async () => {
+    const { itemCount: _count, ...uncounted } = RELATED;
+    mockApi(routes(uncounted).routes);
+    const { unmount } = renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    await screen.findByTestId("import-check-collection");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·选择合集中的视频");
+    unmount();
+    mockApi(routes(undefined).routes);
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    await screen.findByTestId("import-check-video");
+    expect(screen.queryByTestId("import-check-collection")).toBeNull();
+    expect(screen.getByTestId("link-recognition").textContent).toBe("第 2 集·1:00");
+  });
+
+  it("opens the collection's preview with only this video chosen; cancelling sends nothing", async () => {
+    const { routes: table, collection } = routes(RELATED);
+    const { calls } = mockApi(table);
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    fireEvent.click(await screen.findByTestId("import-check-choose"));
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(collection.requests[0]).toEqual({ url: DOUYIN_COLLECTION });
+    await waitFor(() => expect(chosen()).toEqual([DOUYIN_ID]));
+    // No other link is in the batch: the video's place is taken by the collection.
+    expect(within(dialog()).getByTestId("preview-submit").textContent).toBe("开始处理 1 项");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByTestId("collection-preview")).toBeNull());
+    expect(imported(calls)).toHaveLength(0);
+  });
+
+  it("sends the entries chosen in the preview in the video's place, the video once", async () => {
+    const { routes: table } = routes(RELATED);
+    const { calls } = mockApi(table);
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    fireEvent.click(await screen.findByTestId("import-check-choose"));
+    await waitFor(() => expect(chosen()).toEqual([DOUYIN_ID]));
+    const row = rows().find((element) => element.dataset["entryId"] === OTHER_2);
+    if (row === undefined) throw new Error("no row");
+    fireEvent.click(row);
+    fireEvent.click(within(dialog()).getByTestId("preview-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/collections/k5"));
+    expect(imported(calls)).toHaveLength(1);
+    const body = imported(calls)[0]?.body as { items: Array<{ url: string; entries?: string[] }> };
+    expect(body.items).toEqual([{ url: DOUYIN_COLLECTION, entries: [DOUYIN_ID, OTHER_2], previewId: "pv1" }]);
+    expect(body.items.flatMap((item) => item.entries ?? []).filter((id) => id === DOUYIN_ID)).toHaveLength(1);
+    expect(body.items.some((item) => item.url === DOUYIN_VIDEO)).toBe(false);
+  });
+});
+
+describe("NewPage bilibili login hint", () => {
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const accounts = (bilibili: Record<string, unknown>) => ({
+    body: {
+      accounts: [
+        { platform: "bilibili", ...bilibili },
+        { platform: "youtube", credentialStatus: "missing", hasCredential: false },
+        { platform: "xiaohongshu", credentialStatus: "missing", hasCredential: false },
+        { platform: "douyin", credentialStatus: "missing", hasCredential: false },
+      ],
+    },
+  });
+  const NONE = { credentialStatus: "missing", hasCredential: false };
+  const EXPIRED = { credentialStatus: "configured", hasCredential: true, status: "expired", checkedAt: 1 };
+  const VALID = { credentialStatus: "configured", hasCredential: true, status: "valid", checkedAt: 1 };
+
+  it.each([
+    [NONE, "未登录 B 站，字幕会用语音转录获取·去登录"],
+    [EXPIRED, "B 站登录已失效·重新登录"],
+  ])("ends the line with a pointer to the bilibili login when it is not valid", async (bilibili, expected) => {
+    mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(bilibili) });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: MULTI_P } });
+    const hint = await screen.findByTestId("bilibili-login-hint");
+    expect(hint.textContent).toBe(expected);
+    expect(screen.getByTestId("bilibili-login-link").getAttribute("href")).toBe("/settings/platform-accounts?focus=bilibili");
+    // A quiet line, not a dialog, and nothing is held back.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId<HTMLButtonElement>("new-submit").disabled).toBe(false);
+    // After the batch sentence, at the end of the same line.
+    fireEvent.change(box(), { target: { value: `${MULTI_P}\n${YT_VIDEO}` } });
+    expect(screen.getByTestId("link-recognition").textContent).toBe(`已识别 2 条链接，将作为一批导入·${expected}`);
+  });
+
+  it("says nothing with a valid login", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(VALID) });
+    renderApp(page(), { route: "/new" });
+    fireEvent.change(box(), { target: { value: MULTI_P } });
+    await waitFor(() => expect(calls.some((call) => call.path === "/api/platform-accounts")).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByTestId("bilibili-login-hint")).toBeNull();
+  });
+
+  it("says nothing for YouTube, Xiaohongshu or Douyin links, and does not read the logins for them", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(NONE) });
+    renderApp(page(), { route: "/new" });
+    for (const text of [YT_VIDEO, XHS_VIDEO, DOUYIN_VIDEO]) {
+      fireEvent.change(box(), { target: { value: text } });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByTestId("bilibili-login-hint")).toBeNull();
+    }
+    expect(calls.some((call) => call.path === "/api/platform-accounts")).toBe(false);
   });
 });

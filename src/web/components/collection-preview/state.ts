@@ -117,6 +117,45 @@ export function withDefaults(session: PreviewSession, budget: number): PreviewSe
   };
 }
 
+/**
+ * The one entry a preview opened from a single video starts with chosen: that video, found by
+ * its canonical link. `index` (0-based, when the platform tells the episode number) only says
+ * how far to page on to find it; it never picks an entry by position.
+ */
+export interface EntryPreselect {
+  canonicalUrl: string;
+  index?: number;
+}
+
+function preselected(session: PreviewSession, preselect: EntryPreselect): PreviewEntry | undefined {
+  return session.entries.find((entry) => entry.canonicalUrl === preselect.canonicalUrl);
+}
+
+/**
+ * Whether the next page should be read before the defaults are given: the preselected entry is
+ * not among those read, and by its episode number it is still ahead. Without a number nothing
+ * more is read: the first page decides.
+ */
+export function preselectAhead(session: PreviewSession, preselect: EntryPreselect | undefined): boolean {
+  if (preselect === undefined || session.chosen || preselected(session, preselect) !== undefined) return false;
+  return preselect.index !== undefined && session.entries.length <= preselect.index;
+}
+
+/**
+ * The defaults of a preview opened from a single video: that entry alone when it can be chosen,
+ * else nothing; given once, like `withDefaults`.
+ */
+export function withPreselect(session: PreviewSession, preselect: EntryPreselect): PreviewSession {
+  if (session.chosen) return session;
+  const entry = preselected(session, preselect);
+  const { order: _order, ...rest } = session;
+  return {
+    ...rest,
+    selected: new Set(entry !== undefined && selectable(entry) ? [entry.platformContentId] : []),
+    chosen: true,
+  };
+}
+
 /** A later page appended; an entry already read is not listed twice. */
 export function withPage(session: PreviewSession, page: Page): PreviewSession {
   const known = new Set(session.entries.map((entry) => entry.platformContentId));

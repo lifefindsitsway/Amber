@@ -3,6 +3,10 @@ import { linesOf, linkPaste, parseLinkText, readCandidate, recognizeLink, type R
 import {
   APP_SHARE,
   BV,
+  DOUYIN_COLLECTION,
+  DOUYIN_SHARE,
+  DOUYIN_SHORT,
+  DOUYIN_VIDEO,
   LONG_SHARE,
   PART_THEN_TITLE,
   SHORT,
@@ -11,6 +15,10 @@ import {
   VIDEO_2,
   WEB_SHARE,
   WEB_SHARE_LINK,
+  XHS_NOTE,
+  XHS_SHARE,
+  XHS_SHORT,
+  XHS_VIDEO,
   YT_LIST,
   YT_VIDEO,
 } from "../fixtures/platform/share-text.ts";
@@ -31,6 +39,16 @@ describe("recognizeLink", () => {
     ["https://www.youtube.com/watch?v=UF8uR6Z6KLc&list=PL1", { platform: "youtube", kind: "video" }],
     ["https://youtu.be/UF8uR6Z6KLc", { platform: "youtube", kind: "video" }],
     ["https://www.youtube.com/playlist?list=PL12345678", { platform: "youtube", kind: "collection" }],
+    [XHS_VIDEO, { platform: "xiaohongshu", kind: "video" }],
+    [`https://www.xiaohongshu.com/discovery/item/${XHS_NOTE}`, { platform: "xiaohongshu", kind: "video" }],
+    [XHS_SHORT, { platform: "xiaohongshu", kind: "shortlink" }],
+    [DOUYIN_VIDEO, { platform: "douyin", kind: "video" }],
+    [`https://www.douyin.com/note/7301234567890123456`, { platform: "douyin", kind: "video" }],
+    [`https://www.douyin.com/discover?modal_id=7301234567890123456`, { platform: "douyin", kind: "video" }],
+    [`${DOUYIN_COLLECTION}?modal_id=7301234567890123456`, { platform: "douyin", kind: "video" }],
+    [DOUYIN_COLLECTION, { platform: "douyin", kind: "collection" }],
+    ["https://www.iesdouyin.com/share/mix/detail/7298765432109876543/", { platform: "douyin", kind: "collection" }],
+    [DOUYIN_SHORT, { platform: "douyin", kind: "shortlink" }],
   ])("accepts %s", (url, expected) => {
     expect(recognizeLink(url)).toMatchObject({ url, ...expected });
   });
@@ -53,6 +71,15 @@ describe("recognizeLink", () => {
     "https://space.bilibili.com/123/channel/collectiondetail",
     "https://space.bilibili.com/123/channel/seriesdetail?sid=x",
     "https://space.bilibili.com/abc/lists/456",
+    // Xiaohongshu and Douyin: ids of the wrong shape, other hosts, a port or credentials.
+    `https://www.xiaohongshu.com/explore/${XHS_NOTE.toUpperCase()}`,
+    `https://www.xiaohongshu.com:8443/explore/${XHS_NOTE}`,
+    `https://user@www.xiaohongshu.com/explore/${XHS_NOTE}`,
+    "https://xhslink.com/",
+    "https://www.douyin.com/video/123",
+    "https://www.douyin.com/discover?modal_id=abc",
+    "https://m.douyin.com/video/7301234567890123456",
+    "https://v.douyin.com/a/b",
   ])("rejects %s", (text) => {
     expect(recognizeLink(text)).toBeUndefined();
   });
@@ -63,6 +90,11 @@ describe("recognizeLink", () => {
 });
 
 describe("parseLinkText extraction", () => {
+  it("takes the short link out of the Xiaohongshu and Douyin app shares", () => {
+    expect(urls(parseLinkText(XHS_SHARE).links)).toEqual([XHS_SHORT]);
+    expect(urls(parseLinkText(DOUYIN_SHARE).links)).toEqual([DOUYIN_SHORT]);
+  });
+
   it.each([
     ["title, then link", WEB_SHARE, [WEB_SHARE_LINK]],
     ["link, then title", `${VIDEO} 【示例课程】`, [VIDEO]],

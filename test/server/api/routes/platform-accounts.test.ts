@@ -5,7 +5,7 @@ import { PlatformQrLoginService } from "../../../../src/server/application/platf
 import { QR_POLL_INTERVAL_MS } from "../../../../src/shared/defaults.ts";
 import { GENERATE, POLL_CONFIRMED, QR_KEY, QR_URL } from "../../../fixtures/platform/bilibili-qr.ts";
 import { ScriptedHttp } from "../../../fixtures/platform/scripted-io.ts";
-import { BOB_TOKEN, createHarness, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
+import { BOB_TOKEN, createHarness, LOCAL, LOCAL_TOKEN, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { createServerApp, CSRF_HEADERS, type ServerApp } from "../../../fixtures/server/server-app.ts";
 import { countRows } from "../../../tools/sqlite.ts";
 
@@ -61,6 +61,26 @@ describe("/api/platform-accounts", () => {
     expect(countRows(h.db, "secret")).toBe(0);
     expect((await app.inject({ method: "DELETE", url: "/api/platform-accounts/bilibili", headers: auth })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/platform-accounts/bilibili/check", headers: auth })).statusCode).toBe(404);
+  });
+
+  it("imports a Xiaohongshu login from cookies.txt or a Cookie header and answers only hasCredential", async () => {
+    const { h, app, lines } = await setup();
+    const cookiesTxt = "# Netscape HTTP Cookie File\n.xiaohongshu.com\tTRUE\t/\tTRUE\t0\tamber_test_cookie\t<placeholder>\n.example.com\tTRUE\t/\tTRUE\t0\tforeign_cookie\t<placeholder>\n";
+    for (const value of [cookiesTxt, `Cookie: ${COOKIE}`]) {
+      const put = await app.inject({ method: "PUT", url: "/api/platform-accounts/xiaohongshu/cookies", headers: auth, payload: { value } });
+      expect(put.statusCode).toBe(200);
+      expect(put.json()).toEqual({ platform: "xiaohongshu", credentialStatus: "configured", hasCredential: true, status: "unknown" });
+      expect(put.body).not.toContain("amber_test_cookie");
+      expect(put.body).not.toContain("<placeholder>");
+    }
+    const stored = (await h.platformAccounts.credentialFor(LOCAL.userId, "xiaohongshu")?.cookies()) ?? "";
+    expect(stored).toContain(".xiaohongshu.com");
+    expect(stored).not.toContain("foreign_cookie");
+    const listed = await app.inject({ method: "GET", url: "/api/platform-accounts", headers: auth });
+    expect(listed.json().accounts[2]).toEqual({ platform: "xiaohongshu", credentialStatus: "configured", hasCredential: true, status: "unknown" });
+    expect(listed.body).not.toContain("<placeholder>");
+    expect(lines.join("\n")).not.toContain("amber_test_cookie");
+    expect(countRows(h.db, "secret")).toBe(1);
   });
 
   it("answers 404 for a platform Amber does not support", async () => {

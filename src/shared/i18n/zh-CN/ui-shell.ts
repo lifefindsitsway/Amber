@@ -175,6 +175,32 @@ export const shell = {
     skippedTrashed: "{{count}} 项在回收站中，未导入",
     openTrash: "打开回收站",
     viewImported: "查看已导入的内容",
+    /** What checking a single pasted link found, at the end of the recognition line. */
+    check: {
+      checking: "正在确认链接…",
+      inLibrary: "已在资料库",
+      open: "打开",
+      relatedCollection: "属于合集「{{title}}」",
+      episodes: "共 {{count}} 集",
+      chooseFromCollection: "选择合集中的视频",
+      not_video: "这是图文笔记，Amber 目前只处理视频",
+      link_expired: "链接可能不完整或已经失效，请重新复制完整的分享链接",
+    },
+    /** The import could not tell whether these links can be processed; the user may import them anyway. */
+    unverified: "暂时无法确认这条链接能否处理",
+    unverifiedMany: "暂时无法确认其中 {{count}} 条链接能否处理",
+    /** At the end of the recognition line when a bilibili link is in the box and bilibili has no valid login. */
+    bilibiliLogin: {
+      none: "未登录 B 站，字幕会用语音转录获取",
+      expired: "B 站登录已失效",
+      login: "去登录",
+      relogin: "重新登录",
+    },
+    /** After an import offered a new link for a Content already in the library. */
+    sourceUrlUpdate: {
+      updated: "已更新保存的来源链接",
+      kept: "新链接暂时无法确认，保留了原来的链接",
+    },
   },
   /** The dialog choosing which entries of a platform collection to import, and in which order. */
   collectionPreview: {
@@ -228,6 +254,7 @@ export const shell = {
       processing: "沿用正在进行的任务",
       in_collection: "无需再加入",
       trashed: "不能选择，恢复后才能导入",
+      not_video: "Amber 目前只处理视频，不能选择",
     },
     inLibraryDetail: "不会重复创建；设置与上次相同且已完成就不再处理，否则按本次设置重新生成",
     unavailableReason: {

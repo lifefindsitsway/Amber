@@ -1344,3 +1344,194 @@ describe("collection previews and chosen entries", () => {
     });
   });
 });
+
+describe("links checked before import", () => {
+  const NOTE = "64e0a1b2c3d4e5f600112233";
+  const note = (token?: string, source = "pc_feed") =>
+    `https://www.xiaohongshu.com/explore/${NOTE}${token === undefined ? "" : `?xsec_token=${token}&xsec_source=${source}`}`;
+  const VIDEO = "7301234567890123456";
+  const OTHER = "7301234567890123457";
+  const MIX = "7300000000000000001";
+  const DOUYIN_VIDEO = `https://www.douyin.com/video/${VIDEO}`;
+  const DOUYIN_MIX = `https://www.douyin.com/collection/${MIX}`;
+  const checksOf = (h: Harness) => h.platforms.xiaohongshu.callsOf("precheck").length;
+  const rows = (h: Harness) => ["content", "task", "import_batch"].map((table) => countRows(h.db, table));
+
+  it("imports a checked video with the title and duration the check read", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.video(NOTE, { metadata: { title: "番茄牛腩面", durationMs: 284_867 } });
+    const { status, body } = await h.importContent.import(LOCAL, request({}, note("xxxxtok1")));
+    expect(status).toBe(202);
+    expect(contentOf(h, body.contentIds[0])).toMatchObject({
+      source: { kind: "xiaohongshu", sourceUrl: note("xxxxtok1"), platformContentId: NOTE },
+      title: "番茄牛腩面",
+      durationMs: 284_867,
+    });
+    expect(body.taskIds).toHaveLength(1);
+    expect(body).not.toHaveProperty("sourceUrlUpdates");
+  });
+
+  it("refuses the whole request for a link known not to work, naming it, and writes nothing", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "rejected", reason: "not_video" });
+    const refused = await errorOf(() => h.importContent.import(LOCAL, { items: [{ url: WATCH }, { url: note("xxxxtok1") }], settings: { autoProofread: true } }));
+    expect(refused).toMatchObject({ code: "invalid_request.not_video", details: { urls: [note("xxxxtok1")] } });
+    expect(rows(h)).toEqual([0, 0, 0]);
+
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "rejected", reason: "link_expired" });
+    expect(await errorOf(() => h.importContent.import(LOCAL, request({}, note("xxxxtok1"))))).toMatchObject({
+      code: "invalid_request.link_expired",
+      details: { urls: [note("xxxxtok1")] },
+    });
+    // Choosing to import anyway does not apply to a link known not to work.
+    expect(await codeOf(() => h.importContent.import(LOCAL, { items: [{ url: note("xxxxtok1"), acceptUnverified: true }], settings: { autoProofread: true } }))).toBe(
+      "invalid_request.link_expired",
+    );
+    expect(rows(h)).toEqual([0, 0, 0]);
+  });
+
+  it("refuses a link that could not be verified until the user accepts it", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.checks.set(NOTE, { result: "unverified" });
+    h.platforms.douyin.checks.set(VIDEO, { result: "unverified" });
+    const body = { items: [{ url: note("xxxxtok1") }, { url: DOUYIN_VIDEO }], settings: { autoProofread: true } };
+    expect(await errorOf(() => h.importContent.import(LOCAL, body))).toMatchObject({
+      code: "invalid_request.link_unverified",
+      details: { urls: [note("xxxxtok1"), DOUYIN_VIDEO] },
+    });
+    expect(rows(h)).toEqual([0, 0, 0]);
+
+    const accepted = await h.importContent.import(LOCAL, { ...body, items: body.items.map((item) => ({ ...item, acceptUnverified: true })) });
+    expect(accepted.body.contentIds).toHaveLength(2);
+    expect(accepted.body.taskIds).toHaveLength(2);
+    // Nothing was read, so the source stage fills the title.
+    expect(contentOf(h, accepted.body.contentIds[0])?.title).toBeUndefined();
+  });
+
+  it("answers a library link from the library without asking the platform, on inspect and import", async () => {
+    const h = harness();
+    const first = await h.importContent.import(LOCAL, request({}, note("xxxxtok1")));
+    const contentId = first.body.contentIds[0] as string;
+    const calls = h.platforms.xiaohongshu.calls.length;
+    for (const url of [note("xxxxtok1"), note()]) {
+      expect(await h.importContent.inspect(LOCAL, { url })).toEqual({ kind: "single", canonicalUrl: url, contentId });
+      const again = await h.importContent.import(LOCAL, request({}, url));
+      expect(again.body.contentIds).toEqual([contentId]);
+      expect(again.body.taskIds).toEqual(first.body.taskIds);
+      expect(again.body).not.toHaveProperty("sourceUrlUpdates");
+    }
+    expect(h.platforms.xiaohongshu.calls).toHaveLength(calls);
+    expect(contentOf(h, contentId)?.source.sourceUrl).toBe(note("xxxxtok1"));
+  });
+
+  it("inspects a new link with what the check found, and its collection", async () => {
+    const h = harness();
+    h.platforms.xiaohongshu.video(NOTE, { metadata: { title: "番茄牛腩面", durationMs: 284_867 } });
+    expect(await h.importContent.inspect(LOCAL, { url: note("xxxxtok1") })).toEqual({
+      kind: "single",
+      canonicalUrl: note("xxxxtok1"),
+      title: "番茄牛腩面",
+      check: { result: "video", title: "番茄牛腩面", durationMs: 284_867 },
+    });
+    h.platforms.xiaohongshu.checks.set(note("xxxxtok2"), { result: "rejected", reason: "not_video" });
+    expect(await h.importContent.inspect(LOCAL, { url: note("xxxxtok2") })).toEqual({ kind: "single", canonicalUrl: note("xxxxtok2"), check: { result: "rejected", reason: "not_video" } });
+
+    const related = { platformCollectionId: `douyin:${MIX}`, title: "秦汉逐鹿", itemCount: 3, index: 2, canonicalUrl: DOUYIN_MIX };
+    h.platforms.douyin.checks.set(VIDEO, { result: "video", metadata: { title: "第二集", durationMs: 190_000, subtitleTracks: [], description: { state: "unknown" } }, relatedCollection: related });
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO })).toMatchObject({ check: { result: "video", title: "第二集" }, relatedCollection: related });
+    expect(rows(h)).toEqual([0, 0, 0]);
+  });
+
+  it("asks the platform once from inspect to import for the same user and link, and again for another link or user", async () => {
+    const h = harness();
+    await h.importContent.inspect(LOCAL, { url: note("xxxxtok1") });
+    await h.importContent.inspect(LOCAL, { url: note("xxxxtok2") });
+    expect(checksOf(h)).toBe(2);
+    await h.importContent.import(LOCAL, request({}, note("xxxxtok1")));
+    expect(checksOf(h)).toBe(2);
+    await h.importContent.inspect(BOB, { url: note("xxxxtok1") });
+    expect(checksOf(h)).toBe(3);
+  });
+
+  it("replaces the stored link with a verified new one in the same transaction, without touching updatedAt", async () => {
+    const h = harness();
+    const first = await h.importContent.import(LOCAL, request({}, note("xxxxtok1")));
+    const contentId = first.body.contentIds[0] as string;
+    const before = contentOf(h, contentId);
+    const updated = await h.importContent.import(LOCAL, request({}, note("xxxxtok2", "app_share")));
+    expect(updated.body.contentIds).toEqual([contentId]);
+    expect(updated.body.sourceUrlUpdates).toEqual([{ contentId, result: "updated" }]);
+    expect(contentOf(h, contentId)?.source.sourceUrl).toBe(note("xxxxtok2", "app_share"));
+    expect(contentOf(h, contentId)?.updatedAt).toBe(before?.updatedAt);
+
+    for (const check of [{ result: "rejected", reason: "link_expired" } as const, { result: "unverified" } as const, amberError("source_unreachable", "scripted")]) {
+      h.platforms.xiaohongshu.checks.set(note("xxxxbad"), check);
+      const kept = await h.importContent.import(LOCAL, request({}, note("xxxxbad")));
+      expect(kept.body.sourceUrlUpdates).toEqual([{ contentId, result: "kept" }]);
+      expect(contentOf(h, contentId)?.source.sourceUrl).toBe(note("xxxxtok2", "app_share"));
+    }
+
+    // The replacement is part of the import: an import that fails writes no link either.
+    const rolledBack = await errorOf(() => h.importContent.import(LOCAL, request({ templateId: "no-such-template" }, note("xxxxtok3"))));
+    expect(rolledBack).toBeDefined();
+    expect(contentOf(h, contentId)?.source.sourceUrl).toBe(note("xxxxtok2", "app_share"));
+  });
+
+  it("does not check a new link without access parameters or equal to the stored one", async () => {
+    const h = harness();
+    const first = await h.importContent.import(LOCAL, request({}, note("xxxxtok1")));
+    const checks = checksOf(h);
+    for (const url of [note(), note("xxxxtok1")]) {
+      const again = await h.importContent.import(LOCAL, request({}, url));
+      expect(again.body).not.toHaveProperty("sourceUrlUpdates");
+    }
+    expect(checksOf(h)).toBe(checks);
+    expect(contentOf(h, first.body.contentIds[0])?.source.sourceUrl).toBe(note("xxxxtok1"));
+  });
+
+  it("skips image posts when a whole collection is imported, and counts only what it imports", async () => {
+    const h = harness();
+    const id = (n: number) => `73012345678901${String(n).padStart(5, "0")}`;
+    const entry = (n: number, image = false) => ({
+      platformContentId: id(n),
+      canonicalUrl: `https://www.douyin.com/video/${id(n)}`,
+      ...(image ? { unavailable: "not_video" as const } : {}),
+    });
+    h.platforms.douyin.collections.set(`douyin:${MIX}`, { title: "合集", items: [entry(0), entry(1, true), entry(2)] });
+    const whole = await h.importContent.import(LOCAL, { items: [{ url: DOUYIN_MIX }], settings: { autoProofread: true } });
+    expect(whole.body.contentIds).toHaveLength(2);
+    const imported = whole.body.contentIds.map((contentId) => contentOf(h, contentId)?.source.platformContentId);
+    expect(imported).toEqual([id(0), id(2)]);
+    // Chosen explicitly, an image post is refused like any entry that cannot be imported.
+    expect(await codeOf(() => h.importContent.import(LOCAL, { items: [{ url: DOUYIN_MIX, entries: [id(1)] }], settings: { autoProofread: true } }))).toBe("invalid_request");
+
+    const full = harness();
+    const items = [...Array.from({ length: IMPORT_BATCH_MAX }, (_, n) => entry(n)), entry(IMPORT_BATCH_MAX, true)];
+    full.platforms.douyin.collections.set(`douyin:${MIX}`, { title: "合集", items });
+    const atLimit = await full.importContent.import(LOCAL, { items: [{ url: DOUYIN_MIX }], settings: { autoProofread: true } });
+    expect(atLimit.body.contentIds).toHaveLength(IMPORT_BATCH_MAX);
+  });
+
+  it("imports the current video once when a collection is chosen from it, and a cancelled preview writes nothing", async () => {
+    const h = harness();
+    const entry = (id: string) => ({ platformContentId: id, canonicalUrl: `https://www.douyin.com/video/${id}` });
+    h.platforms.douyin.collections.set(`douyin:${MIX}`, { title: "秦汉逐鹿", items: [entry(VIDEO), entry(OTHER)] });
+    const preview = await h.importContent.inspect(LOCAL, { url: DOUYIN_MIX });
+    expect(preview.items?.map((item) => item.state)).toEqual(["new", "new"]);
+    // Leaving the preview: nothing was written.
+    expect(rows(h)).toEqual([0, 0, 0]);
+
+    const chosen = await h.importContent.import(LOCAL, {
+      items: [{ url: DOUYIN_VIDEO }, { url: DOUYIN_MIX, entries: [VIDEO, OTHER], previewId: preview.previewId as string }],
+      settings: { autoProofread: true },
+      confirmCollections: true,
+    });
+    expect(chosen.body.contentIds).toHaveLength(2);
+    expect(countRows(h.db, "content")).toBe(2);
+    expect(countRows(h.db, "task")).toBe(2);
+
+    const again = await h.importContent.import(LOCAL, { items: [{ url: DOUYIN_MIX, entries: [VIDEO, OTHER] }], settings: { autoProofread: true }, confirmCollections: true });
+    expect(again.body.contentIds).toEqual(chosen.body.contentIds);
+    expect(countRows(h.db, "content")).toBe(2);
+  });
+});

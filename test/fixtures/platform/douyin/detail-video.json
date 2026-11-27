@@ -1,0 +1,249 @@
+{
+  "aweme_detail": {
+    "aweme_id": "7900000000000000001",
+    "aweme_type": 0,
+    "media_type": 4,
+    "item_title": "《守灯人：在礁石上住了三十年》",
+    "preview_title": "《守灯人：在礁石上住了三十年》 二十岁那年，你提着一盏煤油灯上了岛。\n第一年冬天，补给船三个月没来。\n你学会了看云，也学会了跟海鸟说话。\n后来灯换成了电的，你还是每晚爬一遍楼梯。\n最后一次下岛，你把钥匙交给了一个孩子。 \n#虚构话题甲   #虚构知识站   #灯塔  #守灯人  #海岛  @TESTONLY_account",
+    "caption": "二十岁那年，你提着一盏煤油灯上了岛。\n第一年冬天，补给船三个月没来。\n你学会了看云，也学会了跟海鸟说话。\n后来灯换成了电的，你还是每晚爬一遍楼梯。\n最后一次下岛，你把钥匙交给了一个孩子。\n\n#虚构话题甲   #虚构知识站   #灯塔  #守灯人  #海岛  @TESTONLY_account",
+    "desc": "《守灯人：在礁石上住了三十年》 二十岁那年，你提着一盏煤油灯上了岛。\n第一年冬天，补给船三个月没来。\n你学会了看云，也学会了跟海鸟说话。\n后来灯换成了电的，你还是每晚爬一遍楼梯。\n最后一次下岛，你把钥匙交给了一个孩子。 \n#虚构话题甲   #虚构知识站   #灯塔  #守灯人  #海岛  @TESTONLY_account",
+    "duration": 190800,
+    "create_time": 1795512577,
+    "author": {
+      "nickname": "TESTONLY_nickname",
+      "sec_uid": "TESTONLY_secuid",
+      "uid": "TESTONLY_uid"
+    },
+    "images": null,
+    "is_image_beat": false,
+    "status": {
+      "is_delete": false,
+      "is_prohibited": false,
+      "private_status": 0,
+      "in_reviewing": false
+    },
+    "chapter_list": [
+      {
+        "desc": "上岛",
+        "detail": "提着一盏煤油灯登上礁石，第一夜听了一整晚的浪",
+        "timestamp": 0,
+        "url": "https://p3-pc-sign.douyinpic.com/TESTONLY/chapter-0.jpeg?x-expires=<expires>&x-signature=<signature>"
+      },
+      {
+        "desc": "断粮",
+        "detail": "补给船三个月没来，靠晒干的鱼和雨水撑过冬天",
+        "timestamp": 20000,
+        "url": "https://p3-pc-sign.douyinpic.com/TESTONLY/chapter-1.jpeg?x-expires=<expires>&x-signature=<signature>"
+      },
+      {
+        "desc": "看云",
+        "detail": "学会从云的颜色判断风暴，提前三天点亮备用灯",
+        "timestamp": 60000,
+        "url": "https://p9-pc-sign.douyinpic.com/TESTONLY/chapter-2.jpeg?x-expires=<expires>&x-signature=<signature>"
+      },
+      {
+        "desc": "换灯",
+        "detail": "煤油灯换成了电灯，楼梯却还是一级一级地爬",
+        "timestamp": 100000,
+        "url": "https://p9-pc-sign.douyinpic.com/TESTONLY/chapter-3.jpeg?x-expires=<expires>&x-signature=<signature>"
+      },
+      {
+        "desc": "救船",
+        "detail": "大雾里一条渔船偏了航线，你敲了一整夜的铁钟",
+        "timestamp": 138000,
+        "url": "https://p3-pc-sign.douyinpic.com/TESTONLY/chapter-4.jpeg?x-expires=<expires>&x-signature=<signature>"
+      },
+      {
+        "desc": "交钥匙",
+        "detail": "最后一次下岛，把钥匙交给了接班的孩子",
+        "timestamp": 166000,
+        "url": "https://p9-pc-sign.douyinpic.com/TESTONLY/chapter-5.jpeg?x-expires=<expires>&x-signature=<signature>"
+      }
+    ],
+    "mix_info": {
+      "mix_id": "7900000000000000100",
+      "mix_name": "灯塔守望录",
+      "statis": {
+        "current_episode": 1,
+        "updated_to_episode": 4
+      }
+    },
+    "video": {
+      "width": 2560,
+      "height": 1440,
+      "duration": 190800,
+      "format": "dash",
+      "is_h265": 0,
+      "cover": {
+        "width": 720,
+        "height": 720,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/TESTONLY/cover-0.jpeg?x-expires=<expires>&x-signature=<signature>",
+          "https://p9-pc-sign.douyinpic.com/TESTONLY/cover-1.jpeg?x-expires=<expires>&x-signature=<signature>"
+        ]
+      },
+      "origin_cover": {
+        "width": 640,
+        "height": 360,
+        "url_list": [
+          "https://p3-pc-sign.douyinpic.com/TESTONLY/origin-cover-0.jpeg?x-expires=<expires>&x-signature=<signature>",
+          "https://p9-pc-sign.douyinpic.com/TESTONLY/origin-cover-1.jpeg?x-expires=<expires>&x-signature=<signature>"
+        ]
+      },
+      "bit_rate": [
+        {
+          "gear_name": "adapt_lowest_1440_1",
+          "bit_rate": 2301524,
+          "format": "mp4",
+          "is_h265": 1,
+          "is_bytevc1": 1,
+          "FPS": 60,
+          "play_addr": {
+            "data_size": 54884460,
+            "width": 2560,
+            "height": 1440,
+            "url_key": "TESTONLY_bytevc1_1440p_2301524",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/adapt_lowest_1440_1-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/adapt_lowest_1440_1-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=adapt_lowest_1440_1-mp4&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_1080_0",
+          "bit_rate": 2120329,
+          "format": "mp4",
+          "is_h265": 0,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "data_size": 50569864,
+            "width": 1920,
+            "height": 1080,
+            "url_key": "TESTONLY_h264_1080p_2120329",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/normal_1080_0-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/normal_1080_0-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=normal_1080_0-mp4&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_1080_0",
+          "bit_rate": 2057119,
+          "format": "dash",
+          "is_h265": 0,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "data_size": 49062288,
+            "width": 1920,
+            "height": 1080,
+            "url_key": "TESTONLY_h264_1080p_2057119",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/normal_1080_0-dash/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/normal_1080_0-dash/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=normal_1080_0-dash&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_540_0",
+          "bit_rate": 1649106,
+          "format": "mp4",
+          "is_h265": 0,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "data_size": 39331200,
+            "width": 1024,
+            "height": 576,
+            "url_key": "TESTONLY_h264_540p_1649106",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/normal_540_0-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/normal_540_0-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=normal_540_0-mp4&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "normal_720_0",
+          "bit_rate": 1605502,
+          "format": "mp4",
+          "is_h265": 0,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "data_size": 38291243,
+            "width": 1280,
+            "height": 720,
+            "url_key": "TESTONLY_h264_720p_1605502",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/normal_720_0-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/normal_720_0-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=normal_720_0-mp4&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "lower_540_0",
+          "bit_rate": 1128384,
+          "format": "mp4",
+          "is_h265": 0,
+          "is_bytevc1": 0,
+          "FPS": 30,
+          "play_addr": {
+            "data_size": 26911981,
+            "width": 1024,
+            "height": 576,
+            "url_key": "TESTONLY_h264_540p_1128384",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/lower_540_0-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/lower_540_0-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=lower_540_0-mp4&sign=<sign>"
+            ]
+          }
+        },
+        {
+          "gear_name": "adapt_lowest_1080_1",
+          "bit_rate": 1108254,
+          "format": "mp4",
+          "is_h265": 1,
+          "is_bytevc1": 1,
+          "FPS": 60,
+          "play_addr": {
+            "data_size": 26428545,
+            "width": 1920,
+            "height": 1080,
+            "url_key": "TESTONLY_bytevc1_1080p_1108254",
+            "url_list": [
+              "https://v95-web-sz.douyinvod.com/TESTONLY/adapt_lowest_1080_1-mp4/?a=6383&l=<request>",
+              "https://v11-weba.douyinvod.com/TESTONLY/adapt_lowest_1080_1-mp4/?a=6383&l=<request>",
+              "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=adapt_lowest_1080_1-mp4&sign=<sign>"
+            ]
+          }
+        }
+      ],
+      "bit_rate_audio": [
+        {
+          "audio_meta": {
+            "bitrate": 46670,
+            "size": 1112927,
+            "format": "dash",
+            "media_type": "audio",
+            "url_list": {
+              "backup_url": "https://v11-weba.douyinvod.com/TESTONLY/audio/?a=6383&l=<request>",
+              "fallback_url": "https://www.douyin.com/aweme/v1/play/?video_id=TESTONLY&file_id=audio&sign=<sign>",
+              "main_url": "https://v95-web-sz.douyinvod.com/TESTONLY/audio/?a=6383&l=<request>"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "log_pb": {
+    "impr_id": "<impr>"
+  },
+  "status_code": 0
+}

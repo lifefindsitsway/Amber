@@ -30,6 +30,7 @@ import { InstanceSettingsService } from "../../../src/server/application/instanc
 import { SettingsService } from "../../../src/server/application/settings.ts";
 import { LlmGateway } from "../../../src/server/application/llm-gateway.ts";
 import { PlatformAccountService } from "../../../src/server/application/platform-accounts.ts";
+import { PlatformDetailReuse } from "../../../src/server/application/platform-detail-reuse.ts";
 import { PlatformRegistry } from "../../../src/server/application/platforms.ts";
 import { SearchService } from "../../../src/server/application/search.ts";
 import { SummaryService } from "../../../src/server/application/summaries.ts";
@@ -178,7 +179,9 @@ export interface Harness {
   notes: NoteService;
   platformAccounts: PlatformAccountService;
   /** Scripted platform adapters behind the registry; the real URL parsers decide what they accept. */
-  platforms: { bilibili: FakePlatformAdapter; youtube: FakePlatformAdapter };
+  platforms: { bilibili: FakePlatformAdapter; youtube: FakePlatformAdapter; xiaohongshu: FakePlatformAdapter; douyin: FakePlatformAdapter };
+  /** Metadata import checks read, shared by the import service and `platformAccess.recentMetadata`. */
+  platformDetails: PlatformDetailReuse;
   platformAccess: PlatformAccess;
   newId: () => string;
   /**
@@ -292,15 +295,22 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     ...(options.files === undefined ? {} : { media: { data: options.files, cache: options.files } }),
   });
   const tasks = new TaskService({ repository, bus, control, secrets: credentialStatus, newId });
-  const platforms = { bilibili: new FakePlatformAdapter("bilibili"), youtube: new FakePlatformAdapter("youtube") };
-  const registry = new PlatformRegistry([platforms.bilibili, platforms.youtube]);
+  const platforms = {
+    bilibili: new FakePlatformAdapter("bilibili"),
+    youtube: new FakePlatformAdapter("youtube"),
+    xiaohongshu: new FakePlatformAdapter("xiaohongshu"),
+    douyin: new FakePlatformAdapter("douyin"),
+  };
+  const registry = new PlatformRegistry([platforms.bilibili, platforms.youtube, platforms.xiaohongshu, platforms.douyin]);
+  const platformDetails = new PlatformDetailReuse({ now });
   const platformAccounts = new PlatformAccountService({ repository, secrets, platforms: registry, newId });
   const platformAccess: PlatformAccess = {
     adapterFor: (kind) => registry.adapterFor(kind),
     credentialFor: (owner, platform) => platformAccounts.credentialFor(owner, platform),
     markExpired: (owner, platform) => platformAccounts.markExpired(owner, platform),
+    recentMetadata: (owner, platform, ref) => platformDetails.recentMetadata(owner, platform, ref),
   };
-  const importContent = new ImportContentService({ repository, bus, control, platforms: registry, credentials: platformAccounts, disk, settings, newId });
+  const importContent = new ImportContentService({ repository, bus, control, platforms: registry, credentials: platformAccounts, disk, settings, details: platformDetails, newId });
   const contents = new ContentService({ repository, newId });
   const descriptionClock = new DescriptionClock(Date.now);
   const contentDescription = new ContentDescriptionService({ repository, platforms: platformAccess, descriptionClock, details: contents });
@@ -387,6 +397,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     notes,
     platformAccounts,
     platforms,
+    platformDetails,
     platformAccess,
     newId,
     now,
