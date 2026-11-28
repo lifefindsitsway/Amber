@@ -1,3 +1,4 @@
+import { PLATFORMS } from "../../../domain/platform.ts";
 import type {
   ContentCoverExpectation,
   ContentCoverImage,
@@ -64,6 +65,20 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
      WHERE content.id = ? AND content.user_id = ? AND content.trashed_at IS NULL`,
   );
   const swapUrl = db.prepare("UPDATE content SET cover_url = @next WHERE id = @contentId AND user_id = @owner AND trashed_at IS NULL AND cover_url = @expected");
+  // Candidates: the owner's platform Contents outside the trash with a cover URL and no copy.
+  // `user_id = ?` is served by the owner's `content_user_updated` index, so only that owner's
+  // rows are visited and sorted, never the whole table; the copy test is a primary-key probe.
+  const platformKinds = PLATFORMS.map((kind) => `'${kind}'`).join(", ");
+  const CANDIDATE = `content.user_id = @owner AND content.trashed_at IS NULL AND content.source_kind IN (${platformKinds})
+                     AND content.cover_url IS NOT NULL AND content.id > @after
+                     AND NOT EXISTS (SELECT 1 FROM content_cover_image AS cover WHERE cover.content_id = content.id)`;
+  const candidates = db.prepare(`SELECT content.id AS id FROM content WHERE ${CANDIDATE} ORDER BY content.id LIMIT @limit`);
+  const candidateCount = db.prepare(`SELECT count(*) AS n FROM content WHERE ${CANDIDATE}`);
+  // Through the owner's Contents (indexed by owner) rather than a scan of every user's images.
+  const bytesOf = db.prepare(
+    `SELECT coalesce(sum(cover.bytes), 0) AS n FROM content JOIN content_cover_image AS cover ON cover.content_id = content.id AND cover.user_id = content.user_id
+     WHERE content.user_id = ?`,
+  );
 
   function writeIf(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number, expected: ContentCoverExpectation): ContentCoverWriteOutcome {
     const current = state.get(contentId, ownerUserId) as { coverUrl: string | null; version: number | null; sha256: string | null } | undefined;
@@ -111,6 +126,15 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
     },
     replaceCoverUrl(ownerUserId, contentId, expected, next) {
       return swapUrl.run({ owner: ownerUserId, contentId, expected, next }).changes > 0;
+    },
+    listBackfillCandidates(ownerUserId, afterId, limit) {
+      return (candidates.all({ owner: ownerUserId, after: afterId ?? "", limit }) as Array<{ id: string }>).map((row) => row.id);
+    },
+    countBackfillCandidates(ownerUserId, afterId) {
+      return (candidateCount.get({ owner: ownerUserId, after: afterId ?? "" }) as { n: number }).n;
+    },
+    totalBytes(ownerUserId) {
+      return (bytesOf.get(ownerUserId) as { n: number }).n;
     },
   };
 }

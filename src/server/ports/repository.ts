@@ -1203,6 +1203,15 @@ export interface ContentCoverRepository {
    * like any cover write.
    */
   replaceCoverUrl(ownerUserId: string, contentId: string, expected: string, next: string): boolean;
+  /**
+   * Ids of the owner's backfill candidates in ascending order, after `afterId` when given, at
+   * most `limit`: outside the trash, from a platform, with a cover URL and no local copy.
+   */
+  listBackfillCandidates(ownerUserId: string, afterId: string | undefined, limit: number): string[];
+  /** How many backfill candidates the owner has, after `afterId` when given. */
+  countBackfillCandidates(ownerUserId: string, afterId?: string): number;
+  /** Bytes of all the owner's local cover copies, the trashed Contents' included. */
+  totalBytes(ownerUserId: string): number;
 }
 
 /** What a conditional cover write expects to find; see `ContentCoverRepository.putIf`. */

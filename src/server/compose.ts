@@ -48,6 +48,7 @@ import { SqliteUsageAnalyticsRepository } from "./adapters/sqlite/repositories/u
 import { sqliteSecretEnvelopeStore } from "./adapters/sqlite/repositories/secret-envelopes.ts";
 import { buildApp, type RegisteredRoute, type ServerAuthDeps } from "./app.ts";
 import { readProxyConfiguration, SystemProxyState } from "./adapters/system-proxy/index.ts";
+import { CoverBackfillService } from "./application/cover-backfill.ts";
 import type { NetworkRouter, NetworkStatusReader } from "./ports/network-route.ts";
 import { AdminService, type AdminTaskControl } from "./application/admin.ts";
 import { AsrProfileService } from "./application/asr-profile.ts";
@@ -419,6 +420,13 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     // Declared further down; read only once requests arrive.
     backgroundReady: () => backgroundReady,
   });
+  const coverBackfill = new CoverBackfillService({
+    repository,
+    covers,
+    disk: files,
+    settings: instanceSettings,
+    logger: lateLogger(() => appLogger?.child({ component: "cover-backfill" })),
+  });
   // One adapter per `AsrProviderProfile.provider`; a new provider adds an entry here.
   const asrFactories = new Map<AsrProviderId, AsrProviderFactory>(
     [new ElevenLabsAsrProviderFactory({ http, files, secrets }), new DashscopeAsrProviderFactory({ http, files, secrets })].map((factory) => [
@@ -683,6 +691,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     revocations,
     files,
     fileDeleter,
+    coverBackfill,
     // Local mode: the desktop shell rotates the key in Credential Manager after the reset.
     rotation:
       config.mode === "server"
@@ -703,6 +712,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     contents,
     contentDescription,
     covers,
+    coverBackfill,
     network,
     trash,
     platformAccounts,
@@ -890,6 +900,8 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       // Content pack jobs read the database and place files; they stop before either closes.
       await contentPacks.exports.close();
       await contentPacks.imports.close();
+      // A backfill job writes covers into the database; it stops before the database closes.
+      await coverBackfill.stop();
       await scheduler?.stop();
       // Neither the trash timer nor the file worker may write once the database is closed.
       await trash.stop();

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SqliteConnection } from "../../../../../src/server/adapters/sqlite/database.ts";
+import { sqliteContentCoverRepository } from "../../../../../src/server/adapters/sqlite/repositories/content-covers.ts";
 import { SqliteRepository } from "../../../../../src/server/adapters/sqlite/repository.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { ContentCoverImageInput, NotPromise, RepositoryScope } from "../../../../../src/server/ports/repository.ts";
@@ -152,5 +153,77 @@ describe("conditional cover writes", () => {
     expect(db.prepare("SELECT cover_url, updated_at FROM content WHERE id = 'c1'").get()).toEqual({ cover_url: "https://img.example.com/2.jpg", updated_at: T0 });
     run((scope) => scope.contents.trash("alice", "c1", T0 + 1));
     expect(run((scope) => scope.contentCovers.replaceCoverUrl("alice", "c1", "https://img.example.com/2.jpg", "https://img.example.com/3.jpg"))).toBe(false);
+  });
+});
+
+describe("backfill candidates", () => {
+  function content(id: string, owner: string, extra: Record<string, unknown> = {}): void {
+    insertRow(db, "content", {
+      id,
+      user_id: owner,
+      source_kind: "douyin",
+      platform_content_id: `p-${id}`,
+      cover_url: `https://img.example.com/${id}.jpg`,
+      processing_status: "succeeded",
+      created_at: T0,
+      updated_at: T0,
+      ...extra,
+    });
+  }
+
+  it("lists the owner's platform Contents outside the trash with a link and no copy, ascending by id after the cursor", () => {
+    db.prepare("DELETE FROM content").run();
+    content("k05", "alice");
+    content("k01", "alice");
+    content("k03", "alice", { source_kind: "youtube" });
+    content("k02", "alice", { cover_url: null });
+    content("k04", "alice", { trashed_at: T0 });
+    content("k06", "bob");
+    content("k07", "alice", { source_kind: "local", platform_content_id: null });
+    content("k08", "alice");
+    run((scope) => scope.contentCovers.put("alice", "k08", image(1), T0));
+    content("k09", "alice");
+    const list = (afterId: string | undefined, limit: number) => run((scope) => scope.contentCovers.listBackfillCandidates("alice", afterId, limit));
+    expect(list(undefined, 10)).toEqual(["k01", "k03", "k05", "k09"]);
+    expect(list(undefined, 2)).toEqual(["k01", "k03"]);
+    expect(list("k03", 10)).toEqual(["k05", "k09"]);
+    expect(run((scope) => scope.contentCovers.countBackfillCandidates("alice"))).toBe(4);
+    expect(run((scope) => scope.contentCovers.countBackfillCandidates("alice", "k03"))).toBe(2);
+    expect(run((scope) => scope.contentCovers.countBackfillCandidates("bob"))).toBe(1);
+  });
+
+  it("finds them through an index of the owner's rows, never a scan of the whole table", () => {
+    const plan = (sql: string, params: Record<string, unknown>) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(params) as Array<{ detail: string }>).map((row) => row.detail);
+    // The statements the repository runs, captured from it rather than retyped.
+    const statements: string[] = [];
+    const prepare = db.prepare.bind(db);
+    const spy = Object.assign(Object.create(db) as SqliteConnection, {
+      prepare: (sql: string) => {
+        statements.push(sql);
+        return prepare(sql);
+      },
+    });
+    sqliteContentCoverRepository(spy);
+    const listing = statements.find((sql) => sql.includes("ORDER BY content.id LIMIT"));
+    const counting = statements.find((sql) => sql.startsWith("SELECT count(*) AS n FROM content WHERE"));
+    expect(listing).toBeDefined();
+    expect(counting).toBeDefined();
+    for (const [sql, params] of [
+      [listing as string, { owner: "alice", after: "", limit: 10 }],
+      [counting as string, { owner: "alice", after: "" }],
+    ] as const) {
+      const steps = plan(sql, params);
+      expect(steps.some((step) => /^SEARCH content USING (COVERING )?INDEX \S+ \(user_id=\?/u.test(step))).toBe(true);
+      expect(steps.filter((step) => /^SCAN content\b/u.test(step))).toEqual([]);
+    }
+  });
+
+  it("totals the bytes of the owner's copies, trashed Contents included", () => {
+    run((scope) => scope.contentCovers.put("alice", "c1", image(1, 2, 3), T0));
+    run((scope) => scope.contentCovers.put("alice", "c2", image(4, 5), T0));
+    run((scope) => scope.contents.trash("alice", "c2", T0 + 1));
+    expect(run((scope) => scope.contentCovers.totalBytes("alice"))).toBe(5);
+    expect(run((scope) => scope.contentCovers.totalBytes("bob"))).toBe(0);
   });
 });

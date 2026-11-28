@@ -197,6 +197,7 @@ export const EXPECTED_REFINED_CODES = [
   { code: "network_proxy_failed.auth_required", detailsKeys: [], retryDisposition: "never", action: null },
   { code: "network_proxy_failed.tls", detailsKeys: [], retryDisposition: "never", action: null },
   { code: "conflict.cover_fetch_busy", detailsKeys: ["retryAfterMs"], retryDisposition: null, action: null },
+  { code: "conflict.cover_backfill_active", detailsKeys: [], retryDisposition: null, action: null },
 ] as const;
 
 /** The reasons `invalid_request.cache_dir` may name; an unregistered reason shows the generic text. */

@@ -68,6 +68,14 @@ export interface CoverFetchResult {
   content: ContentDetailDto;
 }
 
+/** What one backfill item came to; a failure carries what grouping and later modes need. */
+export type CoverBackfillItemResult =
+  | { outcome: "saved"; downloaded: true }
+  | { outcome: "skipped"; downloaded: boolean; platform?: Platform; blocked?: true }
+  /** Stopped while waiting for the link-refresh budget, before anything was requested: still to do. */
+  | { outcome: "interrupted"; downloaded: false }
+  | { outcome: "failed"; downloaded: true; platform: Platform; error: unknown; staleLink: boolean; refreshable: boolean };
+
 function notFound(): never {
   throw amberError("not_found", "content not found");
 }
@@ -77,7 +85,8 @@ function notFound(): never {
  * adapter (trusted image hosts only, no login), decoded and re-encoded by the shared image
  * processor, and stored with its version in one transaction; the platform's file is never
  * kept. Every download goes through the cover download coordinator: the `source` stage's save
- * (`saveIfAbsent`, never throwing) and the user's explicit fetch (`fetch`).
+ * (`saveIfAbsent`, never throwing), the user's explicit fetch (`fetch`) and the backfill
+ * (`backfillOne`).
  *
  * Every write is conditional: the Content must still be the owner's and outside the trash,
  * the caller must not have given up, and its cover URL and version must be what the download
@@ -88,7 +97,7 @@ function notFound(): never {
  *
  * A stored link whose image host answers 403 / 404 / 410 can be re-read from the platform,
  * where its adapter implements `refreshCoverUrl`: at most `COVER_REFRESH_USER_PER_MIN` per
- * user and minute, one read per user and Content at a
+ * user and minute across manual fetches and the backfill, one read per user and Content at a
  * time, through the managed heavy-job governor. The read and the following download run one
  * after the other, never holding both kinds of slot at once.
  */
@@ -196,6 +205,69 @@ export class ContentCoverService implements SourceCoverSaver {
   /** Whether covers of `platform` can be re-read from the platform once their link has gone stale. */
   canRefresh(platform: Platform): boolean {
     return typeof this.options.platforms.adapterFor(platform).refreshCoverUrl === "function";
+  }
+
+  /**
+   * One backfill item: re-checks that the Content still wants a cover (the owner's, outside the
+   * trash, from a platform, with a cover URL and no copy; `skipped` otherwise), skips platforms
+   * in `blocked`, then downloads the stored link, or with `refresh` first re-reads the link
+   * from the platform (waiting for the shared budget rather than failing on it; `stop` ends
+   * that wait, leaving the item `interrupted`). Saving only fills a missing cover. Failures are
+   * returned, not thrown, except the caller's own abort.
+   */
+  async backfillOne(
+    ownerUserId: string,
+    contentId: string,
+    options: { refresh: boolean; blocked: ReadonlySet<Platform>; stop?: AbortSignal },
+    signal: AbortSignal,
+  ): Promise<CoverBackfillItemResult> {
+    const content = this.options.repository.withTransaction((scope) => {
+      const found = scope.contents.get(ownerUserId, contentId);
+      return found !== undefined && found.coverImageVersion === undefined && scope.contentCovers.get(ownerUserId, contentId) === undefined ? found : undefined;
+    });
+    if (content === undefined || !isPlatform(content.source.kind) || content.coverUrl === undefined) {
+      return { outcome: "skipped", downloaded: false };
+    }
+    const platform = content.source.kind;
+    if (options.blocked.has(platform)) {
+      return { outcome: "skipped", downloaded: false, platform, blocked: true };
+    }
+    let coverUrl = content.coverUrl;
+    try {
+      if (options.refresh) {
+        if (!this.canRefresh(platform)) {
+          return { outcome: "skipped", downloaded: false, platform };
+        }
+        const budgetWait = options.stop === undefined ? signal : AbortSignal.any([signal, options.stop]);
+        try {
+          await this.refreshBudget.take(ownerUserId, budgetWait);
+        } catch (error) {
+          if (!signal.aborted && options.stop?.aborted === true) {
+            return { outcome: "interrupted", downloaded: false };
+          }
+          throw error;
+        }
+        const fresh = await this.refreshedCoverUrl(content, coverUrl, "budgeted", signal);
+        if (fresh === undefined) {
+          const still = this.options.repository.withTransaction((scope) => scope.contents.get(ownerUserId, contentId));
+          return still === undefined
+            ? { outcome: "skipped", downloaded: true, platform }
+            : { outcome: "failed", downloaded: true, platform, error: amberError("source_unreachable", "the platform names no cover"), staleLink: true, refreshable: false };
+        }
+        coverUrl = fresh;
+      }
+      const image = await this.download(content, coverUrl, "queued", signal);
+      const result = this.write(ownerUserId, contentId, image, { coverUrl, version: undefined }, signal);
+      return result.outcome === "written" || result.outcome === "unchanged" ? { outcome: "saved", downloaded: true } : { outcome: "skipped", downloaded: true, platform };
+    } catch (error) {
+      if (signal.aborted) {
+        throw signal.reason;
+      }
+      const staleLink = isStaleCoverLink(error) || (isAmberError(error) && error.appError.code === "invalid_request.link_expired");
+      // A link that went stale again right after a refresh is not offered for another one.
+      const refreshable = !options.refresh && isStaleCoverLink(error) && this.canRefresh(platform);
+      return { outcome: "failed", downloaded: true, platform, error, staleLink, refreshable };
+    }
   }
 
   /** The cover of the principal's Content outside the trash; `not_found` when there is none. */

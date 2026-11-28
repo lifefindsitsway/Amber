@@ -37,3 +37,4 @@ export * from "./figure.ts";
 export * from "./danmaku.ts";
 export * from "./content-pack.ts";
 export * from "./network.ts";
+export * from "./cover-backfill.ts";

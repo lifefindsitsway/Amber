@@ -43,6 +43,10 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "POST", path: "/contents/:id/description/fetch", modes: BOTH },
   { method: "GET", path: "/contents/:id/cover", modes: BOTH },
   { method: "POST", path: "/contents/:id/cover/fetch", modes: BOTH },
+  { method: "GET", path: "/covers/backfill", modes: BOTH },
+  { method: "POST", path: "/covers/backfill", modes: BOTH },
+  { method: "POST", path: "/covers/backfill/:jobId/cancel", modes: BOTH },
+  { method: "DELETE", path: "/covers/backfill/:jobId", modes: BOTH },
   // tasks
   { method: "GET", path: "/tasks", modes: BOTH },
   { method: "GET", path: "/tasks/:id", modes: BOTH },

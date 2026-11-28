@@ -283,6 +283,12 @@ export const COVER_FETCH_USER_CONCURRENCY = 2;
 export const COVER_FETCH_USER_PER_MIN = 30;
 /** Re-reads of platform metadata for an expired cover link one user may start per minute, manual and backfill together. */
 export const COVER_REFRESH_USER_PER_MIN = 6;
+/** Gap between two items of a cover backfill job that only download. */
+export const COVER_BACKFILL_INTERVAL_MS = 1000;
+/** Items one cover backfill job takes at most; also the failed ids it keeps. */
+export const COVER_BACKFILL_MAX_ITEMS = 5000;
+/** How often the storage settings poll a running cover backfill job. */
+export const COVER_BACKFILL_POLL_MS = 1000;
 /** How often the desktop shell reads the Windows system proxy. */
 export const SYSTEM_PROXY_POLL_MS = 2000;
 /** Longest system proxy message line the sidecar reads from stdin. */

@@ -627,6 +627,35 @@ describe("stale cover links", () => {
 });
 
 describe("the link-refresh budget", () => {
+  it("refuses a manual refresh over the per-minute budget with the wait, while a backfill item waits for it", async () => {
+    let now = T0;
+    const slept: number[] = [];
+    const sleep = async (ms: number) => {
+      slept.push(ms);
+      now += ms;
+    };
+    const { h, covers, refreshes } = rig({
+      refreshable: ["douyin"],
+      refreshAnswer: (platformId) => `https://img.example.com/fresh-${platformId}.jpg`,
+      auto: (url) => (url.includes("fresh-") ? STALE(404) : STALE(404)),
+      service: { now: () => now, sleep },
+    });
+    const ids = Array.from({ length: COVER_REFRESH_USER_PER_MIN + 1 }, () => rigContent(h, { platform: "douyin" }));
+    for (const id of ids.slice(0, COVER_REFRESH_USER_PER_MIN)) {
+      expect((await failure(covers.fetch(LOCAL, id, signal()))).class).toBe("source_unreachable");
+    }
+    expect(refreshes).toHaveLength(COVER_REFRESH_USER_PER_MIN);
+    const over = await failureWithDetails(covers.fetch(LOCAL, ids.at(-1) as string, signal()));
+    expect(over).toMatchObject({ code: "conflict.cover_fetch_busy", details: { retryAfterMs: 60_000 } });
+    expect(refreshes).toHaveLength(COVER_REFRESH_USER_PER_MIN);
+
+    // The backfill shares the budget: it waits for the next allowance instead of failing.
+    const item = await covers.backfillOne(LOCAL.userId, ids.at(-1) as string, { refresh: true, blocked: new Set() }, signal());
+    expect(slept).toEqual([60_000]);
+    expect(refreshes).toHaveLength(COVER_REFRESH_USER_PER_MIN + 1);
+    expect(item).toMatchObject({ outcome: "failed", staleLink: true, refreshable: false });
+  });
+
   it("reads the platform through the heavy-job governor and downloads only after releasing it, even with one slot of each", async () => {
     const heavy = new FairSemaphore(() => 1);
     const groups: string[] = [];

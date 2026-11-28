@@ -23,7 +23,7 @@ export interface AdminStack {
 }
 
 /** The AdminService over a harness: its scheduler and chat, a FileStore on its temp data directory, a counting rotation. */
-export function createAdmin(h: Harness, options: Partial<Pick<AdminServiceOptions, "drainTimeoutMs" | "rotation">> = {}): AdminStack {
+export function createAdmin(h: Harness, options: Partial<Pick<AdminServiceOptions, "drainTimeoutMs" | "rotation" | "coverBackfill">> = {}): AdminStack {
   const revocations = new SessionRevocations();
   const files = new LocalFileStore(h.dir);
   const stack: AdminStack = { admin: undefined as unknown as AdminService, revocations, files, rotations: 0 };
@@ -50,6 +50,7 @@ export function createAdmin(h: Harness, options: Partial<Pick<AdminServiceOption
     logger: silentLogger,
     newId: h.newId,
     ...(options.drainTimeoutMs === undefined ? {} : { drainTimeoutMs: options.drainTimeoutMs }),
+    ...(options.coverBackfill === undefined ? {} : { coverBackfill: options.coverBackfill }),
   });
   return stack;
 }

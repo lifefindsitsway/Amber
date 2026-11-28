@@ -154,6 +154,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "conflict.mutation_lane": {},
   // The user's cover download slots are taken, or manual fetches or link refreshes hit their per-minute limit.
   "conflict.cover_fetch_busy": { detailsKeys: ["retryAfterMs"] },
+  // The user already has a cover backfill job that has not finished.
+  "conflict.cover_backfill_active": {},
   // The instance setting is fixed by its environment variable and read-only.
   "conflict.setting_env_overridden": {},
   // A file with the same fingerprint already belongs to another Content; `trashed` when that Content is in the trash.

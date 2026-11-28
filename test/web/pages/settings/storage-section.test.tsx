@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { StorageSection } from "../../../../src/web/pages/settings/storage-section.tsx";
 import { useContentDetail } from "../../../../src/web/pages/content/content-data.ts";
 import { BYTES_PER_GB, BYTES_PER_MB } from "../../../../src/shared/units.ts";
-import { CONCURRENCY_PIPELINE_MAX, SAVE_NOTICE_DISMISS_MS } from "../../../../src/shared/defaults.ts";
+import { CONCURRENCY_PIPELINE_MAX, COVER_BACKFILL_POLL_MS, SAVE_NOTICE_DISMISS_MS } from "../../../../src/shared/defaults.ts";
+import type { CoverBackfillJobDto, CoverBackfillStatusDto } from "../../../../src/shared/dto/cover-backfill.ts";
+import { focusManager, QueryClient } from "@tanstack/react-query";
 import type { CacheLocationDto, FileGrant } from "../../../../src/shared/dto/local-media.ts";
 import { fakeShell } from "../../../fixtures/web/desktop-bridge.ts";
 import { contentDetail } from "../../../fixtures/web/content-data.ts";
@@ -667,5 +669,201 @@ describe("old free-ratio hint", () => {
     expect(within(disk).getByTestId("disk-explainer").textContent).toContain("缓存目录存放从平台缓存的视频、音频及其临时文件，不计入数据目录上限");
     const field = within(disk).getByLabelText("数据目录上限（GB）").closest("div") as HTMLElement;
     expect(field.querySelector("p")).toBeNull();
+  });
+});
+
+const JOB = {
+  id: "01JOB",
+  mode: "stored" as const,
+  state: "running" as CoverBackfillJobDto["state"],
+  total: 10,
+  processed: 3,
+  saved: 2,
+  skipped: 0,
+  failed: { platform_unreachable: 1 } as CoverBackfillJobDto["failed"],
+  retryable: 1,
+  refreshable: 0,
+  remaining: 7,
+  nextAfterId: "01C3",
+};
+
+/** Server-mode routes plus the backfill status answered by `status` (a function may vary it per call). */
+function covers(status: CoverBackfillStatusDto | (() => CoverBackfillStatusDto), extra: Parameters<typeof mockApi>[0] = {}, route = "/settings/storage") {
+  const api = mockApi({
+    "GET /api/version": { body: { version: "0.1.0", mode: "server" } },
+    "GET /api/auth/me": { body: { userId: "u1", role: "user", mode: "server", mustChangePassword: false } },
+    "GET /api/storage": { body: { usedBytes: 0 } },
+    "GET /api/covers/backfill": () => ({ body: typeof status === "function" ? status() : status }),
+    ...extra,
+  });
+  renderApp(<StorageSection />, { mode: "server", route });
+  return api;
+}
+
+const block = async () => within(await screen.findByTestId("cover-backfill"));
+
+describe("the covers block", () => {
+  it("says there is nothing to save when there are no candidates", async () => {
+    covers({ candidates: 0 });
+    expect((await screen.findByTestId("cover-backfill-none")).textContent).toBe("暂无需要保存的封面");
+    expect(screen.getByRole("heading", { name: "封面" })).toBeTruthy();
+    expect(screen.queryByTestId("cover-backfill-start")).toBeNull();
+  });
+
+  it("explains and starts a job, then shows its progress, the tally and that the page can be left", async () => {
+    const { calls } = covers({ candidates: 10 }, { "POST /api/covers/backfill": { body: { candidates: 10, job: { ...JOB, processed: 0, saved: 0, failed: {}, retryable: 0 } } } });
+    expect((await screen.findByTestId("cover-backfill-intro")).textContent).toContain("共 10 条内容可以保存");
+    fireEvent.click(screen.getByTestId("cover-backfill-start"));
+    expect((await screen.findByTestId("cover-backfill-progress")).textContent).toBe("已处理 0 / 10");
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ mode: "stored" });
+    expect(screen.getByTestId("cover-backfill-tally").textContent).toBe("已保存 0 · 未成功 0");
+    expect(screen.getByTestId("cover-backfill-note").textContent).toBe("可以离开此页面，保存会在后台继续");
+    expect(screen.getByTestId("cover-backfill-stop").textContent).toBe("停止");
+  });
+
+  it("stops a running job and shows it stopping", async () => {
+    const { calls } = covers({ candidates: 10, job: JOB }, { "POST /api/covers/backfill/01JOB/cancel": { body: { candidates: 10, job: { ...JOB, state: "stopping" } } } });
+    const view = await block();
+    expect((await view.findByTestId("cover-backfill-progress")).textContent).toBe("已处理 3 / 10");
+    expect(view.getByTestId("cover-backfill-tally").textContent).toBe("已保存 2 · 未成功 1");
+    expect(view.getByRole("progressbar", { name: "封面" }).getAttribute("aria-valuenow")).toBe("30");
+    fireEvent.click(view.getByTestId("cover-backfill-stop"));
+    await waitFor(() => expect(view.getByTestId("cover-backfill-note").textContent).toBe("正在停止…"));
+    expect((view.getByTestId("cover-backfill-stop") as HTMLButtonElement).disabled).toBe(true);
+    expect(calls.some((call) => call.method === "POST" && call.path === "/api/covers/backfill/01JOB/cancel")).toBe(true);
+  });
+
+  it("offers to go on after a stop, from the job's cursor", async () => {
+    const { calls } = covers(
+      { candidates: 8, job: { ...JOB, state: "stopped", remaining: 8 } },
+      { "POST /api/covers/backfill": { body: { candidates: 8, job: { ...JOB, id: "01JOB2", processed: 0 } } } },
+    );
+    const view = await block();
+    expect((await view.findByTestId("cover-backfill-summary")).textContent).toBe("已停止 · 已保存 2 张，还有 8 条未处理");
+    expect(view.queryByTestId("cover-backfill-done")).toBeNull();
+    fireEvent.click(view.getByTestId("cover-backfill-resume"));
+    expect(view.getByTestId("cover-backfill-resume").textContent).toBe("继续保存");
+    await waitFor(() => expect(calls.find((call) => call.method === "POST")?.body).toEqual({ mode: "stored", afterId: "01C3" }));
+  });
+
+  it("sums up a finished job with its failures by reason and offers retry, refresh, the rest and done", async () => {
+    const finishedJob = { ...JOB, state: "completed" as const, processed: 10, saved: 5, skipped: 1, failed: { link_expired: 2, platform_unreachable: 1, image_rejected: 1 }, retryable: 1, refreshable: 2, remaining: 5 };
+    const { calls } = covers({ candidates: 9, job: finishedJob }, {
+      "POST /api/covers/backfill": (call) => ({ body: { candidates: 9, job: { ...JOB, id: "01NEXT", mode: (call.body as { mode: "stored" }).mode } } }),
+      "DELETE /api/covers/backfill/01JOB": { body: { candidates: 9 } },
+    });
+    const view = await block();
+    expect((await view.findByTestId("cover-backfill-summary")).textContent).toBe("已保存 5 · 未成功 4 · 已跳过 1");
+    expect(within(view.getByTestId("cover-backfill-reasons")).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "封面地址已失效 2 条",
+      "平台暂时无法访问 1 条",
+      "图片不符合要求 1 条",
+    ]);
+    expect(view.getByTestId("cover-backfill-retry").textContent).toBe("再试一次");
+    const refresh = view.getByTestId("cover-backfill-refresh");
+    expect(refresh.textContent).toBe("重新获取 2 条内容的封面信息");
+    expect(document.getElementById(refresh.getAttribute("aria-describedby") ?? "")?.textContent).toBe("会访问小红书、抖音");
+    expect(view.getByTestId("cover-backfill-continue").textContent).toBe("继续保存其余 5 条");
+    expect(view.getByTestId("cover-backfill-done").textContent).toBe("完成");
+
+    fireEvent.click(view.getByTestId("cover-backfill-retry"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST").map((call) => call.body)).toEqual([{ mode: "retry", jobId: "01JOB" }]));
+  });
+
+  it("starts refresh and continue requests and closes the result", async () => {
+    const finishedJob = { ...JOB, state: "completed" as const, processed: 10, failed: { link_expired: 2 }, retryable: 0, refreshable: 2, remaining: 5 };
+    for (const [testId, expected] of [
+      ["cover-backfill-refresh", { method: "POST", body: { mode: "refresh", jobId: "01JOB" } }],
+      ["cover-backfill-continue", { method: "POST", body: { mode: "stored", afterId: "01C3" } }],
+      ["cover-backfill-done", { method: "DELETE", path: "/api/covers/backfill/01JOB" }],
+    ] as const) {
+      cleanup();
+      const { calls } = covers({ candidates: 5, job: finishedJob }, {
+        "POST /api/covers/backfill": { body: { candidates: 5, job: { ...JOB, id: "01NEXT" } } },
+        "DELETE /api/covers/backfill/01JOB": { body: { candidates: 5 } },
+      });
+      const view = await block();
+      expect(view.queryByTestId("cover-backfill-retry")).toBeNull();
+      fireEvent.click(await view.findByTestId(testId));
+      await waitFor(() => expect(calls.find((call) => call.method !== "GET")).toMatchObject(expected));
+    }
+    expect(await screen.findByTestId("cover-backfill-intro")).toBeTruthy();
+  });
+
+  it("says how many are left when the disk ran low", async () => {
+    covers({ candidates: 6, job: { ...JOB, state: "aborted_disk", remaining: 6 } });
+    const view = await block();
+    expect((await view.findByTestId("cover-backfill-summary")).textContent).toBe("磁盘空间不足，已停止；还有 6 条未处理");
+    expect(view.getByTestId("cover-backfill-resume")).toBeTruthy();
+    expect(view.getByTestId("cover-backfill-done")).toBeTruthy();
+  });
+
+  it("polls while a job runs, pauses while the page is hidden, and refreshes cover views as covers arrive", async () => {
+    let saved = 2;
+    // Polling runs on an interval timer; only those are faked, so the DOM queries still settle.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const { calls } = covers(() => ({ candidates: 10, job: { ...JOB, saved } }));
+    const view = await block();
+    await view.findByTestId("cover-backfill-progress");
+    onTestFinished(() => {
+      focusManager.setFocused(undefined);
+      vi.useRealTimers();
+    });
+    const tick = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+    const polls = () => calls.filter((call) => call.path === "/api/covers/backfill").length;
+    const before = polls();
+    await tick(COVER_BACKFILL_POLL_MS);
+    expect(polls()).toBe(before + 1);
+    await tick(COVER_BACKFILL_POLL_MS);
+    expect(polls()).toBe(before + 2);
+
+    focusManager.setFocused(false);
+    await tick(COVER_BACKFILL_POLL_MS * 3);
+    expect(polls()).toBe(before + 2);
+    focusManager.setFocused(true);
+    await tick(COVER_BACKFILL_POLL_MS);
+    expect(polls()).toBeGreaterThan(before + 2);
+
+    // More covers saved: the views that show covers are marked stale (here, the library list).
+    const invalidated = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    onTestFinished(() => invalidated.mockRestore());
+    saved = 4;
+    await tick(COVER_BACKFILL_POLL_MS);
+    await vi.waitFor(() => expect(view.getByTestId("cover-backfill-tally").textContent).toBe("已保存 4 · 未成功 1"));
+    await vi.waitFor(() =>
+      expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual(expect.arrayContaining([["contents"], ["collections"], ["collection"], ["content"]])),
+    );
+    const count = invalidated.mock.calls.length;
+    const pollsNow = polls();
+    await tick(COVER_BACKFILL_POLL_MS);
+    await vi.waitFor(() => expect(polls()).toBe(pollsNow + 1));
+    await tick(0);
+    // Nothing new saved on this poll: nothing refreshed.
+    expect(invalidated.mock.calls.length).toBe(count);
+  });
+
+  it("scrolls into view when linked as #covers", async () => {
+    const scrolled: Element[] = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    onTestFinished(() => {
+      HTMLElement.prototype.scrollIntoView = original;
+    });
+    covers({ candidates: 0 }, {}, "/settings/storage#covers");
+    await screen.findByTestId("cover-backfill-none");
+    await waitFor(() => expect(scrolled.map((element) => element.id)).toEqual(["covers"]));
+  });
+
+  it("shows nothing when the instance has no backfill routes", async () => {
+    mockApi({
+      "GET /api/version": { body: { version: "0.1.0", mode: "server" } },
+      "GET /api/auth/me": { body: { userId: "u1", role: "user", mode: "server", mustChangePassword: false } },
+      "GET /api/storage": { body: { usedBytes: 0 } },
+    });
+    renderApp(<StorageSection />, { mode: "server" });
+    expect(await screen.findByText(/已用 0 B/u)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByTestId("cover-backfill")).toBeNull());
   });
 });

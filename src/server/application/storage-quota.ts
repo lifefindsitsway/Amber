@@ -36,8 +36,8 @@ function quotaExceeded(usedBytes: number, limitGB: number): AmberError {
 
 /**
  * Per-user storage limits (`User.storageLimitGB`). Usage is the
- * committed bytes under `assets/<userId>/**` plus the bytes of this process's uploads
- * still streaming. An upload is refused at its start when that already exceeds the limit
+ * committed bytes under `assets/<userId>/**`, plus the user's local cover copies (kept in the
+ * database rather than as files), plus the bytes of this process's uploads still streaming. An upload is refused at its start when that already exceeds the limit
  * and aborted as soon as its own bytes push it over. Users without a limit draw from the
  * global pool, which only the disk watermark guards.
  */
@@ -54,8 +54,14 @@ export class StorageQuota {
   /** The caller's own usage and limit. */
   async usage(principal: RequestPrincipal): Promise<StorageDto> {
     const limitGB = this.repository.withTransaction((scope) => scope.users.get(principal.userId)?.storageLimitGB);
-    const usedBytes = await this.files.usedBytes(userAssetsPrefix(principal.userId));
+    const usedBytes = await this.committedBytes(principal.userId);
     return { usedBytes, ...(limitGB === undefined ? {} : { storageLimitGB: limitGB }) };
+  }
+
+  /** The owner's files plus their cover copies. */
+  private async committedBytes(ownerUserId: string): Promise<number> {
+    const fileBytes = await this.files.usedBytes(userAssetsPrefix(ownerUserId));
+    return fileBytes + this.repository.withTransaction((scope) => scope.contentCovers.totalBytes(ownerUserId));
   }
 
   /** `undefined` when the owner has no limit. */
@@ -65,7 +71,7 @@ export class StorageQuota {
       return undefined;
     }
     const limitBytes = limitGB * BYTES_PER_GB;
-    const usedBytes = await this.files.usedBytes(userAssetsPrefix(ownerUserId));
+    const usedBytes = await this.committedBytes(ownerUserId);
     const reservations = this.reservations.get(ownerUserId) ?? new Set<Reservation>();
     const inFlight = (): number => [...reservations].reduce((sum, reservation) => sum + reservation.bytes, 0);
     if (usedBytes + inFlight() > limitBytes) {

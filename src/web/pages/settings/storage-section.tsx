@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import {
 import { CACHE_MIGRATION_REFRESH_MS } from "../../../shared/defaults.ts";
 import { cacheLocationDtoSchema, type CacheHoldDto, type CacheLocationDto, type CacheLocationPut } from "../../../shared/dto/local-media.ts";
 import { isCacheDirReason, type AppError } from "../../../shared/errors.ts";
+import { COVER_BACKFILL_FAILURE_REASONS, type CoverBackfillJobDto, type CoverBackfillStatusDto } from "../../../shared/dto/cover-backfill.ts";
 import { storageDtoSchema } from "../../../shared/dto/storage.ts";
 import { UPLOAD_RETENTION_POLICIES, type UploadRetentionPolicy } from "../../../shared/enums.ts";
 import { BYTES_PER_GB, formatBytes } from "../../../shared/units.ts";
@@ -37,6 +38,7 @@ import { Callout, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { TextInput } from "../../ui/text-field.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import { useAutoDismiss } from "../../use-auto-dismiss.ts";
+import { coverBackfillActive, useCoverBackfill, useCoverBackfillAction, type CoverBackfillAction } from "./cover-backfill-api.ts";
 import { ConfirmButton, Field, RequestError, SettingsBlock } from "./settings-ui.tsx";
 
 /** Shown in this order: the task limit decides queueing, the other two pace the work inside tasks. */
@@ -71,6 +73,7 @@ export function StorageSection() {
           {version.isPending ? <Loading /> : <InstanceSettingsEditor lowWaterHint localCache />}
         </>
       )}
+      <CoverBackfillBlock />
       {desktop ? (
         <>
           <CacheLocationBlock />
@@ -394,6 +397,207 @@ function MyStorageBlock() {
       )}
       <p className={`mt-2 ${NOTE_TEXT_CLASS}`}>{t("settings.storage.mine.hint")}</p>
     </SettingsBlock>
+  );
+}
+
+/** Anchor of the covers block; links that ask the user to save covers first land here. */
+const COVERS_ANCHOR = "covers";
+
+/**
+ * Saving the covers of existing platform Contents to this device, both run modes. Arriving
+ * through `#covers` scrolls here once the status has arrived. A job keeps running when the user
+ * leaves; coming back shows where it got to. An instance without the routes (not found) shows
+ * nothing rather than an error.
+ */
+function CoverBackfillBlock() {
+  const { t } = useTranslation();
+  const location = useLocation();
+  const anchor = useRef<HTMLDivElement>(null);
+  const handled = useRef<string | undefined>(undefined);
+  const status = useCoverBackfill();
+  const action = useCoverBackfillAction();
+  const loaded = status.data !== undefined;
+  useEffect(() => {
+    if (!loaded || location.hash !== `#${COVERS_ANCHOR}` || handled.current === location.key) return;
+    handled.current = location.key;
+    const block = anchor.current;
+    // jsdom has no layout and therefore no scrollIntoView.
+    if (block !== null && typeof block.scrollIntoView === "function") block.scrollIntoView({ block: "start" });
+  }, [loaded, location.hash, location.key]);
+  if (status.error instanceof ApiError && status.error.error.class === "not_found") {
+    return null;
+  }
+  return (
+    <div id={COVERS_ANCHOR} ref={anchor} className="scroll-mt-6" data-testid="cover-backfill">
+      <SettingsBlock title={t("coverBackfill.title")}>
+        {status.isPending ? <SkeletonRows /> : null}
+        <RequestError error={status.error} />
+        {status.data === undefined ? null : (
+          <CoverBackfillBody status={status.data} pending={action.isPending ? action.variables : undefined} act={(next) => action.mutate(next)} />
+        )}
+        <RequestError error={action.error} />
+      </SettingsBlock>
+    </div>
+  );
+}
+
+function failedCount(job: CoverBackfillJobDto): number {
+  return Object.values(job.failed).reduce((sum, count) => sum + (count ?? 0), 0);
+}
+
+/**
+ * What continuing a job that ended early takes up: a `stored` job goes on after its cursor, a
+ * `retry` or `refresh` job takes up its own unprocessed items again.
+ */
+function continuation(job: CoverBackfillJobDto): CoverBackfillAction {
+  if (job.mode === "stored") {
+    return { kind: "start", request: { mode: "stored", ...(job.nextAfterId === undefined ? {} : { afterId: job.nextAfterId }) } };
+  }
+  return { kind: "start", request: { mode: job.mode, jobId: job.id } };
+}
+
+/** Items a job that ended early left: for a `stored` job, every candidate after its cursor. */
+function leftOver(job: CoverBackfillJobDto): number {
+  return job.mode === "stored" ? job.remaining : job.total - job.processed;
+}
+
+function CoverBackfillBody({ status, pending, act }: { status: CoverBackfillStatusDto; pending: CoverBackfillAction | undefined; act: (action: CoverBackfillAction) => void }) {
+  const { t } = useTranslation();
+  const refreshHintId = useId();
+  const job = status.job;
+  const busy = pending !== undefined;
+  const loadingFor = (match: (action: CoverBackfillAction) => boolean): boolean => pending !== undefined && match(pending);
+  if (job === undefined) {
+    if (status.candidates === 0) {
+      return (
+        <p className={NOTE_TEXT_CLASS} data-testid="cover-backfill-none">
+          {t("coverBackfill.none")}
+        </p>
+      );
+    }
+    return (
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <p className={`min-w-0 flex-1 basis-64 ${NOTE_TEXT_CLASS}`} data-testid="cover-backfill-intro">
+          {t("coverBackfill.intro", { count: status.candidates })}
+        </p>
+        <Button variant="primary" size="sm" data-testid="cover-backfill-start" loading={busy} onClick={() => act({ kind: "start", request: { mode: "stored" } })}>
+          {t("coverBackfill.start")}
+        </Button>
+      </div>
+    );
+  }
+
+  const failed = failedCount(job);
+  if (coverBackfillActive(job)) {
+    const stopping = job.state === "stopping";
+    const progress = t("coverBackfill.progress", { processed: job.processed, total: job.total });
+    const percent = job.total === 0 ? 100 : Math.min(100, Math.round((job.processed / job.total) * 100));
+    return (
+      <div data-testid="cover-backfill-running">
+        <div
+          role="progressbar"
+          aria-label={t("coverBackfill.title")}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          aria-valuetext={progress}
+          className="h-1.5 overflow-hidden rounded-full bg-sunken"
+        >
+          <div className="h-full rounded-full bg-accent transition-[width] duration-300 ease-out" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm tabular-nums">
+          <span data-testid="cover-backfill-progress">{progress}</span>
+          <span className="text-muted" data-testid="cover-backfill-tally">
+            {t("coverBackfill.tally", { saved: job.saved, failed })}
+          </span>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <p className={NOTE_TEXT_CLASS} aria-live="polite" data-testid="cover-backfill-note">
+            {stopping ? t("coverBackfill.stopping") : t("coverBackfill.background")}
+          </p>
+          <Button size="sm" data-testid="cover-backfill-stop" disabled={stopping} loading={loadingFor((action) => action.kind === "cancel")} onClick={() => act({ kind: "cancel", jobId: job.id })}>
+            {t("coverBackfill.stop")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const summary =
+    job.state === "stopped"
+      ? t("coverBackfill.stopped", { saved: job.saved, remaining: leftOver(job) })
+      : job.state === "aborted_disk"
+        ? t("coverBackfill.abortedDisk", { remaining: leftOver(job) })
+        : t("coverBackfill.completed", { saved: job.saved, failed, skipped: job.skipped });
+  const reasons = COVER_BACKFILL_FAILURE_REASONS.filter((reason) => (job.failed[reason] ?? 0) > 0);
+  const endedEarly = job.state !== "completed";
+  const showRefresh = job.state === "completed" && job.refreshable > 0;
+  return (
+    <div data-testid="cover-backfill-result" data-state={job.state}>
+      <p className={`text-sm ${job.state === "aborted_disk" ? "text-danger" : ""}`} role="status" data-testid="cover-backfill-summary">
+        {summary}
+      </p>
+      {reasons.length === 0 ? null : (
+        <ul className={`mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 ${NOTE_TEXT_CLASS}`} data-testid="cover-backfill-reasons">
+          {reasons.map((reason) => (
+            <li key={reason} data-reason={reason}>
+              {t("coverBackfill.reasonCount", { reason: t(`coverBackfill.reasons.${reason}`), count: job.failed[reason] ?? 0 })}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {endedEarly ? (
+          <Button variant="primary" size="sm" data-testid="cover-backfill-resume" loading={loadingFor((action) => action.kind === "start")} disabled={busy} onClick={() => act(continuation(job))}>
+            {t("coverBackfill.resume")}
+          </Button>
+        ) : null}
+        {job.state === "completed" && job.retryable > 0 ? (
+          <Button
+            size="sm"
+            data-testid="cover-backfill-retry"
+            loading={loadingFor((action) => action.kind === "start" && action.request.mode === "retry")}
+            disabled={busy}
+            onClick={() => act({ kind: "start", request: { mode: "retry", jobId: job.id } })}
+          >
+            {t("coverBackfill.retry")}
+          </Button>
+        ) : null}
+        {showRefresh ? (
+          <Button
+            size="sm"
+            data-testid="cover-backfill-refresh"
+            aria-describedby={refreshHintId}
+            loading={loadingFor((action) => action.kind === "start" && action.request.mode === "refresh")}
+            disabled={busy}
+            onClick={() => act({ kind: "start", request: { mode: "refresh", jobId: job.id } })}
+          >
+            {t("coverBackfill.refresh", { count: job.refreshable })}
+          </Button>
+        ) : null}
+        {job.state === "completed" && job.remaining > 0 ? (
+          <Button
+            size="sm"
+            data-testid="cover-backfill-continue"
+            loading={loadingFor((action) => action.kind === "start" && action.request.mode === "stored")}
+            disabled={busy}
+            onClick={() => act({ kind: "start", request: { mode: "stored", ...(job.nextAfterId === undefined ? {} : { afterId: job.nextAfterId }) } })}
+          >
+            {t("coverBackfill.continueRest", { count: job.remaining })}
+          </Button>
+        ) : null}
+        {job.state === "stopped" ? null : (
+          <Button size="sm" variant="ghost" className="ml-auto" data-testid="cover-backfill-done" loading={loadingFor((action) => action.kind === "remove")} disabled={busy} onClick={() => act({ kind: "remove", jobId: job.id })}>
+            {t("coverBackfill.done")}
+          </Button>
+        )}
+      </div>
+      {showRefresh ? (
+        <p id={refreshHintId} className={`mt-1.5 ${NOTE_TEXT_CLASS}`} data-testid="cover-backfill-refresh-hint">
+          {t("coverBackfill.refreshHint")}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

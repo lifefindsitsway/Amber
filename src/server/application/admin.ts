@@ -46,6 +46,8 @@ export interface AdminServiceOptions {
    */
   fileDeleter: Pick<PendingFileDeleter, "register" | "kick">;
   rotation: MasterKeyRotation;
+  /** In-memory cover backfill jobs: a deleted user's is abandoned and forgotten with the rest of their work. */
+  coverBackfill?: { discardOwner(ownerUserId: string): Promise<void> };
   logger: Logger;
   /** `USER_DELETE_DRAIN_TIMEOUT_MS` unless a test shortens it. */
   drainTimeoutMs?: number;
@@ -231,7 +233,7 @@ export class AdminService {
     control.kick();
 
     const drained = await withinTimeout(
-      Promise.all([control.settleTasks(taskIds), chat.abortOwner(userId)]),
+      Promise.all([control.settleTasks(taskIds), chat.abortOwner(userId), this.options.coverBackfill?.discardOwner(userId)]),
       this.options.drainTimeoutMs ?? USER_DELETE_DRAIN_TIMEOUT_MS,
     );
     if (!drained) {

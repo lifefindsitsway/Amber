@@ -60,4 +60,30 @@ describe("StorageQuota", () => {
     const error = await refusal(quota.begin(BOB.userId));
     expect(error.userMessage).toContain("剩余 0 B（已用 102.4 MB / 配额 0.1 GB）");
   });
+
+  it("counts the user's local cover copies, kept in the database, as used", async () => {
+    const h = createHarness();
+    open.push(h);
+    h.db.prepare("UPDATE user SET storage_limit_gb = ? WHERE id = ?").run(0.1, BOB.userId);
+    const quota = new StorageQuota({ repository: h.repository, files: { usedBytes: async () => 10 * BYTES_PER_MB } });
+    const coverBytes = 3 * BYTES_PER_MB;
+    for (const [owner, id] of [
+      [BOB.userId, "bob-cover"],
+      [LOCAL.userId, "local-cover"],
+    ] as const) {
+      h.repository.withTransaction((scope) => {
+        scope.contents.insert({ id, userId: owner, source: { kind: "bilibili", platformContentId: `BV${id}` }, processingStatus: "succeeded", createdAt: 1, updatedAt: 1 });
+        scope.contentCovers.put(owner, id, { bytes: new Uint8Array(coverBytes), width: 1, height: 1, sha256: "ab".repeat(32) }, 1);
+      });
+    }
+    expect(await quota.usage(BOB)).toEqual({ usedBytes: 10 * BYTES_PER_MB + coverBytes, storageLimitGB: 0.1 });
+    // A trashed Content's cover still takes room until it is purged.
+    h.trash.trash(BOB, "bob-cover");
+    expect((await quota.usage(BOB)).usedBytes).toBe(10 * BYTES_PER_MB + coverBytes);
+    // An upload is measured against files plus covers.
+    const reservation = await quota.begin(BOB.userId);
+    const error = await refusal(drain(reservation?.meter(chunks(100, BYTES_PER_MB)) ?? chunks(0, 0)));
+    expect(error.userMessage).toContain("已用 13.0 MB / 配额 0.1 GB");
+    reservation?.release();
+  });
 });

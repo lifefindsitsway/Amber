@@ -18,6 +18,7 @@ import type { ChatService } from "./application/chat.ts";
 import type { CollectionService } from "./application/collections.ts";
 import type { ClientMediaTaskService } from "./application/client-media-tasks.ts";
 import type { ContentCoverService } from "./application/content-covers.ts";
+import type { CoverBackfillService } from "./application/cover-backfill.ts";
 import type { ContentDescriptionService } from "./application/content-description.ts";
 import type { ContentService } from "./application/contents.ts";
 import type { DerivedTaskService } from "./application/derived-tasks.ts";
@@ -82,6 +83,7 @@ import { registerNoteRoutes } from "./api/routes/notes.ts";
 import { registerFigureRoutes } from "./api/routes/figures.ts";
 import { registerDanmakuRoutes } from "./api/routes/danmaku.ts";
 import { registerContentPackRoutes } from "./api/routes/content-packs.ts";
+import { registerCoverBackfillRoutes } from "./api/routes/covers.ts";
 import { registerSpeakerRoutes } from "./api/routes/speakers.ts";
 import { registerOtherModelRoutes } from "./api/routes/other-models.ts";
 import { registerPlatformAccountRoutes } from "./api/routes/platform-accounts.ts";
@@ -149,6 +151,8 @@ export interface AppDeps {
   contentDescription?: ContentDescriptionService;
   /** Local cover copies: `/api/contents/:id/cover`, its fetch, and `/api/trash/:id/cover`. */
   covers?: ContentCoverService;
+  /** Saving the covers of existing Contents on request: `/api/covers/backfill*`. */
+  coverBackfill?: CoverBackfillService;
   /** The content trash: `DELETE /api/contents/:id` and `/api/trash*`. */
   trash?: TrashService;
   platformAccounts?: PlatformAccountService;
@@ -393,6 +397,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.danmaku !== undefined) {
     registerDanmakuRoutes(app, { danmaku: deps.danmaku });
+  }
+  if (deps.coverBackfill !== undefined) {
+    registerCoverBackfillRoutes(app, { coverBackfill: deps.coverBackfill });
   }
   if (deps.contentPacks !== undefined) {
     registerContentPackRoutes(app, { mode: deps.mode, ...deps.contentPacks });
