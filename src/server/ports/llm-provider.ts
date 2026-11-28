@@ -2,6 +2,7 @@ import type { LlmProtocol } from "../../shared/enums.ts";
 import type { LlmRequest, LlmStreamEvent, RawUsage } from "../domain/llm.ts";
 import type { CapabilityFlags, ModelCapability, ProviderProfile } from "../domain/provider-profile.ts";
 import type { RequestStartInfo, UsageOutcome } from "../domain/usage.ts";
+import type { OutboundRoute } from "./outbound-http.ts";
 
 export interface LlmStreamOptions {
   signal: AbortSignal;
@@ -42,6 +43,8 @@ export interface LlmProbeBasicResult {
   kind: "basic";
   status: "connected" | "incomplete";
   latencyMs: number;
+  /** The path the request actually took, from the outbound response; absent means direct. */
+  route?: OutboundRoute;
 }
 
 /**

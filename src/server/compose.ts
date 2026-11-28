@@ -47,6 +47,8 @@ import { SqliteRepository } from "./adapters/sqlite/repository.ts";
 import { SqliteUsageAnalyticsRepository } from "./adapters/sqlite/repositories/usage-analytics.ts";
 import { sqliteSecretEnvelopeStore } from "./adapters/sqlite/repositories/secret-envelopes.ts";
 import { buildApp, type RegisteredRoute, type ServerAuthDeps } from "./app.ts";
+import { readProxyConfiguration, SystemProxyState } from "./adapters/system-proxy/index.ts";
+import type { NetworkRouter, NetworkStatusReader } from "./ports/network-route.ts";
 import { AdminService, type AdminTaskControl } from "./application/admin.ts";
 import { AsrProfileService } from "./application/asr-profile.ts";
 import { AuthService, ensureAdminBootstrap } from "./application/auth.ts";
@@ -152,6 +154,11 @@ interface CommonConfig {
   logDestination: { write(line: string): void };
   /** Variables still read during composition (master key, instance overrides, preset admin). */
   env: NodeJS.ProcessEnv;
+  /**
+   * The proxy configuration and its status. `main` builds it before composing so the sidecar's
+   * stdin can feed it changes; read from `env` when absent.
+   */
+  network?: NetworkRouter & NetworkStatusReader;
 }
 
 export interface LocalConfig extends CommonConfig {
@@ -340,7 +347,8 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
   });
   const subtitleImport = new SubtitleImportService({ repository, ...(grants === undefined ? {} : { grants }) });
   const mediaAssets = new MediaAssetService({ repository, media, gate, locks: cachePaths, ...(grants === undefined ? {} : { grants }) });
-  const ytDlp = new YtDlp({ runner, binDir: config.binDir, dataDir: config.dataDir, env: childProcessEnv(config.env) });
+  const network = config.network ?? new SystemProxyState(readProxyConfiguration(config.env));
+  const ytDlp = new YtDlp({ runner, binDir: config.binDir, dataDir: config.dataDir, env: childProcessEnv(config.env), router: network });
   // Server mode applies the outbound network policy to every hop: private and reserved
   // address ranges are refused unless an administrator allowlisted the exact origin, the
   // connection goes to the address that was checked, and every redirect is checked again.
@@ -351,8 +359,9 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
       ? new PolicyOutboundHttpClient({
           mode: "strict",
           allowlist: () => new Set(repository.withTransaction((scope) => scope.networkAllowlist.list().map((entry) => entry.origin))),
+          router: network,
         })
-      : new PolicyOutboundHttpClient({ mode: "permissive" });
+      : new PolicyOutboundHttpClient({ mode: "permissive", router: network });
   const targets = config.mode === "server" ? { targets: http } : {};
   // Every adapter is one instance for the whole process: the Douyin visitor session and its
   // cool-down live on its instance, shared by all users.
@@ -693,6 +702,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     contents,
     contentDescription,
     covers,
+    network,
     trash,
     platformAccounts,
     ...(platformQrLogin === undefined ? {} : { platformQrLogin }),

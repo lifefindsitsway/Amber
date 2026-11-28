@@ -17,7 +17,7 @@ import { EXPECTED_CACHE_DIR_REASONS, EXPECTED_ERROR_CLASSES, EXPECTED_REFINED_CO
 
 describe("error classes", () => {
   it("declares exactly the catalogue classes in catalogue order", () => {
-    expect(EXPECTED_ERROR_CLASSES).toHaveLength(43);
+    expect(EXPECTED_ERROR_CLASSES).toHaveLength(45);
     expect([...ERROR_CLASSES]).toEqual(EXPECTED_ERROR_CLASSES.map((entry) => entry.name));
   });
 
@@ -62,7 +62,7 @@ describe("REFINED_ERROR_CODES", () => {
 
 describe("REFINED_ERROR_CODE_REGISTRY", () => {
   it("registers exactly the catalogue refined codes", () => {
-    expect(EXPECTED_REFINED_CODES).toHaveLength(128);
+    expect(EXPECTED_REFINED_CODES).toHaveLength(137);
     expect([...REFINED_ERROR_CODES].sort()).toEqual(EXPECTED_REFINED_CODES.map((entry) => entry.code).sort());
   });
 
@@ -75,9 +75,9 @@ describe("REFINED_ERROR_CODE_REGISTRY", () => {
     });
   });
 
-  it("overrides the class default for exactly 26 codes", () => {
+  it("overrides the class default for exactly 28 codes", () => {
     const overriding = EXPECTED_REFINED_CODES.filter((entry) => entry.retryDisposition !== null || entry.action !== null).map((entry) => entry.code);
-    expect(overriding).toHaveLength(26);
+    expect(overriding).toHaveLength(28);
     expect(REFINED_ERROR_CODES.filter((code) => "retryDisposition" in REFINED_ERROR_CODE_REGISTRY[code] || "action" in REFINED_ERROR_CODE_REGISTRY[code]).sort()).toEqual(
       [...overriding].sort(),
     );

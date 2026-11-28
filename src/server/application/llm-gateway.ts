@@ -100,7 +100,7 @@ export interface LlmProbeCheckOutcome {
  * `inconclusive`, and only while `basis` still describes the profile.
  */
 export interface LlmProbeOutcome {
-  basic: { status: LlmProbeBasicResult["status"]; latencyMs: number };
+  basic: { status: LlmProbeBasicResult["status"]; latencyMs: number; route?: LlmProbeBasicResult["route"] };
   checks: LlmProbeCheckOutcome[];
   basis: LlmProbeBasis;
 }
@@ -307,7 +307,7 @@ export class LlmGateway implements LlmInvoker {
         continue;
       }
       if (outcome.kind === "basic") {
-        basic = { status: outcome.status, latencyMs: outcome.latencyMs };
+        basic = { status: outcome.status, latencyMs: outcome.latencyMs, ...(outcome.route === undefined ? {} : { route: outcome.route }) };
       } else {
         results.set(outcome.kind, { flag: outcome.kind, result: outcome.result, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) });
       }

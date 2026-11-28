@@ -200,7 +200,7 @@ export class AnthropicMessagesProvider implements LlmProvider {
       report({ outcome: "succeeded", ...withUsage });
       const truncated = stopReason === "length";
       if (kind === "basic") {
-        return { kind, status: answer === "" && truncated ? "incomplete" : "connected", latencyMs };
+        return { kind, status: answer === "" && truncated ? "incomplete" : "connected", latencyMs, ...(response.route === undefined ? {} : { route: response.route }) };
       }
       if (kind === "stream") {
         return { kind, result: whole ? "unsupported" : "supported", latencyMs };

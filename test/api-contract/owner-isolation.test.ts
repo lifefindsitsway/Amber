@@ -147,6 +147,7 @@ const MATRIX: Record<string, Entry> = {
   "POST /api/contents/:id/description/fetch": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/description/fetch`, payload: {} }]),
   "GET /api/contents/:id/cover": owned((ids) => [get(`/api/contents/${ids.contentId}/cover`)]),
   "POST /api/contents/:id/cover/fetch": owned((ids) => [{ method: "POST", url: `/api/contents/${ids.contentId}/cover/fetch`, payload: {} }]),
+  "GET /api/network/status": { kind: "self", reason: "the instance's proxy configuration without credentials; no user data", requests: () => [get("/api/network/status")] },
   "POST /api/contents/:id/subtitle-import": owned((ids) => [
     { method: "POST", url: `/api/contents/${ids.contentId}/subtitle-import`, payload: { text: "1\n00:00:00,000 --> 00:00:01,000\nx\n", format: "srt", language: "en" } },
   ]),

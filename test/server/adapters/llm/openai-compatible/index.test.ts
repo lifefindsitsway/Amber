@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAiCompatibleProvider } from "../../../../../src/server/adapters/llm/openai-compatible/index.ts";
-import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
+import { AmberError, amberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { LlmRequest, LlmStreamEvent } from "../../../../../src/server/domain/llm.ts";
 import type { CapabilityFlags, ModelCapability, ProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
 import type { RequestStartInfo } from "../../../../../src/server/domain/usage.ts";
@@ -1033,5 +1033,31 @@ describe("OpenAiCompatibleProvider request start", () => {
     expect(thrown).toBe(refusal);
     expect(http.requests).toEqual([]);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("proxy errors and route", () => {
+  const proxyErrors = () => [
+    amberError("network_proxy_failed", "cannot connect to the proxy", { code: "network_proxy_failed.rejected" }),
+    amberError("network_proxy_unsupported", "the proxy configuration cannot be used", { code: "network_proxy_unsupported.socks" }),
+  ];
+  const runBasic = (http: ScriptedHttp) =>
+    (setup(http).provider.probe(PROFILE, "model-under-test")[0] as LlmProbeCheck).run({ signal: new AbortController().signal, onRequestStart: () => undefined, onCall: () => undefined });
+
+  it("passes proxy errors from outbound HTTP on unchanged, in a stream and in test connection", async () => {
+    for (const error of proxyErrors()) {
+      expect(await failure(events(streamOf(setup(new ScriptedHttp(error)).provider)))).toBe(error);
+      expect(await failure(runBasic(new ScriptedHttp(error)))).toBe(error);
+    }
+  });
+
+  it("reports the path of the basic test call from the outbound response", async () => {
+    class ProxiedHttp extends ScriptedHttp {
+      override async request(request: OutboundRequest): Promise<OutboundResponse> {
+        return Object.assign(await super.request(request), { route: "proxy" as const });
+      }
+    }
+    expect(await runBasic(new ProxiedHttp({ body: openAiCompletion() }))).toMatchObject({ kind: "basic", status: "connected", route: "proxy" });
+    expect(await runBasic(new ScriptedHttp({ body: openAiCompletion() }))).not.toHaveProperty("route");
   });
 });

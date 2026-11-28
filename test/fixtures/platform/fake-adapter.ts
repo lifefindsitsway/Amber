@@ -74,6 +74,7 @@ const COOKIE_DOMAINS: Readonly<Record<Platform, readonly string[]>> = {
  */
 export class FakePlatformAdapter implements PlatformSourceAdapter {
   readonly kind: Platform;
+  readonly trustedHosts: readonly string[] = ["example.com"];
   readonly cookieDomains: readonly string[];
   readonly calls: FakeCall[] = [];
   readonly videos = new Map<string, FakeVideo>();

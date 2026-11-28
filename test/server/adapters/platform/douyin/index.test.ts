@@ -14,6 +14,8 @@ const ID = "7900000000000000001";
 const REF = { platformContentId: ID };
 const MIX = "douyin:7900000000000000100";
 const API_HOSTS = new Set(["www.douyin.com", "v.douyin.com", "www.iesdouyin.com"]);
+/** The adapter's own proxy table, which every request and download must carry. */
+const TRUSTED = ["douyin.com", "iesdouyin.com", "douyinvod.com", "zjcdn.com", "douyinpic.com"];
 
 type DownloadOutcome = { sizeBytes: number; mimeType: string } | Error;
 
@@ -27,6 +29,7 @@ interface Setup {
 }
 
 const created: FakeDouyin[] = [];
+const setups: Setup[] = [];
 
 afterEach(() => {
   // Every request any adapter test made went to the platform's own hosts, over https, public only.
@@ -37,6 +40,14 @@ afterEach(() => {
       expect(API_HOSTS.has(url.hostname), url.hostname).toBe(true);
       expect(request.publicOnly).toBe(true);
       expect(request.redirect).toBe("manual");
+      expect(request.trustedHosts).toEqual(TRUSTED);
+    }
+  }
+  // Every media and cover download carries the same table, and it is the adapter's own.
+  for (const state of setups.splice(0)) {
+    expect(state.adapter.trustedHosts).toEqual(TRUSTED);
+    for (const download of state.downloads) {
+      expect(download.trustedHosts).toEqual(TRUSTED);
     }
   }
 });
@@ -65,6 +76,7 @@ function setup(): Setup {
     return answer;
   };
   state.adapter = new DouyinAdapter({ http: fake.http, download, now: () => now });
+  setups.push(state);
   return state;
 }
 
@@ -455,7 +467,9 @@ describe("covers", () => {
     const dir = scratch();
     const url = "https://p3-pc-sign.douyinpic.com/TESTONLY/cover.jpeg?x-expires=<expires>&x-signature=<signature>";
     expect(await adapter.fetchCover(url, { path: join(dir, "cover") }, { maxBytes: 1000 }, signal())).toEqual({ sizeBytes: 1234 });
-    expect(downloads).toEqual([{ url, allowedHosts: ["douyinpic.com"], kind: "image", maxBytes: 1000, output: { path: join(dir, "cover"), scratchDir: expect.any(String) } }]);
+    expect(downloads).toEqual([
+      { url, allowedHosts: ["douyinpic.com"], trustedHosts: TRUSTED, kind: "image", maxBytes: 1000, output: { path: join(dir, "cover"), scratchDir: expect.any(String) } },
+    ]);
     expect(fake.http.requests).toHaveLength(0);
     expect(existsSync(downloads[0]!.output.scratchDir)).toBe(false);
   });

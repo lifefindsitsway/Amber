@@ -284,7 +284,12 @@ export async function inflateRawCapped(compressed: Uint8Array, maxBytes: number)
  * `DANMAKU_INFLATED_MAX_BYTES`. The platform's risk-control statuses are reported as the
  * platform being unreachable: a login would not be used, so asking for one would mislead.
  */
-export async function fetchBilibiliDanmaku(http: OutboundHttpClient, cid: string, signal: AbortSignal): Promise<{ items: DanmakuItem[]; truncated: boolean }> {
+export async function fetchBilibiliDanmaku(
+  http: OutboundHttpClient,
+  cid: string,
+  signal: AbortSignal,
+  trustedHosts: readonly string[],
+): Promise<{ items: DanmakuItem[]; truncated: boolean }> {
   if (!/^\d{1,20}$/.test(cid)) {
     throw new TypeError("not a bilibili part id");
   }
@@ -296,6 +301,7 @@ export async function fetchBilibiliDanmaku(http: OutboundHttpClient, cid: string
       signal,
       timeoutMs: DANMAKU_FETCH_TIMEOUT_MS,
       maxBytes: DANMAKU_RESPONSE_MAX_BYTES,
+      trustedHosts,
     });
   } catch (error) {
     if (isAmberError(error) && error.appError.class === "platform_blocked") {

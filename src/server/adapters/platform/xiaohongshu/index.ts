@@ -33,6 +33,12 @@ import { accessParamsOf, explorePageUrl, mobileShareUrl, normalizeXiaohongshuSho
 export const XIAOHONGSHU_COOKIE_DOMAINS: readonly string[] = [".xiaohongshu.com"];
 /** Hosts note pages are read from; a redirect anywhere else is refused. */
 const PAGE_HOSTS: ReadonlySet<string> = new Set(["www.xiaohongshu.com", "xiaohongshu.com"]);
+/**
+ * What this adapter requests: the note page hosts (the bare domain included, so the suffix
+ * form), the short-link hosts and the media and image CDN. Each request is still checked
+ * against its own narrower list before it goes out.
+ */
+const XIAOHONGSHU_TRUSTED_HOSTS: readonly string[] = ["xiaohongshu.com", "xhslink.com", ...XIAOHONGSHU_MEDIA_DOMAINS];
 /** Where a login is sent and checked: the desktop site's host. */
 const LOGIN_HOST = "www.xiaohongshu.com";
 /** The desktop home feed, whose embedded state says whether its viewer is logged in. */
@@ -142,6 +148,7 @@ function pickChoice(choices: readonly VideoChoice[], target: VideoTarget): Video
  */
 export class XiaohongshuAdapter implements PlatformSourceAdapter {
   readonly kind = "xiaohongshu" as const;
+  readonly trustedHosts: readonly string[] = XIAOHONGSHU_TRUSTED_HOSTS;
   readonly cookieDomains = XIAOHONGSHU_COOKIE_DOMAINS;
   protected readonly http: OutboundHttpClient;
   protected readonly download: PlatformMediaDownload;
@@ -161,7 +168,7 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
   async resolveUrl(url: string, signal: AbortSignal): Promise<string | null> {
     let current = normalizeXiaohongshuShortLink(url.trim());
     for (let hop = 0; current !== null && hop < SHORTLINK_MAX_HOPS; hop++) {
-      const response = await platformGetText(this.http, { url: current, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES });
+      const response = await platformGetText(this.http, { url: current, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES, trustedHosts: this.trustedHosts });
       if (response.status < 300 || response.status >= 400 || response.location === undefined) {
         return null;
       }
@@ -230,7 +237,13 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
       return "expired";
     }
     try {
-      const response = await platformGetText(this.http, { url: HOME_PAGE, headers: { Cookie: cookie }, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES });
+      const response = await platformGetText(this.http, {
+        url: HOME_PAGE,
+        headers: { Cookie: cookie },
+        signal,
+        maxBytes: PLATFORM_PAGE_MAX_BYTES,
+        trustedHosts: this.trustedHosts,
+      });
       if (response.status >= 300 && response.status < 400) {
         return response.location !== undefined && this.isLoginPage(response.location) ? "expired" : "unknown";
       }
@@ -338,6 +351,7 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
       const { sizeBytes } = await this.download(this.http, {
         url,
         allowedHosts: XIAOHONGSHU_MEDIA_DOMAINS,
+        trustedHosts: this.trustedHosts,
         kind: "image",
         maxBytes: options.maxBytes,
         output: { path: output.path, scratchDir },
@@ -384,7 +398,7 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
   private async readPage(url: string, form: NotePageForm, noteId: string, headers: Readonly<Record<string, string>>, signal: AbortSignal): Promise<PageOutcome> {
     let current = url;
     for (let hop = 0; hop <= OUTBOUND_MAX_REDIRECTS; hop++) {
-      const response = await platformGetText(this.http, { url: current, headers, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES });
+      const response = await platformGetText(this.http, { url: current, headers, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES, trustedHosts: this.trustedHosts });
       if (response.status === 412 || response.status === 429) {
         return { kind: "refused" };
       }
@@ -503,6 +517,7 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
         signal,
         maxBytes: length,
         redirect: "manual",
+        trustedHosts: this.trustedHosts,
       });
       const range = CONTENT_RANGE.exec(headers.get("content-range") ?? "");
       if (range === null || Number(range[1]) !== start) {
@@ -542,6 +557,7 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
         const { sizeBytes } = await this.download(this.http, {
           url,
           allowedHosts: XIAOHONGSHU_MEDIA_DOMAINS,
+          trustedHosts: this.trustedHosts,
           kind: request.kind,
           expectedBytes: request.expectedBytes,
           maxBytes: request.maxBytes,

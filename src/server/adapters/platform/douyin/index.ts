@@ -21,7 +21,18 @@ import type {
   VideoTarget,
 } from "../../../ports/platform-source.ts";
 import { downloadPlatformMedia, PLATFORM_MEDIA_MAX_BYTES, type PlatformMediaDownload, type PlatformMediaKind } from "../download.ts";
-import { DOUYIN_IMAGE_HOSTS, DOUYIN_MEDIA_HOSTS, DOUYIN_PAGE_HOSTS, DOUYIN_REFERER, DouyinClient, getHop, isOnHosts, refusedHost, statusCheck } from "./client.ts";
+import {
+  DOUYIN_IMAGE_HOSTS,
+  DOUYIN_MEDIA_HOSTS,
+  DOUYIN_PAGE_HOSTS,
+  DOUYIN_REFERER,
+  DOUYIN_TRUSTED_HOSTS,
+  DouyinClient,
+  getHop,
+  isOnHosts,
+  refusedHost,
+  statusCheck,
+} from "./client.ts";
 import {
   audioStreams,
   combinedH264Streams,
@@ -99,6 +110,7 @@ async function withScratch<T>(target: string, work: (scratchDir: string) => Prom
  */
 export class DouyinAdapter implements PlatformSourceAdapter {
   readonly kind = "douyin" as const;
+  readonly trustedHosts: readonly string[] = DOUYIN_TRUSTED_HOSTS;
   protected readonly http: OutboundHttpClient;
   protected readonly download: PlatformMediaDownload;
   protected readonly now: () => number;
@@ -108,7 +120,7 @@ export class DouyinAdapter implements PlatformSourceAdapter {
     this.http = options.http;
     this.download = options.download ?? downloadPlatformMedia;
     this.now = options.now ?? Date.now;
-    this.client = new DouyinClient(this.http, this.now);
+    this.client = new DouyinClient(this.http, this.now, this.trustedHosts);
   }
 
   parse(url: string): ParsedPlatformUrl | null {
@@ -129,7 +141,7 @@ export class DouyinAdapter implements PlatformSourceAdapter {
       if (!isOnHosts(current, DOUYIN_PAGE_HOSTS)) {
         return null;
       }
-      const answer = await getHop(this.http, current, signal);
+      const answer = await getHop(this.http, current, signal, this.trustedHosts);
       if (answer.status < 300 || answer.status >= 400 || answer.location === undefined) {
         return null;
       }
@@ -317,6 +329,7 @@ export class DouyinAdapter implements PlatformSourceAdapter {
       this.download(this.http, {
         url: coverUrl,
         allowedHosts: DOUYIN_IMAGE_HOSTS,
+        trustedHosts: this.trustedHosts,
         kind: "image",
         maxBytes: options.maxBytes,
         output: { path: output.path, scratchDir },
@@ -400,6 +413,7 @@ export class DouyinAdapter implements PlatformSourceAdapter {
         return await this.download(this.http, {
           url,
           allowedHosts: DOUYIN_MEDIA_HOSTS,
+          trustedHosts: this.trustedHosts,
           headers: { Referer: DOUYIN_REFERER },
           kind,
           ...(stream.sizeBytes === undefined ? {} : { expectedBytes: stream.sizeBytes }),

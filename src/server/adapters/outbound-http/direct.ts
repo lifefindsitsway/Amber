@@ -1,14 +1,20 @@
-import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
+import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { LookupFunction, Socket } from "node:net";
+import type { ConnectionOptions } from "node:tls";
+import type { ProxyEndpoint } from "../../ports/network-route.ts";
 import {
   OutboundHttpError,
   type OutboundFailurePhase,
   type OutboundHttpClient,
   type OutboundRequest,
   type OutboundResponse,
+  type OutboundRoute,
   type OutboundStreamBody,
 } from "../../ports/outbound-http.ts";
+import { openProxyTunnel, proxyAuthorization, type ProxyTunnel } from "./proxy-tunnel.ts";
+
+const HTTPS_DEFAULT_PORT = 443;
 
 /** An address the network policy has checked; the connection must go exactly there. */
 export interface PinnedAddress {
@@ -16,9 +22,17 @@ export interface PinnedAddress {
   family: 4 | 6;
 }
 
-/** One hop as the policy layer sends it. */
+/** One hop as the policy layer sends it: straight to the target (pinned or not) or through a proxy. */
 export interface OutboundTransport {
-  send(request: OutboundRequest, pinned?: PinnedAddress): Promise<OutboundResponse>;
+  send(request: OutboundRequest, pinned?: PinnedAddress, proxy?: ProxyEndpoint): Promise<OutboundResponse>;
+}
+
+export interface DirectOutboundHttpClientOptions {
+  /**
+   * Trust anchors replacing the default store for every TLS connection this client opens,
+   * direct and through a proxy alike. For tests against a local certificate only.
+   */
+  ca?: ConnectionOptions["ca"];
 }
 
 /**
@@ -36,13 +50,26 @@ export interface OutboundTransport {
  * Streamed bodies are written chunk by chunk with backpressure, one chunk read ahead so the
  * last one is known before it is written. `timeoutMs` bounds the whole exchange up to the
  * response headers, upload included.
+ *
+ * Through a proxy, the request gets a connection of its own from `openProxyTunnel` (a CONNECT
+ * tunnel with TLS inside for https, the proxy socket with the absolute URL as request target for
+ * http) and keeps exactly the same send boundary: everything up to an established tunnel is
+ * `before_send`, the timer starts before the proxy is dialled, and cancelling or failing at any
+ * stage destroys every socket of the request. No `agent` option is passed then: Node ignores
+ * `createConnection` when `agent` is given, even as `false`, and without an agent nothing is pooled.
  */
 export class DirectOutboundHttpClient implements OutboundHttpClient, OutboundTransport {
+  private readonly ca: ConnectionOptions["ca"] | undefined;
+
+  constructor(options: DirectOutboundHttpClientOptions = {}) {
+    this.ca = options.ca;
+  }
+
   request(request: OutboundRequest): Promise<OutboundResponse> {
     return this.send(request);
   }
 
-  async send(request: OutboundRequest, pinned?: PinnedAddress): Promise<OutboundResponse> {
+  async send(request: OutboundRequest, pinned?: PinnedAddress, proxy?: ProxyEndpoint): Promise<OutboundResponse> {
     const url = new URL(request.url);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new TypeError("only http and https URLs are supported");
@@ -57,7 +84,7 @@ export class DirectOutboundHttpClient implements OutboundHttpClient, OutboundTra
     } else if (body.bytes !== undefined) {
       headers["content-length"] = String(body.bytes.byteLength);
     }
-    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const route: OutboundRoute = proxy === undefined ? "direct" : "proxy";
 
     return new Promise<OutboundResponse>((resolve, reject) => {
       let phase: OutboundFailurePhase = "before_send";
@@ -65,20 +92,28 @@ export class DirectOutboundHttpClient implements OutboundHttpClient, OutboundTra
       let lastChunkQueued = false;
       let settled = false;
       let incoming: IncomingMessage | undefined;
+      let outgoing: ClientRequest | undefined;
+      let tunnel: ProxyTunnel | undefined;
       const crossBoundaryIfComplete = (): void => {
         if (connected && lastChunkQueued) {
           phase = "after_send";
         }
       };
-      const fail = (reason: OutboundHttpError["reason"], cause?: unknown): void => {
+      const teardown = (): void => {
+        outgoing?.destroy();
+        tunnel?.destroy();
+      };
+      const settleWith = (error: Error): void => {
         if (!settled) {
           settled = true;
           cleanup();
-          reject(new OutboundHttpError(phase, reason, { cause }));
+          reject(error);
         }
-        outgoing.destroy();
+        teardown();
       };
+      const fail = (reason: OutboundHttpError["reason"], cause?: unknown): void => settleWith(new OutboundHttpError(phase, reason, { cause }));
       const onAbort = (): void => fail("aborted", request.signal.reason);
+      // Started before the proxy is dialled: one timer bounds the whole exchange.
       const timer =
         request.timeoutMs === undefined ? undefined : setTimeout(() => fail("timeout"), request.timeoutMs);
       const cleanup = (): void => {
@@ -88,66 +123,122 @@ export class DirectOutboundHttpClient implements OutboundHttpClient, OutboundTra
         }
       };
 
-      const outgoing = send(url, {
-        method: request.method,
-        headers,
-        ...(pinned === undefined ? {} : { lookup: pinnedLookup(pinned), agent: false }),
-      });
-      outgoing.once("socket", (socket: Socket) => {
-        const connectedEvent = url.protocol === "https:" ? "secureConnect" : "connect";
-        const onConnected = (): void => {
-          connected = true;
+      const start = (socket?: Socket): void => {
+        const current = (outgoing = createRequest(url, request.method, headers, { pinned, proxy, socket }, this.ca));
+        current.once("socket", (socket: Socket) => {
+          const connectedEvent = url.protocol === "https:" ? "secureConnect" : "connect";
+          const onConnected = (): void => {
+            connected = true;
+            crossBoundaryIfComplete();
+          };
+          // A reused keep-alive socket, and a proxy tunnel, is already connected (and past its TLS handshake).
+          if (!socket.connecting) {
+            onConnected();
+          } else {
+            socket.once(connectedEvent, onConnected);
+          }
+        });
+        current.once("error", (error) => fail(request.signal.aborted ? "aborted" : "network", error));
+        current.once("response", (response: IncomingMessage) => {
+          if (settled) {
+            response.destroy();
+            return;
+          }
+          settled = true;
+          incoming = response;
+          cleanup();
+          resolve(toResponse(response, request.signal, route, teardown));
+        });
+        const queueLast = (chunk?: Uint8Array): void => {
+          lastChunkQueued = true;
           crossBoundaryIfComplete();
+          current.end(chunk);
         };
-        // A reused keep-alive socket is already connected (and past its TLS handshake).
-        if (!socket.connecting) {
-          onConnected();
-        } else {
-          socket.once(connectedEvent, onConnected);
-        }
-      });
-      outgoing.once("error", (error) => fail(request.signal.aborted ? "aborted" : "network", error));
-      outgoing.once("response", (response: IncomingMessage) => {
-        if (settled) {
-          response.destroy();
+        if (body.stream === undefined) {
+          queueLast(body.bytes);
           return;
         }
-        settled = true;
-        incoming = response;
-        cleanup();
-        resolve(toResponse(response, request.signal));
-      });
+        pumpStream(current, body.stream, {
+          stopped: () => settled,
+          queueLast,
+          fail: (cause) => fail("network", cause),
+          // The upstream answered before the upload ended: the request is incomplete, so its
+          // connection must not go back to the keep-alive pool.
+          abandon: () => {
+            if (incoming === undefined) {
+              teardown();
+            } else {
+              incoming.once("close", teardown);
+            }
+          },
+        }).catch((error: unknown) => fail("network", error));
+      };
 
       if (request.signal.aborted) {
         fail("aborted", request.signal.reason);
         return;
       }
       request.signal.addEventListener("abort", onAbort, { once: true });
-      const queueLast = (chunk?: Uint8Array): void => {
-        lastChunkQueued = true;
-        crossBoundaryIfComplete();
-        outgoing.end(chunk);
-      };
-      if (body.stream === undefined) {
-        queueLast(body.bytes);
+      if (proxy === undefined) {
+        start();
         return;
       }
-      pumpStream(outgoing, body.stream, {
-        stopped: () => settled,
-        queueLast,
-        fail: (cause) => fail("network", cause),
-        // The upstream answered before the upload ended: the request is incomplete, so its
-        // connection must not go back to the keep-alive pool.
-        abandon: () => {
-          if (incoming === undefined) {
-            outgoing.destroy();
-          } else {
-            incoming.once("close", () => outgoing.destroy());
+      const opened = openProxyTunnel(url, proxy, this.ca === undefined ? {} : { ca: this.ca });
+      tunnel = opened;
+      opened.ready.then(
+        (socket) => {
+          if (settled) {
+            opened.destroy();
+            return;
           }
+          start(socket);
         },
-      }).catch((error: unknown) => fail("network", error));
+        (error: unknown) => settleWith(error instanceof Error ? error : new OutboundHttpError("before_send", "network", { cause: error })),
+      );
     });
   }
+}
+
+/**
+ * The Node request for one hop. Direct: to the URL, pinned to the checked address when given.
+ * Through a proxy: on the tunnel's socket handed over by `createConnection`; an http target is
+ * sent to the proxy with the absolute URL as request target and `Proxy-Authorization`.
+ */
+function createRequest(
+  url: URL,
+  method: string,
+  headers: Record<string, string>,
+  via: { pinned: PinnedAddress | undefined; proxy: ProxyEndpoint | undefined; socket: Socket | undefined },
+  ca: ConnectionOptions["ca"] | undefined,
+): ClientRequest {
+  const { pinned, proxy, socket } = via;
+  if (proxy === undefined || socket === undefined) {
+    if (url.protocol === "https:") {
+      return httpsRequest(url, { method, headers, ...(ca === undefined ? {} : { ca }), ...(pinned === undefined ? {} : { lookup: pinnedLookup(pinned), agent: false }) });
+    }
+    return httpRequest(url, { method, headers, ...(pinned === undefined ? {} : { lookup: pinnedLookup(pinned), agent: false }) });
+  }
+  const createConnection = (): Socket => socket;
+  if (url.protocol === "https:") {
+    // Without an agent Node assumes port 80 and would write it into the Host header.
+    return httpsRequest(url, { method, headers, createConnection, defaultPort: HTTPS_DEFAULT_PORT });
+  }
+  const authorization = proxyAuthorization(proxy);
+  const hasHost = Object.keys(headers).some((name) => name.toLowerCase() === "host");
+  const options: RequestOptions = {
+    method,
+    host: proxy.host,
+    port: proxy.port,
+    path: `${url.protocol}//${url.host}${url.pathname}${url.search}`,
+    headers: {
+      ...headers,
+      ...(hasHost ? {} : { host: url.host }),
+      ...(authorization === undefined ? {} : { "proxy-authorization": authorization }),
+    },
+    ...(url.username === "" && url.password === "" ? {} : { auth: `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}` }),
+    createConnection,
+  };
+  return httpRequest(options);
 }
 
 /** A `lookup` that answers every query with the checked address and nothing else. */
@@ -229,7 +320,7 @@ function drained(outgoing: ClientRequest): Promise<void> {
   });
 }
 
-function toResponse(incoming: IncomingMessage, signal: AbortSignal): OutboundResponse {
+function toResponse(incoming: IncomingMessage, signal: AbortSignal, route: OutboundRoute, teardown: () => void): OutboundResponse {
   const headers = new Map<string, string>();
   for (const [name, value] of Object.entries(incoming.headers)) {
     if (value !== undefined) {
@@ -255,12 +346,18 @@ function toResponse(incoming: IncomingMessage, signal: AbortSignal): OutboundRes
     }
   })();
   const setCookies = incoming.headers["set-cookie"] ?? [];
+  // A proxied request owns its connection: it goes once the exchange ends.
+  if (route === "proxy") {
+    incoming.once("close", teardown);
+  }
   return {
     status: incoming.statusCode ?? 0,
     headers,
     ...(setCookies.length === 0 ? {} : { setCookies }),
+    route,
     destroy() {
       incoming.destroy();
+      teardown();
     },
     body,
     async text() {

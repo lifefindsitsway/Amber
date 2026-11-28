@@ -3,7 +3,7 @@ import { canonicalPlatformCookies, formatNetscapeCookies, parseSetCookie, type N
 import type { OutboundHttpClient } from "../../../ports/outbound-http.ts";
 import type { PlatformQrLogin, QrLoginTicket, QrPollResult } from "../../../ports/platform-login.ts";
 import { z } from "zod";
-import { apiError, bilibiliEnvelope, dataOf } from "./api.ts";
+import { apiError, BILIBILI_TRUSTED_HOSTS, bilibiliEnvelope, dataOf } from "./api.ts";
 import { BILIBILI_COOKIE_DOMAINS } from "./index.ts";
 
 const PASSPORT_HOST = "passport.bilibili.com";
@@ -46,7 +46,7 @@ export class BilibiliQrLogin implements PlatformQrLogin {
   }
 
   async start(signal: AbortSignal): Promise<QrLoginTicket> {
-    const envelope = await bilibiliEnvelope(this.options.http, { url: `${QR_API}/generate`, headers: WEB_ORIGIN, signal });
+    const envelope = await bilibiliEnvelope(this.options.http, { url: `${QR_API}/generate`, headers: WEB_ORIGIN, signal, trustedHosts: BILIBILI_TRUSTED_HOSTS });
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
@@ -62,6 +62,7 @@ export class BilibiliQrLogin implements PlatformQrLogin {
       url: `${QR_API}/poll?qrcode_key=${encodeURIComponent(key)}`,
       headers: WEB_ORIGIN,
       signal,
+      trustedHosts: BILIBILI_TRUSTED_HOSTS,
     });
     const { setCookies } = envelope;
     if (envelope.code !== 0) {

@@ -34,6 +34,8 @@ export const EXPECTED_ERROR_CLASSES = [
   { name: "output_mismatch", retryDisposition: "policy", action: null },
   { name: "citation_degraded", retryDisposition: null, action: null },
   { name: "network_blocked_by_policy", retryDisposition: "never", action: null },
+  { name: "network_proxy_unsupported", retryDisposition: "never", action: null },
+  { name: "network_proxy_failed", retryDisposition: "safe", action: null },
   { name: "disk_low", retryDisposition: "never", action: null },
   { name: "idempotency_conflict", retryDisposition: "never", action: null },
   { name: "schema_version_unsupported", retryDisposition: "never", action: null },
@@ -185,6 +187,15 @@ export const EXPECTED_REFINED_CODES = [
   { code: "network_blocked_by_policy.private_address", detailsKeys: [], retryDisposition: null, action: null },
   { code: "network_blocked_by_policy.redirect", detailsKeys: [], retryDisposition: null, action: null },
   { code: "network_blocked_by_policy.dns_rebinding", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_unsupported.pac", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_unsupported.socks", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_unsupported.scheme", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_unsupported.unparsable", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_unsupported.read_failed", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_failed.unreachable", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_failed.rejected", detailsKeys: [], retryDisposition: null, action: null },
+  { code: "network_proxy_failed.auth_required", detailsKeys: [], retryDisposition: "never", action: null },
+  { code: "network_proxy_failed.tls", detailsKeys: [], retryDisposition: "never", action: null },
 ] as const;
 
 /** The reasons `invalid_request.cache_dir` may name; an unregistered reason shows the generic text. */

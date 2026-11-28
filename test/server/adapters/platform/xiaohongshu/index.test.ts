@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PlatformDownloadRequest, PlatformDownloadResult } from "../../../../../src/server/adapters/platform/download.ts";
 import { XiaohongshuAdapter } from "../../../../../src/server/adapters/platform/xiaohongshu/index.ts";
 import { amberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
@@ -11,6 +11,7 @@ import type { PlatformContentRef, PlatformCredential } from "../../../../../src/
 import { PLATFORM_PAGE_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
 import { scriptedYtDlp } from "../../../../fixtures/platform/scripted-io.ts";
 import {
+  drainFakeRequests,
   FakeHttp,
   homePage,
   IMAGE_NOTE_ID,
@@ -34,6 +35,18 @@ const LOGIN: PlatformCredential = {
 const SECRETS = [TOKEN, SOURCE, COOKIE_VALUE, "xxxxsign"];
 const PAGE_HOSTS = ["www.xiaohongshu.com", "xiaohongshu.com", "xhslink.com"];
 const ORIGINAL_HOST = "sns-video-bd.xhscdn.com";
+/** The adapter's own proxy table, which every request and download must carry. */
+const TRUSTED = ["xiaohongshu.com", "xhslink.com", "xhscdn.com"];
+const allDownloads: PlatformDownloadRequest[] = [];
+
+afterEach(() => {
+  for (const request of drainFakeRequests()) {
+    expect(request.trustedHosts, request.url).toEqual(TRUSTED);
+  }
+  for (const request of allDownloads.splice(0)) {
+    expect(request.trustedHosts).toEqual(TRUSTED);
+  }
+});
 
 const signal = () => new AbortController().signal;
 const ref = (noteId = VIDEO_NOTE_ID, link = noteLink(noteId)): PlatformContentRef => ({ platformContentId: noteId, sourceUrl: link });
@@ -100,6 +113,7 @@ function downloader(answer: (request: PlatformDownloadRequest, call: number) => 
   const calls: DownloadCall[] = [];
   const download = async (_http: unknown, request: PlatformDownloadRequest): Promise<PlatformDownloadResult> => {
     calls.push({ request });
+    allDownloads.push(request);
     const result = answer(request, calls.length);
     if (result instanceof Error) {
       throw result;

@@ -20,6 +20,11 @@ export interface PlatformDownloadRequest {
   url: string;
   /** Host names matched at a domain boundary (`xhscdn.com` admits `sns-video-bd.xhscdn.com`, not `evilxhscdn.com`). */
   allowedHosts: readonly string[];
+  /**
+   * The calling adapter's own `trustedHosts`, sent with every hop: only a hop whose host is on
+   * it may go through the configured proxy.
+   */
+  trustedHosts: readonly string[];
   /** Sent with every hop; never a cookie (media requests go out without a login). */
   headers?: Readonly<Record<string, string>>;
   kind: PlatformMediaKind;
@@ -219,7 +224,7 @@ async function fetchOnce(
       headers.Range = `bytes=${resumeFrom.received}-`;
       headers["If-Range"] = resumeFrom.etag as string;
     }
-    const response = await walk(http, url, request.allowedHosts, headers, signal);
+    const response = await walk(http, url, request, headers, signal);
     answered = response;
     arm();
 
@@ -315,11 +320,18 @@ async function fetchOnce(
  * Sends one GET and follows its redirects by hand, every hop checked against the allowed
  * hosts before it is requested. Every request is `publicOnly` and `redirect: "manual"`.
  */
-async function walk(http: OutboundHttpClient, first: URL, allowedHosts: readonly string[], headers: Record<string, string>, signal: AbortSignal): Promise<OutboundResponse> {
+async function walk(
+  http: OutboundHttpClient,
+  first: URL,
+  request: Pick<PlatformDownloadRequest, "allowedHosts" | "trustedHosts">,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<OutboundResponse> {
+  const { allowedHosts, trustedHosts } = request;
   let url = first;
   let hopHeaders = headers;
   for (let redirects = 0; ; redirects++) {
-    const response = await http.request({ url: url.toString(), method: "GET", headers: hopHeaders, signal, redirect: "manual", publicOnly: true });
+    const response = await http.request({ url: url.toString(), method: "GET", headers: hopHeaders, signal, redirect: "manual", publicOnly: true, trustedHosts });
     const location = response.headers.get("location");
     if (!REDIRECT_STATUSES.has(response.status) || location === undefined) {
       return response;

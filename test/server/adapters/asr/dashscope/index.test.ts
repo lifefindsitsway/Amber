@@ -8,7 +8,7 @@ import {
   inferLanguage,
   toDashscopeLanguageHint,
 } from "../../../../../src/server/adapters/asr/dashscope/index.ts";
-import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
+import { AmberError, amberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { MediaAsset } from "../../../../../src/server/domain/media-asset.ts";
 import type { AsrModelEntry, AsrProviderProfile } from "../../../../../src/server/domain/provider-profile.ts";
 import type { AsrJobHandle, AsrJobProvider, AsrJobReport } from "../../../../../src/server/ports/asr-provider.ts";
@@ -889,5 +889,24 @@ describe("result normalization", () => {
     expect(toDashscopeLanguageHint("de", hints)).toBeUndefined();
     expect(toDashscopeLanguageHint("not a tag!", hints)).toBeUndefined();
     expect(toDashscopeLanguageHint(undefined, hints)).toBeUndefined();
+  });
+});
+
+describe("proxy errors", () => {
+  it("passes proxy errors from outbound HTTP on unchanged at every step of a submission and a poll", async () => {
+    const errors = () => [
+      amberError("network_proxy_failed", "cannot connect to the proxy", { code: "network_proxy_failed.unreachable" }),
+      amberError("network_proxy_unsupported", "the proxy configuration cannot be used", { code: "network_proxy_unsupported.pac" }),
+    ];
+    for (const step of ["policy", "upload", "submit"] as const) {
+      for (const error of errors()) {
+        const { provider } = setup(routes({ [step]: () => error }));
+        expect([step, await failure(submit(provider as AsrJobProvider))]).toEqual([step, error]);
+      }
+    }
+    for (const error of errors()) {
+      const { provider } = setup(routes({ poll: () => error }));
+      expect(await failure((provider as AsrJobProvider).poll(HANDLE, { signal: signal() }))).toBe(error);
+    }
   });
 });

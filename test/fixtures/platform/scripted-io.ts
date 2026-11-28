@@ -62,8 +62,19 @@ export function outboundResponse(answer: ScriptedResponse, onDestroy?: () => voi
       yield bytes;
     })(),
     text: async () => text,
+    route: "direct",
     destroy: () => onDestroy?.(),
   };
+}
+
+const recorded: OutboundRequest[] = [];
+
+/**
+ * Every request any `ScriptedHttp` recorded since the last call, which are then forgotten:
+ * lets a test file check a property of all requests its tests made, in an `afterEach`.
+ */
+export function drainScriptedRequests(): OutboundRequest[] {
+  return recorded.splice(0);
 }
 
 export class ScriptedHttp implements OutboundHttpClient {
@@ -78,6 +89,7 @@ export class ScriptedHttp implements OutboundHttpClient {
 
   async request(request: OutboundRequest): Promise<OutboundResponse> {
     this.requests.push(request);
+    recorded.push(request);
     const answer = await this.handler(request);
     if (answer instanceof Error) {
       throw answer;

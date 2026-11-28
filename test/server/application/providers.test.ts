@@ -25,7 +25,7 @@ type Verdict = "supported" | "unsupported" | "inconclusive";
  */
 class FakeProber implements ModelProber {
   calls: ModelRef[] = [];
-  outcome: Error | { basic?: "connected" | "incomplete"; stream: Verdict; structuredOutput: Verdict; tools: Verdict } = {
+  outcome: Error | { basic?: "connected" | "incomplete"; route?: "direct" | "proxy"; stream: Verdict; structuredOutput: Verdict; tools: Verdict } = {
     stream: "supported",
     structuredOutput: "unsupported",
     tools: "supported",
@@ -56,7 +56,7 @@ class FakeProber implements ModelProber {
     const outcome = this.outcome;
     const flags = ["stream", "structuredOutput", "tools"] as const;
     return {
-      basic: { status: outcome.basic ?? "connected", latencyMs: 12 },
+      basic: { status: outcome.basic ?? "connected", latencyMs: 12, ...(outcome.route === undefined ? {} : { route: outcome.route }) },
       checks: flags.map((flag) => (outcome[flag] === "inconclusive" ? { flag, result: "inconclusive", reason: "truncated" } : { flag, result: outcome[flag] })),
       basis,
     };
@@ -292,6 +292,7 @@ describe("ProviderService", () => {
       ],
       observed: { stream: "supported", structuredOutput: "unsupported", tools: "supported" },
       observedAt: result.body.observedAt,
+      route: "direct",
     });
     expect(probeResultDtoSchema.parse(result.body)).toEqual(result.body);
     const model = service.get(LOCAL, created.id).models[0];
@@ -301,6 +302,15 @@ describe("ProviderService", () => {
     expect(await asyncCode(() => service.probe(LOCAL, created.id, "model-x", signal))).toBe("not_found");
     expect(await asyncCode(() => service.probe(BOB, created.id, "model-a", signal))).toBe("not_found");
     expect(prober.calls).toHaveLength(2);
+  });
+
+  it("tells which path the test request took, as the outbound response reported it", async () => {
+    const { prober, service } = setup();
+    const created = create(service);
+    prober.outcome = { route: "proxy", stream: "supported", structuredOutput: "supported", tools: "supported" };
+    expect((await service.probe(LOCAL, created.id, "model-a", signal)).body.route).toBe("proxy");
+    prober.outcome = { route: "direct", stream: "supported", structuredOutput: "supported", tools: "supported" };
+    expect((await service.probe(LOCAL, created.id, "model-a", signal)).body.route).toBe("direct");
   });
 
   it("clears the observed flag of an inconclusive check, so lower layers show through again", async () => {

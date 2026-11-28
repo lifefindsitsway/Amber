@@ -38,7 +38,17 @@ export interface OutboundRequest {
    * such a proxy would always fail.
    */
   publicOnly?: boolean;
+  /**
+   * Hosts this request may reach through the configured proxy: a full host name or a dot-boundary
+   * suffix, https on the default port only. Set only by platform adapters from their own table and
+   * re-checked on every redirect hop; a `publicOnly` hop whose host is not on it always connects
+   * directly to the checked, pinned IP. Never taken from an API request.
+   */
+  trustedHosts?: readonly string[];
 }
+
+/** The path a request actually took: straight to the target, or through the configured proxy. */
+export type OutboundRoute = "direct" | "proxy";
 
 export interface OutboundResponse {
   status: number;
@@ -51,6 +61,11 @@ export interface OutboundResponse {
   setCookies?: readonly string[];
   body: AsyncIterable<Uint8Array>;
   text(): Promise<string>;
+  /**
+   * The path this request took. Absent means direct (doubles that predate proxies); every real
+   * transport sets it.
+   */
+  route?: OutboundRoute;
   /**
    * Discards a response whose body is not wanted (an unfollowed 3xx, a status the caller rejects)
    * without reading it, releasing the connection at once. Every real transport implements it;

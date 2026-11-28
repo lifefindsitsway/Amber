@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "recordedAt": "2026-11-28",
+    "source": "synthetic: the message the desktop shell writes to the sidecar (one JSON object per line on stdin, and the same object in AMBER_SYSTEM_PROXY at start)",
+    "sanitized": true
+  },
+  "valid": [
+    { "name": "manual single proxy", "message": { "v": 1, "type": "system_proxy", "seq": 1, "config": { "state": "manual", "http": "127.0.0.1:7890", "https": "127.0.0.1:7890", "bypass": ["localhost", "127.*", "192.168.*", "<local>"] } } },
+    { "name": "manual http only", "message": { "v": 1, "type": "system_proxy", "seq": 2, "config": { "state": "manual", "http": "proxy.example.com:8080", "bypass": [] } } },
+    { "name": "manual with ignored pac", "message": { "v": 1, "type": "system_proxy", "seq": 3, "config": { "state": "manual", "http": "127.0.0.1:7890", "https": "127.0.0.1:7890", "bypass": [], "pacIgnored": true } } },
+    { "name": "off", "message": { "v": 1, "type": "system_proxy", "seq": 4, "config": { "state": "off", "bypass": [] } } },
+    { "name": "pac only", "message": { "v": 1, "type": "system_proxy", "seq": 5, "config": { "state": "unsupported", "reason": "pac", "bypass": [] } } },
+    { "name": "socks only", "message": { "v": 1, "type": "system_proxy", "seq": 6, "config": { "state": "unsupported", "reason": "socks", "bypass": [] } } },
+    { "name": "unparsable", "message": { "v": 1, "type": "system_proxy", "seq": 7, "config": { "state": "unsupported", "reason": "unparsable", "bypass": [] } } },
+    { "name": "read failed keeps last good proxy", "message": { "v": 1, "type": "system_proxy", "seq": 8, "config": { "state": "error", "reason": "read_failed", "http": "127.0.0.1:7890", "https": "127.0.0.1:7890", "bypass": ["localhost"] } } },
+    { "name": "read failed at start", "message": { "v": 1, "type": "system_proxy", "seq": 1, "config": { "state": "unsupported", "reason": "read_failed", "bypass": [] } } }
+  ],
+  "invalid": [
+    { "name": "unknown version", "line": "{\"v\":2,\"type\":\"system_proxy\",\"seq\":9,\"config\":{\"state\":\"off\",\"bypass\":[]}}" },
+    { "name": "unknown type", "line": "{\"v\":1,\"type\":\"other\",\"seq\":9,\"config\":{\"state\":\"off\",\"bypass\":[]}}" },
+    { "name": "extra field", "line": "{\"v\":1,\"type\":\"system_proxy\",\"seq\":9,\"config\":{\"state\":\"off\",\"bypass\":[]},\"x\":1}" },
+    { "name": "negative seq", "line": "{\"v\":1,\"type\":\"system_proxy\",\"seq\":-1,\"config\":{\"state\":\"off\",\"bypass\":[]}}" },
+    { "name": "manual without any proxy", "line": "{\"v\":1,\"type\":\"system_proxy\",\"seq\":9,\"config\":{\"state\":\"manual\",\"bypass\":[]}}" },
+    { "name": "unsupported without reason", "line": "{\"v\":1,\"type\":\"system_proxy\",\"seq\":9,\"config\":{\"state\":\"unsupported\",\"bypass\":[]}}" },
+    { "name": "proxy with credentials", "line": "{\"v\":1,\"type\":\"system_proxy\",\"seq\":9,\"config\":{\"state\":\"manual\",\"http\":\"user:pass@127.0.0.1:7890\",\"bypass\":[]}}" },
+    { "name": "too many bypass entries", "line": "GENERATE:bypass:513" },
+    { "name": "not json", "line": "{\"v\":1,\"type\":" }
+  ]
+}

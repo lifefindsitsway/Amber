@@ -134,6 +134,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
   { method: "DELETE", path: "/web-search", modes: BOTH },
   { method: "PUT", path: "/web-search/credential", modes: BOTH },
   { method: "POST", path: "/web-search/test", modes: BOTH },
+  // network
+  { method: "GET", path: "/network/status", modes: BOTH },
   // notes
   { method: "GET", path: "/contents/:id/notes", modes: BOTH },
   { method: "POST", path: "/contents/:id/notes", modes: BOTH },

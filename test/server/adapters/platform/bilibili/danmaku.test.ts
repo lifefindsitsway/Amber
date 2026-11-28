@@ -15,6 +15,8 @@ import {
 import { danmakuItemSchema } from "../../../../../src/shared/dto/danmaku.ts";
 import { scriptedYtDlp, signal } from "../../../../fixtures/platform/scripted-io.ts";
 
+const TRUSTED = ["api.bilibili.com", "hdslb.com"] as const;
+
 /** A `p` attribute in the platform's nine-field layout; hash and id are synthetic. */
 function p(seconds: string, mode: number, options: { color?: number; pool?: number; weight?: number | string } = {}): string {
   return [seconds, mode, 25, options.color ?? 16777215, 1700000000, options.pool ?? 0, "a1b2c3d4", "123456789012345678", options.weight ?? 5].join(",");
@@ -254,7 +256,7 @@ describe("inflateRawCapped", () => {
 describe("fetchBilibiliDanmaku", () => {
   it("sends one anonymous GET to the danmaku list of the cid, with the danmaku timeout and no cookie", async () => {
     const http = new BinaryHttp(() => deflated(doc(`<d p="${p("2", 1)}">b</d><d p="${p("1", 5)}">a</d>`)));
-    const answer = await fetchBilibiliDanmaku(http, "123456", signal());
+    const answer = await fetchBilibiliDanmaku(http, "123456", signal(), TRUSTED);
     expect(answer).toEqual({
       items: [
         { timeMs: 1000, mode: "top", color: 0xffffff, weight: 5, text: "a" },
@@ -267,25 +269,26 @@ describe("fetchBilibiliDanmaku", () => {
     expect(request.url).toBe("https://api.bilibili.com/x/v1/dm/list.so?oid=123456");
     expect(request.method).toBe("GET");
     expect(request.timeoutMs).toBe(DANMAKU_FETCH_TIMEOUT_MS);
+    expect(request.trustedHosts).toEqual(TRUSTED);
     expect(Object.keys(request.headers ?? {}).map((name) => name.toLowerCase())).not.toContain("cookie");
     expect(request.body).toBeUndefined();
   });
 
   it("refuses a part id that is not a number before sending anything", async () => {
     const http = new BinaryHttp(() => deflated(doc("")));
-    await expect(fetchBilibiliDanmaku(http, "1&oid=2", signal())).rejects.toBeInstanceOf(TypeError);
+    await expect(fetchBilibiliDanmaku(http, "1&oid=2", signal(), TRUSTED)).rejects.toBeInstanceOf(TypeError);
     expect(http.requests).toEqual([]);
   });
 
   it("answers an empty list for a video without danmaku, and an uncompressed body is read as is", async () => {
-    expect(await fetchBilibiliDanmaku(new BinaryHttp(() => deflated(doc(""))), "1", signal())).toEqual({ items: [], truncated: false });
+    expect(await fetchBilibiliDanmaku(new BinaryHttp(() => deflated(doc(""))), "1", signal(), TRUSTED)).toEqual({ items: [], truncated: false });
     const plain = new BinaryHttp(() => ({ chunks: [Buffer.from(doc(`<d p="${p("1", 1)}">x</d>`))] }));
-    expect((await fetchBilibiliDanmaku(plain, "1", signal())).items).toHaveLength(1);
+    expect((await fetchBilibiliDanmaku(plain, "1", signal(), TRUSTED)).items).toHaveLength(1);
   });
 
   it("caps the item count, dropping the lowest weights, and says so", async () => {
     const body = Array.from({ length: DANMAKU_ITEMS_MAX + 10 }, (_, index) => `<d p="${p(String(index), 1, { weight: index < 10 ? 1 : 5 })}">x</d>`).join("");
-    const answer = await fetchBilibiliDanmaku(new BinaryHttp(() => deflated(doc(body))), "1", signal());
+    const answer = await fetchBilibiliDanmaku(new BinaryHttp(() => deflated(doc(body))), "1", signal(), TRUSTED);
     expect(answer.truncated).toBe(true);
     expect(answer.items).toHaveLength(DANMAKU_ITEMS_MAX);
     expect(answer.items.every((item) => item.weight === 5)).toBe(true);
@@ -301,18 +304,18 @@ describe("fetchBilibiliDanmaku", () => {
       { headers: { "content-encoding": "deflate" }, chunks: [randomBytes(1000)] },
     ];
     for (const answer of cases) {
-      expect((await failure(fetchBilibiliDanmaku(new BinaryHttp(() => answer), "1", signal()))).class).toBe("source_html_error_page");
+      expect((await failure(fetchBilibiliDanmaku(new BinaryHttp(() => answer), "1", signal(), TRUSTED))).class).toBe("source_html_error_page");
     }
   });
 
   it("stops reading a response past the size limit", async () => {
     const chunk = Buffer.alloc(1024 * 1024);
     const http = new BinaryHttp(() => ({ headers: { "content-encoding": "deflate" }, chunks: Array.from({ length: 64 }, () => chunk) }));
-    expect((await failure(fetchBilibiliDanmaku(http, "1", signal()))).message).toContain(`exceeded ${DANMAKU_RESPONSE_MAX_BYTES}`);
+    expect((await failure(fetchBilibiliDanmaku(http, "1", signal(), TRUSTED))).message).toContain(`exceeded ${DANMAKU_RESPONSE_MAX_BYTES}`);
     expect(http.chunksRead).toBe(DANMAKU_RESPONSE_MAX_BYTES / chunk.byteLength + 1);
     expect(http.bodyClosed).toBe(true);
     const declared = new BinaryHttp(() => ({ headers: { "content-length": String(DANMAKU_RESPONSE_MAX_BYTES + 1) }, chunks: [Buffer.alloc(10), Buffer.alloc(10)] }));
-    expect((await failure(fetchBilibiliDanmaku(declared, "1", signal()))).class).toBe("source_html_error_page");
+    expect((await failure(fetchBilibiliDanmaku(declared, "1", signal(), TRUSTED))).class).toBe("source_html_error_page");
     // A declared length over the cap is refused before a single byte is read.
     expect(declared.chunksRead).toBe(0);
     expect(declared.destroyed).toBe(1);
@@ -320,12 +323,12 @@ describe("fetchBilibiliDanmaku", () => {
 
   it("reports risk control and HTTP errors as the platform being unreachable, never as needing a login", async () => {
     for (const status of [412, 429, 403, 404, 500]) {
-      expect((await failure(fetchBilibiliDanmaku(new BinaryHttp(() => ({ status, chunks: [Buffer.from("<html>")] })), "1", signal()))).class, String(status)).toBe("source_unreachable");
+      expect((await failure(fetchBilibiliDanmaku(new BinaryHttp(() => ({ status, chunks: [Buffer.from("<html>")] })), "1", signal(), TRUSTED))).class, String(status)).toBe("source_unreachable");
     }
     const network = new BinaryHttp(() => new OutboundHttpError("before_send", "timeout"));
-    expect((await failure(fetchBilibiliDanmaku(network, "1", signal()))).class).toBe("source_unreachable");
+    expect((await failure(fetchBilibiliDanmaku(network, "1", signal(), TRUSTED))).class).toBe("source_unreachable");
     const aborted = new BinaryHttp(() => new OutboundHttpError("after_send", "aborted"));
-    await expect(fetchBilibiliDanmaku(aborted, "1", signal())).rejects.toBeInstanceOf(OutboundHttpError);
+    await expect(fetchBilibiliDanmaku(aborted, "1", signal(), TRUSTED)).rejects.toBeInstanceOf(OutboundHttpError);
   });
 });
 
@@ -336,6 +339,7 @@ describe("BilibiliAdapter.fetchDanmaku", () => {
     const adapter = new BilibiliAdapter({ ytDlp, http });
     expect((await adapter.fetchDanmaku({ platformContentId: "BV1xx411c7mD", platformPartId: "1002" }, signal())).items).toHaveLength(1);
     expect(http.requests.map((request) => request.url)).toEqual(["https://api.bilibili.com/x/v1/dm/list.so?oid=1002"]);
+    expect(http.requests[0]?.trustedHosts).toEqual(adapter.trustedHosts);
     expect(Object.keys(http.requests[0]?.headers ?? {}).map((name) => name.toLowerCase())).not.toContain("cookie");
     expect(runner.specs).toEqual([]);
     expect(adapter.fetchDanmaku.length).toBe(2);

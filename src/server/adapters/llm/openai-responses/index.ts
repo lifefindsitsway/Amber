@@ -187,7 +187,8 @@ export class OpenAiResponsesProvider implements LlmProvider {
       if (kind === "stream" && !eventStream) {
         return { kind, result: "unsupported", latencyMs };
       }
-      return checkResult(kind, outcome, latencyMs);
+      const result = checkResult(kind, outcome, latencyMs);
+      return result.kind === "basic" && response.route !== undefined ? { ...result, route: response.route } : result;
     } catch (error) {
       // Past the send boundary (an answer that broke off included) the request may have
       // been processed: it counts, with an unknown outcome.

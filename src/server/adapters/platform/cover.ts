@@ -9,12 +9,13 @@ import { trustedImageUrl } from "./shared.ts";
  * URL on one of `domains` (subdomains included, no user info, no port) is requested, and every
  * redirect hop stays on them; anything else fails before a request goes out. No cookie is ever
  * sent: a cover is public. The downloader's scratch files go beside `output.path`, in the
- * caller's job directory.
+ * caller's job directory. `trustedHosts` is the calling adapter's own table, passed on to
+ * every request.
  */
 export async function fetchPlatformCover(
   http: OutboundHttpClient | undefined,
   download: PlatformMediaDownload,
-  input: { coverUrl: string; domains: readonly string[]; output: { path: string }; maxBytes: number; signal: AbortSignal },
+  input: { coverUrl: string; domains: readonly string[]; trustedHosts: readonly string[]; output: { path: string }; maxBytes: number; signal: AbortSignal },
 ): Promise<{ sizeBytes: number }> {
   const url = trustedImageUrl(input.coverUrl, input.domains);
   if (url === undefined) {
@@ -27,6 +28,7 @@ export async function fetchPlatformCover(
   const result = await download(http, {
     url,
     allowedHosts: input.domains,
+    trustedHosts: input.trustedHosts,
     kind: "image",
     maxBytes: input.maxBytes,
     output: { path: input.output.path, scratchDir: dirname(input.output.path) },

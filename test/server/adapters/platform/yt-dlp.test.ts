@@ -21,7 +21,8 @@ import { childProcessEnv } from "../../../../src/server/ports/process-runner.ts"
 import type { AppError } from "../../../../src/shared/errors.ts";
 import { RETRY_BASE_MS, RETRY_MAX, YTDLP_SOCKET_TIMEOUT_S } from "../../../../src/shared/defaults.ts";
 import { mediaFixtures } from "../../../fixtures/media/index.ts";
-import { argAfter, BIN_DIR, scriptedYtDlp, signal, type ScriptedProcess } from "../../../fixtures/platform/scripted-io.ts";
+import type { NetworkRouter, RouteDecision } from "../../../../src/server/ports/network-route.ts";
+import { argAfter, BIN_DIR, scriptedYtDlp, ScriptedRunner, signal, type ScriptedProcess } from "../../../fixtures/platform/scripted-io.ts";
 import { toolsBinDir } from "../../../fixtures/tools.ts";
 
 async function errorOf(promise: Promise<unknown>): Promise<AppError> {
@@ -73,7 +74,8 @@ describe("YtDlp.run", () => {
     expect(spec?.command).toBe(join(BIN_DIR, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"));
     expect(spec?.env).toEqual({ LANG: "C.UTF-8" });
     expect(spec?.timeoutMs).toBe(1234);
-    expect(spec?.args).toEqual([...baseArgs({ binDir: BIN_DIR, dataDir }, ["bilibili"]), "--dump-single-json", "https://www.bilibili.com/video/BV1xx411c7mD"]);
+    // Without a proxy route the run connects directly and yt-dlp's own proxy discovery is off.
+    expect(spec?.args).toEqual([...baseArgs({ binDir: BIN_DIR, dataDir }, ["bilibili"]), "--proxy", "", "--dump-single-json", "https://www.bilibili.com/video/BV1xx411c7mD"]);
     expect(spec?.args).not.toContain("--cookies");
   });
 
@@ -156,6 +158,65 @@ describe("YtDlp.run", () => {
   });
 });
 
+describe("YtDlp proxy route", () => {
+  const PAGE = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+  /** A router answering every decision with `decision`, recording the pages it was asked about. */
+  function routed(decision: RouteDecision, env: Record<string, string> = { LANG: "C.UTF-8" }) {
+    const asked: string[] = [];
+    const router: NetworkRouter = {
+      decideRoute: (url) => {
+        asked.push(url.href);
+        return decision;
+      },
+      recordProxyOutcome: () => undefined,
+    };
+    const runner = new ScriptedRunner(() => ({ stdout: "{}" }));
+    const dataDir = mkdtempSync(join(tmpdir(), "amber-ytdlp-"));
+    return { ytDlp: new YtDlp({ runner, binDir: BIN_DIR, dataDir, env, router }), runner, asked, dataDir };
+  }
+
+  it("puts the proxy into this child's environment only, credentials included, never on the command line", async () => {
+    const { ytDlp, runner, asked } = routed(
+      { kind: "proxy", endpoint: { host: "127.0.0.1", port: 3128, credentials: { username: "proxy-user", password: "p@ss:word" } }, seq: 1 },
+      { LANG: "C.UTF-8", HTTPS_PROXY: "http://stale.example:1", no_proxy: "example.org" },
+    );
+    await ytDlp.run({ args: ["--dump-single-json", "--output", "/tmp/out.%(ext)s", PAGE], extractors: ["youtube"], signal: signal() });
+    const [spec] = runner.specs;
+    expect(asked).toEqual([PAGE]);
+    expect(spec?.env).toEqual({
+      LANG: "C.UTF-8",
+      http_proxy: "http://proxy-user:p%40ss%3Aword@127.0.0.1:3128",
+      https_proxy: "http://proxy-user:p%40ss%3Aword@127.0.0.1:3128",
+    });
+    expect(spec?.args).not.toContain("--proxy");
+    expect(spec?.args.join(" ")).not.toMatch(/proxy-user|p@ss|3128/);
+  });
+
+  it("turns off yt-dlp's own proxy discovery when the route is direct", async () => {
+    const { ytDlp, runner } = routed({ kind: "direct" }, { LANG: "C.UTF-8", http_proxy: "http://stale.example:1" });
+    await ytDlp.run({ args: ["--dump-single-json", PAGE], extractors: ["youtube"], signal: signal() });
+    expect(argAfter(runner.specs[0]?.args ?? [], "--proxy")).toBe("");
+    expect(runner.specs[0]?.env).toEqual({ LANG: "C.UTF-8" });
+  });
+
+  it("does not start yt-dlp under a configuration that cannot be used, and writes no cookie file", async () => {
+    const { ytDlp, runner, dataDir } = routed({ kind: "refuse", reason: "socks" });
+    const error = await errorOf(ytDlp.run({ args: ["--dump-single-json", PAGE], extractors: ["youtube"], cookies: COOKIES, signal: signal() }));
+    expect([error.class, error.code, error.retryDisposition]).toEqual(["network_proxy_unsupported", "network_proxy_unsupported.socks", "never"]);
+    expect(runner.specs).toEqual([]);
+    expect(existsSync(join(dataDir, COOKIES_DIR))).toBe(false);
+  });
+
+  it("reads a browser's cookie jar without a page and without a proxy", async () => {
+    const { ytDlp, runner, asked } = routed({ kind: "proxy", endpoint: { host: "127.0.0.1", port: 3128 }, seq: 1 });
+    await ytDlp.dumpBrowserCookies({ browser: "firefox", extractors: ["youtube"], signal: signal() }).catch(() => undefined);
+    expect(asked).toEqual([]);
+    expect(argAfter(runner.specs[0]?.args ?? [], "--proxy")).toBe("");
+    expect(runner.specs[0]?.env).toEqual({ LANG: "C.UTF-8" });
+  });
+});
+
 describe("classifyYtDlpFailure", () => {
   // One stderr line per pattern, in the table's order, taken from the pinned release's messages.
   const SAMPLES: Array<[string, string]> = [
@@ -201,6 +262,7 @@ describe("classifyYtDlpFailure", () => {
 
   it("caps an upstream line", () => {
     expect(redactUpstream("x".repeat(2000))).toHaveLength(500);
+    expect(redactUpstream("ERROR: Unable to connect to proxy http://user:<placeholder>@proxy.example:8080 failed")).toBe("ERROR: Unable to connect to proxy http://***@proxy.example:8080 failed");
     expect(redactUpstream("see http://a.example/p?token=<placeholder> and https://b.example/q#f")).toBe("see http://a.example/p?… and https://b.example/q#f");
   });
 });

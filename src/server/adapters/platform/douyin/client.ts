@@ -24,6 +24,8 @@ export const DOUYIN_PAGE_HOSTS: readonly string[] = ["douyin.com", "iesdouyin.co
 export const DOUYIN_MEDIA_HOSTS: readonly string[] = ["douyinvod.com", "zjcdn.com", "douyin.com"];
 /** Where covers and chapter thumbnails are served from. */
 export const DOUYIN_IMAGE_HOSTS: readonly string[] = ["douyinpic.com"];
+/** Every host the adapter requests: the pages and web API, the media CDNs and the image CDN. */
+export const DOUYIN_TRUSTED_HOSTS: readonly string[] = [...new Set([...DOUYIN_PAGE_HOSTS, ...DOUYIN_MEDIA_HOSTS, ...DOUYIN_IMAGE_HOSTS])];
 
 /**
  * The web client's application id. The API answers the full list of quality tiers (1080P
@@ -116,13 +118,16 @@ export interface DouyinApiResponse {
 export class DouyinClient {
   private readonly http: OutboundHttpClient;
   private readonly now: () => number;
+  /** The adapter's `trustedHosts`, passed on with every request. */
+  private readonly trustedHosts: readonly string[];
   private session: VisitorSession | undefined;
   private building: Promise<VisitorSession> | undefined;
   private blockedUntil = Number.NEGATIVE_INFINITY;
 
-  constructor(http: OutboundHttpClient, now: () => number) {
+  constructor(http: OutboundHttpClient, now: () => number, trustedHosts: readonly string[] = DOUYIN_TRUSTED_HOSTS) {
     this.http = http;
     this.now = now;
+    this.trustedHosts = trustedHosts;
   }
 
   /** Fails while a refused signature keeps the platform off limits. */
@@ -161,6 +166,7 @@ export class DouyinClient {
       headers: { Referer: DOUYIN_REFERER, Cookie: sessionCookie(session) },
       signal,
       maxBytes: PLATFORM_JSON_MAX_BYTES,
+      trustedHosts: this.trustedHosts,
     });
     return { status: response.status, text: response.text };
   }
@@ -226,6 +232,7 @@ export class DouyinClient {
       headers: { Cookie: `ttwid=${ttwid}; passport_csrf_token=${csrfToken}` },
       signal,
       maxBytes: PLATFORM_PAGE_MAX_BYTES,
+      trustedHosts: this.trustedHosts,
     });
     statusCheck(home.status);
     const uifid = cookieValue(home.setCookies, (name) => UIFID_COOKIES.has(name.toLowerCase())) ?? home.headers.get(UIFID_HEADER);
@@ -250,6 +257,7 @@ export class DouyinClient {
         timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
         redirect: "manual",
         publicOnly: true,
+        trustedHosts: this.trustedHosts,
       });
       let read = 0;
       for await (const chunk of response.body) {
@@ -284,6 +292,6 @@ function isSignatureRefusal(answer: DouyinApiResponse): boolean {
 }
 
 /** A short-link hop's answer, read within the page cap without following it. */
-export async function getHop(http: OutboundHttpClient, url: string, signal: AbortSignal): Promise<PlatformTextResponse> {
-  return platformGetText(http, { url, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES });
+export async function getHop(http: OutboundHttpClient, url: string, signal: AbortSignal, trustedHosts: readonly string[]): Promise<PlatformTextResponse> {
+  return platformGetText(http, { url, signal, maxBytes: PLATFORM_PAGE_MAX_BYTES, trustedHosts });
 }

@@ -99,6 +99,8 @@ import { registerTrashRoutes } from "./api/routes/trash.ts";
 import { registerStorageRoutes } from "./api/routes/storage.ts";
 import { registerUsageRoutes } from "./api/routes/usage.ts";
 import { registerWebSearchRoutes } from "./api/routes/web-search.ts";
+import { registerNetworkRoutes } from "./api/routes/network.ts";
+import type { NetworkStatusReader } from "./ports/network-route.ts";
 import type { TaskEventBus } from "./pipeline/events.ts";
 import type { AuthAdapter } from "./ports/auth-adapter.ts";
 import type { Logger } from "./ports/logger.ts";
@@ -126,6 +128,8 @@ export interface ServerAuthDeps {
 export interface AppDeps {
   /** `[server]` routes exist only in server mode and `[client]` routes only in local mode. */
   mode: RunMode;
+  /** The proxy configuration and the outcome of the last proxied request, for the network status line. */
+  network?: NetworkStatusReader;
   auth: AuthAdapter;
   /** Server mode: sessions, login, setup and CSRF. */
   serverAuth?: ServerAuthDeps;
@@ -372,6 +376,9 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   }
   if (deps.webSearch !== undefined) {
     registerWebSearchRoutes(app, { webSearch: deps.webSearch });
+  }
+  if (deps.network !== undefined) {
+    registerNetworkRoutes(app, { network: deps.network, mode: deps.mode });
   }
   if (deps.notes !== undefined) {
     registerNoteRoutes(app, { notes: deps.notes });

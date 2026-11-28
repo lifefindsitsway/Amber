@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { BILIBILI_EXTRACTORS, BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
 import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
@@ -10,12 +10,22 @@ import {
   argAfter,
   cookieLine,
   credential,
+  drainScriptedRequests,
   ScriptedHttp,
   scriptedYtDlp,
   signal,
   type ProcessHandler,
   type ScriptedResponse,
 } from "../../../../fixtures/platform/scripted-io.ts";
+
+/** The adapter's own proxy table, which every request it sends must carry. */
+const TRUSTED = ["api.bilibili.com", "passport.bilibili.com", "b23.tv", "hdslb.com", "biliimg.com"];
+
+afterEach(() => {
+  for (const request of drainScriptedRequests()) {
+    expect(request.trustedHosts, request.url).toEqual(TRUSTED);
+  }
+});
 
 const BV = "BV1xx411c7mD";
 const NOW = Date.UTC(2026, 9, 1);
@@ -783,6 +793,7 @@ describe("BilibiliAdapter.fetchCover", () => {
       ["https://archive.biliimg.com/bfs/b.png", "image", 99, ["hdslb.com", "biliimg.com"]],
     ]);
     expect(requests.every((request) => !JSON.stringify(request.headers ?? {}).toLowerCase().includes("cookie"))).toBe(true);
+    expect(requests.map((request) => request.trustedHosts)).toEqual(requests.map(() => TRUSTED));
     for (const foreign of ["https://i.ytimg.com/vi/x/hq.jpg", "https://www.bilibili.com/cover.jpg", "https://hdslb.com.evil.example/a.jpg"]) {
       const error = await adapter.fetchCover(foreign, output, { maxBytes: 99 }, signal()).catch((caught: unknown) => caught);
       expect([foreign, isAmberError(error)]).toEqual([foreign, true]);

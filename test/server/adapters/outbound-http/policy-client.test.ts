@@ -1,7 +1,13 @@
+import { readdirSync, readFileSync } from "node:fs";
 import type { RequestListener } from "node:http";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { OutboundTransport, PinnedAddress } from "../../../../src/server/adapters/outbound-http/direct.ts";
 import { PolicyOutboundHttpClient, type HostResolver } from "../../../../src/server/adapters/outbound-http/policy-client.ts";
+import { fromSystemMessage, type SystemProxyMessage } from "../../../../src/server/adapters/system-proxy/config.ts";
+import { SystemProxyState } from "../../../../src/server/adapters/system-proxy/state.ts";
+import { amberError } from "../../../../src/server/domain/errors.ts";
+import type { ProxyEndpoint } from "../../../../src/server/ports/network-route.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
 import { FORBIDDEN_ADDRESS_RANGES } from "../../../../src/server/domain/network-policy.ts";
 import { OutboundHttpError, type OutboundRequest, type OutboundResponse } from "../../../../src/server/ports/outbound-http.ts";
@@ -359,5 +365,124 @@ describe("PolicyOutboundHttpClient publicOnly requests", () => {
       { url: "http://relay.lan/v1", pinned: undefined },
     ]);
     expect(resolve.calls).toEqual([]);
+  });
+});
+
+describe("PolicyOutboundHttpClient proxy routing", () => {
+  const PROXY: ProxyEndpoint = { host: "127.0.0.1", port: 7890 };
+  const systemState = (config: SystemProxyMessage["config"]) => new SystemProxyState(fromSystemMessage({ v: 1, type: "system_proxy", seq: 1, config }));
+  const manual = (bypass: string[] = []) => systemState({ state: "manual", http: "127.0.0.1:7890", https: "127.0.0.1:7890", bypass });
+
+  /** Records every hop with its pinned address and proxy; `redirects` maps a URL to the Location it answers with. */
+  function routingTransport(redirects: Record<string, string> = {}, failure?: Error) {
+    const sent: Array<{ url: string; pinned?: PinnedAddress; proxy?: ProxyEndpoint }> = [];
+    const transport: OutboundTransport = {
+      async send(request, pinned, proxy) {
+        sent.push({ url: request.url, ...(pinned === undefined ? {} : { pinned }), ...(proxy === undefined ? {} : { proxy }) });
+        if (failure !== undefined) throw failure;
+        const location = redirects[request.url];
+        const headers = new Map(location === undefined ? [] : [["location", location]]);
+        return { status: location === undefined ? 200 : 302, headers, body: (async function* () {})(), text: async () => "ok", route: proxy === undefined ? "direct" : "proxy" };
+      },
+    };
+    return Object.assign(transport, { sent });
+  }
+
+  it("routes user-configured endpoints by the decision in local mode only; a server keeps them direct and pinned", async () => {
+    const local = routingTransport();
+    const localClient = new PolicyOutboundHttpClient({ mode: "permissive", router: manual(), transport: local });
+    expect((await localClient.request(get("https://api.example.com/v1"))).route).toBe("proxy");
+    await localClient.request(get("http://127.0.0.1:8080/v1"));
+    await localClient.request(get("https://nas/v1"));
+    expect(local.sent).toEqual([{ url: "https://api.example.com/v1", proxy: PROXY }, { url: "http://127.0.0.1:8080/v1" }, { url: "https://nas/v1" }]);
+
+    const resolve = stubResolver({ "api.example.com": "127.0.0.1" });
+    for (const state of [manual(), systemState({ state: "unsupported", reason: "pac", bypass: [] })]) {
+      const server = routingTransport();
+      const serverClient = new PolicyOutboundHttpClient({ mode: "strict", router: state, resolve, forbidden: TEST_RANGES, transport: server });
+      expect((await serverClient.request(get("https://api.example.com/v1"))).route).toBe("direct");
+      expect(server.sent).toEqual([{ url: "https://api.example.com/v1", pinned: { address: "127.0.0.1", family: 4 } }]);
+    }
+  });
+
+  it("refuses an unusable configuration before sending, except for targets on the exception list, which connect directly", async () => {
+    const transport = routingTransport();
+    const client = new PolicyOutboundHttpClient({ mode: "permissive", router: systemState({ state: "unsupported", reason: "pac", bypass: ["*.corp.example"] }), transport });
+    expect(await codeOf(client.request(get("https://api.example.com/v1")))).toBe("network_proxy_unsupported.pac");
+    expect(await codeOf(client.request(publicOnly("https://www.bilibili.com/video", { trustedHosts: ["bilibili.com"] })))).toBe("network_proxy_unsupported.pac");
+    const exempt = await client.request(get("https://git.corp.example/api"));
+    expect([exempt.status, exempt.route, await exempt.text()]).toEqual([200, "direct", "ok"]);
+    expect(transport.sent).toEqual([{ url: "https://git.corp.example/api" }]);
+  });
+
+  it("lets a platform hop use the proxy only for its trusted hosts, https on the default port, in both modes", async () => {
+    for (const mode of ["strict", "permissive"] as const) {
+      const resolve = stubResolver({ "notbilibili.com": "127.0.0.1", "www.bilibili.com": "127.0.0.1", "upos.example.net": "127.0.0.1" });
+      const transport = routingTransport();
+      const client = new PolicyOutboundHttpClient({ mode, router: manual(), resolve, forbidden: TEST_RANGES, transport });
+      const trusted = { trustedHosts: ["bilibili.com", "hdslb.com"] };
+      for (const url of ["https://www.bilibili.com/video", "https://bilibili.com/", "https://i0.hdslb.com/cover.jpg", "https://www.bilibili.com:443/x"]) {
+        await client.request(publicOnly(url, trusted));
+      }
+      for (const url of ["https://notbilibili.com/", "https://www.bilibili.com:8443/x", "http://www.bilibili.com/x", "https://upos.example.net/media"]) {
+        await client.request(publicOnly(url, trusted));
+      }
+      await client.request(publicOnly("https://www.bilibili.com/plain"));
+      const pinned = { address: "127.0.0.1", family: 4 };
+      expect(transport.sent, mode).toEqual([
+        { url: "https://www.bilibili.com/video", proxy: PROXY },
+        { url: "https://bilibili.com/", proxy: PROXY },
+        { url: "https://i0.hdslb.com/cover.jpg", proxy: PROXY },
+        { url: "https://www.bilibili.com/x", proxy: PROXY },
+        { url: "https://notbilibili.com/", pinned },
+        { url: "https://www.bilibili.com:8443/x", pinned },
+        { url: "http://www.bilibili.com/x", pinned },
+        { url: "https://upos.example.net/media", pinned },
+        { url: "https://www.bilibili.com/plain", pinned },
+      ]);
+      // Hosts that went through the proxy were never resolved here: the proxy resolves them.
+      expect(resolve.calls, mode).toEqual(["notbilibili.com", "www.bilibili.com", "www.bilibili.com", "upos.example.net", "www.bilibili.com"]);
+    }
+  });
+
+  it("decides again on every redirect hop: leaving the trusted hosts connects directly and pinned", async () => {
+    const resolve = stubResolver({ "cdn.example.net": "127.0.0.1" });
+    const transport = routingTransport({
+      "https://www.bilibili.com/video": "https://cdn.example.net/a",
+      "https://cdn.example.net/a": "https://i0.hdslb.com/b",
+    });
+    const client = new PolicyOutboundHttpClient({ mode: "strict", router: manual(), resolve, forbidden: TEST_RANGES, transport });
+    await client.request(publicOnly("https://www.bilibili.com/video", { trustedHosts: ["bilibili.com", "hdslb.com"] }));
+    expect(transport.sent).toEqual([
+      { url: "https://www.bilibili.com/video", proxy: PROXY },
+      { url: "https://cdn.example.net/a", pinned: { address: "127.0.0.1", family: 4 } },
+      { url: "https://i0.hdslb.com/b", proxy: PROXY },
+    ]);
+  });
+
+  it("reports proxied outcomes to the router and leaves direct ones out", async () => {
+    const state = manual();
+    const failing = new PolicyOutboundHttpClient({
+      mode: "permissive",
+      router: state,
+      transport: routingTransport({}, amberError("network_proxy_failed", "down", { code: "network_proxy_failed.unreachable" })),
+    });
+    expect(await codeOf(failing.request(get("https://api.example.com/v1")))).toBe("network_proxy_failed.unreachable");
+    expect(state.status().lastProxyOutcome).toMatchObject({ ok: false, seq: 1 });
+    const working = new PolicyOutboundHttpClient({ mode: "permissive", router: state, transport: routingTransport() });
+    await working.request(get("https://api.example.com/v1"));
+    expect(state.status().lastProxyOutcome).toMatchObject({ ok: true, seq: 1 });
+    // A direct request, or a transport failure that is not the proxy's, changes nothing.
+    const other = new PolicyOutboundHttpClient({ mode: "permissive", router: state, transport: routingTransport({}, new OutboundHttpError("after_send", "timeout")) });
+    await other.request(get("https://api.example.com/v1")).catch(() => undefined);
+    await working.request(get("http://localhost:4191/"));
+    expect(state.status().lastProxyOutcome).toMatchObject({ ok: true, seq: 1 });
+  });
+
+  it("keeps trustedHosts out of every shared DTO and schema", () => {
+    const root = join(import.meta.dirname, "../../../../src/shared");
+    const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts"));
+    expect(files.length).toBeGreaterThan(10);
+    expect(files.filter((file) => readFileSync(join(root, file), "utf8").includes("trustedHosts"))).toEqual([]);
   });
 });

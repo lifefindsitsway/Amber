@@ -5,6 +5,7 @@ import { RETRY_BASE_MS, RETRY_MAX, YTDLP_SOCKET_TIMEOUT_S } from "../../../share
 import { BYTES_PER_MB } from "../../../shared/units.ts";
 import type { ErrorClass } from "../../../shared/errors.ts";
 import { AmberError, amberError } from "../../domain/errors.ts";
+import type { NetworkRouter, ProxyEndpoint } from "../../ports/network-route.ts";
 import type { ProcessResult, ProcessRunner } from "../../ports/process-runner.ts";
 
 /** Where yt-dlp keeps its cache and where cookies are materialized, relative to the data directory. */
@@ -24,8 +25,10 @@ export interface YtDlpOptions {
   /** `AMBER_BIN_DIR`: yt-dlp, ffmpeg and deno live here and are started by absolute path. */
   binDir: string;
   dataDir: string;
-  /** Complete child environment, built with `childProcessEnv`. */
+  /** Complete child environment, built with `childProcessEnv`; it carries no proxy variables. */
   env: Readonly<Record<string, string>>;
+  /** The proxy route decision shared with outbound HTTP; absent, every run connects directly. */
+  router?: NetworkRouter;
   newId?: () => string;
 }
 
@@ -107,9 +110,12 @@ export const YTDLP_ERROR_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: 
   },
 ];
 
-/** Removes query strings (signed URLs carry tokens) and caps the length of an upstream line. */
+/** Removes credentials in URLs (a proxy URL may carry them), query strings (signed URLs carry tokens) and caps the length of an upstream line. */
 export function redactUpstream(line: string): string {
-  return line.replace(/(https?:\/\/[^\s?#]+)\?[^\s]*/g, "$1?…").slice(0, 500);
+  return line
+    .replace(/\/\/[^/\s@]+@/g, "//***@")
+    .replace(/(https?:\/\/[^\s?#]+)\?[^\s]*/g, "$1?…")
+    .slice(0, 500);
 }
 
 /** Maps a failed yt-dlp run to an AppError; exit code 2 is an option error on our side. */
@@ -125,10 +131,42 @@ export function classifyYtDlpFailure(result: Pick<ProcessResult, "exitCode" | "s
   return amberError(errorClass, `yt-dlp exited with ${result.exitCode}`, upstreamMessage === "" ? {} : { upstreamMessage });
 }
 
+/** Every spelling of the standard proxy variables; a run's environment carries only the ones its route sets. */
+const PROXY_ENV_NAMES = ["http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
+
+/** The proxy URL for the child's environment; credentials go there and never on the command line. */
+function proxyUrl(endpoint: ProxyEndpoint): string {
+  const host = endpoint.host.includes(":") ? `[${endpoint.host}]` : endpoint.host;
+  const { credentials } = endpoint;
+  const auth = credentials === undefined ? "" : `${encodeURIComponent(credentials.username)}:${encodeURIComponent(credentials.password)}@`;
+  return `http://${auth}${host}:${endpoint.port}`;
+}
+
+/** The page a run reads: the last argument that is an absolute http(s) URL. */
+function pageUrl(args: readonly string[]): URL | undefined {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const arg = args[index] as string;
+    if (/^https?:\/\//iu.test(arg)) {
+      try {
+        return new URL(arg);
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Runs yt-dlp through the ProcessRunner (argument array, never a shell). Cookies are
  * materialized as `tmp/cookies/<ulid>.txt` (directory 0700, file 0600) for the run and
  * removed in `finally`; the start-up sweep catches what a crash leaves.
+ *
+ * The proxy is decided once per run from the page it reads, which adapters only ever pass as a
+ * canonical URL on their own platform hosts; every request of that run (media CDNs included)
+ * follows the decision. Through the proxy, only this child's environment names it; directly,
+ * `--proxy ""` also turns off yt-dlp's own proxy discovery; a configuration that cannot be used
+ * fails before yt-dlp starts, with the same error outbound HTTP raises.
  */
 export class YtDlp {
   private readonly options: YtDlpOptions;
@@ -144,16 +182,17 @@ export class YtDlp {
   }
 
   async run(run: YtDlpRun): Promise<ProcessResult> {
+    const network = this.network(run.args);
     const cookieFile = run.cookies === undefined ? undefined : await this.writeCookies(run.cookies);
     try {
-      const args = [...baseArgs(this.options, run.extractors), ...(cookieFile === undefined ? [] : ["--cookies", cookieFile]), ...run.args];
+      const args = [...baseArgs(this.options, run.extractors), ...network.args, ...(cookieFile === undefined ? [] : ["--cookies", cookieFile]), ...run.args];
       let result: ProcessResult;
       try {
         result = await this.options.runner.run(
           {
             command: executable(this.options.binDir, "yt-dlp"),
             args,
-            env: this.options.env,
+            env: network.env,
             ...(run.timeoutMs === undefined ? {} : { timeoutMs: run.timeoutMs }),
           },
           { signal: run.signal, ...(run.onStdoutLine === undefined ? {} : { onStdoutLine: run.onStdoutLine }) },
@@ -221,6 +260,7 @@ export class YtDlp {
     // Pre-created with the bare header so the file is 0600 from the first byte: yt-dlp
     // reopens an existing file with "w", which keeps its mode. An empty file would not
     // do, yt-dlp loads `--cookies` first and rejects a file without the Netscape header.
+    const network = this.network([]);
     const cookieFile = await this.writeCookies(NETSCAPE_COOKIE_HEADER);
     const unavailable = () => amberError("browser_cookies_unavailable", "yt-dlp could not read the browser's cookies");
     try {
@@ -229,8 +269,8 @@ export class YtDlp {
         result = await this.options.runner.run(
           {
             command: executable(this.options.binDir, "yt-dlp"),
-            args: [...baseArgs(this.options, run.extractors), "--cookies", cookieFile, "--cookies-from-browser", run.browser],
-            env: this.options.env,
+            args: [...baseArgs(this.options, run.extractors), ...network.args, "--cookies", cookieFile, "--cookies-from-browser", run.browser],
+            env: network.env,
             ...(run.timeoutMs === undefined ? {} : { timeoutMs: run.timeoutMs }),
           },
           { signal: run.signal },
@@ -252,6 +292,24 @@ export class YtDlp {
     } finally {
       await rm(cookieFile, { force: true });
     }
+  }
+
+  /** The proxy arguments and environment of one run, decided from the page it reads. */
+  private network(args: readonly string[]): { args: string[]; env: Record<string, string> } {
+    const env: Record<string, string> = { ...this.options.env };
+    for (const name of PROXY_ENV_NAMES) {
+      delete env[name];
+    }
+    const page = pageUrl(args);
+    const decision = page === undefined || this.options.router === undefined ? { kind: "direct" as const } : this.options.router.decideRoute(page);
+    if (decision.kind === "refuse") {
+      throw amberError("network_proxy_unsupported", "the proxy configuration cannot be used", { code: `network_proxy_unsupported.${decision.reason}` });
+    }
+    if (decision.kind === "direct") {
+      return { args: ["--proxy", ""], env };
+    }
+    const url = proxyUrl(decision.endpoint);
+    return { args: [], env: { ...env, http_proxy: url, https_proxy: url } };
   }
 
   private async writeCookies(cookies: string): Promise<string> {

@@ -308,6 +308,8 @@ export class ProviderService {
           checks: measured.checks.map((check) => ({ flag: check.flag, result: check.result, ...(check.reason === undefined ? {} : { reason: check.reason }) })),
           observed: probedFlags(observed),
           observedAt,
+          // The path of the plain call, as the outbound response reported it.
+          route: measured.basic.route ?? "direct",
         };
         return { status: 200, body, resourceRefs: [] };
       }),

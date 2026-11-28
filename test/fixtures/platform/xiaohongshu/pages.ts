@@ -52,6 +52,13 @@ export interface FakeAnswer {
 
 export type FakeHandler = (request: OutboundRequest) => FakeAnswer | Error | Promise<FakeAnswer | Error>;
 
+const recorded: OutboundRequest[] = [];
+
+/** Every request any `FakeHttp` recorded since the last call, which are then forgotten. */
+export function drainFakeRequests(): OutboundRequest[] {
+  return recorded.splice(0);
+}
+
 /** An HTTP double answering text or bytes, recording every request; nothing leaves the machine. */
 export class FakeHttp implements OutboundHttpClient {
   readonly requests: OutboundRequest[] = [];
@@ -63,6 +70,7 @@ export class FakeHttp implements OutboundHttpClient {
 
   async request(request: OutboundRequest): Promise<OutboundResponse> {
     this.requests.push(request);
+    recorded.push(request);
     const answer = await this.handler(request);
     if (answer instanceof Error) {
       throw answer;
@@ -75,6 +83,7 @@ export class FakeHttp implements OutboundHttpClient {
         yield bytes;
       })(),
       text: async () => new TextDecoder().decode(bytes),
+      route: "direct",
       destroy: () => undefined,
     };
   }

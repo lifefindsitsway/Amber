@@ -52,6 +52,8 @@ export const ERROR_CLASSES = [
   "output_mismatch",
   "citation_degraded",
   "network_blocked_by_policy",
+  "network_proxy_unsupported",
+  "network_proxy_failed",
   "disk_low",
   "idempotency_conflict",
   "schema_version_unsupported",
@@ -106,6 +108,10 @@ export const ERROR_CLASS_DEFAULTS: Readonly<Record<ErrorClass, ErrorClassDefault
   output_mismatch: { retryDisposition: "policy" },
   citation_degraded: { retryDisposition: null },
   network_blocked_by_policy: { retryDisposition: "never" },
+  // The proxy configuration cannot be honoured; Amber never falls back to a direct connection.
+  network_proxy_unsupported: { retryDisposition: "never" },
+  // Going through the proxy failed before anything reached the target.
+  network_proxy_failed: { retryDisposition: "safe" },
   disk_low: { retryDisposition: "never" },
   idempotency_conflict: { retryDisposition: "never" },
   schema_version_unsupported: { retryDisposition: "never" },
@@ -290,6 +296,18 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   // A visitor request the platform refused or rate limited (412 / 429). Logging in is not
   // offered as the way out: the platform may not support it, and visitors usually recover.
   "platform_blocked.visitor_refused": { action: "none" },
+  "network_proxy_unsupported.pac": {},
+  "network_proxy_unsupported.socks": {},
+  "network_proxy_unsupported.scheme": {},
+  "network_proxy_unsupported.unparsable": {},
+  "network_proxy_unsupported.read_failed": {},
+  "network_proxy_failed.unreachable": {},
+  // The proxy answered CONNECT with a non-2xx status.
+  "network_proxy_failed.rejected": {},
+  // HTTP 407: the proxy wants credentials Amber does not have.
+  "network_proxy_failed.auth_required": { retryDisposition: "never" },
+  // The certificate check failed through the proxy, likely a proxy replacing certificates.
+  "network_proxy_failed.tls": { retryDisposition: "never" },
   // The platform clearly rejected the request signature even with a fresh visitor session:
   // the way Amber reads it has changed and only a newer Amber can fix it.
   "platform_blocked.access_changed": { action: "none" },

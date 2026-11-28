@@ -20,7 +20,7 @@ import type {
   LlmProvider,
   LlmStreamOptions,
 } from "../../../ports/llm-provider.ts";
-import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../../ports/outbound-http.ts";
+import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse, type OutboundRoute } from "../../../ports/outbound-http.ts";
 import type { SecretStore } from "../../../ports/secret-store.ts";
 import { beginRequest, endpoint, linkedController, OutputWatchdog, sseEvents, transportFailure } from "../shared.ts";
 import { encodeRequest, OPENAI_AUDIO_MIME_TYPES, type ChatCompletionsBody } from "./encode.ts";
@@ -181,7 +181,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     try {
       const response = await this.send(profile, body, controller.signal, opts.onRequestStart);
       const text = await response.text();
-      return { status: response.status, headers: response.headers, text, latencyMs: Math.max(0, this.now() - started) };
+      return { status: response.status, headers: response.headers, text, latencyMs: Math.max(0, this.now() - started), ...(response.route === undefined ? {} : { route: response.route }) };
     } catch (error) {
       if (error instanceof OutboundHttpError && error.phase === "after_send") {
         opts.onCall({ outcome: "outcome_unknown" });
@@ -202,6 +202,7 @@ interface ProbeAnswer {
   headers: ReadonlyMap<string, string>;
   text: string;
   latencyMs: number;
+  route?: OutboundRoute;
 }
 
 /** The basic call goes first: the capability checks only mean something once it connected. */
@@ -291,7 +292,7 @@ async function judgeAnswer(kind: LlmProbeKind, answer: ProbeAnswer, onCall: (cal
   onCall({ outcome: "succeeded", ...withUsage(completion.usage) });
   const truncated = completion.finishReason === LENGTH_FINISH;
   if (kind === "basic") {
-    return { kind, status: completion.text === "" && truncated ? "incomplete" : "connected", latencyMs };
+    return { kind, status: completion.text === "" && truncated ? "incomplete" : "connected", latencyMs, ...(answer.route === undefined ? {} : { route: answer.route }) };
   }
   if (probeTookEffect(kind, answer.text)) {
     return { kind, result: "supported", latencyMs };

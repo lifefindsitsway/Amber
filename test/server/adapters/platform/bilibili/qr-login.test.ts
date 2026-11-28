@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
 import { BilibiliQrLogin } from "../../../../../src/server/adapters/platform/bilibili/qr-login.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { parseNetscapeCookies } from "../../../../../src/server/domain/platform-cookie.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import { GENERATE, POLL_CONFIRMED, POLL_EXPIRED, POLL_PENDING, POLL_SCANNED, QR_KEY, QR_URL } from "../../../../fixtures/platform/bilibili-qr.ts";
-import { ScriptedHttp, signal, type ScriptedResponse } from "../../../../fixtures/platform/scripted-io.ts";
+import { drainScriptedRequests, ScriptedHttp, signal, type ScriptedResponse } from "../../../../fixtures/platform/scripted-io.ts";
+
+afterEach(() => {
+  // The QR login is bilibili's: every request carries the bilibili adapter's proxy table.
+  for (const request of drainScriptedRequests()) {
+    expect(request.trustedHosts, request.url).toEqual(new BilibiliAdapter({ ytDlp: {} as never, http: {} as never }).trustedHosts);
+  }
+});
 
 const NOW = Date.UTC(2026, 9, 1);
 

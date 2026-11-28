@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TavilyWebSearchProvider } from "../../../../../src/server/adapters/web-search/tavily/index.ts";
-import { isAmberError } from "../../../../../src/server/domain/errors.ts";
+import { amberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundRequest, type OutboundResponse } from "../../../../../src/server/ports/outbound-http.ts";
 import { WEB_SEARCH_RESPONSE_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
 import { TAVILY_CHINESE, TAVILY_ENGLISH, TAVILY_ERRORS, TAVILY_TERM, TAVILY_TIME_SENSITIVE } from "../../../../fixtures/web-search/tavily.ts";
@@ -183,5 +183,19 @@ describe("Tavily answers", () => {
     controller.abort();
     const error = await failure(pending);
     expect(error).toBeInstanceOf(OutboundHttpError);
+  });
+});
+
+describe("proxy errors", () => {
+  it("passes proxy errors from outbound HTTP on unchanged instead of calling them unreachable", async () => {
+    for (const error of [
+      amberError("network_proxy_failed", "cannot connect to the proxy", { code: "network_proxy_failed.unreachable" }),
+      amberError("network_proxy_unsupported", "the proxy configuration cannot be used", { code: "network_proxy_unsupported.unparsable" }),
+    ]) {
+      const { tavily } = provider(async () => {
+        throw error;
+      });
+      expect(await failure(search(tavily))).toBe(error);
+    }
   });
 });

@@ -119,6 +119,8 @@ interface FlatPlaylist {
 
 /** Hosts YouTube serves video thumbnails from (`i.ytimg.com`, `i9.ytimg.com`, ...). */
 export const YOUTUBE_IMAGE_DOMAINS = ["ytimg.com"] as const;
+/** What this adapter itself requests: the home page for the login check and the thumbnail hosts. */
+const YOUTUBE_TRUSTED_HOSTS: readonly string[] = [HOME_HOST, ...YOUTUBE_IMAGE_DOMAINS];
 
 /**
  * Why an entry of a playlist cannot be watched. yt-dlp passes on YouTube's own placeholder
@@ -219,6 +221,7 @@ function escapeRegex(text: string): string {
  */
 export class YoutubeAdapter implements PlatformSourceAdapter {
   readonly kind = "youtube" as const;
+  readonly trustedHosts: readonly string[] = YOUTUBE_TRUSTED_HOSTS;
   readonly cookieDomains = ["youtube.com"] as const;
   private readonly options: YoutubeAdapterOptions;
   private readonly newId: () => string;
@@ -339,6 +342,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
         headers: header === "" ? {} : { Cookie: header },
         signal,
         maxBytes: PLATFORM_PAGE_MAX_BYTES,
+        trustedHosts: this.trustedHosts,
       });
       if (response.status < 200 || response.status >= 300) {
         return "unknown";
@@ -398,6 +402,7 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
     return fetchPlatformCover(this.options.http, this.options.download ?? downloadPlatformMedia, {
       coverUrl,
       domains: YOUTUBE_IMAGE_DOMAINS,
+      trustedHosts: this.trustedHosts,
       output,
       maxBytes: options.maxBytes,
       signal,

@@ -42,6 +42,7 @@ import {
 import type { YtDlp } from "../yt-dlp.ts";
 import {
   apiError,
+  BILIBILI_TRUSTED_HOSTS,
   bilibiliEnvelope,
   dataOf,
   navSchema,
@@ -145,6 +146,7 @@ function https(url: string): string {
 export class BilibiliAdapter implements PlatformSourceAdapter {
   readonly kind = "bilibili" as const;
   readonly cookieDomains = BILIBILI_COOKIE_DOMAINS;
+  readonly trustedHosts: readonly string[] = BILIBILI_TRUSTED_HOSTS;
   private readonly options: BilibiliAdapterOptions;
   private readonly now: () => number;
 
@@ -163,7 +165,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       if (!isShortLink(current)) {
         return null;
       }
-      const hop = await platformGetHop(this.options.http, { url: current, signal });
+      const hop = await platformGetHop(this.options.http, { url: current, signal, trustedHosts: this.trustedHosts });
       if (hop.status < 300 || hop.status >= 400 || hop.location === undefined) {
         return null;
       }
@@ -259,7 +261,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     // The signed URL carries its own authorization; no cookie goes to the subtitle host.
     const body = dataOf(
       subtitleBodySchema,
-      await platformGetJson(this.options.http, { url: track.locator, headers: REFERER, signal }),
+      await platformGetJson(this.options.http, { url: track.locator, headers: REFERER, signal, trustedHosts: this.trustedHosts }),
       "a subtitle document",
     );
     return {
@@ -279,6 +281,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
         url: `${API}/x/web-interface/nav`,
         headers: { ...REFERER, ...(await this.cookieHeader(auth, "api.bilibili.com")) },
         signal,
+        trustedHosts: this.trustedHosts,
       });
       // A not-logged-in answer still carries `data.isLogin: false`; any other shape is unclear.
       const isLogin = navSchema.safeParse(response.data).data?.isLogin;
@@ -387,6 +390,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     return fetchPlatformCover(this.options.http, this.options.download ?? downloadPlatformMedia, {
       coverUrl: https(coverUrl),
       domains: BILIBILI_IMAGE_DOMAINS,
+      trustedHosts: this.trustedHosts,
       output,
       maxBytes: options.maxBytes,
       signal,
@@ -478,7 +482,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     if (ref.platformPartId === undefined) {
       throw new TypeError("danmaku needs the part id");
     }
-    return fetchBilibiliDanmaku(this.options.http, ref.platformPartId, signal);
+    return fetchBilibiliDanmaku(this.options.http, ref.platformPartId, signal, this.trustedHosts);
   }
 
   /**
@@ -574,6 +578,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       url: `${API}${path}`,
       headers: { ...REFERER, ...(auth === undefined ? {} : await this.cookieHeader(auth, "api.bilibili.com")) },
       signal,
+      trustedHosts: this.trustedHosts,
     });
   }
 

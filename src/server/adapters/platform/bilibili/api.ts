@@ -11,6 +11,12 @@ import { platformGetJsonWithCookies, type PlatformGetJson } from "../http.ts";
  * wrong type fails the read; the many other fields the platform sends are dropped.
  */
 
+/**
+ * Hosts bilibili requests of this adapter go to: the web API and passport hosts, the short-link
+ * host, and the image and subtitle CDNs (`*.hdslb.com`, `*.biliimg.com`).
+ */
+export const BILIBILI_TRUSTED_HOSTS: readonly string[] = ["api.bilibili.com", "passport.bilibili.com", "b23.tv", "hdslb.com", "biliimg.com"];
+
 const envelopeSchema = z.object({
   code: z.number().int(),
   data: z.unknown().optional(),

@@ -155,5 +155,7 @@ export const probeResultDtoSchema = z.object({
   ),
   observed: capabilityFlagsSchema.pick({ stream: true, structuredOutput: true, tools: true }).partial(),
   observedAt: z.number().int(),
+  /** The path the test request actually took. */
+  route: z.enum(["direct", "proxy"]).exactOptional(),
 });
 export type ProbeResultDto = z.infer<typeof probeResultDtoSchema>;

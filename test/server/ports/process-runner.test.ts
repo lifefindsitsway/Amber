@@ -55,6 +55,24 @@ describe("child process environment contract", () => {
     }
   });
 
+  it("withholds every proxy variable: FFmpeg and ffprobe only touch local files, and yt-dlp gets its proxy per run", () => {
+    const parent = {
+      ...PARENT,
+      HTTP_PROXY: "http://proxy-user:proxy-pass@127.0.0.1:3128",
+      HTTPS_PROXY: "http://127.0.0.1:3128",
+      ALL_PROXY: "socks5://127.0.0.1:1080",
+      NO_PROXY: "localhost",
+      http_proxy: "http://127.0.0.1:3128",
+      https_proxy: "http://127.0.0.1:3128",
+      all_proxy: "socks5://127.0.0.1:1080",
+      no_proxy: "localhost",
+      AMBER_SYSTEM_PROXY: '{"v":1}',
+    };
+    const env = childProcessEnv(parent, { FFREPORT: "level=32" });
+    expect(Object.keys(env).filter((name) => /proxy/i.test(name))).toEqual([]);
+    expect(JSON.stringify(env)).not.toContain("127.0.0.1");
+  });
+
   it("skips empty allowlisted variables", () => {
     expect(childProcessEnv({ TEMP: "", TMP: "/tmp" })).toEqual({ TMP: "/tmp" });
   });

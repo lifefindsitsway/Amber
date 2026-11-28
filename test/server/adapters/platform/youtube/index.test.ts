@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { COOKIES_DIR, PLATFORM_SCRATCH_DIR } from "../../../../../src/server/adapters/platform/yt-dlp.ts";
 import { captionTracks, YOUTUBE_EXTRACTORS, YoutubeAdapter, ytcfgLoggedIn } from "../../../../../src/server/adapters/platform/youtube/index.ts";
 import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
@@ -10,7 +10,26 @@ import { OutboundHttpError } from "../../../../../src/server/ports/outbound-http
 import type { ProcessSpec } from "../../../../../src/server/ports/process-runner.ts";
 import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_PAGE_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
-import { argAfter, cookieLine, credential, ScriptedHttp, scriptedYtDlp, signal, type ProcessHandler, type ScriptedProcess } from "../../../../fixtures/platform/scripted-io.ts";
+import {
+  argAfter,
+  cookieLine,
+  credential,
+  drainScriptedRequests,
+  ScriptedHttp,
+  scriptedYtDlp,
+  signal,
+  type ProcessHandler,
+  type ScriptedProcess,
+} from "../../../../fixtures/platform/scripted-io.ts";
+
+/** The adapter's own proxy table, which every request it sends must carry. */
+const TRUSTED = ["www.youtube.com", "ytimg.com"];
+
+afterEach(() => {
+  for (const request of drainScriptedRequests()) {
+    expect(request.trustedHosts, request.url).toEqual(TRUSTED);
+  }
+});
 
 const ID = "dQw4w9WgXcQ";
 const WATCH = `https://www.youtube.com/watch?v=${ID}`;
@@ -647,6 +666,7 @@ describe("YoutubeAdapter.fetchCover", () => {
       [`https://i.ytimg.com/vi_webp/${ID}/maxresdefault.webp`, "image", 77, ["ytimg.com"]],
     ]);
     expect(JSON.stringify(requests[0]?.headers ?? {}).toLowerCase()).not.toContain("cookie");
+    expect(requests.map((request) => request.trustedHosts)).toEqual(requests.map(() => TRUSTED));
     for (const foreign of [`http://i.ytimg.com/vi/${ID}/hq.jpg`, "https://i0.hdslb.com/a.jpg", "https://www.youtube.com/favicon.ico", "https://ytimg.com.evil.example/a.jpg"]) {
       const error = await adapter.fetchCover(foreign, output, { maxBytes: 77 }, signal()).catch((caught: unknown) => caught);
       expect([foreign, isAmberError(error)]).toEqual([foreign, true]);

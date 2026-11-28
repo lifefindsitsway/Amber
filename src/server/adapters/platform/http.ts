@@ -12,13 +12,23 @@ export interface PlatformGet {
   /** `manual` returns a 3xx as is (short-link expansion walks the chain hop by hop). */
   redirect?: "follow" | "manual";
   /**
+   * The calling adapter's own `trustedHosts`, passed on with the request: only a hop whose host
+   * is on it may go through the configured proxy. Each adapter passes its own table, never
+   * another platform's.
+   */
+  trustedHosts: readonly string[];
+  /**
    * Bounds the request up to its response headers, each wait for the next body chunk, and the
    * whole body read; `PLATFORM_METADATA_TIMEOUT_MS` when absent.
    */
   timeoutMs?: number;
 }
 
-/** Transport failures and HTTP errors of a platform request, as source error classes. */
+/**
+ * Sends one platform GET. Transport failures become source error classes; an abort and every
+ * AmberError the outbound client raises itself (a policy refusal, an unusable or unreachable
+ * proxy) pass through unchanged, so their class and code reach the caller as raised.
+ */
 async function send(http: OutboundHttpClient, request: PlatformGet): Promise<OutboundResponse> {
   try {
     return await http.request({
@@ -30,6 +40,7 @@ async function send(http: OutboundHttpClient, request: PlatformGet): Promise<Out
       // Platform hosts are fixed public names: a platform request never reaches a private or
       // reserved address, whatever the run mode trusts otherwise.
       publicOnly: true,
+      trustedHosts: request.trustedHosts,
       ...(request.redirect === undefined ? {} : { redirect: request.redirect }),
     });
   } catch (error) {

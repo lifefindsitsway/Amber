@@ -38,8 +38,9 @@ export interface ProcessRunner {
 /**
  * Parent variables a child tool may see. Everything else, including every `AMBER_*`
  * variable, is withheld. Tools are always started by absolute path, so PATH is not needed.
- * The standard proxy variables pass so yt-dlp follows the host's proxy; a
- * proxy URL may carry credentials, so child environments are never logged.
+ * The proxy variables are withheld too: FFmpeg and ffprobe only touch local files, and yt-dlp
+ * gets a proxy only from its own run's route decision, which then sets it for that child alone.
+ * A proxy URL may carry credentials, so child environments are never logged.
  */
 export const CHILD_ENV_ALLOWLIST = [
   "SystemRoot",
@@ -53,14 +54,6 @@ export const CHILD_ENV_ALLOWLIST = [
   "TMPDIR",
   "LANG",
   "LC_ALL",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
-  "no_proxy",
 ] as const;
 
 /**

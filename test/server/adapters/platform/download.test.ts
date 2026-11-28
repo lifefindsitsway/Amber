@@ -11,7 +11,7 @@ import {
   type PlatformDownloadEnvironment,
   type PlatformDownloadRequest,
 } from "../../../../src/server/adapters/platform/download.ts";
-import { isAmberError, type AmberError } from "../../../../src/server/domain/errors.ts";
+import { amberError, isAmberError, type AmberError } from "../../../../src/server/domain/errors.ts";
 import type { OutboundHttpClient, OutboundRequest, OutboundResponse } from "../../../../src/server/ports/outbound-http.ts";
 import { PLATFORM_DOWNLOAD_RESUME_MAX, PLATFORM_DOWNLOAD_STALL_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
 import { useLocalServers, type LocalServer } from "../../../fixtures/http/local-server.ts";
@@ -22,6 +22,8 @@ const serve = useLocalServers();
 
 const CDN = "media.cdn.test";
 const ALLOWED = ["cdn.test"];
+/** The calling adapter's table, passed on with every hop. */
+const TRUSTED = ["cdn.test", "api.test"] as const;
 /** Synthetic signed-URL parameters and a cookie that must never surface in errors or logs. */
 const SECRETS = ["TESTONLY_xsec1", "TESTONLY_src1", "TESTONLY_sig1", "TESTONLY_uifid1", "TESTONLY_sign1", "TESTONLY_ck1"];
 const SIGNED = "xsec_token=TESTONLY_xsec1&xsec_source=TESTONLY_src1&x-secsdk-web-signature=TESTONLY_sig1&uifid=TESTONLY_uifid1&sign=TESTONLY_sign1";
@@ -48,6 +50,7 @@ interface RecordedRequest {
   headers: Record<string, string>;
   publicOnly: boolean | undefined;
   redirect: string | undefined;
+  trustedHosts: readonly string[] | undefined;
 }
 
 /**
@@ -66,6 +69,7 @@ function forwardingClient(server: LocalServer): OutboundHttpClient & { requests:
         headers: Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])),
         publicOnly: request.publicOnly,
         redirect: request.redirect,
+        trustedHosts: request.trustedHosts,
       });
       return direct.request({ ...request, url: `http://127.0.0.1:${server.port}${url.pathname}${url.search}`, headers: { ...request.headers, "x-test-host": url.hostname } });
     },
@@ -159,6 +163,7 @@ function downloadRequest(output: { path: string; scratchDir: string }, extra: Pa
   return {
     url: mediaUrl(),
     allowedHosts: ALLOWED,
+    trustedHosts: TRUSTED,
     kind: "video",
     maxBytes: 1_000_000,
     output,
@@ -215,6 +220,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("downloadPlatformMedia proxy errors", () => {
+  it.each([
+    ["network_proxy_unsupported", "network_proxy_unsupported.pac"],
+    ["network_proxy_failed", "network_proxy_failed.unreachable"],
+  ] as const)("passes %s from the outbound client through unchanged and leaves nothing behind", async (errorClass, code) => {
+    const output = await workspace();
+    const http: OutboundHttpClient = {
+      async request() {
+        throw amberError(errorClass, "the proxy could not be used", { code });
+      },
+    };
+    const error = await failure(downloadPlatformMedia(http, downloadRequest(output)));
+    expect(error.appError).toMatchObject({ class: errorClass, code });
+    await expectNothingLeft(output);
+  });
+});
+
 describe("downloadPlatformMedia hosts and redirects", () => {
   it("refuses URLs off the allowed hosts, plain http, user info and ports before any request", async () => {
     const server = await serve("127.0.0.1", cdn({}));
@@ -264,6 +286,7 @@ describe("downloadPlatformMedia hosts and redirects", () => {
     for (const entry of http.requests) {
       expect(entry.publicOnly).toBe(true);
       expect(entry.redirect).toBe("manual");
+      expect(entry.trustedHosts).toEqual(TRUSTED);
       expect(entry.headers.cookie).toBeUndefined();
       expect(entry.headers).toMatchObject({ referer: "https://www.cdn.test/", "user-agent": "amber-test" });
     }

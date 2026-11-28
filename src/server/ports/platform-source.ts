@@ -204,6 +204,12 @@ export interface PlatformSourceAdapter {
    */
   readonly cookieDomains?: readonly string[];
   /**
+   * Hosts of this platform its requests may reach through the configured proxy (full host names or
+   * dot-boundary suffixes; https on the default port only). Requests to any other host connect
+   * directly to the checked, pinned IP. Server-side only: never part of an API DTO.
+   */
+  readonly trustedHosts: readonly string[];
+  /**
    * Pure: accepts only canonical URLs on the platform's supported hosts and returns `null`
    * otherwise. Arbitrary URLs are never handed to yt-dlp.
    */

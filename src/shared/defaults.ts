@@ -275,6 +275,10 @@ export const COVER_IMAGE_MAX_BYTES = 524288;
 export const COVER_LOAD_CONCURRENCY = 6;
 /** How long the interface keeps a loaded cover image cached. */
 export const COVER_CACHE_GC_MS = 600000;
+/** Longest system proxy message line the sidecar reads from stdin. */
+export const SYSTEM_PROXY_MESSAGE_MAX_BYTES = 16384;
+/** System proxy bypass entries handed to the sidecar at most; the rest are dropped. */
+export const SYSTEM_PROXY_BYPASS_MAX_ENTRIES = 512;
 
 /**
  * Longest wait from handing the encoded request to outbound HTTP until the model first

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -185,6 +185,53 @@ describe("sidecar entry point", () => {
     const { AMBER_MODE: _omitted, ...withoutMode } = BASE_ENV;
     const proc = start({ ...withoutMode, AMBER_DATA_DIR: dir, AMBER_BIN_DIR: dir });
     expect(await exitCode(proc)).toBe(1);
+  });
+});
+
+describe("sidecar system proxy channel", () => {
+  const proxyMessage = (seq: number, http: string) =>
+    JSON.stringify({ v: 1, type: "system_proxy", seq, config: { state: "manual", http, https: http, bypass: [] } });
+
+  it("starts from AMBER_SYSTEM_PROXY, applies stdin messages written before READY and still closes on EOF", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "amber-main-"));
+    const proc = start({ ...BASE_ENV, AMBER_DATA_DIR: dir, AMBER_BIN_DIR: dir, AMBER_SYSTEM_PROXY: proxyMessage(1, "10.7.7.7:1111") });
+    const ready = readyPort(proc);
+    // Written at once, long before the sidecar is ready: nothing the shell sends early is lost.
+    proc.stdin.write(`${proxyMessage(1, "10.7.7.7:2222")}\nnot json\n${proxyMessage(2, "10.7.7.7:3333").slice(0, 30)}`);
+    proc.stdin.write(`${proxyMessage(2, "10.7.7.7:3333").slice(30)}\n`);
+    await ready;
+    const deadline = Date.now() + 5000;
+    while (!stderr.includes('"event":"system_proxy_applied"') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const events = stderr
+      .split("\n")
+      .filter((text) => text.includes("system_proxy_"))
+      .map((text) => {
+        const { time: _time, ...rest } = JSON.parse(text) as Record<string, unknown>;
+        return rest;
+      });
+    expect(events).toEqual([
+      { event: "system_proxy_ignored", reason: "stale_seq" },
+      { event: "system_proxy_ignored", reason: "invalid_json" },
+      { event: "system_proxy_applied", seq: 2, state: "manual" },
+    ]);
+    // Proxy addresses are configuration, never logged.
+    expect(stderr).not.toContain("10.7.7.7");
+
+    const exited = exitCode(proc);
+    proc.stdin.end();
+    expect(await exited).toBe(0);
+  });
+
+  it("registers the stdin listeners before it prints READY", () => {
+    const source = readFileSync(MAIN, "utf8");
+    const ready = source.indexOf("process.stdout.write(`READY");
+    expect(ready).toBeGreaterThan(0);
+    for (const registration of ["listenSystemProxyMessages(process.stdin", 'process.stdin.on("end"', 'process.stdin.on("error"']) {
+      const at = source.indexOf(registration);
+      expect([registration, at > 0 && at < ready]).toEqual([registration, true]);
+    }
   });
 });
 

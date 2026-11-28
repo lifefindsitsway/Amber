@@ -1,5 +1,6 @@
 import { FILE_GRANT_KEY_ENV } from "./adapters/file-grant/hmac-file-grant.ts";
 import { MASTER_KEY_ENV } from "./adapters/secret-store/master-key.ts";
+import { listenSystemProxyMessages, readProxyConfiguration, SystemProxyState } from "./adapters/system-proxy/index.ts";
 import { compose, listenAddress, readConfig, startupLog } from "./compose.ts";
 import { isAmberError } from "./domain/errors.ts";
 import { runRestoreCommand } from "./restore.ts";
@@ -10,7 +11,11 @@ import { runRestoreCommand } from "./restore.ts";
  * `local`: the desktop shell spawns this process with an explicit environment, reads the
  * single `READY` line from stdout and keeps stdin open for the sidecar's lifetime: stdin
  * reaching EOF is the request to shut down, which works on Windows where POSIX signals do
- * not exist.
+ * not exist. The shell also writes each change of the Windows system proxy to stdin as one
+ * JSON line; stdin is read from before READY on, so none is missed.
+ *
+ * The proxy configuration is read once at start, from `AMBER_SYSTEM_PROXY` when the shell
+ * passed it and from the standard proxy variables otherwise.
  *
  * `server`: the development and test mode; listens on `AMBER_HOST:AMBER_PORT` (loopback by
  * default), serves the SPA and stops on SIGINT / SIGTERM.
@@ -23,7 +28,8 @@ async function main(): Promise<void> {
   const address = config.mode === "server" ? listenAddress(process.env) : undefined;
   // Read once: nothing later in this process needs these variables.
   delete process.env[FILE_GRANT_KEY_ENV];
-  const composition = await compose(config);
+  const network = new SystemProxyState(readProxyConfiguration(process.env));
+  const composition = await compose({ ...config, network });
   delete process.env[MASTER_KEY_ENV];
 
   let closing = false;
@@ -42,7 +48,14 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   if (config.mode === "local") {
+    listenSystemProxyMessages(process.stdin, network, startupLog);
+    process.stdin.on("end", () => void shutdown("stdin_closed"));
+    process.stdin.on("error", () => void shutdown("stdin_error"));
+    process.stdin.resume();
     await composition.app.listen({ host: "127.0.0.1", port: 0 });
+    if (closing) {
+      return;
+    }
     const bound = composition.app.server.address();
     if (bound === null || typeof bound === "string") {
       throw new Error("server did not bind a TCP port");
@@ -50,9 +63,6 @@ async function main(): Promise<void> {
     process.stdout.write(`READY ${JSON.stringify({ port: bound.port, pid: process.pid })}\n`);
     // Sweeping, recovery and scheduling start after READY so none can delay it.
     await composition.startBackground();
-    process.stdin.on("end", () => void shutdown("stdin_closed"));
-    process.stdin.on("error", () => void shutdown("stdin_error"));
-    process.stdin.resume();
     return;
   }
 

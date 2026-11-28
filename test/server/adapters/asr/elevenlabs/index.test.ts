@@ -9,7 +9,7 @@ import {
   ZH_SENTENCE_PARAMS,
   type SentenceParams,
 } from "../../../../../src/server/adapters/asr/elevenlabs/index.ts";
-import { AmberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
+import { AmberError, amberError, isAmberError } from "../../../../../src/server/domain/errors.ts";
 import type { RequestStartInfo } from "../../../../../src/server/domain/usage.ts";
 import type { AsrTranscribeOptions } from "../../../../../src/server/ports/asr-provider.ts";
 import type { MediaAsset } from "../../../../../src/server/domain/media-asset.ts";
@@ -620,6 +620,17 @@ describe("probe", () => {
     for (const phase of ["before_send", "after_send"] as const) {
       const error = await failure(setup(() => new OutboundHttpError(phase, "timeout")).factory.probe(PROFILE, signal()));
       expect(error.appError).toMatchObject({ code: "asr_failed.unreachable", retryDisposition: "safe" });
+    }
+  });
+});
+
+describe("proxy errors", () => {
+  it("passes proxy errors from outbound HTTP on unchanged", async () => {
+    for (const error of [
+      amberError("network_proxy_failed", "the proxy requires authentication", { code: "network_proxy_failed.auth_required" }),
+      amberError("network_proxy_unsupported", "the proxy configuration cannot be used", { code: "network_proxy_unsupported.scheme" }),
+    ]) {
+      expect(await failure(setup(() => error).provider.transcribe({ audio: ASSET, terminology: [] }, options()))).toBe(error);
     }
   });
 });
