@@ -92,6 +92,13 @@ function playlistPage(url: string, count: number, extra: Record<string, unknown>
   };
 }
 
+/** Renders the page and waits, as a user would, until the settings and the model list are read. */
+async function openPage(ui: Parameters<typeof renderApp>[0], options: Parameters<typeof renderApp>[1]) {
+  const result = renderApp(ui, options);
+  await waitFor(() => expect(document.querySelector("form[data-gate]")?.getAttribute("data-gate")).not.toBe("loading"));
+  return result;
+}
+
 /** Waits for the collection preview to be read, then presses its 「开始处理」. */
 async function confirmPreview(): Promise<void> {
   const dialog = await screen.findByTestId("collection-preview");
@@ -108,7 +115,7 @@ describe("NewPage", () => {
       "GET /api/settings": { body: { ...SETTINGS, defaultModelRef: { providerProfileId: "p1", modelId: "m1" }, defaultOutputLanguage: "en" } },
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "AI 模型" }).textContent).toBe("我的模型 · m1"));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "输出语言" }).textContent).toBe("英语"));
@@ -130,7 +137,7 @@ describe("NewPage", () => {
       ...baseRoutes(),
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     expect(await screen.findByTestId("no-llm-banner")).toBeTruthy();
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -158,7 +165,7 @@ describe("NewPage", () => {
       },
     });
     const onOpenTasks = vi.fn();
-    renderApp(page(onOpenTasks), { route: "/new" });
+    await openPage(page(onOpenTasks), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: MULTI_P } });
     fireEvent.click(screen.getByTestId("new-submit"));
     expect(await screen.findByTestId("parts-choice")).toBeTruthy();
@@ -172,13 +179,13 @@ describe("NewPage", () => {
 
   it("shows the local-file tab disabled in local mode and the upload tab only in server mode", async () => {
     mockApi(baseRoutes());
-    const { unmount } = renderApp(page(), { route: "/new" });
+    const { unmount } = await openPage(page(), { route: "/new" });
     const local = await screen.findByRole("tab", { name: "选择本地文件" });
     expect(local.hasAttribute("disabled")).toBe(true);
     expect(screen.queryByRole("tab", { name: "上传本地文件" })).toBeNull();
     unmount();
     mockApi(baseRoutes({ mode: "server" }));
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     expect(await screen.findByRole("tab", { name: "上传本地文件" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "选择本地文件" })).toBeNull();
   });
@@ -197,7 +204,7 @@ describe("NewPage", () => {
       if (path === "/api/contents/upload" || path === "/api/contents/import") await new Promise<void>((resolve) => gates.set(path, resolve));
       return base(input, init);
     });
-    const { unmount } = renderApp(page(), { route: "/new", mode: "server" });
+    const { unmount } = await openPage(page(), { route: "/new", mode: "server" });
     const tab = await screen.findByRole("tab", { name: "上传本地文件" });
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
@@ -215,7 +222,7 @@ describe("NewPage", () => {
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c7"));
     expect(screen.queryByTestId("new-submit-status")).toBeNull();
     unmount();
-    renderApp(page(), { route: "/new", mode: "server" });
+    await openPage(page(), { route: "/new", mode: "server" });
     fireEvent.change(await screen.findByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(screen.getByTestId("new-submit").getAttribute("aria-busy")).toBe("true"));
@@ -238,7 +245,7 @@ describe("NewPage", () => {
             }
           : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c7"] } },
     });
-    renderApp(page(), { route: "/new", mode: "server" });
+    await openPage(page(), { route: "/new", mode: "server" });
     const tab = await screen.findByRole("tab", { name: "上传本地文件" });
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
@@ -273,7 +280,7 @@ describe("NewPage and the trash", () => {
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"], skippedTrashedContentIds: [] } },
     });
     let client: QueryClient | undefined;
-    renderApp(page(undefined, (value) => (client = value)), { route: "/new" });
+    await openPage(page(undefined, (value) => (client = value)), { route: "/new" });
     client?.setQueryData(TRASH_LIST, { pages: [] });
     client?.setQueryData(queryKeys.collection("k1"), { items: [] });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
@@ -291,7 +298,7 @@ describe("NewPage and the trash", () => {
       "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } },
       "POST /api/contents/inspect": { body: playlistPage(PLAYLIST, 4) },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: PLAYLIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await confirmPreview();
@@ -310,7 +317,7 @@ describe("NewPage and the trash", () => {
       ...baseRoutes(),
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: [], contentIds: [], skippedTrashedContentIds: ["c9"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: VIDEO } });
     fireEvent.click(screen.getByTestId("new-submit"));
     const notice = await screen.findByTestId("new-skipped-trashed");
@@ -332,7 +339,7 @@ describe("NewPage and the trash", () => {
             }
           : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c7"] } },
     });
-    renderApp(page(undefined, (value) => (client = value)), { route: "/new", mode: "server" });
+    await openPage(page(undefined, (value) => (client = value)), { route: "/new", mode: "server" });
     const tab = await screen.findByRole("tab", { name: "上传本地文件" });
     fireEvent.mouseDown(tab);
     fireEvent.click(tab);
@@ -368,7 +375,7 @@ describe("NewPage in the desktop client", () => {
       ...baseRoutes(),
       "POST /api/contents/local-file": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c9"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const pick = await openLocalTab();
     expect(screen.queryByText("选择本地文件需要在 Amber 客户端中进行。")).toBeNull();
     // A cancelled dialog changes nothing.
@@ -412,7 +419,7 @@ describe("NewPage in the desktop client", () => {
             }
           : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c8"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(await openLocalTab());
     await waitFor(() => expect(screen.getByTestId("local-file-name").textContent).toBe("第一讲.mp4"));
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -441,7 +448,7 @@ describe("NewPage in the desktop client", () => {
             }
           : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c8"] } },
     });
-    renderApp(page(undefined, (value) => (client = value)), { route: "/new" });
+    await openPage(page(undefined, (value) => (client = value)), { route: "/new" });
     fireEvent.click(await openLocalTab());
     await waitFor(() => expect(screen.getByTestId("local-file-name").textContent).toBe("第一讲.mp4"));
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -464,7 +471,7 @@ describe("NewPage in the desktop client", () => {
         body: { error: { class: "unauthenticated", code: "unauthenticated.file_grant", retryDisposition: "never", userMessage: "文件授权无效或已过期，请重新选择文件" } },
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const pick = await openLocalTab();
     fireEvent.click(pick);
     await waitFor(() => expect(screen.getByTestId("local-file-name").textContent).toBe("第一讲.mp4"));
@@ -532,7 +539,7 @@ describe("NewPage transcription model", () => {
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
       ...(routes as Record<string, { body: unknown }>),
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await waitFor(() => expect(calls.some((call) => call.path === "/api/asr-profiles")).toBe(true));
     // Give the list time to arrive before reading what the picker shows.
@@ -608,7 +615,7 @@ describe("NewPage speaker identification note", () => {
       "GET /api/asr-profiles": { body: { items } },
       "GET /api/settings": { body: { ...SETTINGS, ...settings } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await waitFor(() => expect(screen.queryByTestId("new-asr-model")).not.toBeNull());
     // Both queries have to land before the note can be told from "not yet".
@@ -646,7 +653,7 @@ describe("NewPage with a subtitle", () => {
 
   it("starts 「自动校对」 unchecked under an attached subtitle, keeps the user's choice, and restores the default on removal", async () => {
     mockApi({ ...baseRoutes({ mode: "server" }), "POST /api/subtitles/inspect": { body: srtPreview() } });
-    renderApp(page(), { route: "/new", mode: "server" });
+    await openPage(page(), { route: "/new", mode: "server" });
     await openTab("上传本地文件");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     expect(settingsCheckbox()?.checked).toBe(true);
@@ -668,7 +675,7 @@ describe("NewPage with a subtitle", () => {
 
   it("keeps a choice the user made before attaching a subtitle", async () => {
     mockApi({ ...baseRoutes({ mode: "server" }), "POST /api/subtitles/inspect": { body: srtPreview() } });
-    renderApp(page(), { route: "/new", mode: "server" });
+    await openPage(page(), { route: "/new", mode: "server" });
     await openTab("上传本地文件");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     fireEvent.click(settingsCheckbox() as HTMLInputElement);
@@ -683,7 +690,7 @@ describe("NewPage with a subtitle", () => {
       "POST /api/subtitles/inspect": { body: prefixPreview() },
       "POST /api/contents/upload": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c7"] } },
     });
-    renderApp(page(), { route: "/new", mode: "server" });
+    await openPage(page(), { route: "/new", mode: "server" });
     await openTab("上传本地文件");
     fireEvent.change(screen.getByTestId("upload-file"), { target: { files: [new File([new Uint8Array([1])], "lecture.mp4", { type: "video/mp4" })] } });
     fireEvent.change(screen.getByTestId("upload-subtitle"), { target: { files: [new File([SRT], "lecture.srt")] } });
@@ -707,7 +714,7 @@ describe("NewPage with a subtitle", () => {
       "POST /api/subtitles/inspect": { body: packagePreview() },
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     await openTab("导入字幕");
     fireEvent.change(screen.getByLabelText("音视频链接"), { target: { value: VIDEO } });
     fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
@@ -722,7 +729,7 @@ describe("NewPage with a subtitle", () => {
 
   it("holds the import while the preview asks for a decision", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/subtitles/inspect": { body: srtPreview({ format: "ass", bilingual: { source: "style", count: 3, samples: [] } }) } });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     await openTab("导入字幕");
     fireEvent.change(screen.getByLabelText("音视频链接"), { target: { value: VIDEO } });
     fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["[Script Info]"], "第一讲.ass")] } });
@@ -745,7 +752,7 @@ describe("NewPage with a picked subtitle in the desktop client", () => {
       "POST /api/subtitles/inspect-local": { body: srtPreview({ format: "ass", bilingual: { source: "style", count: 3, samples: [{ original: "你好", translation: "Hello" }] } }) },
       "POST /api/contents/local-file": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c9"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const tab = await screen.findByRole("tab", { name: "选择本地文件" });
     await waitFor(() => expect(tab.hasAttribute("disabled")).toBe(false));
     fireEvent.mouseDown(tab);
@@ -778,7 +785,7 @@ describe("NewPage model readiness", () => {
 
   it("holds the import while the chosen model has no context window, and lets it go once filled in", async () => {
     const { calls, overrides } = readinessRoutes();
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     // The settings stay folded: the notice still names the model the import would use.
     const notice = await screen.findByTestId("new-context-window");
     expect(notice.textContent).toContain("「备用 · bare」还没有填写上下文窗口");
@@ -803,7 +810,7 @@ describe("NewPage model readiness", () => {
 
   it("asks nothing when only transcribing, or with a model that has its window", async () => {
     readinessRoutes();
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     await screen.findByTestId("new-context-window");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     const model = screen.getByRole("combobox", { name: "AI 模型" });
@@ -829,7 +836,7 @@ describe("NewPage link box with share texts", () => {
 
   async function submitted(text: string): Promise<{ urls: string[] | undefined; scope: string | null }> {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/import": importReply });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: text } });
     const scope = screen.queryByTestId("link-recognition")?.textContent ?? null;
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -841,7 +848,7 @@ describe("NewPage link box with share texts", () => {
 
   it("leaves only the links of a pasted share text, unsupported ones too, with a note the next edit clears", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     pasteInto(box(), LONG_SHARE);
     expect(box().value).toBe([WEB_SHARE_LINK, `${VIDEO_2}?p=3`, YT_VIDEO, UNSUPPORTED, YT_LIST].join("\n"));
     expect(screen.getByTestId("link-recognition-text").textContent).toBe("已从分享内容中提取 5 条链接，另有 1 条不支持、不会提交");
@@ -851,7 +858,7 @@ describe("NewPage link box with share texts", () => {
 
   it("pastes a plain list of links as it is, with no note", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", { value: { getData: () => `${VIDEO}\n${YT_VIDEO}` } });
     box().dispatchEvent(event);
@@ -861,7 +868,7 @@ describe("NewPage link box with share texts", () => {
 
   it("leaves a paste without a supported link to the browser", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", { value: { getData: () => `看这个 ${UNSUPPORTED}` } });
     box().dispatchEvent(event);
@@ -870,7 +877,7 @@ describe("NewPage link box with share texts", () => {
 
   it("inserts at the caret, over a selection, breaking lines so nothing runs on", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: `${VIDEO_2}\n${YT_VIDEO}` } });
     // Caret at the end of the first line: the links go on lines of their own.
     box().setSelectionRange(VIDEO_2.length, VIDEO_2.length);
@@ -894,7 +901,7 @@ describe("NewPage link box with share texts", () => {
     });
     Object.defineProperty(document, "execCommand", { value: execCommand, configurable: true });
     try {
-      renderApp(page(), { route: "/new" });
+      await openPage(page(), { route: "/new" });
       fireEvent.change(box(), { target: { value: VIDEO } });
       box().setSelectionRange(VIDEO.length, VIDEO.length);
       pasteInto(box(), WEB_SHARE);
@@ -927,7 +934,7 @@ describe("NewPage link box with share texts", () => {
 
   it("lists the links left out on request, at most twenty, with the count of the rest and of lines without links", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const others = Array.from({ length: 25 }, (_, index) => `${UNSUPPORTED}/${index}`);
     fireEvent.change(box(), { target: { value: [YT_VIDEO, ...others, "一行字", "又一行"].join("\n") } });
     const scope = screen.getByTestId("link-recognition");
@@ -950,7 +957,7 @@ describe("NewPage link box with share texts", () => {
 
   it("counts supported links for the batch hint and spots a platform list among words", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: `${WEB_SHARE}\n${UNSUPPORTED}\n${YT_VIDEO}` } });
     expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 2 条链接，将作为一批导入，另有 1 条不支持、不会提交");
     fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
@@ -964,7 +971,7 @@ describe("NewPage link box with share texts", () => {
       "GET /api/contents/c1": { body: { ...content("c1", { collections: [{ id: "k7", name: "播放列表", itemId: "ki7" }] }), media: [] } },
       "POST /api/contents/inspect": { body: playlistPage(YT_LIST, 2) },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: `【播放列表】 ${YT_LIST}` } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await confirmPreview();
@@ -986,7 +993,7 @@ describe("NewPage link box with share texts", () => {
         body: { kind: "multipart", canonicalUrl: MULTI_P, title: "多 P 稿件", parts: [1, 2].map((index) => ({ platformPartId: `p${index}`, index, title: `P${index}`, durationMs: 1000 })) },
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: WEB_SHARE } });
     fireEvent.click(screen.getByTestId("new-submit"));
     expect(await screen.findByTestId("parts-choice")).toBeTruthy();
@@ -1015,7 +1022,7 @@ describe("NewPage subtitle tab link", () => {
     ["a supported and an unsupported link", `${VIDEO_2} ${UNSUPPORTED}`],
   ])("refuses %s without sending anything", async (_name, value) => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/subtitles/inspect": { body: packagePreview() } });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(await openSubtitleTab(), { target: { value } });
     fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
     await screen.findByTestId("subtitle-preview-package");
@@ -1030,7 +1037,7 @@ describe("NewPage subtitle tab link", () => {
       "POST /api/subtitles/inspect": { body: packagePreview() },
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(await openSubtitleTab(), { target: { value: WEB_SHARE } });
     fireEvent.change(screen.getByTestId("subtitle-file"), { target: { files: [new File(["{}"], "第一讲.ambersub")] } });
     await screen.findByTestId("subtitle-preview-package");
@@ -1041,7 +1048,7 @@ describe("NewPage subtitle tab link", () => {
 
   it("takes the links out of a multi-line paste, separated by spaces, so the second one is still seen", async () => {
     const { calls } = mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     const field = await openSubtitleTab();
     fireEvent.paste(field, { clipboardData: { getData: () => `${WEB_SHARE}\n${APP_SHARE}` } });
     expect(field.value).toBe(`${WEB_SHARE_LINK} ${SHORT}`);
@@ -1090,7 +1097,7 @@ describe("NewPage with collection links", () => {
   it("opens the preview before sending, then imports the chosen entries in their order and opens the collection", async () => {
     const inspect = fakeInspect([{ url: YT_LIST, title: "示例播放列表", pageSize: 50, entries: newEntries(3, "y") }]);
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply(["k9"]) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${VIDEO}\n${YT_LIST}` } });
     expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 1 个合集，开始处理前可以挑选内容并安排顺序");
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -1114,7 +1121,7 @@ describe("NewPage with collection links", () => {
   it("opens the preview from the line under the box", async () => {
     const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(2, "y") }]);
     mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
     fireEvent.click(screen.getByRole("button", { name: "预览合集" }));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
@@ -1123,7 +1130,7 @@ describe("NewPage with collection links", () => {
   it("goes back to the form on 「取消」 with the text and the choice kept", async () => {
     const inspect = fakeInspect([{ url: YT_LIST, pageSize: 50, entries: newEntries(3, "y") }]);
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply() });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
@@ -1148,7 +1155,7 @@ describe("NewPage with collection links", () => {
       "POST /api/contents/inspect": inspect.reply,
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"], collectionIds: ["k9"], skippedTrashedContentIds: ["c8"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await confirmPreview();
@@ -1169,7 +1176,7 @@ describe("NewPage with collection links", () => {
       { url: YT_LIST, title: "列表二", pageSize: 50, entries: newEntries(2, "y") },
     ]);
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": inspect.reply, "POST /api/contents/import": reply(["k1", "k2"]) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${SERIES}\n${VIDEO}\n${YT_LIST}` } });
     expect(screen.getByTestId("link-recognition-text").textContent).toBe("已识别 2 个合集，开始处理前可以挑选内容并安排顺序");
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -1198,7 +1205,7 @@ describe("NewPage with collection links", () => {
         return attempts === 1 ? choiceError([SHORT]) : reply(["k5"]);
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${SHORT}\n${VIDEO}` } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
@@ -1227,7 +1234,7 @@ describe("NewPage with collection links", () => {
           : reply(["k3"]);
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: `${YT_LIST}\n${MULTI_P}` } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
@@ -1254,7 +1261,7 @@ describe("NewPage with collection links", () => {
         return attempts === 1 ? STALE_REPLY : reply(["k9"]);
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(2));
@@ -1286,7 +1293,7 @@ describe("NewPage with collection links", () => {
       }
       return result;
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: YT_LIST } });
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(within(dialog()).getAllByTestId("preview-entry")).toHaveLength(3));
@@ -1326,7 +1333,7 @@ describe("NewPage with collection links", () => {
 describe("NewPage form checks and settings", () => {
   it("shows a missing link right under the box, marking the box invalid", async () => {
     mockApi(baseRoutes());
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByTestId("new-submit"));
     const message = await screen.findByTestId("new-problem-links");
     expect(message.textContent).toBe("请先粘贴至少一条链接");
@@ -1346,7 +1353,7 @@ describe("NewPage form checks and settings", () => {
         body: { error: { class: "source_unsupported_url", code: "source_unsupported_url", retryDisposition: "never", userMessage } },
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(screen.getByTestId("new-url-input"), { target: { value: "not a link at all" } });
     fireEvent.click(screen.getByTestId("new-submit"));
     const message = await screen.findByTestId("new-problem-links");
@@ -1359,7 +1366,7 @@ describe("NewPage form checks and settings", () => {
 
   it("shows a missing collection name under its field, opening the settings", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "GET /api/collections": { body: { items: [] } } });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await chooseOption(screen.getByRole("combobox", { name: "加入合集" }), "新建合集");
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
@@ -1386,7 +1393,7 @@ describe("NewPage form checks and settings", () => {
       "GET /api/collections": { body: { items: [collection("k1", "第一门课"), collection("k2", "第二门课")] } },
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     const template = screen.getByRole("combobox", { name: "总结模板" });
     const language = screen.getByRole("combobox", { name: "输出语言" });
@@ -1407,7 +1414,7 @@ describe("NewPage form checks and settings", () => {
       "GET /api/collections": { body: { items: [collection("k1", "第一门课")] } },
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "总结模板" }).textContent).toBe("核心总结"));
     await chooseOption(screen.getByRole("combobox", { name: "总结模板" }), "核心总结");
@@ -1451,7 +1458,7 @@ describe("NewPage checking a pasted link", () => {
         return url === XHS_VIDEO ? video("示例笔记", 83_000) : video("另一条", 3_725_000);
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(XHS_VIDEO);
     // Not before the pause.
     expect(inspected(calls)).toEqual([]);
@@ -1482,7 +1489,7 @@ describe("NewPage checking a pasted link", () => {
       }
       return base(input, init);
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     await screen.findByTestId("new-submit");
     type("https://www.douyin.com/video/1");
     type(DOUYIN_VIDEO.slice(0, -1));
@@ -1503,7 +1510,7 @@ describe("NewPage checking a pasted link", () => {
 
   it("does not check bilibili or YouTube links, several links, a collection, or the subtitle tab's link", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     for (const text of [VIDEO, YT_VIDEO, SHORT, YT_LIST, DOUYIN_COLLECTION, `${XHS_VIDEO}\n${DOUYIN_VIDEO}`, `${DOUYIN_VIDEO}\n${UNSUPPORTED}`]) {
       type(text);
       await pause();
@@ -1513,7 +1520,7 @@ describe("NewPage checking a pasted link", () => {
 
   it("checks the short link of an app share", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(DOUYIN_SHARE);
     await screen.findByTestId("import-check-video");
     expect(inspected(calls)).toEqual([{ url: DOUYIN_SHORT }]);
@@ -1529,7 +1536,7 @@ describe("NewPage checking a pasted link", () => {
     ],
   ])("shows a link %s on the line under the box", async (_name, reply, expected) => {
     mockApi({ ...baseRoutes(), "POST /api/contents/inspect": reply });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(DOUYIN_VIDEO);
     await waitFor(() => expect(line()).toBe(expected));
     if (expected.startsWith("已在资料库")) {
@@ -1548,7 +1555,7 @@ describe("NewPage checking a pasted link", () => {
       { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } },
     ]) {
       const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": reply });
-      const { unmount } = renderApp(page(), { route: "/new" });
+      const { unmount } = await openPage(page(), { route: "/new" });
       type(DOUYIN_VIDEO);
       await waitFor(() => expect(inspected(calls)).toHaveLength(1));
       await waitFor(() => expect(screen.queryByTestId("import-check-checking")).toBeNull());
@@ -1570,7 +1577,7 @@ describe("NewPage checking a pasted link", () => {
         }
         return base(input, init);
       });
-      renderApp(page(), { route: "/new" });
+      await openPage(page(), { route: "/new" });
       await screen.findByTestId("new-submit");
       type(XHS_VIDEO);
       expect(await screen.findByTestId("import-check-checking")).toBeTruthy();
@@ -1602,7 +1609,7 @@ describe("NewPage checking a pasted link", () => {
           : { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } };
       },
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(DOUYIN_VIDEO);
     fireEvent.click(screen.getByTestId("new-submit"));
     const prompt = await screen.findByTestId("new-unverified");
@@ -1625,7 +1632,7 @@ describe("NewPage checking a pasted link", () => {
       ...baseRoutes(),
       "POST /api/contents/import": importError("invalid_request.link_unverified", "暂时无法确认这条链接能否处理", [XHS_VIDEO]),
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(XHS_VIDEO);
     fireEvent.click(screen.getByTestId("new-submit"));
     await screen.findByTestId("new-unverified");
@@ -1638,7 +1645,7 @@ describe("NewPage checking a pasted link", () => {
     ["invalid_request.link_expired", "链接可能不完整或已经失效，请重新复制完整的分享链接"],
   ])("shows %s under the box and sends nothing more", async (code, message) => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/import": importError(code, message, [XHS_VIDEO]) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(XHS_VIDEO);
     fireEvent.click(screen.getByTestId("new-submit"));
     expect((await screen.findByTestId("new-problem-links")).textContent).toBe(message);
@@ -1655,7 +1662,7 @@ describe("NewPage checking a pasted link", () => {
       "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: XHS_VIDEO, check: { result: "rejected", reason: "not_video" } } },
       "POST /api/contents/import": importError("invalid_request.not_video", "这是图文笔记，Amber 目前只处理视频", [XHS_VIDEO]),
     });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(XHS_VIDEO);
     await screen.findByTestId("import-check-rejected");
     fireEvent.click(screen.getByTestId("new-submit"));
@@ -1675,7 +1682,7 @@ describe("NewPage checking a pasted link", () => {
       "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: [], contentIds: ["c1"], sourceUrlUpdates: [{ contentId: "c1", result }] } },
     });
     let client: QueryClient | undefined;
-    renderApp(
+    await openPage(
       page(undefined, (found) => {
         client = found;
       }),
@@ -1693,7 +1700,7 @@ describe("NewPage checking a pasted link", () => {
 
   it("shows no source link notice when the import did not touch one", async () => {
     mockApi({ ...baseRoutes(), "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } } });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     type(XHS_VIDEO);
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
@@ -1746,7 +1753,7 @@ describe("NewPage choosing from the collection of a pasted video", () => {
   it("names the collection on the line under the box, and without choosing sends the video alone", async () => {
     const { routes: table } = routes(RELATED);
     const { calls } = mockApi(table);
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     await screen.findByTestId("import-check-collection");
     expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·共 3 集·选择合集中的视频");
@@ -1759,13 +1766,13 @@ describe("NewPage choosing from the collection of a pasted video", () => {
   it("leaves the count out when the platform does not give it, and the sentence out for a video in no collection", async () => {
     const { itemCount: _count, ...uncounted } = RELATED;
     mockApi(routes(uncounted).routes);
-    const { unmount } = renderApp(page(), { route: "/new" });
+    const { unmount } = await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     await screen.findByTestId("import-check-collection");
     expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·选择合集中的视频");
     unmount();
     mockApi(routes(undefined).routes);
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     await screen.findByTestId("import-check-video");
     expect(screen.queryByTestId("import-check-collection")).toBeNull();
@@ -1775,7 +1782,7 @@ describe("NewPage choosing from the collection of a pasted video", () => {
   it("opens the collection's preview with only this video chosen; cancelling sends nothing", async () => {
     const { routes: table, collection } = routes(RELATED);
     const { calls } = mockApi(table);
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     fireEvent.click(await screen.findByTestId("import-check-choose"));
     await waitFor(() => expect(rows()).toHaveLength(3));
@@ -1791,7 +1798,7 @@ describe("NewPage choosing from the collection of a pasted video", () => {
   it("sends the entries chosen in the preview in the video's place, the video once", async () => {
     const { routes: table } = routes(RELATED);
     const { calls } = mockApi(table);
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     fireEvent.click(await screen.findByTestId("import-check-choose"));
     await waitFor(() => expect(chosen()).toEqual([DOUYIN_ID]));
@@ -1829,7 +1836,7 @@ describe("NewPage bilibili login hint", () => {
     [EXPIRED, "B 站登录已失效·重新登录"],
   ])("ends the line with a pointer to the bilibili login when it is not valid", async (bilibili, expected) => {
     mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(bilibili) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: MULTI_P } });
     const hint = await screen.findByTestId("bilibili-login-hint");
     expect(hint.textContent).toBe(expected);
@@ -1844,7 +1851,7 @@ describe("NewPage bilibili login hint", () => {
 
   it("says nothing with a valid login", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(VALID) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: MULTI_P } });
     await waitFor(() => expect(calls.some((call) => call.path === "/api/platform-accounts")).toBe(true));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1853,12 +1860,318 @@ describe("NewPage bilibili login hint", () => {
 
   it("says nothing for YouTube, Xiaohongshu or Douyin links, and does not read the logins for them", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "GET /api/platform-accounts": accounts(NONE) });
-    renderApp(page(), { route: "/new" });
+    await openPage(page(), { route: "/new" });
     for (const text of [YT_VIDEO, XHS_VIDEO, DOUYIN_VIDEO]) {
       fireEvent.change(box(), { target: { value: text } });
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(screen.queryByTestId("bilibili-login-hint")).toBeNull();
     }
     expect(calls.some((call) => call.path === "/api/platform-accounts")).toBe(false);
+  });
+});
+
+describe("NewPage before the settings and the model list are read", () => {
+  type Read = "settings" | "providers";
+  const READ_PATHS: Readonly<Record<string, Read>> = { "/api/settings": "settings", "/api/providers": "providers" };
+  const INTERNAL = { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } };
+  const M1 = { providerProfileId: "p1", modelId: "m1" };
+  const UNVERIFIED = {
+    status: 400,
+    body: { error: { class: "invalid_request", code: "invalid_request.link_unverified", retryDisposition: "never", userMessage: "", details: { urls: [DOUYIN_VIDEO] } } },
+  };
+  const DUPLICATE = {
+    status: 409,
+    body: { error: { class: "conflict", code: "conflict.duplicate_file", retryDisposition: "never", userMessage: "已有相同的文件", details: { duplicateOfContentId: "c0" } } },
+  };
+  const ACCEPTED = { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } };
+  const sent = (calls: RecordedCalls) => calls.filter((call) => call.method === "POST" && ["/api/contents/import", "/api/contents/upload", "/api/contents/local-file"].includes(call.path));
+  const form = (): HTMLFormElement => screen.getByTestId("new-submit").closest("form") as HTMLFormElement;
+  const submitButton = (): HTMLButtonElement => screen.getByTestId<HTMLButtonElement>("new-submit");
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const gateOf = (): string | null => form().getAttribute("data-gate");
+
+  /**
+   * The routes, with the two reads answering only when let go (`hold`) or failing (`fail`);
+   * `client` is the page's query client, for reading them again as a background refresh would.
+   */
+  function reads(routes: Record<string, unknown>) {
+    const { calls } = mockApi(routes as Parameters<typeof mockApi>[0]);
+    const routed = globalThis.fetch;
+    const holding = new Set<Read>();
+    const failing = new Set<Read>();
+    const waiting: Array<{ read: Read; go: () => void }> = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      const read = (init.method ?? "GET").toUpperCase() === "GET" ? READ_PATHS[String(input)] : undefined;
+      if (read !== undefined && holding.has(read)) await new Promise<void>((go) => waiting.push({ read, go }));
+      if (read !== undefined && failing.has(read)) return new Response(JSON.stringify(INTERNAL), { status: 500, headers: { "content-type": "application/json" } });
+      return routed(input, init);
+    });
+    const state = { client: undefined as QueryClient | undefined };
+    return {
+      calls,
+      state,
+      hold: (read: Read) => holding.add(read),
+      release: (read: Read) => {
+        holding.delete(read);
+        for (const entry of waiting.splice(0).filter((candidate) => candidate.read === read)) entry.go();
+      },
+      fail: (read: Read) => failing.add(read),
+      heal: (read: Read) => failing.delete(read),
+      /** Reads `read` afresh with nothing kept, the way it is read for the first time. */
+      reread: async (read: Read) => {
+        await act(async () => {
+          void state.client?.resetQueries({ queryKey: read === "settings" ? queryKeys.settings : queryKeys.providers });
+        });
+      },
+      render: (options: { mode?: "local" | "server" } = {}) =>
+        renderApp(
+          page(undefined, (found) => {
+            state.client = found;
+          }),
+          { route: "/new", ...(options.mode === undefined ? {} : { mode: options.mode }) },
+        ),
+    };
+  }
+
+  async function openSettings(): Promise<HTMLElement> {
+    if (screen.queryByRole("combobox", { name: "AI 模型" }) === null) fireEvent.click(screen.getByRole("button", { name: "本次设置" }));
+    return screen.findByRole("combobox", { name: "AI 模型" });
+  }
+
+  /** Opens the preview from the line under the box and presses its 「开始处理」. */
+  async function confirmFromLine(): Promise<void> {
+    fireEvent.change(box(), { target: { value: YT_LIST } });
+    fireEvent.click(screen.getByRole("button", { name: "预览合集" }));
+    await confirmPreview();
+    await waitFor(() => expect(screen.queryByTestId("collection-preview")).toBeNull());
+  }
+
+  /** Gets the unverified offer on screen with everything read, by an import the server could not verify. */
+  async function offerUnverified(): Promise<void> {
+    fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
+    fireEvent.click(submitButton());
+    await screen.findByTestId("new-unverified");
+  }
+
+  /** Gets the duplicate offer on screen with everything read, by an upload of a file already imported. */
+  async function offerDuplicate(): Promise<void> {
+    const tab = await screen.findByRole("tab", { name: "上传本地文件" });
+    fireEvent.mouseDown(tab);
+    fireEvent.click(tab);
+    fireEvent.change(await screen.findByTestId("upload-file"), { target: { files: [new File([new Uint8Array([1])], "lecture.mp4", { type: "video/mp4" })] } });
+    fireEvent.click(submitButton());
+    await screen.findByTestId("upload-anyway");
+  }
+
+  const routesWithModel = (extra: Record<string, unknown> = {}) => ({
+    ...baseRoutes({ mode: "server" }),
+    "GET /api/providers": { body: { items: [provider("p1", "我的模型", ["m1", "m2"])] } },
+    "GET /api/settings": { body: { ...SETTINGS, defaultModelRef: M1 } },
+    "POST /api/contents/inspect": fakeInspect([{ url: YT_LIST, title: "示例播放列表", pageSize: 50, entries: newEntries(2, "y") }]).reply,
+    ...extra,
+  });
+
+  it.each<Read>(["settings", "providers"])("sends nothing from any of the five ways while %s is still being read, the model menu saying so", async (read) => {
+    let uploads = 0;
+    const api = reads(
+      routesWithModel({
+        "POST /api/contents/import": UNVERIFIED,
+        "POST /api/contents/upload": () => {
+          uploads += 1;
+          return DUPLICATE;
+        },
+      }),
+    );
+    api.hold(read);
+    api.render({ mode: "server" });
+    await screen.findByTestId("new-url-input");
+    expect(gateOf()).toBe("loading");
+    expect((await openSettings()).textContent).toBe("正在读取…");
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    expect(submitButton().disabled).toBe(true);
+    // Enter in the box submits the form, whatever the button shows.
+    fireEvent.submit(form());
+    fireEvent.click(submitButton());
+    await confirmFromLine();
+    expect(sent(api.calls)).toHaveLength(0);
+
+    // The two 「仍然导入」 appear only after an import was answered: read once, then read again from nothing.
+    api.release(read);
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    await offerUnverified();
+    api.hold(read);
+    await api.reread(read);
+    await waitFor(() => expect(gateOf()).toBe("loading"));
+    fireEvent.click(screen.getByTestId("new-import-unverified"));
+    expect(sent(api.calls)).toHaveLength(1);
+
+    api.release(read);
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    await offerDuplicate();
+    expect(uploads).toBe(1);
+    api.hold(read);
+    await api.reread(read);
+    await waitFor(() => expect(gateOf()).toBe("loading"));
+    expect(screen.getByTestId<HTMLButtonElement>("upload-anyway").disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("upload-anyway"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(uploads).toBe(1);
+    api.release(read);
+  });
+
+  it.each<Read>(["settings", "providers"])("says in place that %s could not be read, sends nothing, and sends with the model once 「重试」 reads it", async (read) => {
+    const api = reads(routesWithModel({ "POST /api/contents/import": ACCEPTED }));
+    api.fail(read);
+    api.render();
+    expect((await screen.findByTestId("new-settings-failed")).textContent).toBe("没有读取到设置或模型列表，暂时无法提交重试");
+    expect(gateOf()).toBe("failed");
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.submit(form());
+    expect(submitButton().disabled).toBe(true);
+    await confirmFromLine();
+    expect(sent(api.calls)).toHaveLength(0);
+
+    api.heal(read);
+    fireEvent.click(screen.getByTestId("new-settings-retry"));
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    expect(screen.queryByTestId("new-settings-failed")).toBeNull();
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(sent(api.calls)).toHaveLength(1));
+    expect((sent(api.calls)[0]?.body as { settings: unknown }).settings).toMatchObject({ modelRef: M1 });
+  });
+
+  it("holds both 「仍然导入」 while a read made again fails, and lets them go once it is read", async () => {
+    let imports = 0;
+    let uploads = 0;
+    const api = reads(
+      routesWithModel({
+        "POST /api/contents/import": () => {
+          imports += 1;
+          return imports === 1 ? UNVERIFIED : ACCEPTED;
+        },
+        "POST /api/contents/upload": () => {
+          uploads += 1;
+          return uploads === 1 ? DUPLICATE : ACCEPTED;
+        },
+      }),
+    );
+    api.render({ mode: "server" });
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    await offerUnverified();
+    api.fail("settings");
+    await api.reread("settings");
+    await screen.findByTestId("new-settings-failed");
+    fireEvent.click(screen.getByTestId("new-import-unverified"));
+    expect(imports).toBe(1);
+    api.heal("settings");
+    fireEvent.click(screen.getByTestId("new-settings-retry"));
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    fireEvent.click(screen.getByTestId("new-import-unverified"));
+    await waitFor(() => expect(imports).toBe(2));
+    expect(sent(api.calls).at(-1)?.body).toMatchObject({ items: [{ url: DOUYIN_VIDEO, acceptUnverified: true }], settings: { modelRef: M1 } });
+  });
+
+  it("submits without a model when there is no model service, saying so in other words than a failed read", async () => {
+    const api = reads({ ...baseRoutes(), "POST /api/contents/import": ACCEPTED });
+    api.render();
+    const banner = await screen.findByTestId("no-llm-banner");
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    expect(screen.queryByTestId("new-settings-failed")).toBeNull();
+    expect(banner.textContent).not.toContain("没有读取到设置或模型列表");
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(sent(api.calls)).toHaveLength(1));
+    expect((sent(api.calls)[0]?.body as { settings: object }).settings).not.toHaveProperty("modelRef");
+  });
+
+  it("keeps a default model that is gone shown as unavailable, sends nothing until another is chosen, then sends that one", async () => {
+    const api = reads(
+      routesWithModel({
+        "GET /api/settings": { body: { ...SETTINGS, defaultModelRef: { providerProfileId: "p1", modelId: "gone" } } },
+        "POST /api/contents/import": ACCEPTED,
+      }),
+    );
+    api.render();
+    await waitFor(() => expect(gateOf()).toBe("model_gone"));
+    // The settings open by themselves to show the choice to make.
+    const select = await screen.findByRole("combobox", { name: "AI 模型" });
+    expect(select.textContent).toBe("我的模型 · gone（不可用）");
+    expect(select.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByTestId("new-model-gone").textContent).toBe("原默认模型已不可用，请重新选择模型");
+    expect(select.getAttribute("aria-describedby")).toBe(screen.getByTestId("new-model-gone").id);
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.submit(form());
+    expect(submitButton().disabled).toBe(true);
+    await confirmFromLine();
+    expect(sent(api.calls)).toHaveLength(0);
+
+    await chooseOption(select, "m2");
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    expect(screen.queryByTestId("new-model-gone")).toBeNull();
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(sent(api.calls)).toHaveLength(1));
+    expect((sent(api.calls)[0]?.body as { settings: unknown }).settings).toMatchObject({ modelRef: { providerProfileId: "p1", modelId: "m2" } });
+  });
+
+  it("holds both 「仍然导入」 once the default model disappears from a list read again", async () => {
+    let uploads = 0;
+    const api = reads(
+      routesWithModel({
+        "POST /api/contents/import": UNVERIFIED,
+        "POST /api/contents/upload": () => {
+          uploads += 1;
+          return DUPLICATE;
+        },
+      }),
+    );
+    api.render({ mode: "server" });
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    await offerUnverified();
+    act(() => {
+      api.state.client?.setQueryData(queryKeys.providers, { items: [provider("p1", "我的模型", ["m2"])] });
+    });
+    await waitFor(() => expect(gateOf()).toBe("model_gone"));
+    fireEvent.click(screen.getByTestId("new-import-unverified"));
+    expect(sent(api.calls)).toHaveLength(1);
+    act(() => {
+      api.state.client?.setQueryData(queryKeys.providers, { items: [provider("p1", "我的模型", ["m1", "m2"])] });
+    });
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    await offerDuplicate();
+    act(() => {
+      api.state.client?.setQueryData(queryKeys.providers, { items: [provider("p1", "我的模型", ["m2"])] });
+    });
+    await waitFor(() => expect(gateOf()).toBe("model_gone"));
+    fireEvent.click(screen.getByTestId("upload-anyway"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(uploads).toBe(1);
+  });
+
+  it("chooses the first model without a default, and keeps the user's choice when both are read again", async () => {
+    const api = reads(
+      routesWithModel({
+        "GET /api/settings": { body: SETTINGS },
+        "GET /api/providers": { body: { items: [provider("p1", "我的模型", ["m1", "m2"]), provider("p2", "备用", ["m3"])] } },
+        "POST /api/contents/import": ACCEPTED,
+      }),
+    );
+    api.render();
+    await waitFor(() => expect(gateOf()).toBe("ready"));
+    const select = await openSettings();
+    expect(select.textContent).toBe("我的模型 · m1");
+    await chooseOption(select, "m3", "备用");
+    expect(select.textContent).toBe("备用 · m3");
+    await act(async () => {
+      await api.state.client?.refetchQueries({ queryKey: queryKeys.settings });
+      await api.state.client?.refetchQueries({ queryKey: queryKeys.providers });
+    });
+    expect(api.calls.filter((call) => call.path === "/api/providers").length).toBeGreaterThan(1);
+    expect(screen.getByRole("combobox", { name: "AI 模型" }).textContent).toBe("备用 · m3");
+    fireEvent.change(box(), { target: { value: VIDEO } });
+    fireEvent.click(submitButton());
+    await waitFor(() => expect(sent(api.calls)).toHaveLength(1));
+    expect((sent(api.calls)[0]?.body as { settings: unknown }).settings).toMatchObject({ modelRef: { providerProfileId: "p2", modelId: "m3" } });
   });
 });

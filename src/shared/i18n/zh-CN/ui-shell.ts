@@ -151,6 +151,13 @@ export const shell = {
     settings: "本次设置",
     template: "总结模板",
     model: "AI 模型",
+    /** The model menu while the settings and the model list are still being read. */
+    modelLoading: "正在读取…",
+    /** The default model kept in the menu after it was deleted. */
+    modelUnavailable: "{{model}}（不可用）",
+    modelGone: "原默认模型已不可用，请重新选择模型",
+    /** The settings or the model list could not be read; nothing can be sent until they are. */
+    settingsFailed: "没有读取到设置或模型列表，暂时无法提交",
     asrModel: "转录模型",
     noModel: "暂不选择（AI 阶段将等待配置）",
     noAsrModel: "暂不选择（需要转录时将等待配置）",

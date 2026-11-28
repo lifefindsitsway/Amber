@@ -95,6 +95,14 @@ interface LinkSubmit {
   related?: RelatedPick;
 }
 
+/**
+ * Whether an import may be sent now, from what the settings and model list say. `loading` until
+ * both have been read and `failed` when either could not be: until then the model an import
+ * would name is not known, and one sent without it would wait for configuration. `model_gone`:
+ * the default model is no longer listed and the user has not chosen another.
+ */
+type SubmitGate = "loading" | "failed" | "model_gone" | "ready";
+
 /** Answers that reject a link the import checked, shown under the box as what is wrong with it. */
 const REJECTED_LINK_CODES: ReadonlySet<string> = new Set(["invalid_request.not_video", "invalid_request.link_expired"]);
 
@@ -285,12 +293,30 @@ export function NewPage() {
       service: profile.presetId,
     })),
   );
-  const defaultModel = settings.data?.defaultModelRef === undefined ? undefined : encodeModel(settings.data.defaultModelRef);
-  const model = modelChoice ?? (defaultModel !== undefined && modelOptions.some((option) => option.value === defaultModel) ? defaultModel : (modelOptions[0]?.value ?? ""));
+  const defaultModelRef = settings.data?.defaultModelRef;
+  const defaultModel = defaultModelRef === undefined ? undefined : encodeModel(defaultModelRef);
+  const defaultListed = defaultModel !== undefined && modelOptions.some((option) => option.value === defaultModel);
+  // A default that is no longer listed stays chosen, shown as unavailable, until the user picks
+  // again: silently moving to another model would summarize with a model nobody chose. Without
+  // any model at all there is nothing to pick, and the import waits for configuration.
+  const defaultGone = defaultModel !== undefined && !defaultListed && modelOptions.length > 0;
+  const model = modelChoice ?? (defaultListed || defaultGone ? (defaultModel as string) : (modelOptions[0]?.value ?? ""));
+  const readFailed = (settings.data === undefined && settings.isError) || (providers.data === undefined && providers.isError);
+  const gate: SubmitGate = readFailed
+    ? "failed"
+    : settings.data === undefined || providers.data === undefined
+      ? "loading"
+      : modelChoice === undefined && defaultGone
+        ? "model_gone"
+        : "ready";
+  const retryRead = (): void => {
+    if (settings.isError) void settings.refetch();
+    if (providers.isError) void providers.refetch();
+  };
   // The ASR model starts as the user's default while it can be picked, else none: unlike the
   // LLM model, nothing is chosen for the user.
   const asrOptions = asrProfiles.data?.items ?? [];
-  const modelRef = decodeModel(model);
+  const modelRef = gate === "ready" ? decodeModel(model) : undefined;
   // Every import ends in a summary (and chapters unless the platform has its own), both planned
   // against the context window: a chosen model without one would only fail there.
   const readiness = useModelReadiness(modelRef, "context_window");
@@ -373,6 +399,16 @@ export function NewPage() {
   const subtitleOptions = (): SubtitleImportOptions | undefined =>
     subtitlePreview === undefined || subtitleChoice === undefined ? undefined : buildSubtitleImportOptions(subtitlePreview, subtitleChoice);
   const noLlm = providers.data !== undefined && providers.data.items.length === 0;
+  const goneProfile = defaultGone ? providers.data?.items.find((profile) => profile.id === defaultModelRef?.providerProfileId) : undefined;
+  const goneModel =
+    defaultGone && defaultModelRef !== undefined
+      ? {
+          label: t("shell.newPage.modelUnavailable", { model: goneProfile === undefined ? defaultModelRef.modelId : `${goneProfile.name} · ${defaultModelRef.modelId}` }),
+          modelId: defaultModelRef.modelId,
+          service: goneProfile?.presetId,
+        }
+      : undefined;
+  const modelProblemId = `${formId}-model-problem`;
 
   /** The validation message of a field, its id for the control's description, and whether the control is invalid. */
   const errorId = (field: ProblemField): string => `${formId}-problem-${field}`;
@@ -391,6 +427,22 @@ export function NewPage() {
     setProblem({ field, message });
     if (field === "collectionName") setShowSettings(true);
   };
+
+  /**
+   * The one check every way of sending an import goes through (the form's submit, 「开始处理」,
+   * both 「仍然导入」 and the collection preview's confirmation), whatever their buttons show:
+   * nothing is sent until the settings and the model list are read and the model is one that
+   * exists. Where the user has to choose a model, the settings open to show it.
+   */
+  const mayImport = (): boolean => {
+    if (gate === "ready") return true;
+    if (gate === "model_gone") setShowSettings(true);
+    return false;
+  };
+  // The default model is gone: show the choice to make rather than leave the button unexplained.
+  useEffect(() => {
+    if (gate === "model_gone") setShowSettings(true);
+  }, [gate]);
 
   /** Leaves for the import's result, unless some items were skipped for being in the trash. */
   const finishImport = (response: ImportResponse, next: { path: string; openTasks: boolean }): void => {
@@ -599,7 +651,7 @@ export function NewPage() {
       try {
         const response = await api.post("/api/contents/import", importResponseSchema, { body: intent.current.body, idempotencyKey: intent.current.key });
         intent.current = undefined;
-        // The page may stay (some items skipped): the links imported are read afresh next time,
+          // The page may stay (some items skipped): the links imported are read afresh next time,
         // and the next 「开始处理」 asks again instead of resending this choice.
         preview.close();
         preview.reset([...previewed]);
@@ -724,6 +776,7 @@ export function NewPage() {
 
   const onSubmit = (event: FormEvent): void => {
     event.preventDefault();
+    if (!mayImport()) return;
     setError(undefined);
     setProblem(undefined);
     setSkipped(undefined);
@@ -767,7 +820,7 @@ export function NewPage() {
 
   /** 「仍然导入」: the same send again, these links marked as chosen without verification; a new body, so a new key. */
   const importUnverified = (): void => {
-    if (unverified === undefined) return;
+    if (unverified === undefined || !mayImport()) return;
     for (const url of shownUnverified) acceptedUnverified.current.add(url);
     const send = unverified.send;
     setUnverified(undefined);
@@ -780,6 +833,11 @@ export function NewPage() {
   const onPreviewConfirm = (choices: CollectionChoice[]): void => {
     const pick = related !== undefined && preview.urls.includes(related.collectionUrl) && urls.includes(related.videoUrl) ? related : undefined;
     if (pick === undefined) setConfirmed({ urls: previewUrls, choices });
+    if (!mayImport()) {
+      // What holds the import back is on the form; the choice is kept for the next submit.
+      preview.close();
+      return;
+    }
     setError(undefined);
     setProblem(undefined);
     setSkipped(undefined);
@@ -878,7 +936,7 @@ export function NewPage() {
         testId="new-unverified"
         icon={<CircleAlert size={14} className="text-warn" aria-hidden="true" />}
         action={
-          <TextAction onClick={importUnverified} disabled={linkPending || windowMissing} data-testid="new-import-unverified">
+          <TextAction onClick={importUnverified} disabled={linkPending || windowMissing || gate !== "ready"} data-testid="new-import-unverified">
             {t("shell.newPage.importAnyway")}
           </TextAction>
         }
@@ -891,7 +949,7 @@ export function NewPage() {
     <div className="flex h-full flex-col">
       <PageHeader title={t("shell.newPage.title")} actions={<ImportPackButton testId="new-pack-import" />} />
       <PackActiveNotice className="mx-auto mt-4 w-[calc(100%-3rem)] max-w-2xl" />
-      <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 py-8">
+      <form onSubmit={onSubmit} className="@container mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 py-8" data-gate={gate}>
         {noLlm ? (
           <Callout
             tone="info"
@@ -1139,13 +1197,24 @@ export function NewPage() {
                   kind="llm"
                   id={`${formId}-model`}
                   entries={modelOptions}
-                  value={model}
+                  value={gate === "loading" || gate === "failed" ? "" : model}
                   onChange={setModelChoice}
-                  noneLabel={t("shell.newPage.noModel")}
+                  // Until both are read the menu has nothing true to show, not even "none".
+                  noneLabel={gate === "loading" || gate === "failed" ? undefined : t("shell.newPage.noModel")}
+                  placeholder={gate === "loading" ? t("shell.newPage.modelLoading") : ""}
+                  disabled={gate === "loading" || gate === "failed"}
+                  current={goneModel}
+                  invalid={gate === "model_gone"}
+                  describedBy={gate === "model_gone" ? modelProblemId : undefined}
                   testId="new-model"
                   size="lg"
                   width="fill"
                 />
+                {gate === "model_gone" ? (
+                  <FieldError id={modelProblemId} testId="new-model-gone">
+                    {t("shell.newPage.modelGone")}
+                  </FieldError>
+                ) : null}
               </div>
               {asrOptions.length === 0 ? null : (
                 <div className="flex min-w-0 flex-col gap-1.5 text-sm">
@@ -1263,8 +1332,9 @@ export function NewPage() {
                   <Button
                     size="sm"
                     data-testid="upload-anyway"
-                    disabled={upload.isPending || windowMissing}
+                    disabled={upload.isPending || windowMissing || gate !== "ready"}
                     onClick={() => {
+                      if (!mayImport()) return;
                       setError(undefined);
                       upload.mutate({ allowDuplicate: true });
                     }}
@@ -1275,8 +1345,9 @@ export function NewPage() {
                   <Button
                     size="sm"
                     data-testid="local-anyway"
-                    disabled={localImport.isPending || windowMissing}
+                    disabled={localImport.isPending || windowMissing || gate !== "ready"}
                     onClick={() => {
+                      if (!mayImport()) return;
                       setError(undefined);
                       localImport.mutate({ allowDuplicate: true });
                     }}
@@ -1289,6 +1360,21 @@ export function NewPage() {
           </ErrorView>
         )}
         {windowMissing && modelRef !== undefined ? <ContextWindowNotice modelRef={modelRef} onSaved={windowSaved} testId="new-context-window" /> : null}
+        {gate === "failed" ? (
+          <InlineNote
+            role="alert"
+            testId="new-settings-failed"
+            className="justify-end"
+            icon={<CircleAlert size={14} className="text-danger" aria-hidden="true" />}
+            action={
+              <TextAction onClick={retryRead} data-testid="new-settings-retry">
+                {t("common.action.retry")}
+              </TextAction>
+            }
+          >
+            {t("shell.newPage.settingsFailed")}
+          </InlineNote>
+        ) : null}
         <div className="flex items-center justify-end gap-3">
           {/* An upload can take long, so which step is under way is said beside the button, whose label stays. */}
           {upload.isPending || linkPending || localImport.isPending ? (
@@ -1302,7 +1388,7 @@ export function NewPage() {
             variant="primary"
             data-testid="new-submit"
             loading={linkPending || upload.isPending || localImport.isPending}
-            disabled={windowMissing}
+            disabled={windowMissing || gate !== "ready"}
           >
             {t("shell.newPage.submit")}
           </Button>
