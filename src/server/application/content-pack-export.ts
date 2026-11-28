@@ -109,9 +109,13 @@ function formatVersionOf(build: PackExportBuild): number {
   return build.contents.some((content) => content.document.cover !== undefined) ? CONTENT_PACK_COVER_FORMAT_VERSION : CONTENT_PACK_BASE_FORMAT_VERSION;
 }
 
-/** Platform Contents that travel with their cover URL only, having no local copy to carry. */
+/**
+ * Platform Contents that travel with their cover URL only, having no local copy to carry: once
+ * that address expires they show no cover. Local files and platform Contents without a cover
+ * address have none to lose, so they are not counted.
+ */
 function coversLeftOut(build: PackExportBuild): number {
-  return build.contents.filter((content) => isPlatform(content.document.source.kind) && content.document.cover === undefined).length;
+  return build.contents.filter(({ document }) => isPlatform(document.source.kind) && document.coverUrl !== undefined && document.cover === undefined).length;
 }
 
 function notFound(): AmberError {

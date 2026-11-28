@@ -1,4 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import type { ContentPackExportPlanDto, ExportPlanContent } from "../../../../src/shared/dto/content-pack.ts";
 import { ExportPackDialog } from "../../../../src/web/pages/content-pack/export-dialog.tsx";
@@ -41,6 +43,23 @@ function content(id: string, title: string, extra: Partial<ExportPlanContent> = 
     media: [{ assetId: `${id}-v`, kind: "original", mimeType: "video/mp4", sizeBytes: 1024 * 1024 * 1024 }],
     ...extra,
   };
+}
+
+/** The route the app is on, to see where a link went. */
+function Where() {
+  const location = useLocation();
+  return <p data-testid="where">{`${location.pathname}${location.hash}`}</p>;
+}
+
+/** The dialog as a page holds it: open until it asks to close. */
+function Host(props: { request: { contentIds: string[] } }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <>
+      <ExportPackDialog open={open} onClose={() => setOpen(false)} request={props.request} />
+      <Where />
+    </>
+  );
 }
 
 const PLAN: ContentPackExportPlanDto = {
@@ -165,5 +184,40 @@ describe("ExportPackDialog", () => {
     fireEvent.click(screen.getByTestId("pack-export-cancel"));
     await waitFor(() => expect(screen.getByTestId("pack-export-job").getAttribute("data-status")).toBe("cancelled"));
     expect(api.calls.some((call) => call.path === "/api/content-packs/export-plan")).toBe(false);
+  });
+
+  it("after a pack that left covers out, says what the other device will show and leads to saving the covers here", async () => {
+    routes("server", {
+      "GET /api/content-packs/active": { body: { exportJobId: "job7" } },
+      "GET /api/content-packs/exports/job7": {
+        body: { jobId: "job7", status: "succeeded", phase: "finalize", bytesDone: 1, bytesTotal: 1, result: { fileName: "课程.amberpack", sizeBytes: 2048, contents: 3, coversLeftOut: 2 } },
+      },
+    });
+    renderApp(<Host request={{ contentIds: ["c1"] }} />, { mode: "server", route: "/library" });
+    const note = await screen.findByTestId("pack-export-covers-left-out");
+    expect(note.textContent).toBe(
+      "2 条内容没有带上封面，导入后会显示原平台的封面（地址失效时不显示）。这个文件不会自动更新；先把封面保存到本机，再导出一次就能带上。保存封面到本机",
+    );
+    const link = within(note).getByRole("link", { name: "保存封面到本机" });
+    expect(link.getAttribute("href")).toBe("/settings/storage#covers");
+    fireEvent.click(link);
+    expect(screen.getByTestId("where").textContent).toBe("/settings/storage#covers");
+    await waitFor(() => expect(screen.queryByTestId("pack-export-job")).toBeNull());
+  });
+
+  it("says nothing about covers when every cover that could travel did, or the server did not say", async () => {
+    for (const coversLeftOut of [0, undefined]) {
+      routes("server", {
+        "GET /api/content-packs/active": { body: { exportJobId: "job8" } },
+        "GET /api/content-packs/exports/job8": {
+          body: { jobId: "job8", status: "succeeded", phase: "finalize", bytesDone: 1, bytesTotal: 1, result: { fileName: "课程.amberpack", sizeBytes: 2048, contents: 1, ...(coversLeftOut === undefined ? {} : { coversLeftOut }) } },
+        },
+      });
+      const view = open("server", { contentIds: ["c1"] });
+      expect((await screen.findByTestId("pack-export-job")).getAttribute("data-status")).toBe("succeeded");
+      expect(screen.queryByTestId("pack-export-covers-left-out")).toBeNull();
+      expect(screen.queryByRole("link", { name: "保存封面到本机" })).toBeNull();
+      view.unmount();
+    }
   });
 });

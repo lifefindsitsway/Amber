@@ -3,6 +3,7 @@ import { Download } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import { CONTENT_PACK_FILE_EXTENSION } from "../../../shared/backup-names.ts";
 import type { ContentPackExportJobDto, ContentPackExportPlanDto, ExportPlanContent } from "../../../shared/dto/content-pack.ts";
 import type { AppError } from "../../../shared/errors.ts";
@@ -16,7 +17,7 @@ import { Button, buttonClass } from "../../ui/button.tsx";
 import { Checkbox } from "../../ui/checkbox.tsx";
 import { Loading } from "../../ui/feedback.tsx";
 import { Modal } from "../../ui/modal.tsx";
-import { Callout, InlineNote, NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
+import { Callout, InlineNote, NOTE_TEXT_CLASS, TEXT_ACTION_CLASS } from "../../ui/notice.tsx";
 import { BlockedCard, ExportCard, useSummaryLine } from "./export-card.tsx";
 import {
   applyToContent,
@@ -547,6 +548,9 @@ function ExportJobView(props: { jobId: string; onBack: (() => void) | undefined;
   return <ExportJobBody job={job.data} cancelling={cancel.isPending} onCancel={() => cancel.mutate()} onBack={props.onBack} onClose={props.onClose} />;
 }
 
+/** Where the covers of existing Contents are saved locally, so a new export can carry them. */
+const SAVE_COVERS_TARGET = "/settings/storage#covers";
+
 function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolean; onCancel: () => void; onBack: (() => void) | undefined; onClose: () => void }) {
   const { t, i18n } = useTranslation();
   const client = useApi();
@@ -591,6 +595,21 @@ function ExportJobBody(props: { job: ContentPackExportJobDto; cancelling: boolea
               </a>
               {result.expiresAt === undefined ? null : <p className={NOTE_TEXT_CLASS}>{t("contentPack.export.downloadHint", { time: formatDateTime(result.expiresAt, i18n.language) })}</p>}
             </div>
+          )}
+          {result.coversLeftOut === undefined || result.coversLeftOut === 0 ? null : (
+            <InlineNote
+              className="mt-3"
+              testId="pack-export-covers-left-out"
+              action={
+                // The storage page brings its cover section into view from the hash; the dialog
+                // closes first so the page is not left behind it.
+                <Link to={SAVE_COVERS_TARGET} onClick={props.onClose} className={TEXT_ACTION_CLASS} data-testid="pack-export-save-covers">
+                  {t("contentPack.export.saveCovers")}
+                </Link>
+              }
+            >
+              {t("contentPack.export.coversLeftOut", { count: result.coversLeftOut })}
+            </InlineNote>
           )}
         </div>
       ) : null}

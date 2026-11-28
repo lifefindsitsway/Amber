@@ -190,6 +190,9 @@ export const contentPack = {
     succeeded: "导出完成",
     savedAs: "已保存为 {{name}}",
     resultDetail: "{{count}} 条内容 · {{size}}",
+    /** Platform Contents that have a cover address but went without a local cover copy. */
+    coversLeftOut: "{{count}} 条内容没有带上封面，导入后会显示原平台的封面（地址失效时不显示）。这个文件不会自动更新；先把封面保存到本机，再导出一次就能带上。",
+    saveCovers: "保存封面到本机",
     download: "下载 {{name}}",
     downloadHint: "文件由浏览器直接保存到下载目录；下载链接在 {{time}} 前有效，下载完成后服务器上的临时文件会删除。",
     expired: "下载链接已过期，请重新导出。",

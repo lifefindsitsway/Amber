@@ -54,6 +54,25 @@ describe("ContentPackExportService", () => {
     expect(env.gate.sharedHeld()).toBe(0);
   });
 
+  it("counts as covers left out only platform Contents with a cover address and no cover copy in the pack", async () => {
+    const env = setup();
+    const { build } = sampleBuild(env.outside, { count: 4, cover: (index) => index === 3 });
+    const platform = (index: number) => ({ kind: "bilibili" as const, platformContentId: `BV1Lef${index}41c7m`, sourceUrl: `https://www.bilibili.com/video/BV1Lef${index}41c7m` });
+    const [local, noAddress, covered, leftOut] = build.contents;
+    if (local === undefined || noAddress === undefined || covered === undefined || leftOut === undefined) throw new Error("expected four contents");
+    // A local file, even with an address on it, never had a platform cover to show.
+    local.document = { ...local.document, coverUrl: "https://i0.hdslb.com/bfs/archive/local.jpg" };
+    noAddress.document = { ...noAddress.document, source: platform(2) };
+    covered.document = { ...covered.document, coverUrl: "https://i0.hdslb.com/bfs/archive/covered.jpg" };
+    leftOut.document = { ...leftOut.document, source: platform(4), coverUrl: "https://i0.hdslb.com/bfs/archive/left-out.jpg" };
+    env.engine.script.build = build;
+    const service = env.exports();
+    const target = join(env.outside, "covers.amberpack");
+    const { jobId } = await service.start(alice, { selection, grant: env.grant(target, "pack_output") });
+    await until(() => service.get(alice, jobId).status !== "running");
+    expect(service.get(alice, jobId)).toMatchObject({ status: "succeeded", result: { contents: 4, coversLeftOut: 1 } });
+  });
+
   it("refuses a missing or foreign grant, and a destination with the wrong extension", async () => {
     const env = setup();
     const service = env.exports();
@@ -302,6 +321,7 @@ describe("ContentPackExportService over a library: cover copies", () => {
     expect(documents.header.formatVersion).toBe(CONTENT_PACK_BASE_FORMAT_VERSION);
     expect(documents.contents.map((content) => "cover" in content.document)).toEqual([false, false]);
     expect(documents.header.entries.some((entry) => entry.name.endsWith("/cover.webp"))).toBe(false);
-    expect(job.result?.coversLeftOut).toBe(2);
+    // The second has no cover address, so it has no cover to lose and is not counted.
+    expect(job.result?.coversLeftOut).toBe(1);
   });
 });
