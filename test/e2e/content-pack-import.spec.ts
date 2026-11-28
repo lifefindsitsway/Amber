@@ -35,7 +35,7 @@ test("server mode: upload, decide, import, read the result and retry the collect
   // One line of conclusion per Content, in the pack's order.
   await expect(dialog.getByTestId("pack-import-conclusion")).toHaveText([
     "本机没有 · 将新建",
-    "匹配到《第一讲：检索增强生成》· 合并资料",
+    "匹配到「第一讲：检索增强生成」· 合并资料",
     "本机有 2 条可能对应的内容 · 需要你选择",
     /本机对应的内容在回收站中 · 先恢复或彻底删除/,
     "本机没有 · 将新建",
@@ -78,7 +78,7 @@ test("server mode: upload, decide, import, read the result and retry the collect
   await expect(rowOf(dialog, "c-over").getByTestId("pack-import-over-figures")).toContainText("插图超出上限 3 张（每条内容最多 100 张）");
   await rowOf(dialog, "c-over").getByTestId("pack-import-category-figures").uncheck();
   await rowOf(dialog, "c-media").getByLabel(/录屏（又一份）/).check();
-  await expect(rowOf(dialog, "c-media").getByTestId("pack-import-conclusion")).toHaveText("音视频与《录屏（又一份）》相同 · 合并资料");
+  await expect(rowOf(dialog, "c-media").getByTestId("pack-import-conclusion")).toHaveText("音视频与「录屏（又一份）」相同 · 合并资料");
   await expect(start).toBeEnabled();
 
   // 「合并到其它内容」 names a target by hand; a far-off duration is flagged.
@@ -89,11 +89,11 @@ test("server mode: upload, decide, import, read the result and retry the collect
   await expect(option).toContainText("两边时长相差较多");
   await option.getByRole("button").click();
   await expect(picker).toHaveCount(0);
-  await expect(rowOf(dialog, "c-new").getByTestId("pack-import-conclusion")).toHaveText("合并到《第二讲：评测与对齐》");
+  await expect(rowOf(dialog, "c-new").getByTestId("pack-import-conclusion")).toHaveText("合并到「第二讲：评测与对齐」");
 
   // A same-named collection is new unless the user joins it.
   const collection = dialog.getByTestId("pack-import-collection");
-  await expect(collection).toContainText("本机有同名合集《生成式软件工程》，无法确认是同一个");
+  await expect(collection).toContainText("本机有同名合集「生成式软件工程」，无法确认是同一个");
   await expect(collection.getByTestId("pack-import-collection-action")).toHaveValue("create");
   await collection.getByTestId("pack-import-collection-action").selectOption(`join:${COURSE}`);
 
@@ -195,19 +195,19 @@ test("two carried Contents matching one local Content: each is decided apart, an
   const second = rowOf(dialog, "c-twin-2");
   // Nothing chosen for either: not merged, not imported as new.
   for (const row of [first, second]) {
-    await expect(row.getByTestId("pack-import-conclusion")).toHaveText("与《录屏（导入的副本）》匹配，包里还有别的内容也匹配到它 · 需要你选择");
+    await expect(row.getByTestId("pack-import-conclusion")).toHaveText("与「录屏（导入的副本）」匹配，包里还有别的内容也匹配到它 · 需要你选择");
     await expect(row.getByTestId("pack-import-action")).toHaveValue("");
   }
-  await expect(first.getByTestId("pack-import-shared")).toHaveText("「录屏：下午场」和这一条都与本机《录屏（导入的副本）》匹配，请分别决定。");
+  await expect(first.getByTestId("pack-import-shared")).toHaveText("「录屏：下午场」和这一条都与本机「录屏（导入的副本）」匹配，请分别决定。");
   const start = dialog.getByTestId("pack-import-start");
   await expect(start).toBeDisabled();
   await expect(dialog.getByTestId("pack-import-totals")).toContainText("还有 2 条需要你选择对应的内容。");
 
   // The first goes into the local recording; the second chooses the same one and is stopped there.
   await first.getByLabel(/录屏（导入的副本）/).check();
-  await expect(first.getByTestId("pack-import-conclusion")).toHaveText("音视频与《录屏（导入的副本）》相同 · 合并资料");
+  await expect(first.getByTestId("pack-import-conclusion")).toHaveText("音视频与「录屏（导入的副本）」相同 · 合并资料");
   await second.getByLabel(/录屏（导入的副本）/).check();
-  await expect(second.getByTestId("pack-import-same-target")).toHaveText("「录屏：上午场」也要合并到《录屏（导入的副本）》。一次导入里，一条本机内容只能合并一条，请改选其中一条。");
+  await expect(second.getByTestId("pack-import-same-target")).toHaveText("「录屏：上午场」也要合并到「录屏（导入的副本）」。一次导入里，一条本机内容只能合并一条，请改选其中一条。");
   await expect(first.getByTestId("pack-import-same-target")).toBeVisible();
   await expect(start).toBeDisabled();
   await expect(dialog.getByTestId("pack-import-totals")).toContainText("有 2 条内容要合并到同一条本机内容，请改选。");
@@ -219,7 +219,7 @@ test("two carried Contents matching one local Content: each is decided apart, an
   const picker = page.getByRole("dialog", { name: "合并到其它内容" });
   await picker.getByTestId("pack-target-option").filter({ hasText: "录屏（导入的副本）" }).getByRole("button").click();
   await expect(picker).toHaveCount(0);
-  await expect(second.getByTestId("pack-import-conclusion")).toHaveText("合并到《录屏（导入的副本）》");
+  await expect(second.getByTestId("pack-import-conclusion")).toHaveText("合并到「录屏（导入的副本）」");
   await expect(second.getByTestId("pack-import-same-target")).toBeVisible();
   await expect(start).toBeDisabled();
   // Nothing was ever sent while two rows shared a target.

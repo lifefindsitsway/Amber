@@ -65,6 +65,18 @@ export function titleOf(title: string | undefined, t: TFunction): string {
 }
 
 /**
+ * A title or collection name as a sentence cites it: in quotes, unless the text already opens
+ * and closes with the title marks (common on some platforms), in which case those are the only
+ * brackets shown. The text itself is never rewritten.
+ */
+export function quotedTitle(text: string, t: TFunction): string {
+  const open = t("contentPack.titleMarks.open");
+  const close = t("contentPack.titleMarks.close");
+  const marked = text.length >= open.length + close.length && text.startsWith(open) && text.endsWith(close);
+  return marked ? text : t("contentPack.quoted", { text });
+}
+
+/**
  * A local revision the preview describes only by kind, language, time and model, named as
  * the revision list names it (「校对稿 · deepseek-flash · 11-18 10:02」).
  */

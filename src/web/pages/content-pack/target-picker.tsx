@@ -18,7 +18,7 @@ import { NOTE_TEXT_CLASS } from "../../ui/notice.tsx";
 import { TextInput } from "../../ui/text-field.tsx";
 import { durationsDiffer } from "./import-model.ts";
 import { comparePack } from "./pack-api.ts";
-import { sourceLine, titleOf } from "./pack-labels.ts";
+import { quotedTitle, sourceLine, titleOf } from "./pack-labels.ts";
 
 /**
  * 「合并到其它内容」: the user names the local Content a carried one goes into. Nothing here is
@@ -71,7 +71,7 @@ function PickerBody(props: { jobId: string; item: PackPreviewContent; onPicked: 
   });
   return (
     <div className="flex flex-col gap-3 text-sm" data-testid="pack-target-picker">
-      <p className="text-muted">{t("contentPack.import.mergeOther.intro", { title: titleOf(props.item.title, t) })}</p>
+      <p className="text-muted">{t("contentPack.import.mergeOther.intro", { title: quotedTitle(titleOf(props.item.title, t), t) })}</p>
       <TextInput
         type="search"
         size="md"

@@ -49,7 +49,7 @@ import {
   type ContentDraft,
 } from "./import-model.ts";
 import { commitImport, comparePack } from "./pack-api.ts";
-import { bytesLabel, describedRevisionLabel, packRevisionLabel, sourceLine, titleOf } from "./pack-labels.ts";
+import { bytesLabel, describedRevisionLabel, packRevisionLabel, quotedTitle, sourceLine, titleOf } from "./pack-labels.ts";
 import { revisionTimeLabel } from "../content/labels.ts";
 import { TargetPicker } from "./target-picker.tsx";
 
@@ -97,7 +97,7 @@ export function ImportPreview(props: {
   const shared = useMemo(() => sharedMatches(preview), [preview]);
   const clashes = clashingTargets(preview, drafts);
   const titleByKey = new Map(preview.contents.map((item) => [item.key, titleOf(item.title, t)]));
-  const othersOf = (keys: readonly string[]): string => keys.map((key) => t("contentPack.quoted", { text: titleByKey.get(key) ?? "" })).join(t("contentPack.listSeparator"));
+  const othersOf = (keys: readonly string[]): string => keys.map((key) => quotedTitle(titleByKey.get(key) ?? "", t)).join(t("contentPack.listSeparator"));
 
   const commit = useMutation({
     mutationFn: async (): Promise<ContentPackImportJobDto | undefined> => {
@@ -245,7 +245,7 @@ function useConclusionText(): (item: PackPreviewContent, draft: ContentDraft, sh
       case "mergeMedia":
       case "mergeOther":
       case "shared":
-        return t(`contentPack.import.conclusion.${conclusion.kind}`, { title: titleOf(conclusion.title, t) });
+        return t(`contentPack.import.conclusion.${conclusion.kind}`, { title: quotedTitle(titleOf(conclusion.title, t), t) });
       case "choose":
         return t("contentPack.import.conclusion.choose", { count: conclusion.count });
       default:
@@ -336,12 +336,12 @@ function ContentRow(props: {
           ) : null}
           {props.shared !== undefined && !trashed && draft.action === undefined ? (
             <InlineNote className="mt-1.5" testId="pack-import-shared">
-              {t("contentPack.import.shared", { others: props.shared.others, title: titleOf(props.shared.title, t) })}
+              {t("contentPack.import.shared", { others: props.shared.others, title: quotedTitle(titleOf(props.shared.title, t), t) })}
             </InlineNote>
           ) : null}
           {props.clash !== undefined ? (
             <Callout tone="error" density="compact" announce="alert" className="mt-1.5" testId="pack-import-same-target">
-              {t("contentPack.import.sameTarget", { others: props.clash.others, title: targetTitle(item, draft, t) })}
+              {t("contentPack.import.sameTarget", { others: props.clash.others, title: quotedTitle(targetTitle(item, draft, t), t) })}
             </Callout>
           ) : null}
         </div>
@@ -349,7 +349,7 @@ function ContentRow(props: {
           <NativeSelect
             size="md"
             className="max-w-56"
-            aria-label={t("contentPack.import.action.label", { title })}
+            aria-label={t("contentPack.import.action.label", { title: quotedTitle(title, t) })}
             value={trashed ? "skip" : value}
             disabled={trashed}
             onChange={(event) => choose(event.target.value as ActionValue)}
@@ -377,7 +377,7 @@ function ContentRow(props: {
               className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-sunken focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               aria-expanded={props.open}
               aria-controls={detailsId}
-              aria-label={props.open ? t("contentPack.import.hideDetails", { title }) : t("contentPack.import.showDetails", { title })}
+              aria-label={props.open ? t("contentPack.import.hideDetails", { title: quotedTitle(title, t) }) : t("contentPack.import.showDetails", { title: quotedTitle(title, t) })}
               onClick={props.onToggle}
               data-testid="pack-import-details-toggle"
             >
@@ -496,7 +496,7 @@ function TargetSection(props: { jobId: string; item: PackPreviewContent; draft: 
       ) : null}
       {draft.manualTarget === true ? (
         <div className="text-sm" data-testid="pack-import-manual-target">
-          <span className="font-medium">{t("contentPack.import.conclusion.mergeOther", { title: draft.targetTitle ?? t("contentPack.untitled") })}</span>
+          <span className="font-medium">{t("contentPack.import.conclusion.mergeOther", { title: quotedTitle(titleOf(draft.targetTitle, t), t) })}</span>
           <TextAction className="ml-2" onClick={() => props.onChange(initialDraft(item))}>
             {t("contentPack.import.mergeOther.reset")}
           </TextAction>
@@ -806,7 +806,7 @@ function Details(props: { item: PackPreviewContent; draft: ContentDraft; onChang
       >
         {confirmingPrimary === undefined ? null : (
           <p className="text-sm" data-testid="pack-import-confirm-primary">
-            {t("contentPack.import.revision.confirmPrimary", { title: targetTitle(item, draft, t), label: packRevisionLabel(confirmingPrimary, t, i18n) })}
+            {t("contentPack.import.revision.confirmPrimary", { title: quotedTitle(targetTitle(item, draft, t), t), label: packRevisionLabel(confirmingPrimary, t, i18n) })}
           </p>
         )}
       </Modal>
@@ -821,9 +821,9 @@ function CollectionRow(props: { collection: PackPreviewCollection; draft: Collec
   const value = !props.usable ? "skip" : draft.action === "join" && draft.targetCollectionId !== undefined ? `join:${draft.targetCollectionId}` : draft.action;
   const status =
     collection.match === "same" && candidate !== undefined
-      ? t("contentPack.import.collection.same", { name: candidate.name })
+      ? t("contentPack.import.collection.same", { name: quotedTitle(candidate.name, t) })
       : collection.match === "same_name" && candidate !== undefined
-        ? t("contentPack.import.collection.sameName", { name: candidate.name })
+        ? t("contentPack.import.collection.sameName", { name: quotedTitle(candidate.name, t) })
         : t("contentPack.import.collection.new");
   return (
     <li className="flex flex-wrap items-start gap-x-3 gap-y-2 px-3 py-2.5" data-testid="pack-import-collection" data-key={collection.key} data-match={collection.match}>
@@ -836,7 +836,7 @@ function CollectionRow(props: { collection: PackPreviewCollection; draft: Collec
       <NativeSelect
         size="md"
         className="max-w-56"
-        aria-label={t("contentPack.import.collection.label", { name: collection.name })}
+        aria-label={t("contentPack.import.collection.label", { name: quotedTitle(collection.name, t) })}
         value={value}
         disabled={!props.usable}
         onChange={(event) => {
@@ -849,7 +849,7 @@ function CollectionRow(props: { collection: PackPreviewCollection; draft: Collec
         {collection.match === "same" ? null : <option value="create">{t("contentPack.import.collection.create")}</option>}
         {collection.candidates.map((target) => (
           <option key={target.collectionId} value={`join:${target.collectionId}`}>
-            {collection.match === "same_name" ? t("contentPack.import.collection.joinSameName", { name: target.name }) : t("contentPack.import.collection.join", { name: target.name })}
+            {collection.match === "same_name" ? t("contentPack.import.collection.joinSameName", { name: quotedTitle(target.name, t) }) : t("contentPack.import.collection.join", { name: quotedTitle(target.name, t) })}
           </option>
         ))}
         <option value="skip">{t("contentPack.import.collection.skip")}</option>

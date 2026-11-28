@@ -78,7 +78,7 @@ describe("ImportPackDialog preview", () => {
     expect(within(rowOf("new")).getByTestId("pack-import-conclusion").textContent).toBe("本机没有 · 将新建");
     expect(within(rowOf("new")).getByTestId("pack-import-changes").textContent).toBe("新增字幕 1 份 · 新增插图 3 张 · 新增音视频 1 个");
     expect(within(rowOf("new")).queryByTestId("pack-import-details")).toBeNull();
-    expect(within(rowOf("same")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到《本机的第二讲》· 合并资料");
+    expect(within(rowOf("same")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到「本机的第二讲」· 合并资料");
     // Differing figures open the row and offer the pack's version, off by default.
     const adopt = within(rowOf("same")).getByTestId("pack-import-adopt-toggle") as HTMLInputElement;
     expect(adopt.checked).toBe(false);
@@ -89,6 +89,30 @@ describe("ImportPackDialog preview", () => {
     expect((within(rowOf("trash")).getByTestId("pack-import-action") as HTMLSelectElement).disabled).toBe(true);
     expect(within(rowOf("over")).getByTestId("pack-import-over-figures").textContent).toContain("超出上限 3 张");
     expect(screen.queryByText(/[0-9A-Z]{20,}/)).toBeNull();
+  });
+
+  it("cites titles in 「」 inside sentences, never adds a second pair to a title in 《》, and shows a title on its own line as it is", async () => {
+    const preview: ContentPackPreviewDto = {
+      ...PREVIEW,
+      contents: [
+        item("marked", { title: "《三体》", sourceKind: "douyin", match: "same", candidates: [candidate("x", "《三体》")], diff: diff({ targetContentId: "x" }) }),
+        item("inner", { title: "《三体》第一集", sourceKind: "douyin", match: "same", candidates: [candidate("y", "《三体》第一集")], diff: diff({ targetContentId: "y" }) }),
+      ],
+      collections: [{ key: "k", name: "《科幻》", contentKeys: ["marked"], match: "same", candidates: [{ collectionId: "col", name: "《科幻》", memberCount: 4 }] }],
+    };
+    routes("server", () => job({ preview }));
+    renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
+    await screen.findByTestId("pack-import-preview");
+    expect(within(rowOf("marked")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到《三体》· 合并资料");
+    expect(within(rowOf("marked")).getByTitle("《三体》").textContent).toBe("《三体》");
+    expect(within(rowOf("marked")).getByTestId("pack-import-action").getAttribute("aria-label")).toBe("如何处理《三体》");
+    // Marks only inside the title are part of the text, so the title is still quoted.
+    expect(within(rowOf("inner")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到「《三体》第一集」· 合并资料");
+    expect(within(rowOf("inner")).getByTitle("《三体》第一集").textContent).toBe("《三体》第一集");
+    const collection = screen.getByTestId("pack-import-collection");
+    expect(within(collection).getByText("对应本机《科幻》· 加入，只补充还不在里面的成员")).toBeTruthy();
+    expect(within(collection).getByTestId("pack-import-collection-action").getAttribute("aria-label")).toBe("如何处理合集《科幻》");
+    expect(within(collection).getByRole("option", { name: "加入《科幻》" })).toBeTruthy();
   });
 
   it("says platform source links may carry access parameters, only when the pack holds a platform Content", async () => {
@@ -121,7 +145,7 @@ describe("ImportPackDialog preview", () => {
     expect(start.disabled).toBe(true);
     expect(screen.getByText("还有 1 条需要你选择对应的内容。")).toBeTruthy();
     fireEvent.click(within(rowOf("two")).getByLabelText(/候选乙/));
-    await waitFor(() => expect(within(rowOf("two")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到《候选乙》· 合并资料"));
+    await waitFor(() => expect(within(rowOf("two")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到「候选乙」· 合并资料"));
     expect(start.disabled).toBe(true);
     fireEvent.click(within(rowOf("over")).getByTestId("pack-import-category-figures"));
     await waitFor(() => expect(start.disabled).toBe(false));
@@ -157,7 +181,7 @@ describe("ImportPackDialog preview", () => {
     // Checked at once, not only after the comparison's pending state reaches React on a later tick.
     expect(radio.checked).toBe(true);
     expect((within(rowOf("two")).getByLabelText(/候选甲/) as HTMLInputElement).checked).toBe(false);
-    await waitFor(() => expect(within(rowOf("two")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到《候选乙》· 合并资料"));
+    await waitFor(() => expect(within(rowOf("two")).getByTestId("pack-import-conclusion").textContent).toBe("匹配到「候选乙」· 合并资料"));
     expect(radio.checked).toBe(true);
   });
 
@@ -283,7 +307,7 @@ describe("ImportPackDialog details the server added", () => {
     renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
     await screen.findByTestId("pack-import-preview");
     // Differing notes open the row by themselves.
-    expect(within(rowOf("m")).getByTestId("pack-import-same-text").textContent).toBe("与本机《校对稿 · deepseek-flash · 11-18 10:02》文字和时间都相同，仍作为独立版本导入");
+    expect(within(rowOf("m")).getByTestId("pack-import-same-text").textContent).toBe("与本机「校对稿 · deepseek-flash · 11-18 10:02」文字和时间都相同，仍作为独立版本导入");
     const times = within(rowOf("m")).getByTestId("pack-import-adopt-times");
     expect(times.textContent).toContain("笔记最近修改：本机 11-18 10:02 · 包里 11-17 21:30");
     expect(times.textContent).toContain("两台设备的时钟未必一致，仅供参考。");
@@ -297,19 +321,19 @@ describe("ImportPackDialog details the server added", () => {
     renderApp(<ImportPackDialog open onClose={() => undefined} />, { mode: "server" });
     await screen.findByTestId("pack-import-preview");
     for (const key of ["a", "b"]) {
-      expect(within(rowOf(key)).getByTestId("pack-import-conclusion").textContent).toBe("与《本机录屏》匹配，包里还有别的内容也匹配到它 · 需要你选择");
+      expect(within(rowOf(key)).getByTestId("pack-import-conclusion").textContent).toBe("与「本机录屏」匹配，包里还有别的内容也匹配到它 · 需要你选择");
       expect((within(rowOf(key)).getByTestId("pack-import-action") as HTMLSelectElement).value).toBe("");
     }
-    expect(within(rowOf("a")).getByTestId("pack-import-shared").textContent).toBe("「录屏乙」和这一条都与本机《本机录屏》匹配，请分别决定。");
+    expect(within(rowOf("a")).getByTestId("pack-import-shared").textContent).toBe("「录屏乙」和这一条都与本机「本机录屏」匹配，请分别决定。");
     const start = screen.getByTestId("pack-import-start") as HTMLButtonElement;
     expect(start.disabled).toBe(true);
     expect(screen.getByText("还有 2 条需要你选择对应的内容。")).toBeTruthy();
 
     fireEvent.click(within(rowOf("a")).getByLabelText(/本机录屏/));
-    await waitFor(() => expect(within(rowOf("a")).getByTestId("pack-import-conclusion").textContent).toBe("音视频与《本机录屏》相同 · 合并资料"));
+    await waitFor(() => expect(within(rowOf("a")).getByTestId("pack-import-conclusion").textContent).toBe("音视频与「本机录屏」相同 · 合并资料"));
     fireEvent.click(within(rowOf("b")).getByLabelText(/本机录屏/));
     await waitFor(() => expect(within(rowOf("b")).getByTestId("pack-import-same-target")).toBeTruthy());
-    expect(within(rowOf("b")).getByTestId("pack-import-same-target").textContent).toBe("「录屏甲」也要合并到《本机录屏》。一次导入里，一条本机内容只能合并一条，请改选其中一条。");
+    expect(within(rowOf("b")).getByTestId("pack-import-same-target").textContent).toBe("「录屏甲」也要合并到「本机录屏」。一次导入里，一条本机内容只能合并一条，请改选其中一条。");
     expect(within(rowOf("a")).getByTestId("pack-import-same-target")).toBeTruthy();
     expect(start.disabled).toBe(true);
     expect(screen.getByText("有 2 条内容要合并到同一条本机内容，请改选。")).toBeTruthy();

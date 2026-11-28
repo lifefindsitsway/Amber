@@ -33,7 +33,7 @@ import {
   type ExportChoice,
 } from "./export-model.ts";
 import { cancelExport, downloadUrl, fetchExportPlan, packKeys, startExport, useActivePackJobs, useExportJob } from "./pack-api.ts";
-import { bytesLabel, titleOf } from "./pack-labels.ts";
+import { bytesLabel, quotedTitle, titleOf } from "./pack-labels.ts";
 
 /** What the wizard exports: Contents in the order they were picked, and the page it was opened from. */
 export interface ExportRequest {
@@ -458,10 +458,10 @@ function ExportConfirm(props: {
           ))}
         </ul>
         {blocked.length === 0 ? null : (
-          <p className={`mt-1.5 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.confirm.skipped", { titles: blocked.map((content) => t("contentPack.quoted", { text: titleOf(content.title, t) })).join(t("contentPack.listSeparator")) })}</p>
+          <p className={`mt-1.5 ${NOTE_TEXT_CLASS}`}>{t("contentPack.export.confirm.skipped", { titles: blocked.map((content) => quotedTitle(titleOf(content.title, t), t)).join(t("contentPack.listSeparator")) })}</p>
         )}
         <p className={`mt-1.5 ${NOTE_TEXT_CLASS}`}>
-          {collectionNames.length === 0 ? t("contentPack.export.confirm.noCollections") : t("contentPack.export.confirm.collections", { names: collectionNames.map((name) => t("contentPack.quoted", { text: name })).join(t("contentPack.listSeparator")) })}
+          {collectionNames.length === 0 ? t("contentPack.export.confirm.noCollections") : t("contentPack.export.confirm.collections", { names: collectionNames.map((name) => quotedTitle(name, t)).join(t("contentPack.listSeparator")) })}
         </p>
       </section>
       <section data-testid="pack-export-checks">

@@ -4,8 +4,13 @@ export const contentPack = {
   untitled: "未命名内容",
   separator: " · ",
   listSeparator: "、",
-  /** A title or name quoted inside a sentence. */
+  /**
+   * A title or name inside a sentence. Sentences take the title already quoted (`{{title}}`,
+   * `{{name}}`), so a title that carries its own `titleMarks` is not wrapped a second time.
+   */
   quoted: "「{{text}}」",
+  /** Brackets a platform title often carries itself; a title wrapped in them is cited as it is. */
+  titleMarks: { open: "《", close: "》" },
   source: {
     bilibili: "B 站",
     youtube: "YouTube",
@@ -123,7 +128,7 @@ export const contentPack = {
       notesOnUnselected: "有 {{count}} 条笔记标在未选的版本上，不会带上。",
       figuresOnUnselected: "有 {{count}} 张插图的位置依据未选的版本，到新设备上会按时间落位。",
       includeVersions: "一并带上这些版本",
-      standalone: "{{labels}} 的上一个版本没有带上，到新设备上它会成为一份独立的文稿。",
+      standalone: "{{labels}}的上一个版本没有带上，到新设备上它会成为一份独立的文稿。",
       noTranscript: "没带字幕稿：到新设备上需要重新转录或导入字幕。",
       nothingToCarry: "这条本地内容至少要带字幕稿或一个音视频文件。",
     },
@@ -214,20 +219,20 @@ export const contentPack = {
     collectionsTitle: "合集",
     conclusion: {
       new: "本机没有 · 将新建",
-      merge: "匹配到《{{title}}》· 合并资料",
-      mergeMedia: "音视频与《{{title}}》相同 · 合并资料",
-      mergeOther: "合并到《{{title}}》",
+      merge: "匹配到{{title}}· 合并资料",
+      mergeMedia: "音视频与{{title}}相同 · 合并资料",
+      mergeOther: "合并到{{title}}",
       importAsNew: "音视频与本机一条内容相同 · 作为新内容导入",
       choose: "本机有 {{count}} 条可能对应的内容 · 需要你选择",
       /** Several carried Contents match the same local one, so none was suggested. */
-      shared: "与《{{title}}》匹配，包里还有别的内容也匹配到它 · 需要你选择",
+      shared: "与{{title}}匹配，包里还有别的内容也匹配到它 · 需要你选择",
       trashed: "本机对应的内容在回收站中 · 先恢复或彻底删除",
       skip: "跳过",
     },
     /** Beside a row whose match other rows share. */
-    shared: "{{others}}和这一条都与本机《{{title}}》匹配，请分别决定。",
+    shared: "{{others}}和这一条都与本机{{title}}匹配，请分别决定。",
     /** Beside a row merged into a local Content another row also merges into. */
-    sameTarget: "{{others}}也要合并到《{{title}}》。一次导入里，一条本机内容只能合并一条，请改选其中一条。",
+    sameTarget: "{{others}}也要合并到{{title}}。一次导入里，一条本机内容只能合并一条，请改选其中一条。",
     reason: {
       origin: "来自同一条内容",
       mapped: "之前合并过",
@@ -235,7 +240,7 @@ export const contentPack = {
       platform: "同一个平台视频",
     },
     action: {
-      label: "如何处理「{{title}}」",
+      label: "如何处理{{title}}",
       import: "导入",
       merge: "合并",
       importAsNew: "作为新内容导入",
@@ -255,8 +260,8 @@ export const contentPack = {
       existing: "资料都已在本机",
     },
     details: "详情",
-    showDetails: "展开「{{title}}」的详情",
-    hideDetails: "收起「{{title}}」的详情",
+    showDetails: "展开{{title}}的详情",
+    hideDetails: "收起{{title}}的详情",
     trashLink: "打开回收站",
     candidates: {
       title: "选择要合并进的内容",
@@ -280,7 +285,7 @@ export const contentPack = {
     revision: {
       standalone: "原为{{kind}}，上一个版本没带来，会成为独立的文稿",
       rejected: "译文缺少原文版本，不能导入",
-      sameText: "与本机《{{label}}》文字和时间都相同，仍作为独立版本导入",
+      sameText: "与本机「{{label}}」文字和时间都相同，仍作为独立版本导入",
       sameTextUnknown: "与本机一个版本的文字和时间都相同，仍作为独立版本导入",
       becomesCurrent: "将成为该语言的当前译文",
       setCurrentTranslation: "设为当前译文",
@@ -289,7 +294,7 @@ export const contentPack = {
       setPrimary: "设为当前字幕稿",
       setPrimaryHint: "默认不改变当前字幕稿",
       confirmPrimaryTitle: "设为当前字幕稿？",
-      confirmPrimary: "导入后《{{title}}》的当前字幕稿会换成「{{label}}」。阅读、导出与之后的总结默认都用当前字幕稿；原来的版本仍保留在历史里。",
+      confirmPrimary: "导入后{{title}}的当前字幕稿会换成「{{label}}」。阅读、导出与之后的总结默认都用当前字幕稿；原来的版本仍保留在历史里。",
       confirmPrimaryAction: "设为当前字幕稿",
     },
     figures: {
@@ -335,7 +340,7 @@ export const contentPack = {
     },
     mergeOther: {
       title: "合并到其它内容",
-      intro: "为「{{title}}」选择本机的一条内容，包里的资料会合并进去。",
+      intro: "为{{title}}选择本机的一条内容，包里的资料会合并进去。",
       search: "搜索内容标题或原文",
       recent: "最近更新的内容",
       empty: "没有找到内容",
@@ -347,13 +352,13 @@ export const contentPack = {
     collection: {
       contains: "包含本次 {{count}} 条",
       new: "本机没有 · 将新建",
-      same: "对应本机《{{name}}》· 加入，只补充还不在里面的成员",
-      sameName: "本机有同名合集《{{name}}》，无法确认是同一个",
+      same: "对应本机{{name}}· 加入，只补充还不在里面的成员",
+      sameName: "本机有同名合集{{name}}，无法确认是同一个",
       create: "新建合集",
-      join: "加入《{{name}}》",
-      joinSameName: "加入现有的《{{name}}》",
+      join: "加入{{name}}",
+      joinSameName: "加入现有的{{name}}",
       skip: "不处理合集",
-      label: "如何处理合集「{{name}}」",
+      label: "如何处理合集{{name}}",
       allSkipped: "这个合集里的内容都选择了跳过，不处理",
       keepsName: "加入时不改本机合集的名称与说明",
     },
