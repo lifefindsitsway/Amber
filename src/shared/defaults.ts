@@ -275,6 +275,8 @@ export const COVER_IMAGE_MAX_BYTES = 524288;
 export const COVER_LOAD_CONCURRENCY = 6;
 /** How long the interface keeps a loaded cover image cached. */
 export const COVER_CACHE_GC_MS = 600000;
+/** How often the desktop shell reads the Windows system proxy. */
+export const SYSTEM_PROXY_POLL_MS = 2000;
 /** Longest system proxy message line the sidecar reads from stdin. */
 export const SYSTEM_PROXY_MESSAGE_MAX_BYTES = 16384;
 /** System proxy bypass entries handed to the sidecar at most; the rest are dropped. */

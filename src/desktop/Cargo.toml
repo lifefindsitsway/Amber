@@ -48,6 +48,9 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 # wry already depend on.
 webview2-com = "=0.39.1"
 windows-core = "=0.62.2"
+# Reads the current user's system proxy (WinHTTP) and releases the strings it returns
+# (GlobalFree); the version already in the lockfile through tauri's dependencies.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
 
 [profile.release]
 codegen-units = 1

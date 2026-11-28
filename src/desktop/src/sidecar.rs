@@ -15,12 +15,16 @@
 //! `SIDECAR_SHUTDOWN_GRACE_MS` has passed. It runs from `ShutdownGuard::drop`: Tauri
 //! clears the app resource table on normal exit, on restart and right before the updater
 //! starts an installer, so every exit path goes through the same code.
+//!
+//! On Windows the sidecar follows the user's system proxy: it gets the current proxy
+//! message in `AMBER_SYSTEM_PROXY` when spawned and later changes as lines on stdin. Stdin
+//! belongs to a writer thread of that process, so the supervisor never writes to the pipe.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -33,6 +37,7 @@ use crate::defaults::{SIDECAR_READY_TIMEOUT_MS, SIDECAR_RESTART_MAX, SIDECAR_SHU
 use crate::encoding::base64url;
 use crate::identity::LEGACY_APP_IDENTIFIER;
 use crate::master_key;
+use crate::system_proxy::{self, ProxyFeed, StdinWriter};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -68,7 +73,8 @@ struct Endpoint {
 
 struct Running {
     child: Child,
-    stdin: Option<ChildStdin>,
+    /// Dropping it closes the sidecar's stdin, the request to exit.
+    stdin: Option<StdinWriter>,
     pid: u32,
     endpoint: Option<Endpoint>,
 }
@@ -110,6 +116,8 @@ struct Inner {
     /// (credentials then report as unavailable). Same handling as the file grant key; only
     /// the sidecar receives it.
     secret_key: Mutex<Option<String>>,
+    /// The system proxy the sidecar follows; `None` where the shell does not read one.
+    proxy: Option<Arc<ProxyFeed>>,
 }
 
 impl Inner {
@@ -166,7 +174,7 @@ fn remove_legacy_state_dir(inner: &Arc<Inner>) {
 }
 
 impl Supervisor {
-    pub fn start(app: &AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn start(app: &AppHandle, proxy: Option<Arc<ProxyFeed>>) -> Result<Self, Box<dyn std::error::Error>> {
         let resource_dir = app.path().resource_dir()?;
         let paths = Paths {
             node: node_sidecar_path()?,
@@ -192,6 +200,7 @@ impl Supervisor {
             stop_lock: Mutex::new(()),
             file_grant_key,
             secret_key: Mutex::new(None),
+            proxy,
         });
         inner.log(&format!(
             "paths node={} resources={} data={}",
@@ -471,6 +480,12 @@ fn spawn_and_handshake(inner: &Arc<Inner>) -> Result<u32, String> {
             command.env(name, value);
         }
     }
+    // Taken before the spawn; a change after this snapshot reaches the new sidecar over
+    // stdin once its writer is attached below.
+    let proxy_snapshot = inner.proxy.as_ref().and_then(|feed| feed.snapshot());
+    if let Some((_, message)) = &proxy_snapshot {
+        command.env(system_proxy::ENV_VAR, message);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -480,7 +495,10 @@ fn spawn_and_handshake(inner: &Arc<Inner>) -> Result<u32, String> {
     let pid = child.id();
     let stdout = child.stdout.take().ok_or("sidecar stdout missing")?;
     let stderr = child.stderr.take().ok_or("sidecar stderr missing")?;
-    let stdin = child.stdin.take();
+    let stdin = child.stdin.take().map(StdinWriter::spawn);
+    if let (Some(feed), Some(writer), Some((seq, _))) = (&inner.proxy, &stdin, &proxy_snapshot) {
+        feed.attach(writer.slot(), *seq);
+    }
     inner.lock().running = Some(Running { child, stdin, pid, endpoint: None });
 
     let sidecar_log = paths.log_dir.join("sidecar.log");
@@ -577,6 +595,8 @@ fn shutdown(inner: &Inner) {
 
 /// Asks the sidecar to exit by closing its stdin (Windows has no POSIX signals) and kills
 /// its process tree once `SIDECAR_SHUTDOWN_GRACE_MS` has passed. Callers hold `stop_lock`.
+/// Stdin is closed by its writer thread; one stuck writing to a sidecar that does not read
+/// gets out when the kill breaks the pipe.
 fn stop(inner: &Inner, mut running: Running) {
     drop(running.stdin.take());
     let deadline = Instant::now() + Duration::from_millis(SIDECAR_SHUTDOWN_GRACE_MS);

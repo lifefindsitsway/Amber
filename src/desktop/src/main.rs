@@ -15,6 +15,7 @@ mod marker;
 mod master_key;
 mod pack;
 mod sidecar;
+mod system_proxy;
 mod update_download;
 
 /// Named default constants, generated from src/shared/defaults.ts by `pnpm build`.
@@ -78,7 +79,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let supervisor = Supervisor::start(app.handle())?;
+            // Read once before the first sidecar is spawned, then polled on its own thread.
+            let supervisor = Supervisor::start(app.handle(), system_proxy::start())?;
             app.resources_table().add(supervisor.shutdown_guard());
             app.manage(supervisor);
             app.manage(backup::NativeOps::default());
