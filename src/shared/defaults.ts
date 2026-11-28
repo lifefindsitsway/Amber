@@ -281,6 +281,8 @@ export const SYSTEM_PROXY_POLL_MS = 2000;
 export const SYSTEM_PROXY_MESSAGE_MAX_BYTES = 16384;
 /** System proxy bypass entries handed to the sidecar at most; the rest are dropped. */
 export const SYSTEM_PROXY_BYPASS_MAX_ENTRIES = 512;
+/** How often the model settings re-read the network status while visible. */
+export const NETWORK_STATUS_REFRESH_MS = 5000;
 
 /**
  * Longest wait from handing the encoded request to outbound HTTP until the model first

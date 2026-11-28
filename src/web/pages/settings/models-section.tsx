@@ -30,6 +30,7 @@ import { SuggestionInput } from "../../ui/suggestion-input.tsx";
 import { Tooltip } from "../../ui/tooltip.tsx";
 import { useDragOrder, type DragHandleProps } from "../../ui/use-drag-order.ts";
 import { VendorIcon } from "../../ui/vendor-icon.tsx";
+import { NetworkStatusLine, useSystemProxyRoute } from "./network-status.tsx";
 import { ProbeResult } from "./probe-result.tsx";
 import { ProfileEditor } from "./profile-editor.tsx";
 import { ConfirmButton, CredentialInput, describedBy, Field, fieldHintId, RequestError, SettingsBlock } from "./settings-ui.tsx";
@@ -50,6 +51,7 @@ export function ModelsSection() {
   const items = providers.data?.items ?? [];
   return (
     <div>
+      <NetworkStatusLine />
       <p className={`mb-4 ${NOTE_TEXT_CLASS}`}>{t("settings.models.intro")}</p>
       {items.length === 0 ? (
         <SettingsBlock>
@@ -369,6 +371,7 @@ function ModelRow({ profile, model, regionHint }: { profile: ProviderProfileDto;
   const [showOverride, setShowOverride] = useState(false);
   const pricing = useSetModelPricing("providers");
   const cacheObserved = useCacheObservedModel(profile.id, model.modelId);
+  const systemProxy = useSystemProxyRoute();
   const probe = useMutation({
     mutationFn: () =>
       client.post(`/api/providers/${encodeURIComponent(profile.id)}/probe`, probeResultDtoSchema, { body: { modelId: model.modelId }, idempotent: true }),
@@ -413,7 +416,7 @@ function ModelRow({ profile, model, regionHint }: { profile: ProviderProfileDto;
       )}
       {/* Always mounted, so screen readers announce each new verdict that replaces its content. */}
       <div role="status" aria-live="polite" data-testid="probe-live">
-        {probe.isPending ? null : <ProbeResult result={probe.data} error={probe.error ?? undefined} regionHint={regionHint} />}
+        {probe.isPending ? null : <ProbeResult result={probe.data} error={probe.error ?? undefined} regionHint={regionHint} systemProxy={systemProxy} />}
       </div>
       {showOverride ? <OverrideEditor profile={profile} model={model} /> : null}
     </li>

@@ -77,8 +77,21 @@ function useFailureSummary(): (error: unknown) => Summary {
  * says what to fix. It is meant to sit
  * inside a live region the caller keeps mounted, so a new verdict is announced. `regionHint` adds
  * that a rejected key may belong to another region, for services whose keys are per region.
+ * A result carries a quiet tag with the path the test request actually took (a result without
+ * one went direct); `systemProxy` names the proxy as the Windows system proxy (desktop client)
+ * rather than a proxy from the environment.
  */
-export function ProbeResult({ result, error, regionHint }: { result?: ProbeResultDto | undefined; error?: unknown; regionHint: boolean }) {
+export function ProbeResult({
+  result,
+  error,
+  regionHint,
+  systemProxy = false,
+}: {
+  result?: ProbeResultDto | undefined;
+  error?: unknown;
+  regionHint: boolean;
+  systemProxy?: boolean;
+}) {
   const { t } = useTranslation();
   const failure = useFailureSummary();
   if (result === undefined && error === undefined) {
@@ -97,11 +110,17 @@ export function ProbeResult({ result, error, regionHint }: { result?: ProbeResul
         {t("settings.models.probe.regionMismatch")}
       </p>
     ) : null;
+  const route = result === undefined ? undefined : result.route === "proxy" ? (systemProxy ? "systemProxy" : "proxy") : "direct";
   const verdict =
     summary.tone === "ok" || summary.tone === "plain" ? (
-      <p className={`flex items-start gap-1.5 text-note ${summary.tone === "ok" ? "text-ok" : "text-ink"}`}>
+      <p className={`flex flex-wrap items-start gap-x-1.5 gap-y-0.5 text-note ${summary.tone === "ok" ? "text-ok" : "text-ink"}`}>
         {summary.tone === "ok" ? <CircleCheck size={14} className="mt-[3px] shrink-0" aria-hidden="true" /> : null}
         <span data-testid={summary.testId}>{summary.text}</span>
+        {route === undefined ? null : (
+          <span className="mt-0.5 shrink-0 rounded border border-line px-1 text-[11px] leading-4 font-normal text-muted" data-testid="probe-route" data-route={route}>
+            {t(`network.route.${route}`)}
+          </span>
+        )}
       </p>
     ) : (
       <Callout tone={summary.tone === "danger" ? "error" : "warn"} density="compact">

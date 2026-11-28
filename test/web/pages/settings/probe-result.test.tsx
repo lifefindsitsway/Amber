@@ -113,3 +113,21 @@ describe("ProbeResult", () => {
     expect(container.innerHTML).toBe("");
   });
 });
+
+describe("ProbeResult route tag", () => {
+  it("tags the path the test request took: the system proxy, a proxy, or direct when the result names none", () => {
+    const { rerender } = render(<ProbeResult result={{ ...RESULT, route: "proxy" }} regionHint={false} systemProxy />);
+    expect(screen.getByTestId("probe-route").textContent).toBe("经系统代理");
+    rerender(<ProbeResult result={{ ...RESULT, route: "proxy" }} regionHint={false} />);
+    expect(screen.getByTestId("probe-route").textContent).toBe("经代理");
+    rerender(<ProbeResult result={{ ...RESULT, route: "direct" }} regionHint={false} systemProxy />);
+    expect(screen.getByTestId("probe-route").textContent).toBe("直连");
+    rerender(<ProbeResult result={RESULT} regionHint={false} systemProxy />);
+    expect(screen.getByTestId("probe-route").textContent).toBe("直连");
+  });
+
+  it("has no tag on a failed test, which reports no route", () => {
+    render(<ProbeResult error={failure({ class: "llm_failed", code: "llm_failed.auth" }, 401)} regionHint={false} systemProxy />);
+    expect(screen.queryByTestId("probe-route")).toBeNull();
+  });
+});

@@ -1,5 +1,7 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NETWORK_STATUS_REFRESH_MS } from "../../../../src/shared/defaults.ts";
+import type { NetworkStatusDto } from "../../../../src/shared/dto/network.ts";
 import { encodeModelKey } from "../../../../src/shared/dto/usage-analytics.ts";
 import { ModelsSection } from "../../../../src/web/pages/settings/models-section.tsx";
 import { mockApi, renderApp } from "../../../fixtures/web/render.tsx";
@@ -408,5 +410,161 @@ describe("ModelsSection", () => {
     expect(api.calls.some((call) => call.method === "PATCH")).toBe(false);
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.calls.find((call) => call.method === "PATCH")?.body).toMatchObject({ models: [{ modelId: "model-c" }, { modelId: "model-a" }, { modelId: "model-b" }] }));
+  });
+});
+
+describe("ModelsSection network status line", () => {
+  const PROXY = "127.0.0.1:7890";
+  const NOW = Date.UTC(2026, 10, 28, 8, 0, 0);
+
+  // A profile folded by an earlier test stays folded in this browser.
+  beforeEach(() => localStorage.clear());
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, "visibilityState");
+  });
+
+  async function lineFor(status: NetworkStatusDto, mode: "local" | "server" = "local"): Promise<HTMLElement> {
+    mockApi({
+      "GET /api/providers": { body: { items: [] } },
+      "GET /api/network/status": { body: status },
+    });
+    renderApp(<ModelsSection />, { mode });
+    return screen.findByTestId("network-status");
+  }
+
+  it.each<[string, NetworkStatusDto, string]>([
+    ["the system proxy, one address for both protocols", { source: "system", state: "manual", proxy: { http: PROXY, https: PROXY } }, `网络：跟随 Windows 系统代理 · ${PROXY}`],
+    [
+      "the system proxy with a PAC script it ignores",
+      { source: "system", state: "manual", proxy: { http: PROXY, https: PROXY }, pacIgnored: true },
+      `网络：跟随 Windows 系统代理 · ${PROXY}（已忽略自动配置脚本）`,
+    ],
+    ["the system proxy for HTTP only", { source: "system", state: "manual", proxy: { http: PROXY } }, `网络：跟随 Windows 系统代理（仅 HTTP）· ${PROXY}`],
+    ["the system proxy for HTTPS only", { source: "system", state: "manual", proxy: { https: PROXY } }, `网络：跟随 Windows 系统代理（仅 HTTPS）· ${PROXY}`],
+    [
+      "different addresses per protocol",
+      { source: "system", state: "manual", proxy: { http: PROXY, https: "127.0.0.1:7891" } },
+      `网络：跟随 Windows 系统代理 · HTTP ${PROXY}，HTTPS 127.0.0.1:7891`,
+    ],
+    ["no system proxy", { source: "system", state: "off" }, "网络：直连（Windows 系统代理未开启）"],
+  ])("states %s in a quiet line", async (_name, status, text) => {
+    const line = await lineFor(status);
+    expect(line.textContent).toBe(text);
+    expect(line.dataset["tone"]).toBe("plain");
+    expect(line.className).toContain("text-muted");
+    expect(line.getAttribute("role")).toBe("status");
+  });
+
+  it.each<[string, NetworkStatusDto, string]>([
+    ["only a PAC script", { source: "system", state: "unsupported", reason: "pac" }, "网络：系统代理使用了自动配置脚本（PAC），Amber 暂不支持。请在代理软件中改用非 PAC 的系统代理模式"],
+    ["only SOCKS", { source: "system", state: "unsupported", reason: "socks" }, "网络：系统代理只设置了 SOCKS，Amber 暂不支持。请在代理软件中开启 HTTP 系统代理"],
+    ["a proxy address that is not http://", { source: "env", state: "unsupported", reason: "scheme" }, "网络：代理地址不是 http:// 开头，Amber 暂不支持"],
+    ["settings it cannot make out", { source: "system", state: "unsupported", reason: "unparsable" }, "网络：无法识别系统代理的设置，Amber 不会改为直连"],
+    ["settings it could not read", { source: "system", state: "error", reason: "read_failed" }, "网络：暂时无法读取系统代理设置，沿用上次的设置"],
+  ])("warns about %s", async (_name, status, text) => {
+    const line = await lineFor(status);
+    expect(line.textContent).toBe(text);
+    expect(line.dataset["tone"]).toBe("warn");
+    expect(line.className).toContain("text-warn");
+  });
+
+  it("says when the last request through the system proxy failed, as a relative time", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const line = await lineFor({ source: "system", state: "manual", proxy: { http: PROXY, https: PROXY }, lastProxyOutcome: { ok: false, at: NOW - 150_000, seq: 3 } });
+    expect(line.textContent).toBe("网络：最近一次连接系统代理失败（2 分钟前），请确认代理软件正在运行");
+    expect(line.dataset["tone"]).toBe("danger");
+    expect(line.className).toContain("text-danger");
+  });
+
+  it("goes back to the configuration once a request through the proxy succeeded", async () => {
+    const line = await lineFor({ source: "system", state: "manual", proxy: { http: PROXY, https: PROXY }, lastProxyOutcome: { ok: true, at: 1, seq: 3 } });
+    expect(line.textContent).toBe(`网络：跟随 Windows 系统代理 · ${PROXY}`);
+  });
+
+  it("in server mode only says whether a proxy is used, never its address", async () => {
+    expect((await lineFor({ source: "env", state: "manual", proxy: { http: PROXY } }, "server")).textContent).toBe("网络：经代理");
+  });
+
+  it("in server mode says it goes direct without a proxy", async () => {
+    expect((await lineFor({ source: "env", state: "off" }, "server")).textContent).toBe("网络：直连");
+  });
+
+  it("in server mode words a failed proxy without the system proxy", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const line = await lineFor({ source: "env", state: "manual", lastProxyOutcome: { ok: false, at: NOW - 3 * 3_600_000, seq: 1 } }, "server");
+    expect(line.textContent).toBe("网络：最近一次连接代理失败（3 小时前）");
+    expect(line.dataset["tone"]).toBe("danger");
+  });
+
+  it("shows nothing when the status cannot be read", async () => {
+    mockApi({ "GET /api/providers": { body: { items: [] } } });
+    renderApp(<ModelsSection />);
+    await screen.findByTestId("add-first-profile");
+    expect(screen.queryByTestId("network-status")).toBeNull();
+  });
+
+  it("re-reads the status while the page is visible, stops while it is hidden and reads it again on return", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    const api = mockApi({
+      "GET /api/providers": { body: { items: [] } },
+      "GET /api/network/status": { body: { source: "system", state: "off" } },
+    });
+    renderApp(<ModelsSection />);
+    const reads = (): number => api.calls.filter((call) => call.path === "/api/network/status").length;
+    await vi.waitFor(() => expect(reads()).toBe(1));
+    await act(() => vi.advanceTimersByTimeAsync(NETWORK_STATUS_REFRESH_MS));
+    expect(reads()).toBe(2);
+
+    visibility = "hidden";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(NETWORK_STATUS_REFRESH_MS * 3));
+    expect(reads()).toBe(2);
+
+    visibility = "visible";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(reads()).toBe(3));
+    await act(() => vi.advanceTimersByTimeAsync(NETWORK_STATUS_REFRESH_MS));
+    expect(reads()).toBe(4);
+  });
+
+  function probing(route: "direct" | "proxy" | undefined) {
+    return {
+      modelId: "model-a",
+      basic: { status: "connected", latencyMs: 300 },
+      checks: [],
+      observed: {},
+      observedAt: 2,
+      ...(route === undefined ? {} : { route }),
+    };
+  }
+
+  it.each<[string, "local" | "server", NetworkStatusDto, "direct" | "proxy" | undefined, string]>([
+    ["through the system proxy in the desktop client", "local", { source: "system", state: "manual", proxy: { http: PROXY, https: PROXY } }, "proxy", "经系统代理"],
+    ["direct in the desktop client", "local", { source: "system", state: "manual", proxy: { http: PROXY, https: PROXY } }, "direct", "直连"],
+    ["direct when the result names no route", "local", { source: "system", state: "off" }, undefined, "直连"],
+    ["through the proxy in server mode", "server", { source: "env", state: "manual" }, "proxy", "经代理"],
+    ["direct in server mode", "server", { source: "env", state: "manual" }, "direct", "直连"],
+  ])("tags a connection test that went %s", async (_name, mode, status, route, tag) => {
+    mockApi({
+      "GET /api/providers": { body: { items: [profile(true)] } },
+      "GET /api/settings": { body: SETTINGS },
+      "GET /api/network/status": { body: status },
+      "POST /api/providers/p1/probe": { body: probing(route) },
+    });
+    renderApp(<ModelsSection />, { mode });
+    await screen.findByTestId("network-status");
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
+    const label = await screen.findByTestId("probe-route");
+    expect(label.textContent).toBe(tag);
+    expect(label.className).toContain("text-muted");
+    expect(within(screen.getByTestId("probe-live")).getByTestId("probe-connected").textContent).toBe("连接成功 · 延迟 300 ms");
   });
 });
