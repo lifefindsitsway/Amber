@@ -1,5 +1,5 @@
 import { monotonicFactory } from "ulid";
-import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES } from "../../shared/defaults.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, IMPORT_BATCH_MAX, SUBTITLE_IMPORT_MAX_BYTES, UI_LANGUAGE_DEFAULT } from "../../shared/defaults.ts";
 import type { CollectionEntryState, ImportItem, ImportRequest, ImportResponse, InspectRequest, InspectResponse } from "../../shared/dto/import.ts";
 import { PLATFORM_CAPABILITIES } from "../../shared/platforms.ts";
 import type { DiarizationRequest } from "../../shared/dto/speaker.ts";
@@ -8,7 +8,7 @@ import { canonicalJson } from "../domain/canonical-json.ts";
 import type { Collection } from "../domain/collection.ts";
 import { mergeCollectionOrder } from "../domain/collection-merge.ts";
 import { platformContentKey, trashPurgeAt, type Content, type ContentSource } from "../domain/content.ts";
-import type { AsrModelRef, PromptRef } from "../domain/model-ref.ts";
+import type { AsrModelRef, ModelRef, PromptRef } from "../domain/model-ref.ts";
 import { promptIdsOf } from "../domain/prompts.ts";
 import { AmberError, amberError } from "../domain/errors.ts";
 import type { Task } from "../domain/task.ts";
@@ -49,6 +49,7 @@ import { PlatformDetailReuse } from "./platform-detail-reuse.ts";
 import type { PlatformRegistry } from "./platforms.ts";
 import { asrModelRefForSubmission, diarizationForSubmission, type AsrDescriptorSource } from "./settings.ts";
 import { prepareInitialSubtitle, writeInitialSubtitle, type InitialSubtitle } from "./subtitle-import.ts";
+import { summaryFreshness } from "./summaries.ts";
 import { resolveTemplateRef } from "./summary-templates.ts";
 import type { TaskControl } from "./tasks.ts";
 import { restoreTrashed } from "./trash.ts";
@@ -240,10 +241,11 @@ function summaryRequestJson(scope: RepositoryScope, content: Content, requestJso
  * Re-importing an existing Content, by the first rule that holds: an unfinished
  * Task whose lane intersects is reused with the same intent and is a
  * `conflict.mutation_lane` otherwise; the latest `process_content` is reused when it
- * succeeded with the same intent; with a usable primary, a change of template, output
- * language or model alone becomes a `regenerate_summary`; anything else is a new
- * `process_content`. With a primary, `autoProofread` and `asrModelRef` take no part in
- * either comparison.
+ * succeeded with the same intent and the Content has no primary yet; with a primary, the
+ * same intent or a change of template, output language or model alone answers with the Task
+ * that wrote a summary still standing for these settings, and becomes a `regenerate_summary`
+ * when there is none; anything else is a new `process_content`. With a primary,
+ * `autoProofread` and `asrModelRef` take no part in either comparison.
  * An idempotent replay answers what the first request did and never restores anything.
  *
  * A collection is listed whole (up to `COLLECTION_PREVIEW_ITEMS_MAX` entries) and resolved
@@ -987,10 +989,17 @@ export class ImportContentService {
     // With a primary, neither choice changes what the Task would do to the Content now.
     const ignore = primary === undefined ? UNUSED_PROMPT_FIELDS : ["autoProofread", "asrModelRef", ...PROOFREAD_PROMPT_FIELDS, ...UNUSED_PROMPT_FIELDS];
     const differences = latest === undefined ? undefined : requestDifferences(requestJson, latest.requestJson, ignore);
-    if (latest !== undefined && latest.statusProjection === "succeeded" && differences?.length === 0) {
+    const sameAsLatest = latest !== undefined && latest.statusProjection === "succeeded" && differences?.length === 0;
+    if (sameAsLatest && primary === undefined) {
       return { task: latest, created: false };
     }
-    if (primary !== undefined && differences !== undefined && differences.length > 0 && differences.every((field) => SUMMARY_ONLY_FIELDS.has(field))) {
+    const summaryOnly = primary !== undefined && differences !== undefined && differences.length > 0 && differences.every((field) => SUMMARY_ONLY_FIELDS.has(field));
+    if (sameAsLatest || summaryOnly) {
+      // The summary these settings would produce may stand already, whichever Task wrote it.
+      const reusable = reusableSummaryTask(scope, content, JSON.parse(requestJson) as ProcessContentRequest);
+      if (reusable !== undefined) {
+        return { task: reusable, created: false };
+      }
       const task = createTask(scope, outbox, {
         task: { id: this.newId(), userId: content.userId, contentId: content.id, kind: "regenerate_summary", requestJson: summaryJson() as string, createdAt: now },
         sourceKind: content.source.kind,
@@ -1005,6 +1014,80 @@ export class ImportContentService {
     });
     return { task, created: true };
   }
+}
+
+/** The language a summary is written in for a request: the summary stage's own fallback when it names none. */
+function summaryOutputLanguage(request: { outputLanguage?: string | undefined }): string {
+  return request.outputLanguage ?? UI_LANGUAGE_DEFAULT;
+}
+
+function sameModel(a: ModelRef | undefined, b: ModelRef | undefined): boolean {
+  return a !== undefined && b !== undefined && a.providerProfileId === b.providerProfileId && a.modelId === b.modelId;
+}
+
+/**
+ * The Task whose summary stage wrote summary revision `revisionId`: revisions do not record a
+ * Task, so a succeeded summary StageRun whose result names the revision is the only evidence.
+ */
+function producingTask(scope: RepositoryScope, content: Content, revisionId: string): Task | undefined {
+  const tasks = scope.tasks.listByContent(content.userId, content.id).filter((task) => PROCESSING_KINDS.has(task.kind));
+  return tasks.reverse().find((task) =>
+    scope.stageRuns
+      .listByTask(content.userId, task.id)
+      .some((run) => run.stage === "summary" && run.status === "succeeded" && run.resultJson !== undefined && producedRevisionId(run.resultJson) === revisionId),
+  );
+}
+
+function producedRevisionId(resultJson: string): string | undefined {
+  const result = JSON.parse(resultJson) as { revisionId?: unknown } | null;
+  return typeof result?.revisionId === "string" ? result.revisionId : undefined;
+}
+
+/**
+ * The Task to answer a re-import with when the summary it asks for stands already: the
+ * Content has a primary; the requested template's summary has a current revision; a succeeded
+ * Task wrote that revision; the revision was made with the requested template version, model
+ * (by reference: a Profile whose address changed since is the same model, as nothing is ever
+ * recomputed on its own) and summary prompt versions, in the same output language; and it is
+ * fresh by the summary freshness rules. Speakers take no part, as in freshness. Judged by the
+ * current revision, so a summary the user switched back to an earlier revision counts as that
+ * revision was made, and one written by a Task that later failed is not trusted.
+ */
+function reusableSummaryTask(scope: RepositoryScope, content: Content, request: ProcessContentRequest): Task | undefined {
+  const owner = content.userId;
+  const templateRef = request.templateRef;
+  if (content.primaryTranscriptRevisionId === undefined || templateRef === undefined) {
+    return undefined;
+  }
+  const currentId = scope.summaries.findArtifact(owner, content.id, templateRef.id)?.currentRevisionId;
+  const current = currentId === undefined ? undefined : scope.summaries.getRevision(owner, currentId);
+  if (current === undefined) {
+    return undefined;
+  }
+  const producer = producingTask(scope, content, current.id);
+  if (producer === undefined || producer.statusProjection !== "succeeded") {
+    return undefined;
+  }
+  const { provenance } = current;
+  if (provenance.promptRef?.id !== templateRef.id || provenance.promptRef.version !== templateRef.version) {
+    return undefined;
+  }
+  if (!sameModel(provenance.modelRef, request.modelRef)) {
+    return undefined;
+  }
+  const summaryPrompts = new Set<string>(promptIdsOf("regenerate_summary"));
+  const promptsDiffer = (provenance.promptRefs ?? []).some((used) => {
+    const asked = summaryPrompts.has(used.id) ? request.promptRefs?.[used.id] : undefined;
+    return asked !== undefined && asked.version !== used.version;
+  });
+  if (promptsDiffer) {
+    return undefined;
+  }
+  const producerRequest = JSON.parse(producer.requestJson) as { outputLanguage?: string };
+  if (summaryOutputLanguage(producerRequest) !== summaryOutputLanguage(request)) {
+    return undefined;
+  }
+  return summaryFreshness(scope, content, current).stale ? undefined : producer;
 }
 
 /**

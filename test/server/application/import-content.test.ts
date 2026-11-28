@@ -3,13 +3,17 @@ import { ImportContentService } from "../../../src/server/application/import-con
 import { resolveSpeakerContext } from "../../../src/server/application/speaker-context.ts";
 import { PlatformRegistry } from "../../../src/server/application/platforms.ts";
 import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
-import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, COLLECTION_PREVIEW_TTL_MS, IMPORT_BATCH_MAX } from "../../../src/shared/defaults.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, COLLECTION_PREVIEW_PAGE_SIZE, COLLECTION_PREVIEW_TTL_MS, IMPORT_BATCH_MAX, UI_LANGUAGE_DEFAULT } from "../../../src/shared/defaults.ts";
 import { importRequestSchema } from "../../../src/shared/dto/import.ts";
 import { platformTranscript } from "../../../src/server/domain/platform-subtitle.ts";
 import { TRASH_RETENTION_MS } from "../../../src/server/domain/content.ts";
 import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
 import type { AppError } from "../../../src/shared/errors.ts";
-import { builtinPromptRefs, BOB, configureLlm, createHarness, LOCAL, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
+import type { ModelRef, PromptRef } from "../../../src/server/domain/model-ref.ts";
+import { customizablePrompt } from "../../../src/server/domain/prompts.ts";
+import type { StageRun } from "../../../src/server/domain/task.ts";
+import type { StageExecutionContext, StageExecutor, StageOutcome } from "../../../src/server/pipeline/executor.ts";
+import { builtinPromptRefs, BOB, configureLlm, createHarness, LOCAL, stageRunsOf, taskOf, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { countRows } from "../../tools/sqlite.ts";
 
 const BVID = "BV1xx411c7mD";
@@ -108,6 +112,76 @@ function givePrimary(h: Harness, contentId: string): string {
 async function drain(h: Harness): Promise<void> {
   h.scheduler.start();
   await h.scheduler.whenIdle();
+}
+
+/**
+ * A summary stage that records what the real one does: the base transcript (and the current
+ * chapters, when there are any) as inputs, the model the stage ran with, the template and the
+ * envelope prompt version it used, the speakers it read, and a result naming the revision.
+ */
+function summaryStage(h: Harness): StageExecutor & { calls: number } {
+  const stage = {
+    calls: 0,
+    async run(context: StageExecutionContext): Promise<StageOutcome> {
+      stage.calls += 1;
+      const request = context.request as { kind: string; baseRevisionId?: string; templateRef: PromptRef };
+      const owner = context.task.userId;
+      const contentId = context.task.contentId as string;
+      const envelope = context.prompt("summary.envelope").ref;
+      const modelRef = context.modelRef as ModelRef;
+      const revisionId = h.newId();
+      const artifactId = h.newId();
+      return {
+        resultJson: { revisionId, mode: "single", reasons: [] },
+        publish: (scope) => {
+          const base = (request.kind === "regenerate_summary" ? request.baseRevisionId : scope.contents.get(owner, contentId)?.primaryTranscriptRevisionId) as string;
+          const chapters = scope.chapters.getCurrent(owner, contentId);
+          const speakerContext = resolveSpeakerContext(scope, owner, contentId, base, "transcript");
+          const stored = scope.summaries.insertRevision(owner, {
+            contentId,
+            templateId: request.templateRef.id,
+            artifactId,
+            revision: {
+              id: revisionId,
+              provenance: {
+                inputs: [{ kind: "transcriptRevision", id: base }, ...(chapters === undefined ? [] : [{ kind: "chapterRevision" as const, id: chapters.id }])],
+                modelRef: { ...modelRef, providerNameSnapshot: "relay", modelDisplaySnapshot: modelRef.modelId },
+                promptRef: request.templateRef,
+                promptRefs: [request.templateRef, envelope],
+                ...(speakerContext === undefined ? {} : { speakerContext }),
+                createdAt: 1,
+              },
+              quality: "normal",
+              body: "要点",
+              citations: [],
+              ...(chapters === undefined ? {} : { chapterRevisionId: chapters.id }),
+            },
+          });
+          scope.summaries.setCurrent(owner, stored.artifactId, revisionId);
+        },
+      };
+    },
+  };
+  return stage;
+}
+
+/**
+ * Imports `LINK` with `settings` and runs it to the end with a primary in place (given by
+ * `primary`, a platform transcript by default), so its summary stage writes a summary;
+ * `before` sees the Content first. Later imports' Tasks run when `drain` is called again.
+ */
+async function summarized(
+  h: Harness,
+  settings: Record<string, unknown>,
+  options: { primary?: (h: Harness, contentId: string) => string; before?: (contentId: string, taskId: string) => void } = {},
+) {
+  h.executors.summary = summaryStage(h);
+  const first = await h.importContent.import(LOCAL, request(settings));
+  const contentId = first.body.contentIds[0] as string;
+  (options.primary ?? givePrimary)(h, contentId);
+  options.before?.(contentId, first.body.taskIds[0] as string);
+  await drain(h);
+  return first;
 }
 
 const SRT = "1\n00:00:00,000 --> 00:00:02,000\nhello\n\n2\n00:00:02,000 --> 00:00:04,000\nworld\n";
@@ -710,10 +784,8 @@ describe("re-importing the same link", () => {
   it("ignores autoProofread once a primary exists", async () => {
     const h = harness();
     const modelRef = configureLlm(h);
-    const first = await h.importContent.import(LOCAL, request({ modelRef }));
-    await drain(h);
+    const first = await summarized(h, { modelRef });
     expect(taskOf(h, first.body.taskIds[0] as string).statusProjection).toBe("succeeded");
-    givePrimary(h, first.body.contentIds[0] as string);
     const toggled = await h.importContent.import(LOCAL, request({ modelRef, autoProofread: false }));
     expect(toggled.body.taskIds).toEqual(first.body.taskIds);
     expect(countRows(h.db, "task")).toBe(1);
@@ -723,10 +795,8 @@ describe("re-importing the same link", () => {
     const h = harness();
     const modelRef = configureLlm(h);
     h.repository.withTransaction((scope) => scope.asrProfiles.insert({ id: "other", userId: LOCAL.userId, name: "other", provider: "dashscope", models: [{ modelId: "fun-asr" }], createdAt: 1 }));
-    const first = await h.importContent.import(LOCAL, request({ modelRef }));
-    await drain(h);
+    const first = await summarized(h, { modelRef });
     expect(taskOf(h, first.body.taskIds[0] as string).statusProjection).toBe("succeeded");
-    givePrimary(h, first.body.contentIds[0] as string);
     const switched = await h.importContent.import(LOCAL, request({ modelRef, asrModelRef: { asrProfileId: "other", modelId: "fun-asr" } }));
     expect(switched.body.taskIds).toEqual(first.body.taskIds);
     expect(countRows(h.db, "task")).toBe(1);
@@ -737,6 +807,231 @@ describe("re-importing the same link", () => {
     const mine = await h.importContent.import(LOCAL, request());
     const bobs = await h.importContent.import(BOB, request());
     expect(bobs.body.contentIds).not.toEqual(mine.body.contentIds);
+  });
+});
+
+describe("re-importing when a summary still stands", () => {
+  function tasksOf(h: Harness): string[] {
+    return (h.db.prepare("SELECT id FROM task ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id);
+  }
+  function summaryOf(h: Harness, contentId: string, templateId = "summary.core") {
+    const artifact = h.repository.withTransaction((scope) => scope.summaries.findArtifact(LOCAL.userId, contentId, templateId));
+    return artifact as { id: string; currentRevisionId: string };
+  }
+  async function reimport(h: Harness, settings: Record<string, unknown>) {
+    const answer = await h.importContent.import(LOCAL, request(settings));
+    return taskOf(h, answer.body.taskIds[0] as string);
+  }
+  function primaryOf(h: Harness, contentId: string): string {
+    return contentOf(h, contentId)?.primaryTranscriptRevisionId as string;
+  }
+
+  it("answers with the Task that wrote it when nothing changed, and summarizes again once the summary is gone", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const first = await summarized(h, { modelRef });
+    const contentId = first.body.contentIds[0] as string;
+    expect(summaryOf(h, contentId).currentRevisionId).toBeDefined();
+
+    const same = await h.importContent.import(LOCAL, request({ modelRef }));
+    expect(same.body.taskIds).toEqual(first.body.taskIds);
+    expect(countRows(h.db, "task")).toBe(1);
+
+    h.db.prepare("DELETE FROM summary_artifact WHERE content_id = ?").run(contentId);
+    const again = await reimport(h, { modelRef });
+    expect(again.kind).toBe("regenerate_summary");
+    expect(JSON.parse(again.requestJson)).toMatchObject({ baseRevisionId: primaryOf(h, contentId), modelRef, templateRef: { id: "summary.core", version: 1 } });
+    expect(countRows(h.db, "task")).toBe(2);
+  });
+
+  it("answers B, C, B with the Task of each template's summary, creating only the second summary", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const c = h.summaryTemplates.create(LOCAL, { name: "C", prompt: "## 只要要点" });
+    const first = await summarized(h, { modelRef });
+    const toC = await reimport(h, { modelRef, templateId: c.id });
+    expect(toC.kind).toBe("regenerate_summary");
+    await drain(h);
+    expect(taskOf(h, toC.id).statusProjection).toBe("succeeded");
+
+    const backToB = await h.importContent.import(LOCAL, request({ modelRef }));
+    expect(backToB.body.taskIds).toEqual(first.body.taskIds);
+    const backToC = await h.importContent.import(LOCAL, request({ modelRef, templateId: c.id }));
+    expect(backToC.body.taskIds).toEqual([toC.id]);
+    expect(tasksOf(h)).toEqual([first.body.taskIds[0], toC.id]);
+  });
+
+  it("judges the output language by the current revision: B in Chinese, English, Chinese summarizes again; an absent language is the default", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    await summarized(h, { modelRef, outputLanguage: "zh-CN" });
+    const english = await reimport(h, { modelRef, outputLanguage: "en" });
+    expect(english.kind).toBe("regenerate_summary");
+    await drain(h);
+    const chinese = await reimport(h, { modelRef, outputLanguage: "zh-CN" });
+    expect(chinese.kind).toBe("regenerate_summary");
+    expect(JSON.parse(chinese.requestJson)).toMatchObject({ outputLanguage: "zh-CN" });
+    expect(countRows(h.db, "task")).toBe(3);
+
+    const other = harness();
+    const otherModel = configureLlm(other);
+    const absent = await summarized(other, { modelRef: otherModel });
+    const explicit = await other.importContent.import(LOCAL, request({ modelRef: otherModel, outputLanguage: UI_LANGUAGE_DEFAULT }));
+    expect(explicit.body.taskIds).toEqual(absent.body.taskIds);
+    expect(countRows(other.db, "task")).toBe(1);
+  });
+
+  it("judges a summary restored to an earlier revision by how that revision was made", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const first = await summarized(h, { modelRef, outputLanguage: "zh-CN" });
+    const contentId = first.body.contentIds[0] as string;
+    const chineseRevision = summaryOf(h, contentId).currentRevisionId;
+    await reimport(h, { modelRef, outputLanguage: "en" });
+    await drain(h);
+    expect(summaryOf(h, contentId).currentRevisionId).not.toBe(chineseRevision);
+
+    h.summaries.setCurrent(LOCAL, summaryOf(h, contentId).id, chineseRevision);
+    const chinese = await h.importContent.import(LOCAL, request({ modelRef, outputLanguage: "zh-CN" }));
+    expect(chinese.body.taskIds).toEqual(first.body.taskIds);
+    expect(countRows(h.db, "task")).toBe(2);
+    const english = await reimport(h, { modelRef, outputLanguage: "en" });
+    expect(english.kind).toBe("regenerate_summary");
+    expect(countRows(h.db, "task")).toBe(3);
+  });
+
+  describe("freshness, by the summary freshness rules", () => {
+    it("still stands after the transcript is only corrected: the new primary descends from the summarized one", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      const first = await summarized(h, { modelRef });
+      const contentId = first.body.contentIds[0] as string;
+      const parent = primaryOf(h, contentId);
+      const { revision, segments } = platformTranscript({
+        revisionId: h.newId(),
+        contentId,
+        language: "zh-CN",
+        cues: [{ startMs: 0, endMs: 1000, text: "hello!" }],
+        acquisition: "guest",
+        newId: h.newId,
+        createdAt: 2,
+      });
+      h.repository.withTransaction((scope) => {
+        scope.transcripts.insertRevision(LOCAL.userId, { ...revision, kind: "manual", generation: { kind: "manual" }, parentRevisionId: parent }, segments);
+        scope.contents.setPrimaryTranscript(LOCAL.userId, contentId, revision.id, 2);
+      });
+      const same = await h.importContent.import(LOCAL, request({ modelRef }));
+      expect(same.body.taskIds).toEqual(first.body.taskIds);
+      expect(countRows(h.db, "task")).toBe(1);
+    });
+
+    it("no longer stands after a new transcription becomes the primary", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      const first = await summarized(h, { modelRef });
+      const contentId = first.body.contentIds[0] as string;
+      const transcribed = givePrimary(h, contentId);
+      const again = await reimport(h, { modelRef });
+      expect(again.kind).toBe("regenerate_summary");
+      expect(JSON.parse(again.requestJson)).toMatchObject({ baseRevisionId: transcribed });
+    });
+
+    it("no longer stands once the chapters it was summarized by changed", async () => {
+      const h = harness();
+      const modelRef = configureLlm(h);
+      const chapters = (contentId: string, title: string) =>
+        h.repository.withTransaction((scope) => {
+          const stored = scope.chapters.insertPlatformRevision(LOCAL.userId, contentId, {
+            id: h.newId(),
+            artifactId: h.newId(),
+            chapters: [{ startMs: 0, endMs: 1000, title }],
+            createdAt: 1,
+          });
+          scope.chapters.setCurrent(LOCAL.userId, contentId, stored.revisionId);
+          return stored.revisionId;
+        });
+      const first = await summarized(h, { modelRef }, { before: (contentId) => chapters(contentId, "开头") });
+      const contentId = first.body.contentIds[0] as string;
+      const same = await h.importContent.import(LOCAL, request({ modelRef }));
+      expect(same.body.taskIds).toEqual(first.body.taskIds);
+
+      chapters(contentId, "新的开头");
+      const again = await reimport(h, { modelRef });
+      expect(again.kind).toBe("regenerate_summary");
+    });
+  });
+
+  it("does not trust a summary whose Task later failed, nor one no succeeded summary stage names", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const c = h.summaryTemplates.create(LOCAL, { name: "C", prompt: "## 只要要点" });
+    const first = await summarized(h, { modelRef });
+    const toC = await reimport(h, { modelRef, templateId: c.id });
+    await drain(h);
+    h.repository.withTransaction((scope) => scope.tasks.setProjection(LOCAL.userId, toC.id, "failed", Date.now()));
+    const againC = await reimport(h, { modelRef, templateId: c.id });
+    expect(againC.kind).toBe("regenerate_summary");
+    expect(againC.id).not.toBe(toC.id);
+    await drain(h);
+
+    const firstTask = first.body.taskIds[0] as string;
+    const run = stageRunsOf(h, firstTask).find((candidate) => candidate.stage === "summary" && candidate.status === "succeeded");
+    expect(run).toBeDefined();
+    h.repository.withTransaction((scope) => scope.stageRuns.update(LOCAL.userId, { ...(run as StageRun), resultJson: JSON.stringify({ revisionId: h.newId(), mode: "single", reasons: [] }) }));
+    const againB = await reimport(h, { modelRef });
+    expect(againB.kind).toBe("regenerate_summary");
+    expect(againB.id).not.toBe(firstTask);
+  });
+
+  it("compares models by reference: a changed service address is the same model, another model or a stage's own model is not", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const otherModel = configureLlm(h);
+    const first = await summarized(h, { modelRef });
+    h.db.prepare("UPDATE provider_profile SET base_url = ? WHERE id = ?").run("https://relay.invalid/v2", modelRef.providerProfileId);
+    const moved = await h.importContent.import(LOCAL, request({ modelRef }));
+    expect(moved.body.taskIds).toEqual(first.body.taskIds);
+    const another = await reimport(h, { modelRef: otherModel });
+    expect(another.kind).toBe("regenerate_summary");
+
+    // The summary stage ran with a model of its own: the revision records that one.
+    const staged = harness();
+    const asked = configureLlm(staged);
+    const stageModel = configureLlm(staged);
+    const overridden = await summarized(staged, { modelRef: asked }, {
+      before: (_contentId, taskId) => {
+        const run = stageRunsOf(staged, taskId).find((candidate) => candidate.stage === "summary") as StageRun;
+        staged.repository.withTransaction((scope) => scope.stageRuns.update(LOCAL.userId, { ...run, inputJson: JSON.stringify({ modelRef: stageModel }) }));
+      },
+    });
+    const stageModelAsked = await staged.importContent.import(LOCAL, request({ modelRef: stageModel }));
+    expect(stageModelAsked.body.taskIds).toEqual(overridden.body.taskIds);
+    const sameRequest = await reimport(staged, { modelRef: asked });
+    expect(sameRequest.kind).toBe("regenerate_summary");
+  });
+
+  it("leaves speakers out of the comparison", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    const first = await summarized(h, { modelRef }, { primary: giveReviewedPrimary });
+    const contentId = first.body.contentIds[0] as string;
+    const revision = h.repository.withTransaction((scope) => scope.summaries.getRevision(LOCAL.userId, summaryOf(h, contentId).currentRevisionId));
+    expect(revision?.provenance.speakerContext?.speakers.map((speaker) => speaker.label)).toEqual(["蒋炎岩", "发言人 2"]);
+    const named = h.repository.withTransaction((scope) => scope.speakers.list(LOCAL.userId, contentId))[1] as { id: string };
+    h.repository.withTransaction((scope) => scope.speakers.update(LOCAL.userId, contentId, named.id, { name: "王二", nameConfirmedAt: 3 }, 3));
+    const same = await h.importContent.import(LOCAL, request({ modelRef }));
+    expect(same.body.taskIds).toEqual(first.body.taskIds);
+    expect(countRows(h.db, "task")).toBe(1);
+  });
+
+  it("compares the summary prompt versions the revision was made with", async () => {
+    const h = harness();
+    const modelRef = configureLlm(h);
+    await summarized(h, { modelRef });
+    const builtin = customizablePrompt("summary.envelope")?.builtin.text as string;
+    h.prompts.update(LOCAL, "summary.envelope", { text: `${builtin}\n只用短句。` });
+    const again = await reimport(h, { modelRef });
+    expect(again.kind).toBe("regenerate_summary");
   });
 });
 

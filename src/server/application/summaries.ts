@@ -54,7 +54,7 @@ export function qualityReasonsOf(quality: ArtifactRevisionBase["quality"]): Qual
 }
 
 /** Freshness of a summary against the Content's primary (and its ancestors) and current chapters. */
-function summaryFreshness(scope: RepositoryScope, content: Content, revision: SummaryRevision): Freshness {
+export function summaryFreshness(scope: RepositoryScope, content: Content, revision: SummaryRevision): Freshness {
   const chapterRevisionId = scope.chapters.getArtifact(content.userId, content.id)?.currentRevisionId;
   return deriveFreshness(revision.provenance.inputs, {
     ...(content.primaryTranscriptRevisionId === undefined ? {} : { primaryTranscriptRevisionId: content.primaryTranscriptRevisionId }),
