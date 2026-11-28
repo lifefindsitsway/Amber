@@ -14,13 +14,15 @@ export interface PlatformCapabilities {
   readonly linkMayExpire: boolean;
   /** A single link is checked against the platform before import (video, not a video, cannot tell). */
   readonly importCheck: boolean;
+  /** A pasted single video link can reveal the platform collection the video belongs to. */
+  readonly relatedCollection: boolean;
 }
 
 export const PLATFORM_CAPABILITIES: Readonly<Record<Platform, PlatformCapabilities>> = {
-  bilibili: { loginSupported: true, onlinePlayer: true, linkMayExpire: false, importCheck: false },
-  youtube: { loginSupported: true, onlinePlayer: true, linkMayExpire: false, importCheck: false },
-  xiaohongshu: { loginSupported: true, onlinePlayer: false, linkMayExpire: true, importCheck: true },
-  douyin: { loginSupported: false, onlinePlayer: false, linkMayExpire: false, importCheck: true },
+  bilibili: { loginSupported: true, onlinePlayer: true, linkMayExpire: false, importCheck: false, relatedCollection: true },
+  youtube: { loginSupported: true, onlinePlayer: true, linkMayExpire: false, importCheck: false, relatedCollection: false },
+  xiaohongshu: { loginSupported: true, onlinePlayer: false, linkMayExpire: true, importCheck: true, relatedCollection: false },
+  douyin: { loginSupported: false, onlinePlayer: false, linkMayExpire: false, importCheck: true, relatedCollection: true },
 };
 
 export function platformCapabilities(platform: Platform): PlatformCapabilities {

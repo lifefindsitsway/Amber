@@ -258,6 +258,12 @@ export interface PlatformSourceAdapter {
    */
   refreshCoverUrl?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<string | undefined>;
   /**
+   * The platform collection a single video belongs to, for a pasted link; `undefined` when it
+   * belongs to none or the collection cannot be read. Present exactly on platforms whose
+   * capability row has `relatedCollection`.
+   */
+  findRelatedCollection?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformRelatedCollection | undefined>;
+  /**
    * Lists a collection's entries in the platform's order, at most `limit` of them, in as few
    * requests as the platform allows and without asking anything per entry.
    */

@@ -1,0 +1,45 @@
+{
+  "source": {
+    "sanitized": true,
+    "synthetic": true,
+    "url": "https://api.bilibili.com/x/web-interface/view?bvid=BV1Fh411c7mD",
+    "license": "合成数据，不对应真实稿件",
+    "attribution": "按录制的 view 应答结构合成的两 P 稿件，属于一个虚构合集",
+    "recordedAt": "2026-11-28",
+    "recordedWith": "synthetic: shaped like the recorded view answers, with two parts"
+  },
+  "answer": {
+    "code": 0,
+    "message": "OK",
+    "data": {
+      "bvid": "BV1Fh411c7mD",
+      "videos": 2,
+      "pages": [
+        {
+          "cid": 9000000001
+        },
+        {
+          "cid": 9000000002
+        }
+      ],
+      "ugc_season": {
+        "id": 9000001,
+        "title": "Synthetic season",
+        "mid": 9000000,
+        "ep_count": 2,
+        "sections": [
+          {
+            "episodes": [
+              {
+                "bvid": "BV1Fh411c7mD"
+              },
+              {
+                "bvid": "BV1Gh411c7mD"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

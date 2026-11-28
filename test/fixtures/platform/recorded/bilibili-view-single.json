@@ -1,0 +1,23 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://api.bilibili.com/x/web-interface/view?bvid=BV1mU411f7zZ",
+    "license": "未核实许可；仅作结构样本",
+    "attribution": "B 站单 P 稿件 BV1mU411f7zZ（UP 主 UID 1519547765），不属于任何合集",
+    "recordedAt": "2026-11-28",
+    "recordedWith": "a guest GET of x/web-interface/view with a browser User-Agent and the bilibili Referer; data reduced to the fields the adapter reads"
+  },
+  "answer": {
+    "code": 0,
+    "message": "OK",
+    "data": {
+      "bvid": "BV1mU411f7zZ",
+      "videos": 1,
+      "pages": [
+        {
+          "cid": 1548981236
+        }
+      ]
+    }
+  }
+}

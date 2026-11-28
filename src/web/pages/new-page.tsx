@@ -12,7 +12,6 @@ import {
   type ImportItem,
   type ImportRequest,
   type ImportResponse,
-  type InspectResponse,
   type RelatedCollection,
 } from "../../shared/dto/import.ts";
 import type { LocalFileRequest } from "../../shared/dto/local-media.ts";
@@ -54,7 +53,18 @@ import { TextArea, TextInput } from "../ui/text-field.tsx";
 import { appErrorOf } from "../components/confirm-dialog.tsx";
 import { PageHeader } from "../ui/feedback.tsx";
 import { useToast } from "../ui/toast.tsx";
-import { checkableLink, ImportCheckNote, importCheckShown, SubtitleLoginNote, useImportCheck, useSubtitleLoginHint } from "./import-check.tsx";
+import {
+  checkableLink,
+  forgetImportChecks,
+  ImportCheckNote,
+  importCheckShown,
+  RelatedCollectionNote,
+  relatedCollectionOf,
+  SubtitleLoginNote,
+  useImportCheck,
+  useSubtitleLoginHint,
+  videoIdOf,
+} from "./import-check.tsx";
 import { ImportPackButton, PackActiveNotice } from "./content-pack/pack-entry.tsx";
 
 /** Builtin template id used when the user has not chosen a default. */
@@ -486,6 +496,7 @@ export function NewPage() {
       }
       form.append("file", uploadFile, uploadFile.name);
       const response = await api.upload("/api/contents/upload", form, importResponseSchema, { idempotent: true });
+      forgetImportChecks(queryClient);
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.unfinishedTasks,
@@ -543,6 +554,7 @@ export function NewPage() {
         ...(localSubtitle === undefined ? {} : { initialSubtitle: localInitialSubtitle(localSubtitle) }),
       };
       const response = await api.post("/api/contents/local-file", importResponseSchema, { body, idempotent: true });
+      forgetImportChecks(queryClient);
       void queryClient.invalidateQueries({ queryKey: queryKeys.contentsAll });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.unfinishedTasks,
@@ -580,14 +592,13 @@ export function NewPage() {
    * 「选择合集中的视频」: the preview of the collection the box's video belongs to, with that video
    * alone chosen to start with. Cancelling sends nothing; without confirming, the video goes alone.
    */
-  const openRelated = (collection: RelatedCollection, answer: InspectResponse): void => {
-    if (checkUrl === undefined) return;
+  const openRelated = (collection: RelatedCollection): void => {
+    if (checkUrl === undefined || check?.phase !== "done") return;
+    const videoId = videoIdOf(check.answer.canonicalUrl);
     setConfirmed(undefined);
     setError(undefined);
     setRelated({ videoUrl: checkUrl, collectionUrl: collection.canonicalUrl });
-    preview.open([collection.canonicalUrl], undefined, {
-      [collection.canonicalUrl]: { canonicalUrl: answer.canonicalUrl, ...(collection.index === undefined ? {} : { index: collection.index - 1 }) },
-    });
+    preview.open([collection.canonicalUrl], undefined, videoId === undefined ? {} : { [collection.canonicalUrl]: { platformContentId: videoId } });
   };
 
   /** Tells once what became of the stored source links the import offered to replace, and drops their stale details. */
@@ -651,7 +662,8 @@ export function NewPage() {
       try {
         const response = await api.post("/api/contents/import", importResponseSchema, { body: intent.current.body, idempotencyKey: intent.current.key });
         intent.current = undefined;
-          // The page may stay (some items skipped): the links imported are read afresh next time,
+        forgetImportChecks(queryClient);
+        // The page may stay (some items skipped): the links imported are read afresh next time,
         // and the next 「开始处理」 asks again instead of resending this choice.
         preview.close();
         preview.reset([...previewed]);
@@ -925,9 +937,12 @@ export function NewPage() {
   // The rest of the recognition line: what checking the link found, then the login hint.
   const recognitionExtras = [
     // Once the import itself refused the link, the field error says it; the check would say it twice.
-    ...(importCheckShown(check) && refusedText === undefined ? [<ImportCheckNote key="check" check={check} onChooseFromCollection={openRelated} />] : []),
+    ...(importCheckShown(check) && refusedText === undefined ? [<ImportCheckNote key="check" check={check} />] : []),
     ...(loginHint === undefined ? [] : [<SubtitleLoginNote key="login" state={loginHint} />]),
   ];
+  // The collection the box's video belongs to, a block of its own under the line; not once the import refused the link.
+  const relatedCollection = refusedText === undefined ? relatedCollectionOf(check) : undefined;
+  const relatedId = `${recognitionId}-collection`;
   // Under the box: the links the import could not verify, and the choice to import them anyway.
   const unverifiedPrompt =
     shownUnverified.length === 0 ? null : (
@@ -981,7 +996,12 @@ export function NewPage() {
               placeholder={t("shell.newPage.urlPlaceholder")}
               rows={6}
               invalid={invalid("links")}
-              aria-describedby={describedBy("links", recognitionId, recognitionExtras.length === 0 ? undefined : `${recognitionId}-more`)}
+              aria-describedby={describedBy(
+                "links",
+                recognitionId,
+                recognitionExtras.length === 0 ? undefined : `${recognitionId}-more`,
+                relatedCollection === undefined ? undefined : relatedId,
+              )}
               className="w-full font-mono"
             />
             {fieldError("links")}
@@ -994,6 +1014,7 @@ export function NewPage() {
               reserve={checkUrl !== undefined}
               extras={recognitionExtras}
             />
+            <RelatedCollectionNote id={relatedId} related={relatedCollection} onChoose={openRelated} />
           </Tabs.Content>
           {server ? (
             <Tabs.Content value="upload" className={FORM_GRID}>

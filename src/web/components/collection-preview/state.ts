@@ -119,26 +119,15 @@ export function withDefaults(session: PreviewSession, budget: number): PreviewSe
 
 /**
  * The one entry a preview opened from a single video starts with chosen: that video, found by
- * its canonical link. `index` (0-based, when the platform tells the episode number) only says
- * how far to page on to find it; it never picks an entry by position.
+ * its video id among the entries read when the preview opens. It is never picked by position,
+ * and no further page is read to find it.
  */
 export interface EntryPreselect {
-  canonicalUrl: string;
-  index?: number;
+  platformContentId: string;
 }
 
 function preselected(session: PreviewSession, preselect: EntryPreselect): PreviewEntry | undefined {
-  return session.entries.find((entry) => entry.canonicalUrl === preselect.canonicalUrl);
-}
-
-/**
- * Whether the next page should be read before the defaults are given: the preselected entry is
- * not among those read, and by its episode number it is still ahead. Without a number nothing
- * more is read: the first page decides.
- */
-export function preselectAhead(session: PreviewSession, preselect: EntryPreselect | undefined): boolean {
-  if (preselect === undefined || session.chosen || preselected(session, preselect) !== undefined) return false;
-  return preselect.index !== undefined && session.entries.length <= preselect.index;
+  return session.entries.find((entry) => entry.platformContentId === preselect.platformContentId);
 }
 
 /**

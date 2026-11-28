@@ -28,6 +28,7 @@ import type {
   PlatformCredential,
   PlatformImportCheck,
   PlatformPart,
+  PlatformRelatedCollection,
   PlatformSourceAdapter,
 } from "../ports/platform-source.ts";
 import type { Repository, RepositoryScope } from "../ports/repository.ts";
@@ -315,7 +316,7 @@ export class ImportContentService {
       return this.inspectCollection(owner, request, recognized, signal);
     }
     if (adapter.precheck !== undefined) {
-      return this.inspectChecked(owner, recognized, signal);
+      return this.inspectChecked(owner, request, recognized, signal);
     }
     if (adapter.resolveParts === undefined) {
       return { kind: "single", canonicalUrl: parsed.canonicalUrl };
@@ -329,7 +330,21 @@ export class ImportContentService {
     }
     if (chosen !== undefined || parts.length === 1) {
       const part = (chosen ?? parts[0]) as PlatformPart;
-      return { kind: "single", canonicalUrl: part.canonicalUrl, ...(part.title === "" ? {} : { title: part.title }) };
+      const single: InspectResponse = { kind: "single", canonicalUrl: part.canonicalUrl, ...(part.title === "" ? {} : { title: part.title }) };
+      if (!pastedSingleChecked(adapter)) {
+        return single;
+      }
+      // Whether the library has it is known only by the part id, which takes asking the
+      // platform anyway: the same answer names the collection too, for a single-part video.
+      const source: ContentSource = { kind: adapter.kind, sourceUrl: part.canonicalUrl, platformContentId, platformPartId: part.platformPartId };
+      const existing = this.options.repository.withTransaction((scope) => scope.contents.findByPlatformIdentity(owner, source));
+      const related =
+        parts.length === 1 ? await this.relatedCollection(owner, recognized, { platformContentId, platformPartId: part.platformPartId, sourceUrl: part.canonicalUrl }, signal) : undefined;
+      return {
+        ...single,
+        ...(existing === undefined || existing.trashedAt !== undefined ? {} : { contentId: existing.id }),
+        ...(related === undefined ? {} : { relatedCollection: relatedCollectionDto(related) }),
+      };
     }
     return {
       kind: "multipart",
@@ -341,13 +356,23 @@ export class ImportContentService {
   /**
    * A single link of a platform that checks links before import: the Content it names when
    * that is in the library already (the platform is not asked), otherwise what the check found.
+   * Where the platform can name the video's collection, a library answer says the collection
+   * can be asked for, and a request with `discoverCollection` asks the platform for it.
    */
-  private async inspectChecked(owner: string, recognized: Recognized, signal: AbortSignal): Promise<InspectResponse> {
+  private async inspectChecked(owner: string, request: InspectRequest, recognized: Recognized, signal: AbortSignal): Promise<InspectResponse> {
     const { adapter, parsed } = recognized;
     const source: ContentSource = { kind: adapter.kind, sourceUrl: parsed.canonicalUrl, platformContentId: parsed.platformContentId as string };
     const existing = this.options.repository.withTransaction((scope) => scope.contents.findByPlatformIdentity(owner, source));
     if (existing !== undefined && existing.trashedAt === undefined) {
-      return { kind: "single", canonicalUrl: parsed.canonicalUrl, contentId: existing.id };
+      const library: InspectResponse = { kind: "single", canonicalUrl: parsed.canonicalUrl, contentId: existing.id };
+      if (!findsRelatedCollection(adapter)) {
+        return library;
+      }
+      if (request.discoverCollection !== true) {
+        return { ...library, collectionCheck: "available" };
+      }
+      const related = await this.relatedCollection(owner, recognized, { platformContentId: source.platformContentId as string, sourceUrl: parsed.canonicalUrl }, signal);
+      return related === undefined ? library : { ...library, relatedCollection: relatedCollectionDto(related) };
     }
     const check = await this.checkLink(owner, recognized, signal);
     if (check.result !== "video") {
@@ -360,18 +385,33 @@ export class ImportContentService {
       canonicalUrl: parsed.canonicalUrl,
       title,
       check: { result: "video", title, durationMs: Math.max(0, Math.round(durationMs)) },
-      ...(related === undefined
-        ? {}
-        : {
-            relatedCollection: {
-              platformCollectionId: related.platformCollectionId,
-              title: related.title,
-              ...(related.itemCount === undefined ? {} : { itemCount: related.itemCount }),
-              ...(related.index === undefined ? {} : { index: related.index }),
-              canonicalUrl: related.canonicalUrl,
-            },
-          }),
+      ...(related === undefined ? {} : { relatedCollection: relatedCollectionDto(related) }),
     };
+  }
+
+  /**
+   * The platform collection a pasted video belongs to: from what an import check of this link
+   * read moments ago when there is that, otherwise asked of the platform. Only a hint beside
+   * the library state, so a platform error leaves it out rather than failing the paste check.
+   */
+  private async relatedCollection(owner: string, recognized: Recognized, ref: PlatformContentRef, signal: AbortSignal): Promise<PlatformRelatedCollection | undefined> {
+    const { adapter, auth } = recognized;
+    const find = adapter.findRelatedCollection?.bind(adapter);
+    if (find === undefined || !PLATFORM_CAPABILITIES[adapter.kind].relatedCollection) {
+      return undefined;
+    }
+    const kept = this.details.find(owner, adapter.kind, ref);
+    if (kept !== undefined) {
+      return kept.relatedCollection;
+    }
+    try {
+      return await this.heavyJob(owner, signal, () => find(ref, auth, signal));
+    } catch (error) {
+      if (signal.aborted || !(error instanceof AmberError)) {
+        throw error;
+      }
+      return undefined;
+    }
   }
 
   /**
@@ -1088,6 +1128,27 @@ function reusableSummaryTask(scope: RepositoryScope, content: Content, request: 
     return undefined;
   }
   return summaryFreshness(scope, content, current).stale ? undefined : producer;
+}
+
+/** Whether the platform can name the collection a pasted single video belongs to. */
+function findsRelatedCollection(adapter: PlatformSourceAdapter): boolean {
+  return PLATFORM_CAPABILITIES[adapter.kind].relatedCollection && adapter.findRelatedCollection !== undefined;
+}
+
+/** Whether a pasted single link of the platform is answered with its library state. */
+function pastedSingleChecked(adapter: PlatformSourceAdapter): boolean {
+  const capabilities = PLATFORM_CAPABILITIES[adapter.kind];
+  return capabilities.importCheck || capabilities.relatedCollection;
+}
+
+function relatedCollectionDto(related: PlatformRelatedCollection): NonNullable<InspectResponse["relatedCollection"]> {
+  return {
+    platformCollectionId: related.platformCollectionId,
+    title: related.title,
+    ...(related.itemCount === undefined ? {} : { itemCount: related.itemCount }),
+    ...(related.index === undefined ? {} : { index: related.index }),
+    canonicalUrl: related.canonicalUrl,
+  };
 }
 
 /**

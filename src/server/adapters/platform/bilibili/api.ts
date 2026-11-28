@@ -110,6 +110,27 @@ export const seasonArchivesSchema = z
   })
   .nullish();
 
+/**
+ * `x/web-interface/view`: the submission's part count and, for a submission in a 合集, the
+ * season (`ugc_season`) with its owner, title, episode count and the episodes in order.
+ */
+export const viewSchema = z.object({
+  bvid: z.string(),
+  videos: z.number().int().nonnegative(),
+  pages: z.array(z.object({ cid: z.number().int().positive() })).nullish(),
+  ugc_season: z
+    .object({
+      id: z.number().int().positive(),
+      title: text,
+      mid: z.number().int().positive(),
+      ep_count: count,
+      sections: z
+        .array(z.object({ episodes: z.array(z.object({ bvid: text })).nullish() }))
+        .nullish(),
+    })
+    .nullish(),
+});
+
 /** A signed subtitle document (not an API envelope): its sentence lines. */
 export const subtitleBodySchema = z.object({
   body: z.array(z.object({ from: count, to: count, content: text })).nullish(),

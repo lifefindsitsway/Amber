@@ -27,6 +27,11 @@ describe("PLATFORM_CAPABILITIES", () => {
     expect(adapter.checkCredential !== undefined).toBe(row.loginSupported);
     expect(adapter.cookieDomains !== undefined && adapter.cookieDomains.length > 0).toBe(row.loginSupported);
     expect(adapter.precheck !== undefined).toBe(row.importCheck);
+    expect(adapter.findRelatedCollection !== undefined).toBe(row.relatedCollection);
+  });
+
+  it("gives related-collection discovery to bilibili and douyin only", () => {
+    expect(PLATFORMS.filter((platform) => PLATFORM_CAPABILITIES[platform].relatedCollection)).toEqual(["bilibili", "douyin"]);
   });
 
   it.each(ADAPTERS.map((adapter) => [adapter.kind, adapter] as const))("%s declares its own proxy hosts as bare, lowercase host names", (_kind, adapter) => {

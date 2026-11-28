@@ -183,6 +183,53 @@ describe("precheck", () => {
   });
 });
 
+describe("related collection of a video already in the library", () => {
+  it("names the collection from one detail read, the same source as the import check", async () => {
+    const { adapter, fake } = setup();
+    const check = await adapter.precheck(REF, undefined, signal());
+    const related = await adapter.findRelatedCollection(REF, undefined, signal());
+    expect(related).toEqual({
+      platformCollectionId: MIX,
+      title: "灯塔守望录",
+      itemCount: 4,
+      index: 1,
+      canonicalUrl: "https://www.douyin.com/collection/7900000000000000100",
+    });
+    expect(check.result === "video" ? check.relatedCollection : undefined).toEqual(related);
+    expect(fake.api("detail")).toHaveLength(2);
+    expect(apiParams(fake.api("detail")[1]!)).toEqual(apiParams(fake.api("detail")[0]!));
+  });
+
+  it("names nothing outside a collection, for an image post, a filtered answer or any failure", async () => {
+    const answers: Array<FakeDouyin["detail"]> = [
+      () => ({ body: detailWith((detail) => (detail["mix_info"] = null)) }),
+      () => ({ body: imagePost() }),
+      () => ({ body: { aweme_detail: null, filter_detail: { aweme_id: ID, filter_reason: "core_dep" }, status_code: 0 } }),
+      () => ({ status: 429 }),
+      () => ({ status: 200, body: "<html>verify</html>" }),
+      () => new OutboundHttpError("before_send", "network"),
+    ];
+    for (const answer of answers) {
+      const { adapter, fake } = setup();
+      fake.detail = answer;
+      expect(await adapter.findRelatedCollection(REF, undefined, signal())).toBeUndefined();
+    }
+    const refused = setup();
+    refused.fake.refuseAll = true;
+    expect(await refused.adapter.findRelatedCollection(REF, undefined, signal())).toBeUndefined();
+  });
+
+  it("lets a cancellation through", async () => {
+    const { adapter, fake } = setup();
+    const controller = new AbortController();
+    fake.detail = () => {
+      controller.abort();
+      return new OutboundHttpError("after_send", "aborted");
+    };
+    await expect(adapter.findRelatedCollection(REF, undefined, controller.signal)).rejects.toBeInstanceOf(OutboundHttpError);
+  });
+});
+
 describe("refreshed cover link", () => {
   it("reads the current cover on the image hosts from a fresh detail read", async () => {
     const { adapter, fake } = setup();

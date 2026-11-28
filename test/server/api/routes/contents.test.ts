@@ -120,6 +120,28 @@ describe("POST /api/contents/inspect", () => {
     expect(stale.json().error.code).toBe("conflict.collection_preview_stale");
     expect((await inspect({ url: SPACE, offset: -1 })).statusCode).toBe(400);
   });
+
+  it("answers the collection a pasted video belongs to: bilibili in the same response, Douyin in the library when asked again", async () => {
+    const { h, app } = await setup();
+    const inspect = (payload: object) => app.inject({ method: "POST", url: "/api/contents/inspect", headers: auth, payload });
+    const season = { platformCollectionId: "bilibili:season:2", title: "操作系统", itemCount: 12, index: 3, canonicalUrl: "https://space.bilibili.com/1/lists/2?type=season" };
+    h.platforms.bilibili.relate("BV1xx411c7mD", season);
+    const bilibili = await inspect({ url: LINK });
+    expect(bilibili.statusCode).toBe(200);
+    expect(bilibili.json()).toEqual({ kind: "single", canonicalUrl: LINK, relatedCollection: season });
+
+    const video = "https://www.douyin.com/video/7301234567890123456";
+    const mix = { platformCollectionId: "douyin:7300000000000000001", title: "秦汉逐鹿", canonicalUrl: "https://www.douyin.com/collection/7300000000000000001" };
+    h.platforms.douyin.relate("7301234567890123456", mix);
+    h.platforms.douyin.checks.set("7301234567890123456", { result: "unverified" });
+    const imported = await app.inject({ method: "POST", url: "/api/contents/import", headers: auth, payload: { items: [{ url: video, acceptUnverified: true }] } });
+    const contentId = imported.json().contentIds[0];
+    expect((await inspect({ url: video })).json()).toEqual({ kind: "single", canonicalUrl: video, contentId, collectionCheck: "available" });
+    expect(h.platforms.douyin.callsOf("findRelatedCollection")).toHaveLength(0);
+    expect((await inspect({ url: video, discoverCollection: true })).json()).toEqual({ kind: "single", canonicalUrl: video, contentId, relatedCollection: mix });
+    expect(h.platforms.douyin.callsOf("findRelatedCollection")).toHaveLength(1);
+    expect((await inspect({ url: video, discoverCollection: false })).statusCode).toBe(400);
+  });
 });
 
 describe("reading and managing Contents over HTTP", () => {

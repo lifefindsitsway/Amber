@@ -6,7 +6,6 @@ import {
   missingChoice,
   movedToFront,
   platformOrder,
-  preselectAhead,
   processingOrder,
   pruneChoice,
   rangeBetween,
@@ -118,26 +117,18 @@ describe("collection preview state", () => {
 
 describe("preselecting the video a preview was opened from", () => {
   const read = (ids: string[], extra: Record<string, unknown> = {}): PreviewSession => withFirstPage(emptySession(URL), page(ids.map((id) => entry(id)), extra));
-  const target = (id: string, index?: number) => ({ canonicalUrl: `https://www.youtube.com/watch?v=${id}`, ...(index === undefined ? {} : { index }) });
+  const target = (id: string) => ({ platformContentId: id });
 
-  it("chooses that entry alone, found by its link, once", () => {
-    const session = withPreselect(read(["a", "b", "c"]), target("b", 0));
+  it("chooses that entry alone, found by its video id, once", () => {
+    const session = withPreselect(read(["a", "b", "c"]), target("b"));
     expect([...session.selected]).toEqual(["b"]);
     expect(session.chosen).toBe(true);
     expect(withPreselect({ ...session, selected: new Set(["c"]) }, target("b"))).toMatchObject({ selected: new Set(["c"]) });
   });
 
-  it("chooses nothing when the entry is missing or cannot be chosen", () => {
-    expect(withPreselect(read(["a"]), target("z", 0)).selected.size).toBe(0);
+  it("chooses nothing when the entry is not among those read or cannot be chosen", () => {
+    expect(withPreselect(read(["a"], { nextOffset: 1 }), target("z")).selected.size).toBe(0);
     const trashed = withFirstPage(emptySession(URL), page([entry("a", "trashed")]));
     expect(withPreselect(trashed, target("a")).selected.size).toBe(0);
-  });
-
-  it("reads on only while the episode number puts the entry beyond what was read", () => {
-    expect(preselectAhead(read(["a", "b"], { nextOffset: 2 }), target("e", 4))).toBe(true);
-    expect(preselectAhead(read(["a", "b"], { nextOffset: 2 }), target("b", 4))).toBe(false);
-    expect(preselectAhead(read(["a", "b"], { nextOffset: 2 }), target("e", 1))).toBe(false);
-    expect(preselectAhead(read(["a", "b"], { nextOffset: 2 }), target("e"))).toBe(false);
-    expect(preselectAhead(read(["a", "b"], { nextOffset: 2 }), undefined)).toBe(false);
   });
 });

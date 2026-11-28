@@ -1830,3 +1830,106 @@ describe("links checked before import", () => {
     expect(countRows(h.db, "content")).toBe(2);
   });
 });
+
+describe("the collection a pasted video belongs to", () => {
+  const SEASON = { platformCollectionId: "bilibili:season:2", title: "操作系统", itemCount: 12, index: 3, canonicalUrl: "https://space.bilibili.com/1/lists/2?type=season" };
+  const VIDEO = "7301234567890123456";
+  const DOUYIN_VIDEO = `https://www.douyin.com/video/${VIDEO}`;
+  const MIX = { platformCollectionId: "douyin:7300000000000000001", title: "秦汉逐鹿", itemCount: 3, index: 2, canonicalUrl: "https://www.douyin.com/collection/7300000000000000001" };
+  const callsOf = (h: Harness, platform: "bilibili" | "douyin", method: string) => h.platforms[platform].callsOf(method).length;
+
+  it("answers a single-part bilibili video with its library state and its collection in one response", async () => {
+    const h = harness();
+    h.platforms.bilibili.relate(BVID, SEASON);
+    expect(await h.importContent.inspect(LOCAL, { url: LINK })).toEqual({ kind: "single", canonicalUrl: LINK, relatedCollection: SEASON });
+    const imported = await h.importContent.import(LOCAL, request());
+    expect(await h.importContent.inspect(LOCAL, { url: LINK })).toEqual({
+      kind: "single",
+      canonicalUrl: LINK,
+      contentId: imported.body.contentIds[0],
+      relatedCollection: SEASON,
+    });
+    expect(callsOf(h, "bilibili", "findRelatedCollection")).toBe(2);
+    expect(countRows(h.db, "collection")).toBe(0);
+  });
+
+  it("leaves the collection out for a multi-part bilibili video, one in no collection, and one whose collection cannot be read", async () => {
+    const h = harness();
+    threeParts(h);
+    h.platforms.bilibili.relate(BVID, SEASON);
+    expect(await h.importContent.inspect(LOCAL, { url: LINK })).toMatchObject({ kind: "multipart" });
+    expect(await h.importContent.inspect(LOCAL, { url: `${LINK}?p=2` })).toEqual({ kind: "single", canonicalUrl: `${LINK}?p=2`, title: "Lecture 2" });
+    expect(callsOf(h, "bilibili", "findRelatedCollection")).toBe(0);
+
+    const loose = bvid(7);
+    h.platforms.bilibili.relate(loose, undefined);
+    expect(await h.importContent.inspect(LOCAL, { url: `https://www.bilibili.com/video/${loose}` })).toEqual({
+      kind: "single",
+      canonicalUrl: `https://www.bilibili.com/video/${loose}`,
+    });
+    const unreadable = bvid(8);
+    h.platforms.bilibili.relate(unreadable, amberError("source_unreachable", "scripted"));
+    expect(await h.importContent.inspect(LOCAL, { url: `https://www.bilibili.com/video/${unreadable}` })).toEqual({
+      kind: "single",
+      canonicalUrl: `https://www.bilibili.com/video/${unreadable}`,
+    });
+  });
+
+  it("answers a Douyin video in the library at once, and its collection only when asked again", async () => {
+    const h = harness();
+    h.platforms.douyin.relate(VIDEO, MIX);
+    h.platforms.douyin.checks.set(VIDEO, { result: "unverified" });
+    const imported = await h.importContent.import(LOCAL, { items: [{ url: DOUYIN_VIDEO, acceptUnverified: true }], settings: { autoProofread: true } });
+    const contentId = imported.body.contentIds[0] as string;
+    const calls = h.platforms.douyin.calls.length;
+
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO })).toEqual({ kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId, collectionCheck: "available" });
+    expect(h.platforms.douyin.calls).toHaveLength(calls);
+
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO, discoverCollection: true })).toEqual({
+      kind: "single",
+      canonicalUrl: DOUYIN_VIDEO,
+      contentId,
+      relatedCollection: MIX,
+    });
+    expect(h.platforms.douyin.calls.slice(calls).map((call) => call.method)).toEqual(["findRelatedCollection"]);
+
+    h.platforms.douyin.relate(VIDEO, undefined);
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO, discoverCollection: true })).toEqual({ kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId });
+  });
+
+  it("names a Douyin video's collection from what the import check read moments ago, without asking again", async () => {
+    const h = harness();
+    h.platforms.douyin.relate(VIDEO, MIX);
+    h.platforms.douyin.checks.set(VIDEO, { result: "video", metadata: { title: "第二集", durationMs: 190_000, subtitleTracks: [], description: { state: "unknown" } }, relatedCollection: MIX });
+    const imported = await h.importContent.import(LOCAL, { items: [{ url: DOUYIN_VIDEO }], settings: { autoProofread: true } });
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO, discoverCollection: true })).toEqual({
+      kind: "single",
+      canonicalUrl: DOUYIN_VIDEO,
+      contentId: imported.body.contentIds[0],
+      relatedCollection: MIX,
+    });
+    expect(callsOf(h, "douyin", "findRelatedCollection")).toBe(0);
+    expect(callsOf(h, "douyin", "precheck")).toBe(1);
+  });
+
+  it("answers a Douyin video not in the library as before: the check brings its collection, asked or not", async () => {
+    const h = harness();
+    h.platforms.douyin.relate(VIDEO, MIX);
+    h.platforms.douyin.checks.set(VIDEO, { result: "video", metadata: { title: "第二集", durationMs: 190_000, subtitleTracks: [], description: { state: "unknown" } }, relatedCollection: MIX });
+    const expected = { kind: "single", canonicalUrl: DOUYIN_VIDEO, title: "第二集", check: { result: "video", title: "第二集", durationMs: 190_000 }, relatedCollection: MIX };
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO })).toEqual(expected);
+    expect(await h.importContent.inspect(LOCAL, { url: DOUYIN_VIDEO, discoverCollection: true })).toEqual(expected);
+    expect(callsOf(h, "douyin", "findRelatedCollection")).toBe(0);
+  });
+
+  it("offers no collection check for a library link of a platform that names no collection", async () => {
+    const h = harness();
+    const NOTE = "64e0a1b2c3d4e5f600112233";
+    const url = `https://www.xiaohongshu.com/explore/${NOTE}?xsec_token=xxxxtok1&xsec_source=pc_feed`;
+    const imported = await h.importContent.import(LOCAL, request({}, url));
+    const answer = { kind: "single", canonicalUrl: url, contentId: imported.body.contentIds[0] };
+    expect(await h.importContent.inspect(LOCAL, { url })).toEqual(answer);
+    expect(await h.importContent.inspect(LOCAL, { url, discoverCollection: true })).toEqual(answer);
+  });
+});

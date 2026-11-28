@@ -1,9 +1,12 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../../../src/web/api/client.ts";
 import { queryKeys } from "../../../src/web/api/queries.ts";
+import { useContentEvents } from "../../../src/web/api/context.tsx";
+import type { ContentEventBus } from "../../../src/web/api/content-events.ts";
 import { NewPage, routeAfterImport } from "../../../src/web/pages/new-page.tsx";
 import { useOpenTasksRequest } from "../../../src/web/shell/task-panel.tsx";
 import { usePasteGuard } from "../../../src/web/shell/paste-guard.ts";
@@ -33,7 +36,7 @@ import {
   YT_LIST,
   YT_VIDEO,
 } from "../../fixtures/platform/share-text.ts";
-import { IMPORT_CHECK_DEBOUNCE_MS, IMPORT_CHECK_QUIET_MS } from "../../../src/shared/defaults.ts";
+import { IMPORT_CHECK_CACHE_MS, IMPORT_CHECK_DEBOUNCE_MS, IMPORT_CHECK_QUIET_MS } from "../../../src/shared/defaults.ts";
 import type { InspectRequest } from "../../../src/shared/dto/import.ts";
 import { fakeInspect, newEntries, STALE_REPLY } from "../../fixtures/web/collection-preview.ts";
 
@@ -1508,10 +1511,10 @@ describe("NewPage checking a pasted link", () => {
     expect(screen.queryByTestId("import-check-checking")).toBeNull();
   });
 
-  it("does not check bilibili or YouTube links, several links, a collection, or the subtitle tab's link", async () => {
+  it("does not check YouTube links, several links, a collection, or the subtitle tab's link", async () => {
     const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": video("示例", 1000) });
     await openPage(page(), { route: "/new" });
-    for (const text of [VIDEO, YT_VIDEO, SHORT, YT_LIST, DOUYIN_COLLECTION, `${XHS_VIDEO}\n${DOUYIN_VIDEO}`, `${DOUYIN_VIDEO}\n${UNSUPPORTED}`]) {
+    for (const text of [VIDEO, YT_VIDEO, YT_LIST, DOUYIN_COLLECTION, `${XHS_VIDEO}\n${DOUYIN_VIDEO}`, `${DOUYIN_VIDEO}\n${UNSUPPORTED}`]) {
       type(text);
       await pause();
     }
@@ -1756,7 +1759,8 @@ describe("NewPage choosing from the collection of a pasted video", () => {
     await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     await screen.findByTestId("import-check-collection");
-    expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·共 3 集·选择合集中的视频");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("第 2 集·1:00");
+    expect(screen.getByTestId("import-check-collection").textContent).toBe("属于合集「示例合集」·共 3 集·选择合集中的视频");
     fireEvent.click(screen.getByTestId("new-submit"));
     await waitFor(() => expect(imported(calls)).toHaveLength(1));
     expect((imported(calls)[0]?.body as { items: unknown[] }).items).toEqual([{ url: DOUYIN_VIDEO }]);
@@ -1769,7 +1773,7 @@ describe("NewPage choosing from the collection of a pasted video", () => {
     const { unmount } = await openPage(page(), { route: "/new" });
     fireEvent.change(box(), { target: { value: DOUYIN_VIDEO } });
     await screen.findByTestId("import-check-collection");
-    expect(screen.getByTestId("link-recognition").textContent).toBe("属于合集「示例合集」·选择合集中的视频");
+    expect(screen.getByTestId("import-check-collection").textContent).toBe("属于合集「示例合集」·选择合集中的视频");
     unmount();
     mockApi(routes(undefined).routes);
     await openPage(page(), { route: "/new" });
@@ -2173,5 +2177,198 @@ describe("NewPage before the settings and the model list are read", () => {
     fireEvent.click(submitButton());
     await waitFor(() => expect(sent(api.calls)).toHaveLength(1));
     expect((sent(api.calls)[0]?.body as { settings: unknown }).settings).toMatchObject({ modelRef: { providerProfileId: "p2", modelId: "m3" } });
+  });
+});
+
+describe("NewPage library state and collection of a pasted link", () => {
+  const BILIBILI = "https://www.bilibili.com/video/BV1xx411c7mD";
+  const SEASON = { platformCollectionId: "bilibili:season:2", title: "操作系统", itemCount: 12, index: 3, canonicalUrl: "https://space.bilibili.com/1/lists/2?type=season" };
+  const MIX = { platformCollectionId: "douyin:mix", title: "示例合集", itemCount: 3, index: 2, canonicalUrl: DOUYIN_COLLECTION };
+  const box = (): HTMLTextAreaElement => screen.getByTestId<HTMLTextAreaElement>("new-url-input");
+  const type = (text: string): void => {
+    fireEvent.change(box(), { target: { value: text } });
+  };
+  const inspected = (calls: RecordedCalls): unknown[] => calls.filter((call) => call.method === "POST" && call.path === "/api/contents/inspect").map((call) => call.body);
+  const pause = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, IMPORT_CHECK_DEBOUNCE_MS + 150));
+
+  /** The page that can be left and come back to within one session, with the session's event bus and query client at hand. */
+  function Revisitable(props: { onBus: (bus: ContentEventBus) => void; onClient: (client: QueryClient) => void }) {
+    const [shown, setShown] = useState(true);
+    props.onBus(useContentEvents());
+    props.onClient(useQueryClient());
+    return (
+      <>
+        <button type="button" data-testid="toggle-page" onClick={() => setShown(!shown)} />
+        {shown ? page() : null}
+      </>
+    );
+  }
+  function session() {
+    const found: { bus?: ContentEventBus; client?: QueryClient } = {};
+    renderApp(
+      <Revisitable
+        onBus={(bus) => {
+          found.bus = bus;
+        }}
+        onClient={(client) => {
+          found.client = client;
+        }}
+      />,
+      { route: "/new" },
+    );
+    return {
+      found,
+      /** Leaves the page and comes back, as navigating elsewhere and back would. */
+      revisit: async (between?: () => void) => {
+        fireEvent.click(screen.getByTestId("toggle-page"));
+        await waitFor(() => expect(screen.queryByTestId("new-url-input")).toBeNull());
+        between?.();
+        fireEvent.click(screen.getByTestId("toggle-page"));
+        await screen.findByTestId("new-url-input");
+      },
+    };
+  }
+
+  it("shows a bilibili video's library state on the line and its collection in a block of its own, from one answer", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: BILIBILI, contentId: "c9", relatedCollection: SEASON } } });
+    await openPage(page(), { route: "/new" });
+    type(BILIBILI);
+    const block = await screen.findByTestId("import-check-collection");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("已在资料库·打开");
+    expect(block.textContent).toBe("属于合集「操作系统」·共 12 集·选择合集中的视频");
+    expect(screen.getByTestId("link-recognition").contains(block)).toBe(false);
+    expect(box().getAttribute("aria-describedby")?.split(" ")).toContain(block.querySelector("[id]")?.id);
+    expect(inspected(calls)).toEqual([{ url: BILIBILI }]);
+  });
+
+  it("shows a Douyin video in the library at once, then asks for its collection and adds the block", async () => {
+    const { calls } = mockApi({ ...baseRoutes() });
+    const routed = globalThis.fetch;
+    let letGo = (): void => undefined;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (String(input) === "/api/contents/inspect" && JSON.parse(String(init.body)).discoverCollection === true) {
+        await new Promise<void>((resolve) => {
+          letGo = resolve;
+        });
+        calls.push({ method: "POST", path: "/api/contents/inspect", headers: {}, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId: "c9", relatedCollection: MIX }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (String(input) === "/api/contents/inspect") {
+        calls.push({ method: "POST", path: "/api/contents/inspect", headers: {}, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId: "c9", collectionCheck: "available" }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return routed(input, init);
+    });
+    await openPage(page(), { route: "/new" });
+    type(DOUYIN_VIDEO);
+    await screen.findByTestId("import-check-in-library");
+    // The library state stands while the collection is asked for, without a progress note.
+    expect(screen.getByTestId("link-recognition").textContent).toBe("已在资料库·打开");
+    expect(screen.queryByTestId("import-check-collection")).toBeNull();
+    await waitFor(() => expect(letGo).not.toBe(undefined));
+    letGo();
+    expect((await screen.findByTestId("import-check-collection")).textContent).toBe("属于合集「示例合集」·共 3 集·选择合集中的视频");
+    expect(screen.getByTestId("link-recognition").textContent).toBe("已在资料库·打开");
+    expect(inspected(calls)).toEqual([{ url: DOUYIN_VIDEO }, { url: DOUYIN_VIDEO, discoverCollection: true }]);
+  });
+
+  it("asks once per user and link while the answer is kept, also after leaving the page, and again once it is too old", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: BILIBILI, contentId: "c9", relatedCollection: SEASON } } });
+      const { revisit } = session();
+      await screen.findByTestId("new-url-input");
+      type(BILIBILI);
+      await screen.findByTestId("import-check-collection");
+      type("");
+      type(BILIBILI);
+      expect(screen.getByTestId("import-check-collection")).toBeTruthy();
+      await revisit();
+      type(BILIBILI);
+      expect(await screen.findByTestId("import-check-in-library")).toBeTruthy();
+      await act(async () => {
+        vi.advanceTimersByTime(IMPORT_CHECK_DEBOUNCE_MS * 2);
+      });
+      expect(inspected(calls)).toHaveLength(1);
+
+      await revisit(() => vi.setSystemTime(Date.now() + IMPORT_CHECK_CACHE_MS));
+      type(BILIBILI);
+      await waitFor(() => expect(inspected(calls)).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks again after an import succeeds", async () => {
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: BILIBILI, relatedCollection: SEASON } },
+      "POST /api/contents/import": { status: 202, body: { importBatchId: "b1", taskIds: ["t1"], contentIds: ["c1"] } },
+    });
+    await openPage(page(), { route: "/new" });
+    type(BILIBILI);
+    await screen.findByTestId("import-check-collection");
+    fireEvent.click(screen.getByTestId("new-submit"));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/contents/c1"));
+    await waitFor(() => expect(inspected(calls)).toHaveLength(2));
+  });
+
+  it.each(["trashed", "restored", "purged"] as const)("asks again once Content is %s, on the page or while away from it", async (type_) => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: BILIBILI, contentId: "c9" } } });
+    const { found, revisit } = session();
+    await screen.findByTestId("new-url-input");
+    type(BILIBILI);
+    await screen.findByTestId("import-check-in-library");
+    act(() => found.bus?.publish({ type: type_, contentId: "c9" }));
+    await waitFor(() => expect(inspected(calls)).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByTestId("import-check-in-library")).toBeTruthy());
+    await revisit(() => found.bus?.publish({ type: type_, contentId: "c9" }));
+    type(BILIBILI);
+    await waitFor(() => expect(inspected(calls)).toHaveLength(3));
+  });
+
+  it("asks again for another user, and after signing out", async () => {
+    const { calls } = mockApi({ ...baseRoutes(), "POST /api/contents/inspect": { body: { kind: "single", canonicalUrl: BILIBILI, contentId: "c9" } } });
+    const { found, revisit } = session();
+    await screen.findByTestId("new-url-input");
+    type(BILIBILI);
+    await screen.findByTestId("import-check-in-library");
+    await revisit(() => found.client?.setQueryData(queryKeys.me, { userId: "u2", role: "user", mode: "local", mustChangePassword: false }));
+    type(BILIBILI);
+    await waitFor(() => expect(inspected(calls)).toHaveLength(2));
+    await screen.findByTestId("import-check-in-library");
+    await revisit(() => found.client?.clear());
+    type(BILIBILI);
+    await waitFor(() => expect(inspected(calls)).toHaveLength(3));
+  });
+
+  it("keeps no failed answer: the link is asked again on the next visit, and once the box held another link", async () => {
+    let attempts = 0;
+    const { calls } = mockApi({
+      ...baseRoutes(),
+      "POST /api/contents/inspect": () => {
+        attempts += 1;
+        return attempts <= 2
+          ? { status: 500, body: { error: { class: "internal", code: "internal", retryDisposition: "never", userMessage: "" } } }
+          : { body: { kind: "single", canonicalUrl: DOUYIN_VIDEO, contentId: "c9" } };
+      },
+    });
+    const { revisit } = session();
+    await screen.findByTestId("new-url-input");
+    type(DOUYIN_VIDEO);
+    await waitFor(() => expect(inspected(calls)).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId("import-check-checking")).toBeNull());
+    // The same link, edited around: not asked again.
+    type(`${DOUYIN_VIDEO} `);
+    await pause();
+    expect(inspected(calls)).toHaveLength(1);
+    await revisit();
+    type(DOUYIN_VIDEO);
+    await waitFor(() => expect(inspected(calls)).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByTestId("import-check-checking")).toBeNull());
+    type(BILIBILI);
+    type(DOUYIN_VIDEO);
+    expect(await screen.findByTestId("import-check-in-library")).toBeTruthy();
+    expect(inspected(calls)).toEqual([{ url: DOUYIN_VIDEO }, { url: DOUYIN_VIDEO }, { url: DOUYIN_VIDEO }]);
   });
 });

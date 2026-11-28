@@ -15,6 +15,7 @@ import type {
   PlatformDescription,
   PlatformImportCheck,
   PlatformMetadata,
+  PlatformRelatedCollection,
   PlatformSourceAdapter,
   SubtitleTrackRef,
   VideoQuality,
@@ -190,6 +191,24 @@ export class DouyinAdapter implements PlatformSourceAdapter {
   async refreshCoverUrl(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<string | undefined> {
     const { coverUrl } = await this.fetchMetadata(ref, auth, signal);
     return coverUrl !== undefined && isOnHosts(coverUrl, DOUYIN_IMAGE_HOSTS) ? coverUrl : undefined;
+  }
+
+  /**
+   * The collection a video already in the library belongs to, from one detail read: the same
+   * source as the collection the import check reports. A hidden post, one that is not a video,
+   * one outside any collection and any failure to read are `undefined`; only the caller's own
+   * cancellation is thrown.
+   */
+  async findRelatedCollection(ref: PlatformContentRef, _auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformRelatedCollection | undefined> {
+    try {
+      const read = await this.readDetail(ref.platformContentId, signal);
+      return read.kind === "hidden" || !isPlayableVideo(read.detail) ? undefined : relatedCollectionOf(read.detail);
+    } catch (error) {
+      if (signal.aborted) {
+        throw error;
+      }
+      return undefined;
+    }
   }
 
   /** The same detail request as `fetchMetadata`; an image post still has a description. */

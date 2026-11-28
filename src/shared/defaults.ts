@@ -275,6 +275,8 @@ export const COVER_IMAGE_MAX_BYTES = 524288;
 export const COVER_LOAD_CONCURRENCY = 6;
 /** How long the interface keeps a loaded cover image cached. */
 export const COVER_CACHE_GC_MS = 600000;
+/** How long the new-item form keeps a successful link check, keyed by the signed-in user and the link. */
+export const IMPORT_CHECK_CACHE_MS = 60000;
 /** Cover downloads (download and processing) running at once across the instance. */
 export const COVER_FETCH_CONCURRENCY = 4;
 /** Cover downloads running at once for one user; a manual fetch that finds none free answers busy at once. */

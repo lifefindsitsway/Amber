@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BILIBILI_EXTRACTORS, BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
 import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
-import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY, PLATFORM_JSON_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
+import {
+  COLLECTION_PREVIEW_ITEMS_MAX,
+  PLATFORM_COLLECTION_RESOLVE_CONCURRENCY,
+  PLATFORM_JSON_MAX_BYTES,
+  PLATFORM_METADATA_TIMEOUT_MS,
+} from "../../../../../src/shared/defaults.ts";
 import { OutboundHttpError, type OutboundRequest } from "../../../../../src/server/ports/outbound-http.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import {
@@ -92,6 +97,90 @@ describe("BilibiliAdapter.resolveUrl", () => {
     const plain = setup();
     expect(await plain.adapter.resolveUrl("https://example.com/v/1", signal())).toBeNull();
     expect(plain.http.requests).toEqual([]);
+  });
+});
+
+describe("BilibiliAdapter.findRelatedCollection", () => {
+  const recordedView = (name: string) =>
+    (JSON.parse(readFileSync(new URL(`../../../../fixtures/platform/recorded/${name}`, import.meta.url), "utf8")) as { answer: { data: { bvid: string } } }).answer;
+  const SEASON_VIEW = recordedView("bilibili-view-season.json");
+  const SINGLE_VIEW = recordedView("bilibili-view-single.json");
+  const MULTIPART_VIEW = recordedView("bilibili-view-multipart.json");
+  const VIEW = "/x/web-interface/view";
+
+  function viewSetup(view: (bvid: string) => ScriptedResponse | Error) {
+    return setup({ routes: (_, url) => (url.pathname === VIEW ? view(url.searchParams.get("bvid") as string) : undefined) });
+  }
+
+  it("names the 合集 of a single-part submission from the recorded view answer, with its size and the video's place", async () => {
+    const { adapter, http } = viewSetup(() => ({ body: SEASON_VIEW }));
+    expect(await adapter.findRelatedCollection({ platformContentId: "BV1kybV6DE47" }, undefined, signal())).toEqual({
+      platformCollectionId: "202224425_8942017",
+      title: "[连载] 2026南京大学《生成式软件工程》(蒋炎岩)",
+      itemCount: 14,
+      index: 3,
+      canonicalUrl: "https://space.bilibili.com/202224425/lists/8942017",
+    });
+    expect(http.requests.map((request) => request.url)).toEqual(["https://api.bilibili.com/x/web-interface/view?bvid=BV1kybV6DE47"]);
+    expect(http.requests[0]?.headers).toMatchObject({ Referer: "https://www.bilibili.com/" });
+    expect(http.requests[0]?.headers).not.toHaveProperty("Cookie");
+  });
+
+  it("sends the login whenever the user has one", async () => {
+    const { adapter, http } = viewSetup(() => ({ body: SEASON_VIEW }));
+    await adapter.findRelatedCollection({ platformContentId: "BV1kybV6DE47" }, LOGIN, signal());
+    expect(http.requests[0]?.headers?.["Cookie"]).toBe("session=<placeholder>");
+  });
+
+  it("names nothing for a submission outside any 合集, a multi-part one, or an answer about another submission", async () => {
+    const single = viewSetup(() => ({ body: SINGLE_VIEW }));
+    expect(await single.adapter.findRelatedCollection({ platformContentId: "BV1mU411f7zZ" }, undefined, signal())).toBeUndefined();
+    const multipart = viewSetup(() => ({ body: MULTIPART_VIEW }));
+    expect(await multipart.adapter.findRelatedCollection({ platformContentId: "BV1Fh411c7mD" }, undefined, signal())).toBeUndefined();
+    const other = viewSetup(() => ({ body: SEASON_VIEW }));
+    expect(await other.adapter.findRelatedCollection({ platformContentId: "BV1pb8o6yE8f" }, undefined, signal())).toBeUndefined();
+    // One part listed but more counted is still a multi-part submission.
+    const counted = viewSetup(() => ({ body: { ...SEASON_VIEW, data: { ...SEASON_VIEW.data, videos: 2 } } }));
+    expect(await counted.adapter.findRelatedCollection({ platformContentId: "BV1kybV6DE47" }, undefined, signal())).toBeUndefined();
+    for (const { http } of [single, multipart, other, counted]) {
+      expect(http.requests.map((request) => new URL(request.url).pathname)).toEqual([VIEW]);
+    }
+  });
+
+  it("leaves out the place when the season does not list the video, and counts listed episodes when no total is given", async () => {
+    const data = SEASON_VIEW.data as unknown as { ugc_season: { ep_count?: number; sections: Array<{ episodes: Array<{ bvid: string }> }> } };
+    const sections = [{ episodes: data.ugc_season.sections[0]!.episodes.filter((episode) => episode.bvid !== "BV1kybV6DE47").slice(0, 5) }];
+    const { ep_count: _count, ...season } = data.ugc_season;
+    const { adapter } = viewSetup(() => ({ body: { ...SEASON_VIEW, data: { ...SEASON_VIEW.data, ugc_season: { ...season, sections } } } }));
+    const related = await adapter.findRelatedCollection({ platformContentId: "BV1kybV6DE47" }, undefined, signal());
+    expect(related).toMatchObject({ platformCollectionId: "202224425_8942017", itemCount: 5 });
+    expect(related).not.toHaveProperty("index");
+  });
+
+  it("names nothing when the view answer fails, asking nothing else and staying within one time limit", async () => {
+    for (const failure of [{ status: 503 }, { body: { code: -352, message: "risk control" } }, { body: { code: 0, data: { bvid: 1 } } }, new OutboundHttpError("before_send", "network")] as Array<ScriptedResponse | Error>) {
+      const { adapter, http } = viewSetup(() => failure);
+      expect(await adapter.findRelatedCollection({ platformContentId: BV }, undefined, signal()), JSON.stringify(failure)).toBeUndefined();
+      expect(http.requests.map((request) => new URL(request.url).pathname)).toEqual([VIEW]);
+      expect((http.requests[0] as OutboundRequest).timeoutMs).toBeLessThanOrEqual(PLATFORM_METADATA_TIMEOUT_MS);
+    }
+  });
+
+  it("throws the caller's own cancellation", async () => {
+    const controller = new AbortController();
+    const { adapter, http } = viewSetup(() => {
+      controller.abort();
+      return new OutboundHttpError("before_send", "aborted");
+    });
+    await expect(adapter.findRelatedCollection({ platformContentId: BV }, undefined, controller.signal)).rejects.toBeInstanceOf(OutboundHttpError);
+    expect(http.requests).toHaveLength(1);
+    expect(http.requests[0]?.signal.aborted).toBe(true);
+  });
+
+  it("reads the view answer within PLATFORM_JSON_MAX_BYTES", async () => {
+    const { adapter, http } = viewSetup(() => ({ body: SEASON_VIEW, headers: { "Content-Length": String(PLATFORM_JSON_MAX_BYTES + 1) } }));
+    expect(await adapter.findRelatedCollection({ platformContentId: "BV1kybV6DE47" }, undefined, signal())).toBeUndefined();
+    expect(http.destroyed[0]).toBe("https://api.bilibili.com/x/web-interface/view?bvid=BV1kybV6DE47");
   });
 });
 

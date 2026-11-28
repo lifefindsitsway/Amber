@@ -1,0 +1,77 @@
+{
+  "source": {
+    "sanitized": true,
+    "url": "https://api.bilibili.com/x/web-interface/view?bvid=BV1kybV6DE47",
+    "license": "CC BY-NC 4.0",
+    "attribution": "B 站合集 8942017（UP 主 UID 202224425）“[连载] 2026南京大学《生成式软件工程》(蒋炎岩)”的第 3 个稿件",
+    "recordedAt": "2026-11-28",
+    "recordedWith": "a guest GET of x/web-interface/view with a browser User-Agent and the bilibili Referer; data reduced to the fields the adapter reads"
+  },
+  "answer": {
+    "code": 0,
+    "message": "OK",
+    "data": {
+      "bvid": "BV1kybV6DE47",
+      "videos": 1,
+      "pages": [
+        {
+          "cid": 41694986827
+        }
+      ],
+      "ugc_season": {
+        "id": 8942017,
+        "title": "[连载] 2026南京大学《生成式软件工程》(蒋炎岩)",
+        "mid": 202224425,
+        "ep_count": 14,
+        "sections": [
+          {
+            "episodes": [
+              {
+                "bvid": "BV1pb8o6yE8f"
+              },
+              {
+                "bvid": "BV1CQt365EzW"
+              },
+              {
+                "bvid": "BV1kybV6DE47"
+              },
+              {
+                "bvid": "BV1Q6en6NEUo"
+              },
+              {
+                "bvid": "BV1Nyeq6qEt8"
+              },
+              {
+                "bvid": "BV1Rch76WEfQ"
+              },
+              {
+                "bvid": "BV1JGap6LE74"
+              },
+              {
+                "bvid": "BV11LWw6VEHW"
+              },
+              {
+                "bvid": "BV144nc6KEA4"
+              },
+              {
+                "bvid": "BV1Guxu6EERa"
+              },
+              {
+                "bvid": "BV1ej4g6xESc"
+              },
+              {
+                "bvid": "BV1LaW36WErp"
+              },
+              {
+                "bvid": "BV1wysu6hEkz"
+              },
+              {
+                "bvid": "BV1pu1FzKEgk"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

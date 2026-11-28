@@ -674,7 +674,7 @@ describe("useCollectionPreview opened from one of a collection's videos", () => 
   it("starts with that video alone chosen, whatever its state, and keeps the user's choice after", async () => {
     const { onConfirm } = setup(
       [{ url: COLLECTION, pageSize: 50, entries: entries(4).map((entry) => (entry.id === "v2" ? { ...entry, state: "in_library" as const } : entry)) }],
-      { preselect: { [COLLECTION]: { canonicalUrl: video("v2"), index: 1 } } },
+      { preselect: { [COLLECTION]: { platformContentId: "v2" } } },
     );
     await loaded(4);
     await waitFor(() => expect(chosen()).toEqual(["v2"]));
@@ -683,29 +683,33 @@ describe("useCollectionPreview opened from one of a collection's videos", () => 
     expect(onConfirm).toHaveBeenCalledWith([{ url: COLLECTION, entries: ["v2", "v4"], previewId: "pv1" }]);
   });
 
-  it("reads on to the page holding the video when its episode number says it is further on", async () => {
-    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(6) }], { preselect: { [COLLECTION]: { canonicalUrl: video("v5"), index: 4 } } });
-    await waitFor(() => expect(chosen()).toEqual(["v5"]));
-    expect(rows()).toHaveLength(6);
-    expect(inspect.requests).toEqual([
-      { url: COLLECTION },
-      { url: COLLECTION, previewId: "pv1", offset: 2 },
-      { url: COLLECTION, previewId: "pv1", offset: 4 },
-    ]);
-  });
-
-  it("chooses nothing when the video is not among the entries, rather than another one", async () => {
-    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(4) }], { preselect: { [COLLECTION]: { canonicalUrl: video("gone") } } });
+  it("chooses no video when this one is on a page not read yet, and does not read on to find it", async () => {
+    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(6) }], { preselect: { [COLLECTION]: { platformContentId: "v5" } } });
     await loaded(2);
     await waitFor(() => expect(within(dialog()).getByTestId("preview-none-chosen")).toBeTruthy());
     expect(chosen()).toEqual([]);
-    // Without an episode number, the first page decides.
+    expect(inspect.requests).toEqual([{ url: COLLECTION }]);
+  });
+
+  it("chooses nothing when the video is not among the entries, rather than another one", async () => {
+    const { inspect } = setup([{ url: COLLECTION, pageSize: 2, entries: entries(4) }], { preselect: { [COLLECTION]: { platformContentId: "gone" } } });
+    await loaded(2);
+    await waitFor(() => expect(within(dialog()).getByTestId("preview-none-chosen")).toBeTruthy());
+    expect(chosen()).toEqual([]);
     expect(inspect.requests).toHaveLength(1);
+  });
+
+  it("matches the video by its id, not by its link", async () => {
+    setup([{ url: COLLECTION, pageSize: 50, entries: entries(3).map((entry) => (entry.id === "v3" ? { ...entry, canonicalUrl: `${video("v3")}?previous_page=app_code_link` } : entry)) }], {
+      preselect: { [COLLECTION]: { platformContentId: "v3" } },
+    });
+    await loaded(3);
+    await waitFor(() => expect(chosen()).toEqual(["v3"]));
   });
 
   it("does not choose the video when it cannot be chosen", async () => {
     setup([{ url: COLLECTION, pageSize: 50, entries: entries(3).map((entry) => (entry.id === "v2" ? { ...entry, state: "trashed" as const } : entry)) }], {
-      preselect: { [COLLECTION]: { canonicalUrl: video("v2") } },
+      preselect: { [COLLECTION]: { platformContentId: "v2" } },
     });
     await loaded(3);
     await waitFor(() => expect(within(dialog()).getByTestId("preview-none-chosen")).toBeTruthy());

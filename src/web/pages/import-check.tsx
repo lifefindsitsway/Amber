@@ -1,27 +1,30 @@
-import { useQuery } from "@tanstack/react-query";
-import { CircleAlert } from "lucide-react";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { CircleAlert, ListVideo } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import { IMPORT_CHECK_DEBOUNCE_MS, IMPORT_CHECK_QUIET_MS } from "../../shared/defaults.ts";
-import { inspectResponseSchema, type InspectResponse, type RelatedCollection } from "../../shared/dto/import.ts";
+import { IMPORT_CHECK_CACHE_MS, IMPORT_CHECK_DEBOUNCE_MS, IMPORT_CHECK_QUIET_MS } from "../../shared/defaults.ts";
+import { inspectResponseSchema, type InspectRequest, type InspectResponse, type RelatedCollection } from "../../shared/dto/import.ts";
 import { platformAccountListDtoSchema } from "../../shared/dto/platform-account.ts";
 import type { Platform } from "../../shared/enums.ts";
 import { platformCapabilities } from "../../shared/platforms.ts";
-import { useApi } from "../api/context.tsx";
-import { queryKeys } from "../api/queries.ts";
+import type { ContentEventBus } from "../api/content-events.ts";
+import { useApi, useContentEvents } from "../api/context.tsx";
+import { queryKeys, useMe } from "../api/queries.ts";
 import { formatDuration } from "../format.ts";
 import type { ParsedLinkText } from "../links.ts";
-import { TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
+import { NOTE_TEXT_CLASS, TEXT_ACTION_CLASS, TextAction } from "../ui/notice.tsx";
 
 /**
  * The link a box is checked for before import: only when it holds exactly one link, of a
- * platform that checks single links, and not a collection (a collection is previewed instead).
+ * platform that checks single links or can name the collection a video belongs to, and not a
+ * collection (a collection is previewed instead).
  */
 export function checkableLink(parsed: ParsedLinkText): string | undefined {
   const link = parsed.links[0];
   if (parsed.all.length !== 1 || link === undefined || link.kind === "collection") return undefined;
-  return platformCapabilities(link.platform).importCheck ? link.url : undefined;
+  const capabilities = platformCapabilities(link.platform);
+  return capabilities.importCheck || capabilities.relatedCollection ? link.url : undefined;
 }
 
 /** Where the check of the box's link stands; `undefined` when the box holds no checkable link. */
@@ -29,57 +32,135 @@ export type ImportCheckView =
   | { url: string; phase: "waiting" | "checking" | "quiet" }
   | { url: string; phase: "done"; answer: InspectResponse };
 
-/** What a check ended in: its answer, or nothing worth showing (no answer in time, or a failure). */
-type Settled = { answer: InspectResponse } | { quiet: true };
+/**
+ * Successful checks are kept in the query cache, under the signed-in user and the link, so they
+ * outlive the page for `IMPORT_CHECK_CACHE_MS` and go with everything else the session cached
+ * when the user signs out.
+ */
+const IMPORT_CHECK_KEY = ["importCheck"] as const;
+
+function checkKey(userId: string, url: string): readonly unknown[] {
+  return [...IMPORT_CHECK_KEY, userId, url];
+}
+
+function keptCheck(queryClient: QueryClient, userId: string, url: string): InspectResponse | undefined {
+  const state = queryClient.getQueryState<InspectResponse>(checkKey(userId, url));
+  if (state?.data === undefined || Date.now() - state.dataUpdatedAt >= IMPORT_CHECK_CACHE_MS) return undefined;
+  return state.data;
+}
+
+/** Forgets every kept check: the library changed, so "already in the library" may no longer hold. */
+export function forgetImportChecks(queryClient: QueryClient): void {
+  queryClient.removeQueries({ queryKey: IMPORT_CHECK_KEY });
+}
+
+/**
+ * Content moving into or out of the trash changes what a check would say. The kept checks
+ * outlive the page, so they are forgotten whenever it happens, whatever page is open: the
+ * first check subscribes once for the app's event bus.
+ */
+const watchedBuses = new WeakSet<ContentEventBus>();
+function forgetOnContentEvents(bus: ContentEventBus, queryClient: QueryClient): void {
+  if (watchedBuses.has(bus)) return;
+  watchedBuses.add(bus);
+  bus.subscribe((event) => {
+    if (event.type === "trashed" || event.type === "restored" || event.type === "purged") forgetImportChecks(queryClient);
+  });
+}
+
+/** Whether the answer names a Content in the library whose collection was not asked for yet. */
+function collectionPending(answer: InspectResponse): boolean {
+  return answer.collectionCheck === "available" && answer.relatedCollection === undefined;
+}
 
 /**
  * Checks the box's single link once typing has paused for `IMPORT_CHECK_DEBOUNCE_MS`. A new edit
- * restarts the pause; a different link (or none) stops a check under way. Each link is checked at
- * most once on the page and its result reused. A check that has not answered within
- * `IMPORT_CHECK_QUIET_MS`, or fails, is given up quietly: it is only a hint, the import checks
+ * restarts the pause; a different link (or none) stops a check under way. A successful answer is
+ * kept for the signed-in user and the link for `IMPORT_CHECK_CACHE_MS` (forgotten earlier once an
+ * import succeeds, Content is trashed or restored, or the user signs out). An answer naming a
+ * Content in the library that says its collection can be asked for is shown at once and asked
+ * again, right away, with `discoverCollection`. A check that has not answered within
+ * `IMPORT_CHECK_QUIET_MS`, or fails, is given up quietly and not kept: the link is checked again
+ * once the box holds another link and then this one. It is only a hint, the import checks
  * again, and nothing here ever holds the submit back.
  */
 export function useImportCheck(url: string | undefined, text: string): ImportCheckView | undefined {
   const api = useApi();
-  const settled = useRef(new Map<string, Settled>());
-  const running = useRef<{ url: string; controller: AbortController; quiet: ReturnType<typeof setTimeout> } | undefined>(undefined);
+  const queryClient = useQueryClient();
+  const contentEvents = useContentEvents();
+  const userId = useMe().data?.userId ?? "";
+  const running = useRef<{ url: string; discover: boolean; controller: AbortController; quiet: ReturnType<typeof setTimeout> } | undefined>(undefined);
   const [checking, setChecking] = useState<string | undefined>(undefined);
-  const [, setSettledCount] = useState(0);
+  // The link whose last check (or collection question) ended without an answer.
+  const [failed, setFailed] = useState<{ url: string; discover: boolean } | undefined>(undefined);
+  // Bumped whenever a kept check is stored or forgotten, so the view and the effect read it again.
+  const [kept, setKept] = useState(0);
+
+  useEffect(() => forgetOnContentEvents(contentEvents, queryClient), [contentEvents, queryClient]);
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.query.queryKey[0] === IMPORT_CHECK_KEY[0] && (event.type === "added" || event.type === "removed" || event.type === "updated")) setKept((count) => count + 1);
+      }),
+    [queryClient],
+  );
+  useEffect(() => {
+    if (failed !== undefined && failed.url !== url) setFailed(undefined);
+  }, [failed, url]);
 
   useEffect(() => {
-    if (url !== undefined && (settled.current.has(url) || running.current?.url === url)) return undefined;
-    const previous = running.current;
-    if (previous !== undefined) {
+    const stop = (): void => {
+      const previous = running.current;
+      if (previous === undefined) return;
       clearTimeout(previous.quiet);
       previous.controller.abort();
       running.current = undefined;
       setChecking(undefined);
-    }
-    if (url === undefined) return undefined;
-    const settle = (controller: AbortController, result: Settled): void => {
-      const current = running.current;
-      if (current === undefined || current.controller !== controller) return;
-      clearTimeout(current.quiet);
-      running.current = undefined;
-      settled.current.set(url, result);
-      setChecking(undefined);
-      setSettledCount((count) => count + 1);
     };
-    const pause = setTimeout(() => {
+    if (url === undefined) {
+      stop();
+      return undefined;
+    }
+    const answer = keptCheck(queryClient, userId, url);
+    const discover = answer !== undefined && collectionPending(answer);
+    const givenUp = failed?.url === url && (answer === undefined || failed.discover);
+    if ((answer !== undefined && !discover) || givenUp) {
+      if (running.current?.url !== url) stop();
+      return undefined;
+    }
+    if (running.current?.url === url && running.current.discover === discover) return undefined;
+    stop();
+    const start = (): void => {
       const controller = new AbortController();
+      const settle = (result: InspectResponse | undefined): void => {
+        const current = running.current;
+        if (current === undefined || current.controller !== controller) return;
+        clearTimeout(current.quiet);
+        running.current = undefined;
+        setChecking(undefined);
+        if (result === undefined) setFailed({ url, discover });
+        else queryClient.setQueryData(checkKey(userId, url), result);
+      };
       const quiet = setTimeout(() => {
-        settle(controller, { quiet: true });
+        settle(undefined);
         controller.abort();
       }, IMPORT_CHECK_QUIET_MS);
-      running.current = { url, controller, quiet };
-      setChecking(url);
-      api.post("/api/contents/inspect", inspectResponseSchema, { body: { url }, signal: controller.signal }).then(
-        (answer) => settle(controller, { answer }),
-        () => settle(controller, { quiet: true }),
+      running.current = { url, discover, controller, quiet };
+      // Asking for the collection keeps the library state on the line; only a first check shows progress.
+      if (!discover) setChecking(url);
+      const body: InspectRequest = discover ? { url, discoverCollection: true } : { url };
+      api.post("/api/contents/inspect", inspectResponseSchema, { body, signal: controller.signal }).then(
+        (result) => settle(result),
+        () => settle(undefined),
       );
-    }, IMPORT_CHECK_DEBOUNCE_MS);
+    };
+    if (discover) {
+      start();
+      return undefined;
+    }
+    const pause = setTimeout(start, IMPORT_CHECK_DEBOUNCE_MS);
     return () => clearTimeout(pause);
-  }, [api, url, text]);
+  }, [api, queryClient, url, text, userId, failed, kept]);
 
   useEffect(
     () => () => {
@@ -93,15 +174,16 @@ export function useImportCheck(url: string | undefined, text: string): ImportChe
   );
 
   if (url === undefined) return undefined;
-  const result = settled.current.get(url);
-  if (result !== undefined) return "answer" in result ? { url, phase: "done", answer: result.answer } : { url, phase: "quiet" };
+  const answer = keptCheck(queryClient, userId, url);
+  if (answer !== undefined) return { url, phase: "done", answer };
+  if (failed?.url === url) return { url, phase: "quiet" };
   return { url, phase: checking === url ? "checking" : "waiting" };
 }
 
 /**
- * Whether the check has anything to say: while it is under way, and for an answer naming a
- * Content in the library, a video, or a rejected link. Nothing while waiting for the pause, when
- * given up, when the check could not tell, or for any other answer.
+ * Whether the check has anything to say on the recognition line: while it is under way, and for
+ * an answer naming a Content in the library, a video, or a rejected link. Nothing while waiting
+ * for the pause, when given up, when the check could not tell, or for any other answer.
  */
 export function importCheckShown(check: ImportCheckView | undefined): boolean {
   if (check === undefined) return false;
@@ -113,11 +195,11 @@ export function importCheckShown(check: ImportCheckView | undefined): boolean {
 
 /**
  * The check's part of the recognition line, per what it found: checking, already in the
- * library (with 「打开」), a video's title and length, the collection the video belongs to (with
- * 「选择合集中的视频」), an image post or an incomplete or expired link (as a field error). Render
- * it only when `importCheckShown`.
+ * library (with 「打开」), a video's title and length, or an image post or an incomplete or
+ * expired link (as a field error). Render it only when `importCheckShown`. The collection the
+ * video belongs to is a block of its own, `RelatedCollectionNote`.
  */
-export function ImportCheckNote(props: { check: ImportCheckView | undefined; onChooseFromCollection: (related: RelatedCollection, answer: InspectResponse) => void }) {
+export function ImportCheckNote(props: { check: ImportCheckView | undefined }) {
   const { t } = useTranslation();
   const { check } = props;
   if (check === undefined || !importCheckShown(check)) return null;
@@ -147,24 +229,6 @@ export function ImportCheckNote(props: { check: ImportCheckView | undefined; onC
     );
   }
   if (found?.result !== "video") return null;
-  const related = answer.relatedCollection;
-  if (related !== undefined) {
-    return (
-      <span data-testid="import-check-collection">
-        {t("shell.newPage.check.relatedCollection", { title: related.title })}
-        {related.itemCount === undefined ? null : (
-          <>
-            <Separator />
-            {t("shell.newPage.check.episodes", { count: related.itemCount })}
-          </>
-        )}
-        <Separator />
-        <TextAction onClick={() => props.onChooseFromCollection(related, answer)} data-testid="import-check-choose">
-          {t("shell.newPage.check.chooseFromCollection")}
-        </TextAction>
-      </span>
-    );
-  }
   return (
     // The title stays on the one line; a long one is cut, its length always shown.
     <span className="inline-flex max-w-full min-w-0 align-bottom" data-testid="import-check-video">
@@ -178,6 +242,53 @@ export function ImportCheckNote(props: { check: ImportCheckView | undefined; onC
       )}
       <span className="shrink-0 tabular-nums">{formatDuration(found.durationMs)}</span>
     </span>
+  );
+}
+
+/**
+ * The video id a canonical video link names, as a collection's entries carry it: the last
+ * segment of its path. `undefined` for a link that is not one.
+ */
+export function videoIdOf(canonicalUrl: string): string | undefined {
+  try {
+    const segment = new URL(canonicalUrl).pathname.split("/").filter((part) => part !== "").at(-1);
+    return segment === undefined || segment === "" ? undefined : segment;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The collection the checked video belongs to, when the check named one. */
+export function relatedCollectionOf(check: ImportCheckView | undefined): RelatedCollection | undefined {
+  return check?.phase === "done" ? check.answer.relatedCollection : undefined;
+}
+
+/**
+ * The collection block under the recognition line: the collection the box's video belongs to,
+ * its size when the platform says, and 「选择合集中的视频」. Quiet on purpose, a hint beside the
+ * line rather than part of it; nothing when the video belongs to no collection.
+ */
+export function RelatedCollectionNote(props: { id: string; related: RelatedCollection | undefined; onChoose: (related: RelatedCollection) => void }) {
+  const { t } = useTranslation();
+  const { related } = props;
+  if (related === undefined) return null;
+  return (
+    <p className={`flex items-baseline gap-1.5 ${NOTE_TEXT_CLASS}`} data-testid="import-check-collection">
+      <ListVideo size={14} className="shrink-0 self-center" aria-hidden="true" />
+      <span id={props.id} className="min-w-0">
+        <span className="break-words">{t("shell.newPage.check.relatedCollection", { title: related.title })}</span>
+        {related.itemCount === undefined ? null : (
+          <>
+            <Separator />
+            {t("shell.newPage.check.episodes", { count: related.itemCount })}
+          </>
+        )}
+        <Separator />
+        <TextAction onClick={() => props.onChoose(related)} data-testid="import-check-choose">
+          {t("shell.newPage.check.chooseFromCollection")}
+        </TextAction>
+      </span>
+    </p>
   );
 }
 

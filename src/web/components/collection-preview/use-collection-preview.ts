@@ -9,7 +9,6 @@ import {
   missingChoice,
   movedToFront,
   platformOrder,
-  preselectAhead,
   processingOrder,
   pruneChoice,
   setChosen,
@@ -217,12 +216,11 @@ export function useCollectionPreview(
             const first = await inspect(url, undefined, controller.signal);
             put(url, (session) => withFirstPage(session, first));
             // Read again after the preview went stale: page on until every chosen entry is seen,
-            // so that only those really gone are dropped. Opened from one of its videos: page on
-            // until that video is seen, so it can start chosen.
+            // so that only those really gone are dropped.
             for (;;) {
               const session = store.current[url];
               if (session === undefined || session.nextOffset === undefined || session.previewId === undefined) break;
-              if (!missingChoice(session) && !preselectAhead(session, preselects.current.get(url))) break;
+              if (!missingChoice(session)) break;
               const page = await inspect(url, { previewId: session.previewId, offset: session.nextOffset }, controller.signal);
               put(url, (current) => withPage(current, page));
             }

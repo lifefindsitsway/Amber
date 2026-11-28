@@ -17,9 +17,11 @@ import type {
   PlatformImportCheck,
   PlatformMetadata,
   PlatformPart,
+  PlatformRelatedCollection,
   PlatformSourceAdapter,
   SubtitleTrackRef,
 } from "../../../src/server/ports/platform-source.ts";
+import { PLATFORM_CAPABILITIES } from "../../../src/shared/platforms.ts";
 
 /** One scripted video: parts (bilibili only), metadata and subtitle bodies by track locator. */
 export interface FakeVideo {
@@ -88,6 +90,9 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
   declare resolveParts?: NonNullable<PlatformSourceAdapter["resolveParts"]>;
   declare resolveUrl?: NonNullable<PlatformSourceAdapter["resolveUrl"]>;
   declare precheck?: NonNullable<PlatformSourceAdapter["precheck"]>;
+  declare findRelatedCollection?: NonNullable<PlatformSourceAdapter["findRelatedCollection"]>;
+  /** What `findRelatedCollection` answers, by video id: the collection, nothing, or an error to throw. */
+  readonly related = new Map<string, PlatformRelatedCollection | Error | undefined>();
 
   constructor(kind: Platform) {
     this.kind = kind;
@@ -116,6 +121,27 @@ export class FakePlatformAdapter implements PlatformSourceAdapter {
 
   parse(url: string): ParsedPlatformUrl | null {
     return PARSERS[this.kind](url);
+  }
+
+  /**
+   * Scripts the collection `findRelatedCollection` names for a video (`undefined`: none). The
+   * method exists only once something is scripted, and only on platforms whose capability row
+   * says it can, so a fake left alone behaves as before.
+   */
+  relate(id: string, related: PlatformRelatedCollection | Error | undefined): this {
+    if (!PLATFORM_CAPABILITIES[this.kind].relatedCollection) {
+      throw new Error(`${this.kind} names no related collection`);
+    }
+    this.related.set(id, related);
+    this.findRelatedCollection ??= async (ref, auth) => {
+      this.log("findRelatedCollection", ref.platformContentId, auth);
+      const scripted = this.related.get(ref.platformContentId);
+      if (scripted instanceof Error) {
+        throw scripted;
+      }
+      return scripted;
+    };
+    return this;
   }
 
   video(id: string, video: FakeVideo): this {

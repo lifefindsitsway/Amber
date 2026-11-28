@@ -16,6 +16,7 @@ import type {
   PlatformEntryUnavailableReason,
   PlatformMetadata,
   PlatformPart,
+  PlatformRelatedCollection,
   PlatformSourceAdapter,
   SubtitleTrackRef,
   VideoQuality,
@@ -50,6 +51,7 @@ import {
   playerSchema,
   seasonArchivesSchema,
   subtitleBodySchema,
+  viewSchema,
   type BilibiliEnvelope,
 } from "./api.ts";
 import { fetchBilibiliDanmaku } from "./danmaku.ts";
@@ -130,6 +132,41 @@ function partsOf(bvid: string, data: unknown): PlatformPart[] {
     durationMs: secondsToMs(page.duration ?? 0),
     canonicalUrl: videoUrl(bvid, pages.length > 1 ? page.page : undefined),
   }));
+}
+
+function viewPath(bvid: string): string {
+  return `/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`;
+}
+
+/**
+ * The 合集 of a single-part submission as its view answer names it. A multi-part submission,
+ * one outside any 合集, an answer about another submission, and a season without a usable id
+ * or title name none. `index` is the submission's 1-based place among the season's episodes,
+ * section by section, when it is listed there.
+ */
+function relatedCollectionOf(bvid: string, view: z.output<typeof viewSchema>): PlatformRelatedCollection | undefined {
+  const season = view.ugc_season;
+  const singlePart = view.videos === 1 && (view.pages === undefined || view.pages === null || view.pages.length === 1);
+  if (view.bvid !== bvid || !singlePart || season === undefined || season === null) {
+    return undefined;
+  }
+  const platformCollectionId = `${season.mid}_${season.id}`;
+  const canonicalUrl = seasonOf(platformCollectionId) === null ? null : collectionUrl(platformCollectionId);
+  const title = (season.title ?? "").trim();
+  if (canonicalUrl === null || title === "") {
+    return undefined;
+  }
+  const episodes = (season.sections ?? []).flatMap((section) => section.episodes ?? []);
+  const position = episodes.findIndex((episode) => episode.bvid === bvid);
+  const positive = (value: number | null | undefined): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  const itemCount = positive(season.ep_count) ? season.ep_count : episodes.length > 0 ? episodes.length : undefined;
+  return {
+    platformCollectionId,
+    title,
+    ...(itemCount === undefined ? {} : { itemCount }),
+    ...(position < 0 ? {} : { index: position + 1 }),
+    canonicalUrl,
+  };
 }
 
 function https(url: string): string {
@@ -294,6 +331,26 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
         throw error;
       }
       return "unknown";
+    }
+  }
+
+  /**
+   * The 合集 a pasted single-part submission belongs to, from its view answer (with the login
+   * whenever the user has one); a 列表 (series) or a multi-part submission is never named.
+   * Only the view answer names a collection, so nothing else is asked when it fails: anything
+   * that cannot be read within `PLATFORM_METADATA_TIMEOUT_MS` is `undefined`, and only the
+   * caller's own cancellation is thrown.
+   */
+  async findRelatedCollection(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformRelatedCollection | undefined> {
+    const bounded = AbortSignal.any([signal, AbortSignal.timeout(PLATFORM_METADATA_TIMEOUT_MS)]);
+    try {
+      const view = dataOf(viewSchema, await this.api(viewPath(ref.platformContentId), auth, bounded, PLATFORM_METADATA_TIMEOUT_MS), "a submission view");
+      return relatedCollectionOf(ref.platformContentId, view);
+    } catch (error) {
+      if (signal.aborted) {
+        throw error;
+      }
+      return undefined;
     }
   }
 
@@ -565,20 +622,21 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
   }
 
   /** The still unchecked `data` of an answer whose code is 0; any other code is thrown as its source class. */
-  private async api(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<unknown> {
-    const envelope = await this.envelope(path, auth, signal);
+  private async api(path: string, auth: PlatformCredential | undefined, signal: AbortSignal, timeoutMs?: number): Promise<unknown> {
+    const envelope = await this.envelope(path, auth, signal, timeoutMs);
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
     return envelope.data;
   }
 
-  private async envelope(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<BilibiliEnvelope> {
+  private async envelope(path: string, auth: PlatformCredential | undefined, signal: AbortSignal, timeoutMs?: number): Promise<BilibiliEnvelope> {
     return bilibiliEnvelope(this.options.http, {
       url: `${API}${path}`,
       headers: { ...REFERER, ...(auth === undefined ? {} : await this.cookieHeader(auth, "api.bilibili.com")) },
       signal,
       trustedHosts: this.trustedHosts,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
   }
 

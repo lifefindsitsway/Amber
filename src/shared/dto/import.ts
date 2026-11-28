@@ -123,6 +123,11 @@ export const inspectRequestSchema = z
     collectionId: z.string().min(1).exactOptional(),
     previewId: z.string().min(1).exactOptional(),
     offset: z.number().int().nonnegative().exactOptional(),
+    /**
+     * Second request for a single link already in the library whose first answer carried
+     * `collectionCheck: "available"`: now ask the platform for the collection the video belongs to.
+     */
+    discoverCollection: z.literal(true).exactOptional(),
   })
   .strict();
 export type InspectRequest = z.infer<typeof inspectRequestSchema>;
@@ -217,7 +222,12 @@ export const inspectResponseSchema = z.object({
   contentId: z.string().min(1).exactOptional(),
   /** A single link of a checking platform: what the import check found. */
   check: importCheckSchema.exactOptional(),
-  /** With `check.result` `video`: the platform collection the video belongs to. */
+  /** The platform collection the video belongs to, when it belongs to one. */
   relatedCollection: relatedCollectionSchema.exactOptional(),
+  /**
+   * A single link already in the library on a platform that can name the video's collection, where
+   * the platform was not asked: ask again with `discoverCollection: true` to get `relatedCollection`.
+   */
+  collectionCheck: z.literal("available").exactOptional(),
 });
 export type InspectResponse = z.infer<typeof inspectResponseSchema>;
