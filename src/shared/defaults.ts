@@ -281,6 +281,8 @@ export const COVER_FETCH_CONCURRENCY = 4;
 export const COVER_FETCH_USER_CONCURRENCY = 2;
 /** Manual cover fetches one user may start per minute. */
 export const COVER_FETCH_USER_PER_MIN = 30;
+/** Re-reads of platform metadata for an expired cover link one user may start per minute, manual and backfill together. */
+export const COVER_REFRESH_USER_PER_MIN = 6;
 /** How often the desktop shell reads the Windows system proxy. */
 export const SYSTEM_PROXY_POLL_MS = 2000;
 /** Longest system proxy message line the sidecar reads from stdin. */

@@ -182,6 +182,16 @@ export class DouyinAdapter implements PlatformSourceAdapter {
     return metadataOf(await this.videoDetail(ref, signal));
   }
 
+  /**
+   * The video's current cover from a fresh detail read, the same request and error classes as
+   * `fetchMetadata`, for a stored cover whose image host no longer serves it. Only an https
+   * cover on the platform's image hosts is returned.
+   */
+  async refreshCoverUrl(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<string | undefined> {
+    const { coverUrl } = await this.fetchMetadata(ref, auth, signal);
+    return coverUrl !== undefined && isOnHosts(coverUrl, DOUYIN_IMAGE_HOSTS) ? coverUrl : undefined;
+  }
+
   /** The same detail request as `fetchMetadata`; an image post still has a description. */
   async fetchDescription(ref: PlatformContentRef, _auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformDescription> {
     const read = await this.readDetail(ref.platformContentId, signal);

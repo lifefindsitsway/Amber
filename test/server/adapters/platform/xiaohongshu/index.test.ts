@@ -301,6 +301,38 @@ describe("XiaohongshuAdapter.fetchMetadata errors", () => {
   });
 });
 
+describe("XiaohongshuAdapter.refreshCoverUrl", () => {
+  it("reads the note's current cover over https on the media domain, like fetchMetadata", async () => {
+    const http = scripted({ mobile: MOBILE_OK });
+    expect(await adapter(http).refreshCoverUrl(ref(), undefined, signal())).toBe("https://sns-webpic-qc.xhscdn.com/202611270000/xxxxcover!h5_1080jpg");
+    expect(pageRequests(http).map((request) => [request.path, request.login])).toEqual([[`/discovery/item/${VIDEO_NOTE_ID}`, false]]);
+  });
+
+  it("uses the stored login exactly as fetchMetadata does, only when both pages want one", async () => {
+    const http = scripted({ ...BOTH_LOGIN, desktopWithLogin: DESKTOP_OK });
+    expect(await adapter(http).refreshCoverUrl(ref(), LOGIN, signal())).toMatch(/^https:\/\/sns-webpic-qc\.xhscdn\.com\//);
+    expect(pageRequests(http).map((request) => request.login)).toEqual([false, false, true]);
+  });
+
+  it("is link_expired for a source link without its access parameter, asking nothing", async () => {
+    const http = scripted({ mobile: MOBILE_OK });
+    expect(await codeOf(adapter(http).refreshCoverUrl(ref(VIDEO_NOTE_ID, noteLink(VIDEO_NOTE_ID, { source: SOURCE })), LOGIN, signal()))).toBe(
+      "invalid_request.link_expired",
+    );
+    expect(await codeOf(adapter(http).refreshCoverUrl({ platformContentId: VIDEO_NOTE_ID }, undefined, signal()))).toBe("invalid_request.link_expired");
+    expect(http.requests).toHaveLength(0);
+  });
+
+  it("names no cover off the media domain and fails with fetchMetadata's errors", async () => {
+    const foreign = { mobile: { body: page("mobile-video").replaceAll("http://sns-webpic-qc.xhscdn.com/", "http://images.example.com/") } };
+    expect(await adapter(scripted(foreign)).refreshCoverUrl(ref(), undefined, signal())).toBeUndefined();
+    expect(await codeOf(adapter(scripted(BOTH_LOGIN)).refreshCoverUrl(ref(), undefined, signal()))).toBe("auth_required");
+    expect(await codeOf(adapter(scripted({ mobile: { status: 429 } })).refreshCoverUrl(ref(), undefined, signal()))).toBe("platform_blocked.visitor_refused");
+    const image = { mobile: { body: page("mobile-image").replaceAll(IMAGE_NOTE_ID, VIDEO_NOTE_ID) } };
+    expect(await codeOf(adapter(scripted(image)).refreshCoverUrl(ref(), undefined, signal()))).toBe("invalid_request.not_video");
+  });
+});
+
 describe("XiaohongshuAdapter media", () => {
 
   it("downloads the smallest H.264 stream for audio, main address first, without yt-dlp or a login", async () => {

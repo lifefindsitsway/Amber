@@ -63,6 +63,7 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
      FROM content LEFT JOIN content_cover_image AS cover ON cover.content_id = content.id AND cover.user_id = content.user_id
      WHERE content.id = ? AND content.user_id = ? AND content.trashed_at IS NULL`,
   );
+  const swapUrl = db.prepare("UPDATE content SET cover_url = @next WHERE id = @contentId AND user_id = @owner AND trashed_at IS NULL AND cover_url = @expected");
 
   function writeIf(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number, expected: ContentCoverExpectation): ContentCoverWriteOutcome {
     const current = state.get(contentId, ownerUserId) as { coverUrl: string | null; version: number | null; sha256: string | null } | undefined;
@@ -107,6 +108,9 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
     },
     putIf(ownerUserId, contentId, image, now, expected) {
       return db.transaction(() => writeIf(ownerUserId, contentId, image, now, expected))();
+    },
+    replaceCoverUrl(ownerUserId, contentId, expected, next) {
+      return swapUrl.run({ owner: ownerUserId, contentId, expected, next }).changes > 0;
     },
   };
 }

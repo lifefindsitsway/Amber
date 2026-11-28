@@ -221,6 +221,19 @@ export class XiaohongshuAdapter implements PlatformSourceAdapter {
     return (await this.note(ref, auth, signal)).description;
   }
 
+  /**
+   * The note's current cover, read like `fetchMetadata` (visitor first, the stored login as the
+   * same fallback, the same error classes), for a stored cover whose image host no longer
+   * serves it. A link without its access parameter is expired, as the import check judges it,
+   * and nothing is asked. Only an https cover on the platform's image hosts is returned.
+   */
+  async refreshCoverUrl(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<string | undefined> {
+    if (this.accessParams(ref).xsecToken === undefined) {
+      throw amberError("invalid_request", "the source link lacks its access parameter", { code: "invalid_request.link_expired" });
+    }
+    return trustedImageUrl((await this.fetchMetadata(ref, auth, signal)).coverUrl, XIAOHONGSHU_MEDIA_DOMAINS);
+  }
+
   async fetchSubtitle(_ref: PlatformContentRef, _track: SubtitleTrackRef, _auth: PlatformCredential | undefined, _signal: AbortSignal): Promise<CanonicalSubtitle> {
     // Notes have no platform subtitles; the subtitle stage never lists a track to ask for.
     throw amberError("source_unreachable", "xiaohongshu has no platform subtitles");

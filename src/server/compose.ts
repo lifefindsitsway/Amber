@@ -414,6 +414,7 @@ export async function compose(config: ComposeConfig): Promise<Composition> {
     platforms: platformAccess,
     images,
     details: contents,
+    heavy,
     logger: lateLogger(() => appLogger?.child({ component: "covers" })),
     // Declared further down; read only once requests arrive.
     backgroundReady: () => backgroundReady,

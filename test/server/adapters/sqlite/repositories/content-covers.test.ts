@@ -144,4 +144,13 @@ describe("conditional cover writes", () => {
     expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(1), T0, { version: undefined }))).toEqual({ outcome: "gone" });
     expect(countRows(db, "content_cover_image")).toBe(0);
   });
+
+  it("replaces the cover link only while it is still the expected one", () => {
+    expect(run((scope) => scope.contentCovers.replaceCoverUrl("alice", "c1", "https://img.example.com/x.jpg", "https://img.example.com/2.jpg"))).toBe(false);
+    expect(run((scope) => scope.contentCovers.replaceCoverUrl("bob", "c1", "https://img.example.com/1.jpg", "https://img.example.com/2.jpg"))).toBe(false);
+    expect(run((scope) => scope.contentCovers.replaceCoverUrl("alice", "c1", "https://img.example.com/1.jpg", "https://img.example.com/2.jpg"))).toBe(true);
+    expect(db.prepare("SELECT cover_url, updated_at FROM content WHERE id = 'c1'").get()).toEqual({ cover_url: "https://img.example.com/2.jpg", updated_at: T0 });
+    run((scope) => scope.contents.trash("alice", "c1", T0 + 1));
+    expect(run((scope) => scope.contentCovers.replaceCoverUrl("alice", "c1", "https://img.example.com/2.jpg", "https://img.example.com/3.jpg"))).toBe(false);
+  });
 });

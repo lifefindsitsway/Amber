@@ -10,6 +10,7 @@ import {
   COVER_FETCH_USER_PER_MIN,
   COVER_IMAGE_MAX_BYTES,
   COVER_LONG_EDGE_MAX_PX,
+  COVER_REFRESH_USER_PER_MIN,
 } from "../../../src/shared/defaults.ts";
 import { FfmpegMediaIngest } from "../../../src/server/adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { NodeProcessRunner } from "../../../src/server/adapters/process-runner/node-process-runner.ts";
@@ -17,12 +18,13 @@ import { ContentCoverService, COVER_LIMITS } from "../../../src/server/applicati
 import { CoverFetchCoordinator } from "../../../src/server/application/cover-fetch-coordinator.ts";
 import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
 import { FIGURE_SCRATCH_DIR, FigureImageProcessor } from "../../../src/server/application/figure-images.ts";
-import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
+import { AmberError, amberError, appError, isAmberError } from "../../../src/server/domain/errors.ts";
 import { inspectPackWebp } from "../../../src/server/domain/figure-image.ts";
 import type { LocalMediaIngest } from "../../../src/server/ports/local-media-ingest.ts";
 import type { LogFields, Logger } from "../../../src/server/ports/logger.ts";
 import type { PlatformSourceAdapter } from "../../../src/server/ports/platform-source.ts";
 import { childProcessEnv, type ProcessRunner } from "../../../src/server/ports/process-runner.ts";
+import { upstreamHttpStatus } from "../../../src/server/ports/upstream-status.ts";
 import { coverRig, rigContent, type CoverRigOptions } from "../../fixtures/platform/covers.ts";
 import { patternPng, truncatedJpeg } from "../../fixtures/media/figure-images.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
@@ -429,6 +431,7 @@ describe("covers racing purge, restore and re-import", () => {
   });
 });
 
+const STALE = (status: number) => new AmberError(appError("source_unreachable"), `media request answered HTTP ${status}`, { cause: upstreamHttpStatus(status) });
 const IMAGE_A = Buffer.from("image-a");
 const IMAGE_B = Buffer.from("image-b");
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -545,6 +548,117 @@ describe("manual fetch limits", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("stale cover links", () => {
+  it("re-reads the link once on 403 / 404 / 410 where the platform can, stores it, then downloads it", async () => {
+    for (const status of [403, 404, 410]) {
+      const { h, covers, calls, refreshes } = rig({
+        refreshable: ["xiaohongshu", "douyin"],
+        refreshAnswer: (platformId) => `https://img.example.com/fresh-${platformId}.jpg`,
+        auto: (url) => (url.includes("fresh-") ? IMAGE_B : STALE(status)),
+      });
+      const id = rigContent(h, { platform: "xiaohongshu" });
+      const result = await covers.fetch(LOCAL, id, signal());
+      expect([status, refreshes]).toEqual([status, [`xiaohongshu-${id}`]]);
+      expect(calls.map((call) => call.url)).toEqual([`https://img.example.com/${id}.jpg`, `https://img.example.com/fresh-xiaohongshu-${id}.jpg`]);
+      expect(result.content).toMatchObject({ coverUrl: `https://img.example.com/fresh-xiaohongshu-${id}.jpg`, coverImageVersion: 1 });
+      expect(coverOf(h, id)?.sha256).toBe(digest(IMAGE_B));
+    }
+  });
+
+  it("leaves other statuses, and platforms that cannot re-read, to fail as they came", async () => {
+    const { h, covers, refreshes } = rig({
+      refreshable: ["xiaohongshu", "douyin"],
+      refreshAnswer: () => "https://img.example.com/fresh.jpg",
+      auto: (url) => (url.includes("/b-") ? STALE(404) : STALE(500)),
+    });
+    expect((await failure(covers.fetch(LOCAL, rigContent(h, { platform: "douyin" }), signal()))).class).toBe("source_unreachable");
+    for (const platform of ["bilibili", "youtube"] as const) {
+      expect((await failure(covers.fetch(LOCAL, rigContent(h, { platform, coverUrl: `https://img.example.com/b-${platform}.jpg` }), signal()))).class).toBe("source_unreachable");
+    }
+    expect(refreshes).toEqual([]);
+  });
+
+  it("asks the platform once for concurrent fetches of one Content", async () => {
+    let release: (url: string) => void = () => undefined;
+    const fresh = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const { h, covers, refreshes, calls } = rig({ refreshable: ["douyin"], refreshAnswer: () => fresh, auto: (url) => (url.includes("fresh") ? IMAGE_B : STALE(403)) });
+    const id = rigContent(h, { platform: "douyin" });
+    const fetches = [covers.fetch(LOCAL, id, signal()), covers.fetch(LOCAL, id, signal())];
+    await until(() => refreshes.length === 1);
+    release("https://img.example.com/fresh.jpg");
+    const results = await Promise.all(fetches);
+    expect(refreshes).toHaveLength(1);
+    expect(calls.filter((call) => call.url.includes("fresh"))).toHaveLength(1);
+    expect(results.map((result) => result.content.coverImageVersion)).toEqual([1, 1]);
+  });
+
+  it("answers link_expired when the source link itself has expired", async () => {
+    const { h, covers } = rig({
+      refreshable: ["xiaohongshu"],
+      refreshAnswer: () => {
+        throw amberError("invalid_request", "source link expired", { code: "invalid_request.link_expired", details: { urls: [] } });
+      },
+      auto: () => STALE(404),
+    });
+    const id = rigContent(h, { platform: "xiaohongshu" });
+    expect(await failure(covers.fetch(LOCAL, id, signal()))).toEqual({ class: "invalid_request", code: "invalid_request.link_expired" });
+    expect(contentOf(h, id)?.coverUrl).toBe(`https://img.example.com/${id}.jpg`);
+  });
+
+  it("writes the new link only while the stored one is still the stale one", async () => {
+    const { h, covers } = rig({
+      refreshable: ["douyin"],
+      refreshAnswer: (platformId) => {
+        // Someone stores another link while the platform is read.
+        h.db.prepare("UPDATE content SET cover_url = 'https://img.example.com/elsewhere.jpg' WHERE platform_content_id = ?").run(platformId);
+        return "https://img.example.com/fresh.jpg";
+      },
+      auto: (url) => (url.includes("elsewhere") ? IMAGE_A : STALE(410)),
+    });
+    const id = rigContent(h, { platform: "douyin" });
+    const result = await covers.fetch(LOCAL, id, signal());
+    expect(result.content).toMatchObject({ coverUrl: "https://img.example.com/elsewhere.jpg", coverImageVersion: 1 });
+  });
+});
+
+describe("the link-refresh budget", () => {
+  it("reads the platform through the heavy-job governor and downloads only after releasing it, even with one slot of each", async () => {
+    const heavy = new FairSemaphore(() => 1);
+    const groups: string[] = [];
+    const governor = {
+      run: <T>(ref: { key: string; createdAt: number }, s: AbortSignal, work: () => Promise<T>) => {
+        groups.push(ref.key);
+        return heavy.run(ref, s, work);
+      },
+    };
+    const observed: Array<{ heavy: number; coverSlots: number }> = [];
+    const { h, covers, coordinator } = rig({
+      refreshable: ["xiaohongshu"],
+      refreshAnswer: () => {
+        observed.push({ heavy: heavy.inFlight, coverSlots: coordinator.userSlotsInUse(LOCAL.userId) });
+        return "https://img.example.com/fresh.jpg";
+      },
+      auto: (url) => {
+        observed.push({ heavy: heavy.inFlight, coverSlots: coordinator.userSlotsInUse(LOCAL.userId) });
+        return url.includes("fresh") ? IMAGE_B : STALE(403);
+      },
+      coordinator: { userConcurrency: 1, globalSlots: new FairSemaphore(() => 1) },
+      service: { heavy: governor },
+    });
+    const id = rigContent(h, { platform: "xiaohongshu" });
+    expect((await covers.fetch(LOCAL, id, signal())).content.coverImageVersion).toBe(1);
+    expect(groups).toEqual([`foreground:${LOCAL.userId}`]);
+    // Download, refresh, download: never a governor slot and a cover slot at the same time.
+    expect(observed).toEqual([
+      { heavy: 0, coverSlots: 1 },
+      { heavy: 1, coverSlots: 0 },
+      { heavy: 0, coverSlots: 1 },
+    ]);
   });
 });
 

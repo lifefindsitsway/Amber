@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { MAX_UPLOAD_GB, OUTBOUND_MAX_REDIRECTS, PLATFORM_DOWNLOAD_RESUME_MAX, PLATFORM_DOWNLOAD_STALL_TIMEOUT_MS } from "../../../shared/defaults.ts";
 import type { RefinedErrorCode } from "../../../shared/errors.ts";
 import { BYTES_PER_GB, formatBytes } from "../../../shared/units.ts";
-import { amberError, isAmberError } from "../../domain/errors.ts";
+import { AmberError, amberError, appError, isAmberError } from "../../domain/errors.ts";
+import { upstreamHttpStatus } from "../../ports/upstream-status.ts";
 import { OutboundHttpError, type OutboundHttpClient, type OutboundResponse } from "../../ports/outbound-http.ts";
 
 /** Which kind of body a download must be; an HTML error page or anything else is refused. */
@@ -257,7 +258,9 @@ async function fetchOnce(
       }
     } else {
       drop();
-      throw amberError("source_unreachable", `media request answered HTTP ${response.status}`);
+      // The status travels as the cause: a cover whose image host answers 403 / 404 / 410 has a
+      // stale link, which the cover service can re-read from the platform.
+      throw new AmberError(appError("source_unreachable"), `media request answered HTTP ${response.status}`, { cause: upstreamHttpStatus(response.status) });
     }
 
     const mimeType = mediaType(response.headers.get("content-type"));

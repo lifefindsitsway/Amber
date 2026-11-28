@@ -183,6 +183,37 @@ describe("precheck", () => {
   });
 });
 
+describe("refreshed cover link", () => {
+  it("reads the current cover on the image hosts from a fresh detail read", async () => {
+    const { adapter, fake } = setup();
+    expect(await adapter.refreshCoverUrl(REF, undefined, signal())).toBe("https://p3-pc-sign.douyinpic.com/TESTONLY/cover-0.jpeg?x-expires=<expires>&x-signature=<signature>");
+    expect(fake.api("detail")).toHaveLength(1);
+  });
+
+  it("names no cover when the detail offers none on the image hosts", async () => {
+    const { adapter, fake } = setup();
+    fake.detail = () => ({
+      body: detailWith((_detail, video) => {
+        video["cover"] = { url_list: ["https://evil.example/cover.jpeg"] };
+        video["origin_cover"] = null;
+      }),
+    });
+    expect(await adapter.refreshCoverUrl(REF, undefined, signal())).toBeUndefined();
+  });
+
+  it("fails like fetchMetadata: hidden, not a video, refused", async () => {
+    const hidden = setup();
+    hidden.fake.detail = () => ({ body: { aweme_detail: null, filter_detail: { aweme_id: ID, filter_reason: "core_dep" }, status_code: 0 } });
+    expect(await codeOf(hidden.adapter.refreshCoverUrl(REF, undefined, signal()))).toBe("source_unreachable");
+    const image = setup();
+    image.fake.detail = () => ({ body: imagePost() });
+    expect(await codeOf(image.adapter.refreshCoverUrl(REF, undefined, signal()))).toBe("invalid_request.not_video");
+    const limited = setup();
+    limited.fake.detail = () => ({ status: 429 });
+    expect(await codeOf(limited.adapter.refreshCoverUrl(REF, undefined, signal()))).toBe("platform_blocked.visitor_refused");
+  });
+});
+
 describe("metadata and description", () => {
   it("reads metadata and the description each in one detail request of the same kind", async () => {
     const { adapter, fake } = setup();

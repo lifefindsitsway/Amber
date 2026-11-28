@@ -1,24 +1,42 @@
-import { COVER_FETCH_TIMEOUT_MS, COVER_FETCH_USER_PER_MIN, COVER_IMAGE_MAX_BYTES, COVER_LONG_EDGE_MAX_PX } from "../../shared/defaults.ts";
+import {
+  COVER_FETCH_TIMEOUT_MS,
+  COVER_FETCH_USER_PER_MIN,
+  COVER_IMAGE_MAX_BYTES,
+  COVER_LONG_EDGE_MAX_PX,
+  COVER_REFRESH_USER_PER_MIN,
+  PLATFORM_METADATA_TIMEOUT_MS,
+} from "../../shared/defaults.ts";
 import type { ContentDetailDto } from "../../shared/dto/content.ts";
 import type { Content } from "../domain/content.ts";
 import { amberError, isAmberError } from "../domain/errors.ts";
-import { isPlatform } from "../domain/platform.ts";
+import { isPlatform, type Platform } from "../domain/platform.ts";
 import type { RequestPrincipal } from "../domain/user.ts";
 import type { Logger } from "../ports/logger.ts";
 import type { ContentCoverExpectation, ContentCoverImage, Repository } from "../ports/repository.ts";
-import type { PlatformAccess } from "../pipeline/stages/platform-access.ts";
+import { upstreamHttpStatusOf } from "../ports/upstream-status.ts";
+import type { FairGroupRef } from "../pipeline/fair-semaphore.ts";
+import { platformTarget, type PlatformAccess } from "../pipeline/stages/platform-access.ts";
 import type { SourceCoverSaver } from "../pipeline/stages/source-cover.ts";
 import type { ContentService } from "./contents.ts";
-import { abortableSleep, CoverFetchCoordinator, coverFetchBusy, PerMinuteLimiter, type CoverFetchPriority } from "./cover-fetch-coordinator.ts";
+import { abortableSleep, CoverFetchCoordinator, coverFetchBusy, PerMinuteLimiter, untilAborted, type CoverFetchPriority } from "./cover-fetch-coordinator.ts";
 import type { FigureImage, FigureImageProcessor, ImageLimits } from "./figure-images.ts";
 
 /** A stored cover: a WebP of at most this edge and size, whatever the platform served. */
 export const COVER_LIMITS: ImageLimits = { maxLongEdge: COVER_LONG_EDGE_MAX_PX, maxBytes: COVER_IMAGE_MAX_BYTES };
 
+/** Image host answers that mean the stored link no longer leads to the image. */
+const STALE_LINK_STATUSES: ReadonlySet<number> = new Set([403, 404, 410]);
+
+/** Whether a cover download failed because the image host no longer serves that link. */
+export function isStaleCoverLink(error: unknown): boolean {
+  const status = upstreamHttpStatusOf(error);
+  return status !== undefined && STALE_LINK_STATUSES.has(status);
+}
+
 export interface ContentCoverServiceOptions {
   repository: Repository;
-  /** The platform adapters; a cover is fetched without any login. */
-  platforms: Pick<PlatformAccess, "adapterFor">;
+  /** The platform adapters and logins; a cover image is fetched without any login, a link refresh reads the platform as metadata reads do. */
+  platforms: PlatformAccess;
   /** The process's one image processor, shared with figures so both count against one decoding limit. */
   images: Pick<FigureImageProcessor, "normalizeFetched">;
   /** Builds the answer's Content exactly as the detail endpoint does. */
@@ -28,12 +46,16 @@ export interface ContentCoverServiceOptions {
    * Built from `platforms`, `images` and `timeoutMs` when absent.
    */
   coordinator?: CoverFetchCoordinator;
+  /** The managed heavy-job governor: a link refresh reads the platform like a metadata read. */
+  heavy?: { run<T>(ref: FairGroupRef, signal: AbortSignal, work: () => Promise<T>): Promise<T> };
   logger?: Logger;
   now?: () => number;
   /** Waits for a per-minute budget; tests pass a fake. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Download plus processing of one cover, and a manual fetch's whole wait; `COVER_FETCH_TIMEOUT_MS` by default. */
   timeoutMs?: number;
+  /** A link refresh's platform read, slot wait included; `PLATFORM_METADATA_TIMEOUT_MS` by default. */
+  refreshTimeoutMs?: number;
   /**
    * False until the start-up sweep has run. It empties the scratch area image jobs work in, so a
    * manual fetch waits for it (`conflict.starting_up`). Absent means ready.
@@ -63,12 +85,20 @@ function notFound(): never {
  * they are not, an identical image already stored counts as success without a new version;
  * anything else is dropped and the current cover stands. A failed download never removes a
  * stored copy.
+ *
+ * A stored link whose image host answers 403 / 404 / 410 can be re-read from the platform,
+ * where its adapter implements `refreshCoverUrl`: at most `COVER_REFRESH_USER_PER_MIN` per
+ * user and minute, one read per user and Content at a
+ * time, through the managed heavy-job governor. The read and the following download run one
+ * after the other, never holding both kinds of slot at once.
  */
 export class ContentCoverService implements SourceCoverSaver {
   private readonly options: ContentCoverServiceOptions;
   private readonly now: () => number;
   private readonly coordinator: CoverFetchCoordinator;
   private readonly manualBudget: PerMinuteLimiter;
+  private readonly refreshBudget: PerMinuteLimiter;
+  private readonly refreshes = new Map<string, { promise: Promise<string | undefined>; controller: AbortController; waiters: number }>();
 
   constructor(options: ContentCoverServiceOptions) {
     this.options = options;
@@ -84,6 +114,7 @@ export class ContentCoverService implements SourceCoverSaver {
       });
     const clock = { now: this.now, sleep: options.sleep ?? abortableSleep };
     this.manualBudget = new PerMinuteLimiter(COVER_FETCH_USER_PER_MIN, clock);
+    this.refreshBudget = new PerMinuteLimiter(COVER_REFRESH_USER_PER_MIN, clock);
   }
 
   async saveIfAbsent(ownerUserId: string, contentId: string, coverUrl: string, signal: AbortSignal): Promise<void> {
@@ -113,9 +144,10 @@ export class ContentCoverService implements SourceCoverSaver {
    * Downloads the cover at the Content's current `coverUrl` again and replaces the local copy,
    * raising its version. Only platform Contents have one (`invalid_request` otherwise). At most
    * `COVER_FETCH_USER_PER_MIN` per user and minute, and only while one of the user's cover
-   * slots is free (`conflict.cover_fetch_busy` otherwise). Any failure is thrown as it came with
-   * the stored copy untouched; a result overtaken by a newer cover is dropped and the Content
-   * answered as it stands.
+   * slots is free (`conflict.cover_fetch_busy` otherwise). A link the image host no longer
+   * serves is re-read from the platform once where the adapter can. Any failure is thrown as it
+   * came with the stored copy untouched; a result overtaken by a newer cover is dropped and the
+   * Content answered as it stands.
    */
   async fetch(principal: RequestPrincipal, contentId: string, signal: AbortSignal): Promise<CoverFetchResult> {
     const owner = principal.userId;
@@ -136,8 +168,21 @@ export class ContentCoverService implements SourceCoverSaver {
       throw coverFetchBusy(budget.retryAfterMs);
     }
     const version = content.coverImageVersion;
-    const coverUrl = content.coverUrl;
-    const image = await this.download(content, coverUrl, "manual", signal);
+    let coverUrl = content.coverUrl;
+    let image: FigureImage;
+    try {
+      image = await this.download(content, coverUrl, "manual", signal);
+    } catch (error) {
+      if (signal.aborted || !isStaleCoverLink(error) || !this.canRefresh(content.source.kind)) {
+        throw error;
+      }
+      const fresh = await this.refreshedCoverUrl(content, coverUrl, "manual", signal);
+      if (fresh === undefined || fresh === coverUrl) {
+        throw error;
+      }
+      coverUrl = fresh;
+      image = await this.download(content, coverUrl, "manual", signal);
+    }
     const result = this.write(owner, contentId, image, { coverUrl, version }, signal);
     if (result.outcome === "gone") {
       notFound();
@@ -146,6 +191,11 @@ export class ContentCoverService implements SourceCoverSaver {
       const current = scope.contents.get(owner, contentId) ?? notFound();
       return { content: this.options.details.detailIn(scope, owner, current) };
     });
+  }
+
+  /** Whether covers of `platform` can be re-read from the platform once their link has gone stale. */
+  canRefresh(platform: Platform): boolean {
+    return typeof this.options.platforms.adapterFor(platform).refreshCoverUrl === "function";
   }
 
   /** The cover of the principal's Content outside the trash; `not_found` when there is none. */
@@ -188,6 +238,79 @@ export class ContentCoverService implements SourceCoverSaver {
   private write(owner: string, contentId: string, image: FigureImage, expected: ContentCoverExpectation, signal: AbortSignal) {
     signal.throwIfAborted();
     return this.options.repository.withTransaction((scope) => scope.contentCovers.putIf(owner, contentId, image, this.now(), expected));
+  }
+
+  /**
+   * Re-reads the Content's cover link from the platform and stores it while the Content still
+   * has `staleUrl`; answers the link to download now (the stored one, which may have been
+   * replaced meanwhile by someone else), or `undefined` when the platform names none. One read
+   * per user and Content at a time, shared by its callers. A manual caller takes from the
+   * per-minute budget here and is refused with the wait when it is spent; a `budgeted` caller
+   * has already waited for its share.
+   */
+  private async refreshedCoverUrl(content: Content, staleUrl: string, budget: "manual" | "budgeted", signal: AbortSignal): Promise<string | undefined> {
+    const owner = content.userId;
+    const key = `${owner}\u0000${content.id}`;
+    let refresh = this.refreshes.get(key);
+    if (refresh === undefined) {
+      if (budget === "manual") {
+        const taken = this.refreshBudget.tryTake(owner);
+        if (!taken.ok) {
+          throw coverFetchBusy(taken.retryAfterMs);
+        }
+      }
+      refresh = this.startRefresh(key, content, staleUrl);
+    }
+    refresh.waiters += 1;
+    try {
+      return await untilAborted(refresh.promise, signal);
+    } finally {
+      refresh.waiters -= 1;
+      if (refresh.waiters === 0 && this.refreshes.get(key) === refresh) {
+        this.refreshes.delete(key);
+        refresh.controller.abort(new Error("every caller gave up on this refresh"));
+      }
+    }
+  }
+
+  private startRefresh(key: string, content: Content, staleUrl: string) {
+    const controller = new AbortController();
+    const owner = content.userId;
+    const timeout = setTimeout(() => controller.abort(amberError("source_unreachable", "the cover link refresh timed out")), this.options.refreshTimeoutMs ?? PLATFORM_METADATA_TIMEOUT_MS);
+    const read = async (): Promise<string | undefined> => {
+      const fresh = await this.heavyJob(owner, controller.signal, async () => {
+        // The login is read once the slot is granted, so one changed while waiting is used.
+        const target = platformTarget(this.options.platforms, content);
+        const refreshCoverUrl = target?.adapter.refreshCoverUrl?.bind(target.adapter);
+        if (target === undefined || refreshCoverUrl === undefined) {
+          return undefined;
+        }
+        return refreshCoverUrl(target.ref, target.auth, controller.signal);
+      });
+      controller.signal.throwIfAborted();
+      if (fresh === undefined) {
+        return undefined;
+      }
+      return this.options.repository.withTransaction((scope) => {
+        scope.contentCovers.replaceCoverUrl(owner, content.id, staleUrl, fresh);
+        return scope.contents.get(owner, content.id)?.coverUrl;
+      });
+    };
+    const promise = untilAborted(read(), controller.signal).finally(() => {
+      clearTimeout(timeout);
+      if (this.refreshes.get(key) === entry) {
+        this.refreshes.delete(key);
+      }
+    });
+    promise.catch(() => undefined);
+    const entry = { promise, controller, waiters: 0 };
+    this.refreshes.set(key, entry);
+    return entry;
+  }
+
+  private heavyJob<T>(owner: string, signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+    const heavy = this.options.heavy;
+    return heavy === undefined ? work() : heavy.run({ key: `foreground:${owner}`, createdAt: this.now() }, signal, work);
   }
 }
 

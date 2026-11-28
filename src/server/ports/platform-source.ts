@@ -252,6 +252,12 @@ export interface PlatformSourceAdapter {
    */
   fetchCover?(coverUrl: string, output: { path: string }, options: { maxBytes: number }, signal: AbortSignal): Promise<{ sizeBytes: number }>;
   /**
+   * Reads the platform's current cover link again, for a stored cover link whose image host
+   * answered 403 / 404 / 410. `undefined` when the platform names no cover. Uses the same read and
+   * error classes as `fetchMetadata` (an expired source link is `invalid_request.link_expired`).
+   */
+  refreshCoverUrl?(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<string | undefined>;
+  /**
    * Lists a collection's entries in the platform's order, at most `limit` of them, in as few
    * requests as the platform allows and without asking anything per entry.
    */

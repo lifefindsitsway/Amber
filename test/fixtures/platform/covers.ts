@@ -77,11 +77,16 @@ export interface CoverRig {
   coordinator: CoverFetchCoordinator;
   /** Every `fetchCover` call so far, in order. */
   calls: RigCoverCall[];
+  /** `refreshCoverUrl` calls by Content (platform id), answered by `refreshAnswer`. */
+  refreshes: string[];
 }
 
 export interface CoverRigOptions {
   /** Answers a call at once; `undefined` leaves it to the test. */
   auto?: (url: string, platform: Platform) => Buffer | Error | undefined;
+  /** Platforms whose adapter can re-read a cover link, and what each read answers. */
+  refreshable?: readonly Platform[];
+  refreshAnswer?: (platformContentId: string) => Promise<string | undefined> | string | undefined;
   /** When false, a pending call ignores its signal, like a step that never looks at it. */
   honourSignal?: boolean;
   coordinator?: Partial<CoverFetchCoordinatorOptions>;
@@ -95,6 +100,7 @@ export interface CoverRigOptions {
  */
 export function coverRig(h: Harness, options: CoverRigOptions = {}): CoverRig {
   const calls: RigCoverCall[] = [];
+  const refreshes: string[] = [];
   for (const platform of PLATFORMS) {
     const adapter = h.platforms[platform];
     const fetchCover: NonNullable<PlatformSourceAdapter["fetchCover"]> = async (url, output, _limits, signal) => {
@@ -128,6 +134,13 @@ export function coverRig(h: Harness, options: CoverRigOptions = {}): CoverRig {
       return { sizeBytes: bytes.length };
     };
     Object.assign(adapter, { fetchCover });
+    if (options.refreshable?.includes(platform) === true) {
+      const refreshCoverUrl: NonNullable<PlatformSourceAdapter["refreshCoverUrl"]> = async (ref) => {
+        refreshes.push(ref.platformContentId);
+        return options.refreshAnswer?.(ref.platformContentId);
+      };
+      Object.assign(adapter, { refreshCoverUrl });
+    }
   }
   const images = {
     normalizeFetched: async (_owner: string, fill: (input: { path: string }) => Promise<unknown>): Promise<FigureImage> => {
@@ -139,7 +152,7 @@ export function coverRig(h: Harness, options: CoverRigOptions = {}): CoverRig {
   };
   const coordinator = new CoverFetchCoordinator({ platforms: h.platformAccess, images, limits: COVER_LIMITS, ...options.coordinator });
   const covers = new ContentCoverService({ repository: h.repository, platforms: h.platformAccess, images, details: h.contents, coordinator, ...options.service });
-  return { covers, coordinator, calls };
+  return { covers, coordinator, calls, refreshes };
 }
 
 /** A platform Content of `owner` with `coverUrl` and no local copy; its platform id is `<platform>-<id>`. */

@@ -1,3 +1,4 @@
+import { upstreamHttpStatusOf } from "../../../../src/server/ports/upstream-status.ts";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
@@ -354,6 +355,17 @@ describe("downloadPlatformMedia completion", () => {
     const output = await workspace();
     expect((await failure(downloadPlatformMedia(forwardingClient(chunked), downloadRequest(output)))).appError.code).toBe("source_unreachable");
     await expectNothingLeft(output);
+  });
+
+  it("carries the status of a refused answer as its cause, so a stale link can be told apart", async () => {
+    for (const status of [403, 404, 410, 500]) {
+      const server = await serve("127.0.0.1", cdn({ answers: { 0: { status, headers: { "Content-Type": "text/plain" }, body: Buffer.from("no") } } }));
+      const output = await workspace();
+      const error = await failure(downloadPlatformMedia(forwardingClient(server), downloadRequest(output, { kind: "image" })));
+      expect(error.appError.code).toBe("source_unreachable");
+      expect(upstreamHttpStatusOf(error)).toBe(status);
+      await expectNothingLeft(output);
+    }
   });
 
   it("refuses a total that differs from the size the platform declared", async () => {

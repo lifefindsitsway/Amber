@@ -1197,6 +1197,12 @@ export interface ContentCoverRepository {
    * an unmet condition; the same atomicity as `put`.
    */
   putIf(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number, expected: ContentCoverExpectation): ContentCoverWriteOutcome;
+  /**
+   * Replaces `content.cover_url` with `next` only while it still equals `expected` and the
+   * Content is the owner's and outside the trash; returns whether it wrote. `updated_at` stays,
+   * like any cover write.
+   */
+  replaceCoverUrl(ownerUserId: string, contentId: string, expected: string, next: string): boolean;
 }
 
 /** What a conditional cover write expects to find; see `ContentCoverRepository.putIf`. */
