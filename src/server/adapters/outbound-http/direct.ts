@@ -259,6 +259,9 @@ function toResponse(incoming: IncomingMessage, signal: AbortSignal): OutboundRes
     status: incoming.statusCode ?? 0,
     headers,
     ...(setCookies.length === 0 ? {} : { setCookies }),
+    destroy() {
+      incoming.destroy();
+    },
     body,
     async text() {
       const chunks: Uint8Array[] = [];

@@ -35,6 +35,7 @@ class BinaryHttp implements OutboundHttpClient {
   readonly requests: OutboundRequest[] = [];
   chunksRead = 0;
   bodyClosed = false;
+  destroyed = 0;
   private readonly answer: (request: OutboundRequest) => FakeAnswer | Error;
 
   constructor(answer: (request: OutboundRequest) => FakeAnswer | Error) {
@@ -63,6 +64,9 @@ class BinaryHttp implements OutboundHttpClient {
       headers: new Map(Object.entries(answer.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])),
       body,
       text: async () => Buffer.concat(answer.chunks).toString("utf8"),
+      destroy: () => {
+        self.destroyed += 1;
+      },
     };
   }
 }
@@ -309,7 +313,9 @@ describe("fetchBilibiliDanmaku", () => {
     expect(http.bodyClosed).toBe(true);
     const declared = new BinaryHttp(() => ({ headers: { "content-length": String(DANMAKU_RESPONSE_MAX_BYTES + 1) }, chunks: [Buffer.alloc(10), Buffer.alloc(10)] }));
     expect((await failure(fetchBilibiliDanmaku(declared, "1", signal()))).class).toBe("source_html_error_page");
-    expect(declared.chunksRead).toBe(1);
+    // A declared length over the cap is refused before a single byte is read.
+    expect(declared.chunksRead).toBe(0);
+    expect(declared.destroyed).toBe(1);
   });
 
   it("reports risk control and HTTP errors as the platform being unreachable, never as needing a login", async () => {

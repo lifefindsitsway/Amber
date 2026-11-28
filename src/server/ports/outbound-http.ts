@@ -51,6 +51,12 @@ export interface OutboundResponse {
   setCookies?: readonly string[];
   body: AsyncIterable<Uint8Array>;
   text(): Promise<string>;
+  /**
+   * Discards a response whose body is not wanted (an unfollowed 3xx, a status the caller rejects)
+   * without reading it, releasing the connection at once. Every real transport implements it;
+   * callers invoke it as `response.destroy?.()`.
+   */
+  destroy?(): void;
 }
 
 /**

@@ -29,6 +29,32 @@ async function errorOf(promise: Promise<unknown>): Promise<AppError> {
 }
 
 describe("BilibiliQrLogin", () => {
+  it("runs a whole login from the recorded answers: code, pending, scanned, confirmed", async () => {
+    const polls: ScriptedResponse[] = [POLL_PENDING, POLL_SCANNED, POLL_CONFIRMED];
+    const http = new ScriptedHttp((request) => {
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/qrcode/generate")) return GENERATE;
+      if (path.endsWith("/qrcode/poll")) return polls.shift() ?? { status: 404 };
+      return { status: 404 };
+    });
+    const login = new BilibiliQrLogin({ http, now: () => NOW });
+    const ticket = await login.start(signal());
+    expect(ticket).toEqual({ qrUrl: QR_URL, key: QR_KEY });
+    expect((await login.poll(ticket.key, signal())).status).toBe("pending");
+    expect((await login.poll(ticket.key, signal())).status).toBe("scanned");
+    const confirmed = await login.poll(ticket.key, signal());
+    expect(confirmed.status).toBe("confirmed");
+    const cookies = parseNetscapeCookies(confirmed.status === "confirmed" ? confirmed.cookies : "");
+    expect(cookies.map((cookie) => cookie.name)).toContain("SESSDATA");
+    expect(http.requests).toHaveLength(4);
+    for (const request of http.requests) {
+      expect(request).toMatchObject({ method: "GET", publicOnly: true });
+      expect(new URL(request.url).host).toBe("passport.bilibili.com");
+    }
+    // Every answer was read whole: none was discarded unread.
+    expect(http.destroyed).toEqual([]);
+  });
+
   it("asks the passport for a code from the web origin and leaves its lifetime to the caller", async () => {
     const { login, http } = setup(POLL_PENDING);
     expect(await login.start(signal())).toEqual({ qrUrl: QR_URL, key: QR_KEY });

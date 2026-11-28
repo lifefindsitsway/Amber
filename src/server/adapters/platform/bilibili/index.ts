@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import { PLATFORM_COLLECTION_RESOLVE_CONCURRENCY, PLATFORM_METADATA_TIMEOUT_MS, SHORTLINK_MAX_HOPS } from "../../../../shared/defaults.ts";
 import { classifyPlatformDescription } from "../../../domain/content-description.ts";
 import { amberError } from "../../../domain/errors.ts";
@@ -23,7 +24,7 @@ import type {
 import type { DanmakuItem } from "../../../../shared/dto/danmaku.ts";
 import { fetchPlatformCover } from "../cover.ts";
 import { downloadPlatformMedia, type PlatformMediaDownload } from "../download.ts";
-import { platformGet, platformGetJson } from "../http.ts";
+import { platformGetHop, platformGetJson } from "../http.ts";
 import {
   downloadAudio,
   downloadVideo,
@@ -39,6 +40,17 @@ import {
   type YtDlpChapter,
 } from "../shared.ts";
 import type { YtDlp } from "../yt-dlp.ts";
+import {
+  apiError,
+  bilibiliEnvelope,
+  dataOf,
+  navSchema,
+  pageListSchema,
+  playerSchema,
+  seasonArchivesSchema,
+  subtitleBodySchema,
+  type BilibiliEnvelope,
+} from "./api.ts";
 import { fetchBilibiliDanmaku } from "./danmaku.ts";
 import { collectionUrl, isShortLink, parseBilibiliUrl, seasonOf, videoUrl } from "./url.ts";
 
@@ -63,24 +75,6 @@ export interface BilibiliAdapterOptions {
   now?: () => number;
 }
 
-interface ApiEnvelope<T> {
-  code: number;
-  message?: string;
-  data?: T;
-}
-
-interface PageEntry {
-  cid: number;
-  page: number;
-  part?: string;
-  duration?: number;
-}
-
-interface PlayerInfo {
-  need_login_subtitle?: boolean;
-  subtitle?: { subtitles?: Array<{ lan?: string; lan_doc?: string; subtitle_url?: string; type?: number; ai_type?: number }> };
-}
-
 interface VideoInfo {
   title?: string;
   duration?: number;
@@ -101,17 +95,8 @@ interface FlatPlaylist {
   entries?: Array<{ id?: string; url?: string }>;
 }
 
-/** One submission of a 合集 as its archive list gives it; `duration` is the whole submission's and is not read. */
-interface SeasonArchive {
-  bvid?: string;
-  title?: string;
-  pic?: string;
-}
-
-interface SeasonArchives {
-  archives?: SeasonArchive[];
-  page?: { total?: number };
-}
+/** One submission of a 合集 as its archive list gives it. */
+type SeasonArchive = NonNullable<NonNullable<z.output<typeof seasonArchivesSchema>>["archives"]>[number];
 
 /** One page of a 合集's archive list: the season's submissions with their titles and covers, guest-readable. */
 function seasonArchivesPath(season: { mid: string; seasonId: string }, page: number): string {
@@ -127,24 +112,13 @@ const UNAVAILABLE_PART_LIST_CODES: ReadonlyMap<number, PlatformEntryUnavailableR
   [-403, "private"],
 ]);
 
-/** An API error code: -101 not logged in, -352 / -412 risk control, -404 gone, -403 no access. */
-export function apiError(code: number): Error {
-  if (code === -412 || code === -352 || code === -509) {
-    return amberError("platform_blocked", `bilibili api code ${code}`);
-  }
-  if (code === -101 || code === -403) {
-    return amberError("auth_required", `bilibili api code ${code}`);
-  }
-  return amberError("source_unreachable", `bilibili api code ${code}`);
-}
-
 function pageListPath(bvid: string): string {
   return `/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`;
 }
 
 /** A submission's parts from its part list; a list without parts is a failure. */
-function partsOf(bvid: string, data: PageEntry[] | undefined): PlatformPart[] {
-  const pages = data ?? [];
+function partsOf(bvid: string, data: unknown): PlatformPart[] {
+  const pages = dataOf(pageListSchema, data, "a part list") ?? [];
   if (pages.length === 0) {
     throw amberError("source_unreachable", "bilibili returned no parts");
   }
@@ -189,13 +163,11 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       if (!isShortLink(current)) {
         return null;
       }
-      const response = await platformGet(this.options.http, { url: current, signal });
-      await response.text();
-      const location = response.headers.get("location");
-      if (response.status < 300 || response.status >= 400 || location === undefined) {
+      const hop = await platformGetHop(this.options.http, { url: current, signal });
+      if (hop.status < 300 || hop.status >= 400 || hop.location === undefined) {
         return null;
       }
-      const next = new URL(location, current).toString();
+      const next = hop.location;
       const parsed = this.parse(next);
       if (parsed !== null) {
         return parsed.canonicalUrl;
@@ -206,11 +178,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
   }
 
   async resolveParts(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart[]> {
-    const envelope = await this.envelope<PageEntry[]>(pageListPath(ref.platformContentId), auth, signal);
-    if (envelope.code !== 0) {
-      throw apiError(envelope.code);
-    }
-    return partsOf(ref.platformContentId, envelope.data);
+    return partsOf(ref.platformContentId, await this.api(pageListPath(ref.platformContentId), auth, signal));
   }
 
   async fetchMetadata(ref: PlatformContentRef, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformMetadata> {
@@ -223,21 +191,21 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       signal,
       timeoutMs: PLATFORM_METADATA_TIMEOUT_MS,
     });
-    const player = await this.api<PlayerInfo>(
-      `/x/player/wbi/v2?bvid=${encodeURIComponent(ref.platformContentId)}&cid=${encodeURIComponent(part.platformPartId)}`,
-      auth,
-      signal,
+    const player = dataOf(
+      playerSchema,
+      await this.api(`/x/player/wbi/v2?bvid=${encodeURIComponent(ref.platformContentId)}&cid=${encodeURIComponent(part.platformPartId)}`, auth, signal),
+      "a player answer",
     );
     const tracks: SubtitleTrackRef[] = [];
     for (const subtitle of player?.subtitle?.subtitles ?? []) {
-      if (subtitle.lan === undefined || subtitle.subtitle_url === undefined || subtitle.subtitle_url === "") {
+      if (subtitle.lan === undefined || subtitle.lan === null || subtitle.subtitle_url === undefined || subtitle.subtitle_url === null || subtitle.subtitle_url === "") {
         continue;
       }
       const ai = subtitle.lan.startsWith("ai-") || subtitle.type === 1;
       tracks.push({
         locator: https(subtitle.subtitle_url),
         language: languageTag(subtitle.lan.replace(/^ai-/, "")),
-        ...(subtitle.lan_doc === undefined ? {} : { label: subtitle.lan_doc }),
+        ...(subtitle.lan_doc === undefined || subtitle.lan_doc === null ? {} : { label: subtitle.lan_doc }),
         autoGenerated: ai,
         translated: subtitle.ai_type === 1,
       });
@@ -289,11 +257,11 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     signal: AbortSignal,
   ): Promise<CanonicalSubtitle> {
     // The signed URL carries its own authorization; no cookie goes to the subtitle host.
-    const body = await platformGetJson<{ body?: Array<{ from?: number; to?: number; content?: string }> }>(this.options.http, {
-      url: track.locator,
-      headers: REFERER,
-      signal,
-    });
+    const body = dataOf(
+      subtitleBodySchema,
+      await platformGetJson(this.options.http, { url: track.locator, headers: REFERER, signal }),
+      "a subtitle document",
+    );
     return {
       language: track.language,
       cues: (body.body ?? []).map((line) => ({
@@ -307,15 +275,17 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
 
   async checkCredential(auth: PlatformCredential, signal: AbortSignal): Promise<"valid" | "expired" | "unknown"> {
     try {
-      const response = await platformGetJson<ApiEnvelope<{ isLogin?: boolean }>>(this.options.http, {
+      const response = await bilibiliEnvelope(this.options.http, {
         url: `${API}/x/web-interface/nav`,
         headers: { ...REFERER, ...(await this.cookieHeader(auth, "api.bilibili.com")) },
         signal,
       });
-      if (response.data?.isLogin === true) {
+      // A not-logged-in answer still carries `data.isLogin: false`; any other shape is unclear.
+      const isLogin = navSchema.safeParse(response.data).data?.isLogin;
+      if (isLogin === true) {
         return "valid";
       }
-      return response.code === -101 || response.data?.isLogin === false ? "expired" : "unknown";
+      return response.code === -101 || isLogin === false ? "expired" : "unknown";
     } catch (error) {
       if (signal.aborted) {
         throw error;
@@ -517,7 +487,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
    * Network errors, risk control and every other code still fail the whole resolution.
    */
   private async entryParts(bvid: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<PlatformPart[] | PlatformEntryUnavailableReason> {
-    const envelope = await this.envelope<PageEntry[]>(pageListPath(bvid), auth, signal);
+    const envelope = await this.envelope(pageListPath(bvid), auth, signal);
     const unavailable = UNAVAILABLE_PART_LIST_CODES.get(envelope.code);
     if (unavailable !== undefined) {
       return unavailable;
@@ -560,7 +530,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
         break;
       }
       try {
-        const data = await this.api<SeasonArchives>(seasonArchivesPath(season, page), auth, signal);
+        const data = dataOf(seasonArchivesSchema, await this.api(seasonArchivesPath(season, page), auth, signal), "a season archive list");
         for (const archive of data?.archives ?? []) {
           if (typeof archive.bvid === "string" && !byBvid.has(archive.bvid)) {
             byBvid.set(archive.bvid, archive);
@@ -580,7 +550,7 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
       return undefined;
     }
     try {
-      const total = (await this.api<SeasonArchives>(seasonArchivesPath(season, 1), auth, signal))?.page?.total;
+      const total = dataOf(seasonArchivesSchema, await this.api(seasonArchivesPath(season, 1), auth, signal), "a season archive list")?.page?.total;
       return typeof total === "number" && Number.isInteger(total) && total >= 0 ? total : undefined;
     } catch (error) {
       if (signal.aborted) {
@@ -590,16 +560,17 @@ export class BilibiliAdapter implements PlatformSourceAdapter {
     }
   }
 
-  private async api<T>(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<T | undefined> {
-    const envelope = await this.envelope<T>(path, auth, signal);
+  /** The still unchecked `data` of an answer whose code is 0; any other code is thrown as its source class. */
+  private async api(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<unknown> {
+    const envelope = await this.envelope(path, auth, signal);
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
     return envelope.data;
   }
 
-  private async envelope<T>(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<ApiEnvelope<T>> {
-    return platformGetJson<ApiEnvelope<T>>(this.options.http, {
+  private async envelope(path: string, auth: PlatformCredential | undefined, signal: AbortSignal): Promise<BilibiliEnvelope> {
+    return bilibiliEnvelope(this.options.http, {
       url: `${API}${path}`,
       headers: { ...REFERER, ...(auth === undefined ? {} : await this.cookieHeader(auth, "api.bilibili.com")) },
       signal,

@@ -204,8 +204,12 @@ async function fetchOnce(
       controller.abort();
     }, env.stallTimeoutMs);
   };
+  let answered: OutboundResponse | undefined;
   // Ends the response early; its connection is dropped rather than drained.
-  const drop = (): void => controller.abort();
+  const drop = (): void => {
+    answered?.destroy?.();
+    controller.abort();
+  };
   let held = resumeFrom;
   let streaming = false;
   arm();
@@ -216,6 +220,7 @@ async function fetchOnce(
       headers["If-Range"] = resumeFrom.etag as string;
     }
     const response = await walk(http, url, request.allowedHosts, headers, signal);
+    answered = response;
     arm();
 
     let start = 0;
@@ -414,8 +419,12 @@ function matchesKind(type: string, kind: PlatformMediaKind): boolean {
   return type.startsWith(`${kind}/`);
 }
 
-/** Drops a redirect's body; its connection is not reused. */
+/** Drops a redirect's body unread; its connection is not reused. */
 async function discard(response: OutboundResponse): Promise<void> {
+  if (response.destroy !== undefined) {
+    response.destroy();
+    return;
+  }
   const iterator = response.body[Symbol.asyncIterator]();
   try {
     const first = await iterator.next();

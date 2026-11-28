@@ -50,7 +50,8 @@ export interface ScriptedResponse {
 
 export type HttpHandler = (request: OutboundRequest) => ScriptedResponse | Error | Promise<ScriptedResponse | Error>;
 
-export function outboundResponse(answer: ScriptedResponse): OutboundResponse {
+/** `onDestroy` is told when the caller discards the response unread. */
+export function outboundResponse(answer: ScriptedResponse, onDestroy?: () => void): OutboundResponse {
   const text = answer.body === undefined ? "" : typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body);
   const bytes = new TextEncoder().encode(text);
   return {
@@ -61,11 +62,14 @@ export function outboundResponse(answer: ScriptedResponse): OutboundResponse {
       yield bytes;
     })(),
     text: async () => text,
+    destroy: () => onDestroy?.(),
   };
 }
 
 export class ScriptedHttp implements OutboundHttpClient {
   readonly requests: OutboundRequest[] = [];
+  /** URLs of the responses the caller discarded unread, in order. */
+  readonly destroyed: string[] = [];
   handler: HttpHandler;
 
   constructor(handler: HttpHandler = () => ({ status: 404 })) {
@@ -78,7 +82,7 @@ export class ScriptedHttp implements OutboundHttpClient {
     if (answer instanceof Error) {
       throw answer;
     }
-    return outboundResponse(answer);
+    return outboundResponse(answer, () => this.destroyed.push(request.url));
   }
 
   /** Requests whose URL path is `path`. */

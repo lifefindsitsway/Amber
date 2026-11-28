@@ -183,8 +183,12 @@ function crossOriginHeaders(headers: Readonly<Record<string, string>> | undefine
   return Object.fromEntries(Object.entries(headers).filter(([name]) => CROSS_ORIGIN_HEADERS.has(name.toLowerCase())));
 }
 
-/** Drops a redirect's body without reading more than its first chunk; its connection is not reused. */
+/** Drops a redirect's body without reading it, or past its first chunk for a transport without `destroy`; its connection is not reused. */
 async function discard(response: OutboundResponse): Promise<void> {
+  if (response.destroy !== undefined) {
+    response.destroy();
+    return;
+  }
   const iterator = response.body[Symbol.asyncIterator]();
   try {
     const first = await iterator.next();

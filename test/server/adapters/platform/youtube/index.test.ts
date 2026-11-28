@@ -8,7 +8,7 @@ import { isAmberError } from "../../../../../src/server/domain/errors.ts";
 import { selectSubtitleTrack } from "../../../../../src/server/domain/platform-subtitle.ts";
 import { OutboundHttpError } from "../../../../../src/server/ports/outbound-http.ts";
 import type { ProcessSpec } from "../../../../../src/server/ports/process-runner.ts";
-import { COLLECTION_PREVIEW_ITEMS_MAX } from "../../../../../src/shared/defaults.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_PAGE_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import { argAfter, cookieLine, credential, ScriptedHttp, scriptedYtDlp, signal, type ProcessHandler, type ScriptedProcess } from "../../../../fixtures/platform/scripted-io.ts";
 
@@ -315,6 +315,17 @@ describe("YoutubeAdapter.checkCredential", () => {
       const { ytDlp } = scriptedYtDlp();
       expect(await new YoutubeAdapter({ ytDlp, http }).checkCredential(LOGIN, signal())).toBe("unknown");
     }
+  });
+
+  it("reads the home page within PLATFORM_PAGE_MAX_BYTES without following a redirect, and discards a redirect unread", async () => {
+    const { ytDlp } = scriptedYtDlp();
+    const over = new ScriptedHttp(() => ({ body: page(true), headers: { "Content-Length": String(PLATFORM_PAGE_MAX_BYTES + 1) } }));
+    expect(await new YoutubeAdapter({ ytDlp, http: over }).checkCredential(LOGIN, signal())).toBe("unknown");
+    expect(over.requests[0]?.redirect).toBe("manual");
+    expect(over.destroyed).toEqual(["https://www.youtube.com/"]);
+    const moved = new ScriptedHttp(() => ({ status: 302, headers: { Location: "https://consent.youtube.com/" }, body: page(true) }));
+    expect(await new YoutubeAdapter({ ytDlp, http: moved }).checkCredential(LOGIN, signal())).toBe("unknown");
+    expect(moved.destroyed).toEqual(["https://www.youtube.com/"]);
   });
 
   it("passes the signal and rethrows when aborted", async () => {

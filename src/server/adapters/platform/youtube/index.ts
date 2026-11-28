@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { monotonicFactory } from "ulid";
-import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../shared/defaults.ts";
+import { PLATFORM_METADATA_TIMEOUT_MS, PLATFORM_PAGE_MAX_BYTES } from "../../../../shared/defaults.ts";
 import { classifyPlatformDescription } from "../../../domain/content-description.ts";
 import { AmberError, amberError } from "../../../domain/errors.ts";
 import { cookieHeaderFor, parseNetscapeCookies } from "../../../domain/platform-cookie.ts";
@@ -26,7 +26,7 @@ import type {
 } from "../../../ports/platform-source.ts";
 import { fetchPlatformCover } from "../cover.ts";
 import { downloadPlatformMedia, type PlatformMediaDownload } from "../download.ts";
-import { platformGet } from "../http.ts";
+import { platformGetText } from "../http.ts";
 import {
   downloadAudio,
   downloadVideo,
@@ -334,11 +334,16 @@ export class YoutubeAdapter implements PlatformSourceAdapter {
     }
     try {
       const header = cookieHeaderFor(cookies, HOME_HOST, this.now());
-      const response = await platformGet(http, { url: HOME_URL, headers: header === "" ? {} : { Cookie: header }, signal });
+      const response = await platformGetText(http, {
+        url: HOME_URL,
+        headers: header === "" ? {} : { Cookie: header },
+        signal,
+        maxBytes: PLATFORM_PAGE_MAX_BYTES,
+      });
       if (response.status < 200 || response.status >= 300) {
         return "unknown";
       }
-      const loggedIn = ytcfgLoggedIn(await response.text());
+      const loggedIn = ytcfgLoggedIn(response.text);
       return loggedIn === undefined ? "unknown" : loggedIn ? "valid" : "expired";
     } catch (error) {
       if (signal.aborted) {

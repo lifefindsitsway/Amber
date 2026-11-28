@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_USER_AGENT, platformGet, platformGetBytes, platformGetJson, platformGetText } from "../../../../src/server/adapters/platform/http.ts";
+import { BROWSER_USER_AGENT, platformGetBytes, platformGetHop, platformGetJson, platformGetText } from "../../../../src/server/adapters/platform/http.ts";
 import { isAmberError } from "../../../../src/server/domain/errors.ts";
-import { OutboundHttpError } from "../../../../src/server/ports/outbound-http.ts";
-import { PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
+import { OutboundHttpError, type OutboundHttpClient } from "../../../../src/server/ports/outbound-http.ts";
+import { PLATFORM_JSON_MAX_BYTES, PLATFORM_METADATA_TIMEOUT_MS } from "../../../../src/shared/defaults.ts";
 import { ScriptedHttp, signal, type ScriptedResponse } from "../../../fixtures/platform/scripted-io.ts";
 
 const PAGELIST = "https://api.bilibili.com/x/player/pagelist?bvid=BV1xx411c7mD";
@@ -58,15 +58,41 @@ describe("platformGetJson", () => {
   });
 });
 
-describe("platformGet", () => {
-  it("hands back redirects and error statuses as responses", async () => {
-    const http = new ScriptedHttp(() => ({ status: 302, headers: { Location: "https://www.bilibili.com/video/BV1xx411c7mD" } }));
-    const response = await platformGet(http, { url: "https://b23.tv/abc", signal: signal() });
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("https://www.bilibili.com/video/BV1xx411c7mD");
+describe("platformGetJson limits", () => {
+  it("discards an error status or an unfollowed redirect unread", async () => {
+    for (const answer of [{ status: 503, body: "{}" }, { status: 302, headers: { Location: "https://example.com/" } }, { status: 412 }] as ScriptedResponse[]) {
+      const http = new ScriptedHttp(() => answer);
+      await classOf(platformGetJson(http, { url: PAGELIST, signal: signal() }));
+      expect(http.destroyed, JSON.stringify(answer)).toEqual([PAGELIST]);
+    }
+  });
+
+  it("reads within PLATFORM_JSON_MAX_BYTES unless told otherwise, refusing a larger declaration before reading", async () => {
+    const declared = new ScriptedHttp(() => ({ body: "{}", headers: { "Content-Length": String(PLATFORM_JSON_MAX_BYTES + 1) } }));
+    expect(await classOf(platformGetJson(declared, { url: PAGELIST, signal: signal() }))).toBe("source_html_error_page");
+    expect(declared.destroyed).toEqual([PAGELIST]);
+    const long = new ScriptedHttp(() => ({ body: { code: 0, data: "x".repeat(64) } }));
+    expect(await classOf(platformGetJson(long, { url: PAGELIST, signal: signal(), maxBytes: 16 }))).toBe("source_html_error_page");
+    const fits = new ScriptedHttp(() => ({ body: { code: 0 } }));
+    expect(await platformGetJson(fits, { url: PAGELIST, signal: signal(), maxBytes: 16 })).toEqual({ code: 0 });
+  });
+});
+
+describe("platformGetHop", () => {
+  it("hands back a redirect's status and resolved target without following it, discarding the body unread", async () => {
+    const http = new ScriptedHttp(() => ({ status: 302, headers: { Location: "/video/BV1xx411c7mD" }, body: "moved" }));
+    const hop = await platformGetHop(http, { url: "https://b23.tv/abc", signal: signal() });
+    expect(hop).toMatchObject({ status: 302, location: "https://b23.tv/video/BV1xx411c7mD" });
     expect(http.requests[0]?.headers).toEqual({ "User-Agent": BROWSER_USER_AGENT });
     // The caller walks the chain itself; the client must not follow it.
     expect(http.requests[0]?.redirect).toBe("manual");
+    expect(http.destroyed).toEqual(["https://b23.tv/abc"]);
+  });
+
+  it("discards a non-redirect answer too and names no location", async () => {
+    const http = new ScriptedHttp(() => ({ status: 200, body: "<html>" }));
+    expect(await platformGetHop(http, { url: "https://b23.tv/abc", signal: signal() })).not.toHaveProperty("location");
+    expect(http.destroyed).toHaveLength(1);
   });
 });
 
@@ -123,12 +149,16 @@ describe("platformGetBytes", () => {
 });
 
 describe("platform requests", () => {
+  const every = (http: OutboundHttpClient): Array<() => Promise<unknown>> => [
+    () => platformGetJson(http, { url: PAGELIST, signal: signal() }),
+    () => platformGetHop(http, { url: PAGELIST, signal: signal() }),
+    () => platformGetBytes(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 }),
+    () => platformGetText(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 }),
+  ];
+
   it("are always marked public-only, whatever the helper", async () => {
     const http = new ScriptedHttp(() => ({ body: { code: 0 } }));
-    await platformGetJson(http, { url: PAGELIST, signal: signal() });
-    await platformGet(http, { url: PAGELIST, signal: signal() });
-    await platformGetBytes(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 });
-    await platformGetText(http, { url: PAGELIST, signal: signal(), maxBytes: 1024 });
+    await Promise.all(every(http).map((call) => call()));
     expect(http.requests.map((request) => request.publicOnly)).toEqual([true, true, true, true]);
   });
 });
@@ -141,6 +171,12 @@ describe("platformGetText", () => {
     const answer = await platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 });
     expect(answer).toMatchObject({ status: 302, location: "https://www.example.com/login?redirectPath=x", text: "" });
     expect(http.requests[0]?.redirect).toBe("manual");
+  });
+
+  it("discards a redirect's body unread and returns no text for it", async () => {
+    const http = new ScriptedHttp(() => ({ status: 301, body: "moved", headers: { location: "https://www.example.com/next" } }));
+    expect(await platformGetText(http, { url: PAGE, signal: signal(), maxBytes: 1024 })).toMatchObject({ status: 301, text: "" });
+    expect(http.destroyed).toEqual([PAGE]);
   });
 
   it("does not map error statuses: the adapter decides", async () => {
@@ -190,6 +226,38 @@ describe("platformGetText", () => {
     };
     const started = Date.now();
     expect(await classOf(platformGetText(trickle, { url: PAGE, signal: signal(), maxBytes: 1024, timeoutMs: 50 }))).toBe("source_unreachable");
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(ended).toBe(true);
+  });
+
+  it("gives up a body that keeps trickling past the request's timeout, and ends it", async () => {
+    let ended = false;
+    const trickle: OutboundHttpClient = {
+      async request() {
+        return {
+          status: 200,
+          headers: new Map<string, string>(),
+          body: {
+            [Symbol.asyncIterator]() {
+              return {
+                // A byte every 10 ms: never a stall, never the end.
+                next: () => new Promise<IteratorResult<Uint8Array>>((resolve) => setTimeout(() => resolve({ done: false, value: new Uint8Array([120]) }), 10)),
+                return: () => {
+                  ended = true;
+                  return Promise.resolve({ done: true as const, value: undefined });
+                },
+              };
+            },
+          },
+          text: async () => "",
+          destroy: () => {
+            ended = true;
+          },
+        };
+      },
+    };
+    const started = Date.now();
+    expect(await classOf(platformGetText(trickle, { url: PAGE, signal: signal(), maxBytes: 1_000_000, timeoutMs: 100 }))).toBe("source_unreachable");
     expect(Date.now() - started).toBeLessThan(5000);
     expect(ended).toBe(true);
   });

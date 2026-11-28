@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { BILIBILI_EXTRACTORS, BilibiliAdapter } from "../../../../../src/server/adapters/platform/bilibili/index.ts";
 import type { PlatformDownloadRequest, PlatformMediaDownload } from "../../../../../src/server/adapters/platform/download.ts";
 import { isAmberError } from "../../../../../src/server/domain/errors.ts";
-import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY } from "../../../../../src/shared/defaults.ts";
+import { COLLECTION_PREVIEW_ITEMS_MAX, PLATFORM_COLLECTION_RESOLVE_CONCURRENCY, PLATFORM_JSON_MAX_BYTES } from "../../../../../src/shared/defaults.ts";
 import { OutboundHttpError, type OutboundRequest } from "../../../../../src/server/ports/outbound-http.ts";
 import type { AppError } from "../../../../../src/shared/errors.ts";
 import {
@@ -67,6 +67,8 @@ describe("BilibiliAdapter.resolveUrl", () => {
     expect(await adapter.resolveUrl("https://b23.tv/one", signal())).toBe(`https://www.bilibili.com/video/${BV}?p=2`);
     expect(http.requests.map((request) => request.url)).toEqual(["https://b23.tv/one", "https://b23.tv/two"]);
     expect(http.requests.map((request) => request.redirect)).toEqual(["manual", "manual"]);
+    // Only the status and Location matter: each hop's body is discarded unread.
+    expect(http.destroyed).toEqual(["https://b23.tv/one", "https://b23.tv/two"]);
   });
 
   it("gives up beyond SHORTLINK_MAX_HOPS, on a non-redirect, off-platform targets and non-short links", async () => {
@@ -80,6 +82,28 @@ describe("BilibiliAdapter.resolveUrl", () => {
     const plain = setup();
     expect(await plain.adapter.resolveUrl("https://example.com/v/1", signal())).toBeNull();
     expect(plain.http.requests).toEqual([]);
+  });
+});
+
+describe("BilibiliAdapter: API answers", () => {
+  it("are checked in two layers: an error code is classified whatever data comes with it", async () => {
+    const { adapter } = setup({ routes: () => ({ body: { code: -412, data: "not an object" } }) });
+    expect((await errorOf(adapter.resolveParts({ platformContentId: BV }, undefined, signal()))).class).toBe("platform_blocked");
+  });
+
+  it("refuse an envelope without an integer code, and data of the wrong shape, as unreachable", async () => {
+    for (const body of [{ data: [] }, { code: "0", data: [] }, { code: 0.5 }, [], { code: 0, data: [{ cid: "1001", page: 1 }] }, { code: 0, data: { cid: 1 } }]) {
+      const { adapter } = setup({ routes: () => ({ body }) });
+      expect((await errorOf(adapter.resolveParts({ platformContentId: BV }, undefined, signal()))).class, JSON.stringify(body)).toBe("source_unreachable");
+    }
+  });
+
+  it("are read within PLATFORM_JSON_MAX_BYTES, an error status discarded unread", async () => {
+    const big = setup({ routes: () => ({ body: { code: 0, data: PAGES }, headers: { "Content-Length": String(PLATFORM_JSON_MAX_BYTES + 1) } }) });
+    expect((await errorOf(big.adapter.resolveParts({ platformContentId: BV }, undefined, signal()))).class).toBe("source_html_error_page");
+    const refused = setup({ routes: () => ({ status: 503, body: "<html>" }) });
+    expect((await errorOf(refused.adapter.resolveParts({ platformContentId: BV }, undefined, signal()))).class).toBe("source_unreachable");
+    expect(refused.http.destroyed).toHaveLength(1);
   });
 });
 

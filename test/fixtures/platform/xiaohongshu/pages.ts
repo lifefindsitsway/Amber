@@ -75,6 +75,7 @@ export class FakeHttp implements OutboundHttpClient {
         yield bytes;
       })(),
       text: async () => new TextDecoder().decode(bytes),
+      destroy: () => undefined,
     };
   }
 

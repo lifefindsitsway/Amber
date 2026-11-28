@@ -2,8 +2,9 @@ import { amberError } from "../../../domain/errors.ts";
 import { canonicalPlatformCookies, formatNetscapeCookies, parseSetCookie, type NetscapeCookie } from "../../../domain/platform-cookie.ts";
 import type { OutboundHttpClient } from "../../../ports/outbound-http.ts";
 import type { PlatformQrLogin, QrLoginTicket, QrPollResult } from "../../../ports/platform-login.ts";
-import { platformGetJson, platformGetJsonWithCookies } from "../http.ts";
-import { apiError, BILIBILI_COOKIE_DOMAINS } from "./index.ts";
+import { z } from "zod";
+import { apiError, bilibiliEnvelope, dataOf } from "./api.ts";
+import { BILIBILI_COOKIE_DOMAINS } from "./index.ts";
 
 const PASSPORT_HOST = "passport.bilibili.com";
 const QR_API = `https://${PASSPORT_HOST}/x/passport-login/web/qrcode`;
@@ -19,10 +20,8 @@ const POLL_STATUS: Readonly<Record<number, "pending" | "scanned" | "expired" | "
   0: "confirmed",
 };
 
-interface Envelope<T> {
-  code: number;
-  data?: T;
-}
+const generateSchema = z.object({ url: z.string().nullish(), qrcode_key: z.string().nullish() }).nullish();
+const pollSchema = z.object({ code: z.number().int().nullish() }).nullish();
 
 export interface BilibiliQrLoginOptions {
   http: OutboundHttpClient;
@@ -47,33 +46,31 @@ export class BilibiliQrLogin implements PlatformQrLogin {
   }
 
   async start(signal: AbortSignal): Promise<QrLoginTicket> {
-    const envelope = await platformGetJson<Envelope<{ url?: string; qrcode_key?: string }>>(this.options.http, {
-      url: `${QR_API}/generate`,
-      headers: WEB_ORIGIN,
-      signal,
-    });
+    const envelope = await bilibiliEnvelope(this.options.http, { url: `${QR_API}/generate`, headers: WEB_ORIGIN, signal });
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
-    const { url, qrcode_key: key } = envelope.data ?? {};
-    if (url === undefined || url === "" || key === undefined || key === "") {
+    const { url, qrcode_key: key } = dataOf(generateSchema, envelope.data, "a QR code") ?? {};
+    if (url === undefined || url === null || url === "" || key === undefined || key === null || key === "") {
       throw amberError("source_unreachable", "bilibili returned no QR code");
     }
     return { qrUrl: url, key };
   }
 
   async poll(key: string, signal: AbortSignal): Promise<QrPollResult> {
-    const { body: envelope, setCookies } = await platformGetJsonWithCookies<Envelope<{ code?: number }>>(this.options.http, {
+    const envelope = await bilibiliEnvelope(this.options.http, {
       url: `${QR_API}/poll?qrcode_key=${encodeURIComponent(key)}`,
       headers: WEB_ORIGIN,
       signal,
     });
+    const { setCookies } = envelope;
     if (envelope.code !== 0) {
       throw apiError(envelope.code);
     }
-    const status = envelope.data?.code === undefined ? undefined : POLL_STATUS[envelope.data.code];
+    const pollCode = dataOf(pollSchema, envelope.data, "a QR poll")?.code;
+    const status = pollCode === undefined || pollCode === null ? undefined : POLL_STATUS[pollCode];
     if (status === undefined) {
-      throw amberError("source_unreachable", `bilibili QR poll answered code ${String(envelope.data?.code)}`);
+      throw amberError("source_unreachable", `bilibili QR poll answered code ${String(pollCode)}`);
     }
     if (status !== "confirmed") {
       return { status };
