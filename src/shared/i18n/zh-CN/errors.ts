@@ -181,6 +181,7 @@ export const refinedErrors: Readonly<Partial<Record<RefinedErrorCode, string>>> 
   "network_proxy_failed.rejected": "网络代理拒绝了这次连接，请检查代理软件的规则或稍后再试",
   "network_proxy_failed.auth_required": "网络代理要求身份验证，Amber 暂不支持需要认证的代理",
   "network_proxy_failed.tls": "经网络代理连接时证书校验失败，可能是代理软件替换了证书",
+  "conflict.cover_fetch_busy": "正在获取的封面较多，请稍后再试",
   "forbidden.account_suspended": "账号已被暂停",
   "forbidden.must_change_password": "请先修改密码",
 };

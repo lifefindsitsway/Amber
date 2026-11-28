@@ -152,6 +152,8 @@ export const REFINED_ERROR_CODE_REGISTRY = {
   "internal.tool_failed": {},
   // Another unfinished Task on the same target touches an overlapping stage set.
   "conflict.mutation_lane": {},
+  // The user's cover download slots are taken, or manual fetches or link refreshes hit their per-minute limit.
+  "conflict.cover_fetch_busy": { detailsKeys: ["retryAfterMs"] },
   // The instance setting is fixed by its environment variable and read-only.
   "conflict.setting_env_overridden": {},
   // A file with the same fingerprint already belongs to another Content; `trashed` when that Content is in the trash.

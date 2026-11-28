@@ -275,6 +275,12 @@ export const COVER_IMAGE_MAX_BYTES = 524288;
 export const COVER_LOAD_CONCURRENCY = 6;
 /** How long the interface keeps a loaded cover image cached. */
 export const COVER_CACHE_GC_MS = 600000;
+/** Cover downloads (download and processing) running at once across the instance. */
+export const COVER_FETCH_CONCURRENCY = 4;
+/** Cover downloads running at once for one user; a manual fetch that finds none free answers busy at once. */
+export const COVER_FETCH_USER_CONCURRENCY = 2;
+/** Manual cover fetches one user may start per minute. */
+export const COVER_FETCH_USER_PER_MIN = 30;
 /** How often the desktop shell reads the Windows system proxy. */
 export const SYSTEM_PROXY_POLL_MS = 2000;
 /** Longest system proxy message line the sidecar reads from stdin. */

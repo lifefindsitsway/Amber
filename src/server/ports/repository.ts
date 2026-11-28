@@ -1187,7 +1187,31 @@ export interface ContentCoverRepository {
    * merges never replace one); returns whether it wrote. Same refusals and atomicity as `put`.
    */
   putIfAbsent(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number): boolean;
+  /**
+   * Stores or replaces the cover only while the Content is still as the download found it: the
+   * owner's, outside the trash, `cover_url` equal to `expected.coverUrl` (when given) and
+   * `cover_image_version` equal to `expected.version` (`undefined`: still no copy). Writes and
+   * raises the version when all hold. Otherwise nothing is written: `unchanged` when the copy
+   * there now has the same digest (the same image is already stored), `superseded` when it does
+   * not, `gone` when the Content is missing, another owner's or in the trash. Never throws for
+   * an unmet condition; the same atomicity as `put`.
+   */
+  putIf(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number, expected: ContentCoverExpectation): ContentCoverWriteOutcome;
 }
+
+/** What a conditional cover write expects to find; see `ContentCoverRepository.putIf`. */
+export interface ContentCoverExpectation {
+  /** `content.cover_url` must still be this; absent: not checked. */
+  coverUrl?: string;
+  /** `content.cover_image_version` must still be this; `undefined`: there must still be no copy. */
+  version: number | undefined;
+}
+
+export type ContentCoverWriteOutcome =
+  | { outcome: "written"; version: number }
+  | { outcome: "unchanged"; version: number }
+  | { outcome: "superseded" }
+  | { outcome: "gone" };
 
 export interface DanmakuSnapshotRecord {
   contentId: string;

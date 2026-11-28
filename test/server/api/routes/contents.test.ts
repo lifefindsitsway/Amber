@@ -7,7 +7,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalFileStore } from "../../../../src/server/adapters/file-store/local-file-store.ts";
 import type { FileStore } from "../../../../src/server/ports/file-store.ts";
-import { CONTENT_DESCRIPTION_MAX_CHARS, CONTENT_LIST_IDS_MAX, MAX_UPLOAD_GB, SUBTITLE_IMPORT_MAX_BYTES } from "../../../../src/shared/defaults.ts";
+import {
+  CONTENT_DESCRIPTION_MAX_CHARS,
+  CONTENT_LIST_IDS_MAX,
+  COVER_FETCH_USER_CONCURRENCY,
+  COVER_FETCH_USER_PER_MIN,
+  MAX_UPLOAD_GB,
+  SUBTITLE_IMPORT_MAX_BYTES,
+} from "../../../../src/shared/defaults.ts";
 import { TEXT_BODY_LIMIT_BYTES } from "../../../../src/server/api/routes/contents.ts";
 import { isUlid } from "../../../../src/shared/ids.ts";
 import { BYTES_PER_GB, BYTES_PER_MB } from "../../../../src/shared/units.ts";
@@ -17,7 +24,7 @@ import { createMediaStack, type MediaStack, type MediaStackOptions } from "../..
 import { BOB_TOKEN, createHarness, createLocalContent, gate, LOCAL, LOCAL_TOKEN, stageStatuses, taskOf, waitFor, type Harness } from "../../../fixtures/pipeline/harness.ts";
 import { configureLlm } from "../../../fixtures/pipeline/harness.ts";
 import { countRows, tempDataDir } from "../../../tools/sqlite.ts";
-import { platformContentWithCover, scriptedCovers, TINY_WEBP, type ScriptedCover } from "../../../fixtures/platform/covers.ts";
+import { coverRig, platformContentWithCover, rigContent, scriptedCovers, TINY_WEBP, type ScriptedCover } from "../../../fixtures/platform/covers.ts";
 import { amberError } from "../../../../src/server/domain/errors.ts";
 import { contentListDtoSchema } from "../../../../src/shared/dto/content.ts";
 
@@ -699,6 +706,30 @@ describe("the local cover over HTTP", () => {
     const served = await app.inject({ method: "GET", url: `/api/contents/${id}/cover`, headers: auth });
     expect([served.statusCode, served.headers.etag]).toEqual([200, expect.stringMatching(/^"v1-/)]);
     expect((await app.inject({ method: "GET", url: `/api/contents/${id}`, headers: auth })).json().coverImageVersion).toBe(1);
+  });
+
+  it("answers 409 cover_fetch_busy while the user's cover slots are taken and over the per-minute budget", async () => {
+    const h = createHarness();
+    open.push(h);
+    let now = 1_000_000;
+    const rig = coverRig(h, { service: { now: () => now } });
+    const { app } = await h.app({ covers: rig.covers });
+    const held = Array.from({ length: COVER_FETCH_USER_CONCURRENCY }, () => rigContent(h));
+    const saving = held.map((id) => rig.covers.saveIfAbsent(LOCAL.userId, id, `https://img.example.com/${id}.jpg`, new AbortController().signal));
+    await waitFor(() => rig.calls.length === COVER_FETCH_USER_CONCURRENCY);
+    const id = rigContent(h);
+    const busy = await fetchCover(app, id);
+    expect([busy.statusCode, busy.json().error.code]).toEqual([409, "conflict.cover_fetch_busy"]);
+    for (const call of rig.calls) call.answer(TINY_WEBP);
+    await Promise.all(saving);
+
+    const quick = coverRig(h, { auto: () => TINY_WEBP, service: { now: () => now } });
+    const { app: second } = await h.app({ covers: quick.covers });
+    for (let i = 0; i < COVER_FETCH_USER_PER_MIN; i += 1) expect((await fetchCover(second, id)).statusCode).toBe(200);
+    const limited = await fetchCover(second, id);
+    expect([limited.statusCode, limited.json().error]).toEqual([409, expect.objectContaining({ code: "conflict.cover_fetch_busy", details: { retryAfterMs: 60_000 } })]);
+    now += 60_000;
+    expect((await fetchCover(second, id)).statusCode).toBe(200);
   });
 
   it("refuses a local Content and answers not_found for another user's", async () => {

@@ -116,3 +116,32 @@ describe("content cover repository", () => {
     expect(db.prepare("SELECT content_id FROM content_cover_image").all()).toEqual([{ content_id: "c2" }]);
   });
 });
+
+describe("conditional cover writes", () => {
+  beforeEach(() => {
+    db.prepare("UPDATE content SET cover_url = 'https://img.example.com/1.jpg' WHERE id = 'c1'").run();
+  });
+
+  it("writes and raises the version only while link and version are as expected", () => {
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(1), T0, { coverUrl: "https://img.example.com/1.jpg", version: undefined }))).toEqual({ outcome: "written", version: 1 });
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(2), T0, { coverUrl: "https://img.example.com/1.jpg", version: 1 }))).toEqual({ outcome: "written", version: 2 });
+    // Started before the second write: an older version, a different image.
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(3), T0, { coverUrl: "https://img.example.com/1.jpg", version: 1 }))).toEqual({ outcome: "superseded" });
+    // The same image as the one stored: success without a new version.
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(2), T0, { coverUrl: "https://img.example.com/1.jpg", version: 1 }))).toEqual({ outcome: "unchanged", version: 2 });
+    // Another link than the stored one.
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(4), T0, { coverUrl: "https://img.example.com/old.jpg", version: 2 }))).toEqual({ outcome: "superseded" });
+    // Filling a missing cover finds one.
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(5), T0, { version: undefined }))).toEqual({ outcome: "superseded" });
+    expect(run((scope) => scope.contentCovers.get("alice", "c1"))).toEqual({ ...image(2), version: 2 });
+    expect(contentRow("c1")).toEqual({ cover_image_version: 2, updated_at: T0 });
+  });
+
+  it("answers gone for a trashed, missing or foreign Content and writes nothing", () => {
+    expect(run((scope) => scope.contentCovers.putIf("bob", "c1", image(1), T0, { version: undefined }))).toEqual({ outcome: "gone" });
+    expect(run((scope) => scope.contentCovers.putIf("alice", "missing", image(1), T0, { version: undefined }))).toEqual({ outcome: "gone" });
+    run((scope) => scope.contents.trash("alice", "c1", T0 + 1));
+    expect(run((scope) => scope.contentCovers.putIf("alice", "c1", image(1), T0, { version: undefined }))).toEqual({ outcome: "gone" });
+    expect(countRows(db, "content_cover_image")).toBe(0);
+  });
+});

@@ -1,11 +1,21 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { COVER_DOWNLOAD_MAX_BYTES, COVER_IMAGE_MAX_BYTES, COVER_LONG_EDGE_MAX_PX } from "../../../src/shared/defaults.ts";
+import { createHash } from "node:crypto";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  COVER_DOWNLOAD_MAX_BYTES,
+  COVER_FETCH_TIMEOUT_MS,
+  COVER_FETCH_USER_CONCURRENCY,
+  COVER_FETCH_USER_PER_MIN,
+  COVER_IMAGE_MAX_BYTES,
+  COVER_LONG_EDGE_MAX_PX,
+} from "../../../src/shared/defaults.ts";
 import { FfmpegMediaIngest } from "../../../src/server/adapters/media-ingest/ffmpeg-media-ingest.ts";
 import { NodeProcessRunner } from "../../../src/server/adapters/process-runner/node-process-runner.ts";
-import { ContentCoverService } from "../../../src/server/application/content-covers.ts";
+import { ContentCoverService, COVER_LIMITS } from "../../../src/server/application/content-covers.ts";
+import { CoverFetchCoordinator } from "../../../src/server/application/cover-fetch-coordinator.ts";
+import { FairSemaphore } from "../../../src/server/pipeline/fair-semaphore.ts";
 import { FIGURE_SCRATCH_DIR, FigureImageProcessor } from "../../../src/server/application/figure-images.ts";
 import { amberError, isAmberError } from "../../../src/server/domain/errors.ts";
 import { inspectPackWebp } from "../../../src/server/domain/figure-image.ts";
@@ -13,6 +23,7 @@ import type { LocalMediaIngest } from "../../../src/server/ports/local-media-ing
 import type { LogFields, Logger } from "../../../src/server/ports/logger.ts";
 import type { PlatformSourceAdapter } from "../../../src/server/ports/platform-source.ts";
 import { childProcessEnv, type ProcessRunner } from "../../../src/server/ports/process-runner.ts";
+import { coverRig, rigContent, type CoverRigOptions } from "../../fixtures/platform/covers.ts";
 import { patternPng, truncatedJpeg } from "../../fixtures/media/figure-images.ts";
 import { BOB, createHarness, createLocalContent, LOCAL, type Harness } from "../../fixtures/pipeline/harness.ts";
 import { toolsBinDir } from "../../fixtures/tools.ts";
@@ -93,7 +104,7 @@ function capturingLogger(): Logger & { warnings: Array<{ message: string; fields
   return logger;
 }
 
-function setup(options: { ingest?: LocalMediaIngest; timeoutMs?: number; concurrency?: number } = {}) {
+function setup(options: { ingest?: LocalMediaIngest; timeoutMs?: number; concurrency?: number; userConcurrency?: number } = {}) {
   const h = createHarness();
   open.push(h);
   const logger = capturingLogger();
@@ -103,6 +114,16 @@ function setup(options: { ingest?: LocalMediaIngest; timeoutMs?: number; concurr
     newId: h.newId,
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
   });
+  const coordinator =
+    options.userConcurrency === undefined
+      ? undefined
+      : new CoverFetchCoordinator({
+          platforms: h.platformAccess,
+          images,
+          limits: COVER_LIMITS,
+          userConcurrency: options.userConcurrency,
+          globalSlots: new FairSemaphore(() => Number.POSITIVE_INFINITY),
+        });
   const covers = new ContentCoverService({
     repository: h.repository,
     platforms: h.platformAccess,
@@ -110,6 +131,7 @@ function setup(options: { ingest?: LocalMediaIngest; timeoutMs?: number; concurr
     details: h.contents,
     logger,
     now: () => T0 + 5_000,
+    ...(coordinator === undefined ? {} : { coordinator }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   return { h, covers, images, logger };
@@ -328,7 +350,8 @@ describe("covers racing purge, restore and re-import", () => {
   const orphans = (h: Harness): number => countRows(h.db, "content_cover_image", "NOT EXISTS (SELECT 1 FROM content WHERE content.id = content_cover_image.content_id)");
 
   it("leaves no cover row behind and reads only an existing cover or not_found", async () => {
-    const { h, covers } = setup();
+    // Enough slots for every download at once: the point here is the races, not the limits.
+    const { h, covers } = setup({ userConcurrency: 16 });
     // Downloads in the order they reached the platform; each waits until released.
     const gates: Array<ReturnType<typeof deferred<Buffer>>> = [];
     scriptCovers(h, () => {
@@ -339,13 +362,12 @@ describe("covers racing purge, restore and re-import", () => {
     const ids = Array.from({ length: 6 }, () => platformContent(h));
     const saving = ids.map((id) => covers.saveIfAbsent(LOCAL.userId, id, COVER_URL, signal()));
     while (gates.length < ids.length) await new Promise((resolve) => setTimeout(resolve, 5));
-    // Manual fetches of two of them run at the same time.
+    // Manual fetches of two of them run at the same time; they share the saves' downloads of the same link.
     const manualOnPurged = covers.fetch(LOCAL, ids[4] as string, signal()).then(
       () => "ok",
       (error: unknown) => (isAmberError(error) ? error.appError.class : "other"),
     );
     const manualOnLive = covers.fetch(LOCAL, ids[5] as string, signal());
-    while (gates.length < ids.length + 2) await new Promise((resolve) => setTimeout(resolve, 5));
     const [purged, trashed, restored, reimported, purgedDuringFetch, live] = ids as [string, string, string, string, string, string];
 
     // Meanwhile: one is purged, one moved to the trash, one trashed and restored, one purged and imported again.
@@ -368,12 +390,13 @@ describe("covers racing purge, restore and re-import", () => {
     for (const id of [...ids, again]) {
       expect([id, classOf(() => covers.cover(LOCAL, id))]).toEqual([id, "not_found"]);
     }
-    // The source-stage saves land first, then the manual fetches replace what they wrote.
-    for (const gate of gates.slice(0, ids.length)) gate.resolve(small);
+    for (const gate of gates) gate.resolve(small);
     await Promise.all(saving);
-    for (const gate of gates.slice(ids.length)) gate.resolve(wide);
+    expect(gates).toHaveLength(ids.length);
     expect(await manualOnPurged).toBe("not_found");
-    expect((await manualOnLive).content.coverImageVersion).toBe(2);
+    // The save stored the shared image first; the manual fetch finds the same image there and
+    // counts that as its success without a second version.
+    expect((await manualOnLive).content.coverImageVersion).toBe(1);
 
     expect(orphans(h)).toBe(0);
     expect(countRows(h.db, "content_cover_image")).toBe(2);
@@ -383,7 +406,7 @@ describe("covers racing purge, restore and re-import", () => {
     // Moved to the trash before its download landed: no copy is written to a trashed Content.
     expect(coverOf(h, trashed)).toBeUndefined();
     expect(covers.cover(LOCAL, restored).version).toBe(1);
-    expect(covers.cover(LOCAL, live).version).toBe(2);
+    expect(covers.cover(LOCAL, live).version).toBe(1);
     for (const id of [...ids, again]) {
       const outcome = classOf(() => covers.cover(LOCAL, id)) ?? "found";
       expect([id, ["found", "not_found"].includes(outcome)]).toEqual([id, true]);
@@ -405,3 +428,132 @@ describe("covers racing purge, restore and re-import", () => {
     expect(orphans(h)).toBe(0);
   });
 });
+
+const IMAGE_A = Buffer.from("image-a");
+const IMAGE_B = Buffer.from("image-b");
+const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+function rig(options: CoverRigOptions = {}) {
+  const h = createHarness();
+  open.push(h);
+  return { h, ...coverRig(h, options) };
+}
+
+/** Lets pending promise callbacks and file writes run until `ready` holds. */
+async function until(ready: () => boolean): Promise<void> {
+  await vi.waitFor(() => expect(ready()).toBe(true));
+}
+
+describe("conditional cover writes", () => {
+  it("shares one download among concurrent manual fetches: one write, one version step", async () => {
+    const { h, covers, calls } = rig();
+    const id = rigContent(h);
+    h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_A), width: 1, height: 1, sha256: digest(IMAGE_A) }, T0));
+    const fetches = [covers.fetch(LOCAL, id, signal()), covers.fetch(LOCAL, id, signal())];
+    await until(() => calls.length === 1);
+    calls[0]?.answer(IMAGE_B);
+    const results = await Promise.all(fetches);
+    expect(results.map((result) => result.content.coverImageVersion)).toEqual([2, 2]);
+    expect(calls).toHaveLength(1);
+    expect(coverOf(h, id)).toMatchObject({ version: 2, sha256: digest(IMAGE_B) });
+  });
+
+  it("drops an older download that lands after a newer cover, keeping the newer bytes and version", async () => {
+    const { h, covers, calls } = rig();
+    const id = rigContent(h);
+    h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_A), width: 1, height: 1, sha256: digest(IMAGE_A) }, T0));
+    const older = covers.fetch(LOCAL, id, signal());
+    await until(() => calls.length === 1);
+    // A newer cover lands meanwhile (another fetch, a content pack).
+    h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_B), width: 1, height: 1, sha256: digest(IMAGE_B) }, T0 + 1));
+    calls[0]?.answer(Buffer.from("image-old"));
+    expect((await older).content.coverImageVersion).toBe(2);
+    expect(coverOf(h, id)).toMatchObject({ version: 2, sha256: digest(IMAGE_B) });
+  });
+
+  it("counts an identical image already stored as success without a new version", async () => {
+    const { h, covers, calls } = rig();
+    const id = rigContent(h);
+    h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_A), width: 1, height: 1, sha256: digest(IMAGE_A) }, T0));
+    const older = covers.fetch(LOCAL, id, signal());
+    await until(() => calls.length === 1);
+    h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_B), width: 1, height: 1, sha256: digest(IMAGE_B) }, T0 + 1));
+    calls[0]?.answer(IMAGE_B);
+    expect((await older).content.coverImageVersion).toBe(2);
+    expect(coverOf(h, id)?.version).toBe(2);
+  });
+
+  it("writes nothing when the Content moves to the trash, its cover link changes, or the caller gives up", async () => {
+    const { h, covers, calls } = rig({ honourSignal: false, coordinator: { userConcurrency: 4 } });
+    const [trashed, relinked, abandoned, saved] = [rigContent(h), rigContent(h), rigContent(h), rigContent(h)];
+    const onTrashed = failure(covers.fetch(LOCAL, trashed, signal()));
+    const onRelinked = covers.fetch(LOCAL, relinked, signal());
+    await until(() => calls.length === 2);
+    const caller = new AbortController();
+    const onAbandoned = covers.saveIfAbsent(LOCAL.userId, abandoned, `https://img.example.com/${abandoned}.jpg`, caller.signal);
+    const onSaved = covers.saveIfAbsent(LOCAL.userId, saved, `https://img.example.com/${saved}.jpg`, signal());
+    await until(() => calls.length === 4);
+    h.trash.trash(LOCAL, trashed);
+    h.db.prepare("UPDATE content SET cover_url = 'https://img.example.com/other.jpg' WHERE id = ?").run(relinked);
+    caller.abort(new Error("stage cancelled"));
+    for (const call of calls) call.answer(IMAGE_A);
+    expect((await onTrashed).class).toBe("not_found");
+    expect((await onRelinked).content).not.toHaveProperty("coverImageVersion");
+    await onAbandoned;
+    await onSaved;
+    expect([coverOf(h, trashed), coverOf(h, relinked), coverOf(h, abandoned)]).toEqual([undefined, undefined, undefined]);
+    expect(coverOf(h, saved)?.version).toBe(1);
+  });
+});
+
+describe("manual fetch limits", () => {
+  it("answers busy at once while the user's slots are taken, and stays within the per-minute budget", async () => {
+    let now = T0;
+    const { h, covers, calls } = rig({ service: { now: () => now } });
+    const ids = Array.from({ length: COVER_FETCH_USER_CONCURRENCY }, () => rigContent(h));
+    const saving = ids.map((id) => covers.saveIfAbsent(LOCAL.userId, id, `https://img.example.com/${id}.jpg`, signal()));
+    await until(() => calls.length === COVER_FETCH_USER_CONCURRENCY);
+    const busy = await failureWithDetails(covers.fetch(LOCAL, rigContent(h), signal()));
+    expect(busy).toMatchObject({ class: "conflict", code: "conflict.cover_fetch_busy" });
+    for (const call of calls) call.answer(IMAGE_A);
+    await Promise.all(saving);
+
+    const { h: h2, covers: limited } = rig({ auto: () => IMAGE_A, service: { now: () => now } });
+    const id = rigContent(h2);
+    for (let i = 0; i < COVER_FETCH_USER_PER_MIN; i += 1) {
+      await limited.fetch(LOCAL, id, signal());
+      now += 10;
+    }
+    const over = await failureWithDetails(limited.fetch(LOCAL, id, signal()));
+    expect(over).toMatchObject({ code: "conflict.cover_fetch_busy", details: { retryAfterMs: 60_000 - COVER_FETCH_USER_PER_MIN * 10 } });
+    expect(coverOf(h2, id)?.version).toBe(COVER_FETCH_USER_PER_MIN);
+    now += 60_000;
+    await limited.fetch(LOCAL, id, signal());
+  });
+
+  it("answers source_unreachable once queue and download exceed the time limit, keeping the copy", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { h, covers, calls } = rig();
+      const id = rigContent(h);
+      h.repository.withTransaction((scope) => scope.contentCovers.put(LOCAL.userId, id, { bytes: new Uint8Array(IMAGE_A), width: 1, height: 1, sha256: digest(IMAGE_A) }, T0));
+      const outcome = failure(covers.fetch(LOCAL, id, signal()));
+      await vi.advanceTimersByTimeAsync(COVER_FETCH_TIMEOUT_MS + 1);
+      expect((await outcome).class).toBe("source_unreachable");
+      expect(calls[0]?.signal.aborted).toBe(true);
+      expect(coverOf(h, id)).toMatchObject({ version: 1, sha256: digest(IMAGE_A) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+async function failureWithDetails(promise: Promise<unknown>): Promise<{ class: string; code: string; details?: unknown }> {
+  try {
+    await promise;
+  } catch (error) {
+    if (isAmberError(error)) return error.appError;
+    throw error;
+  }
+  throw new Error("expected a rejection");
+}

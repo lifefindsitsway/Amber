@@ -1,4 +1,10 @@
-import type { ContentCoverImage, ContentCoverImageInput, ContentCoverRepository } from "../../../ports/repository.ts";
+import type {
+  ContentCoverExpectation,
+  ContentCoverImage,
+  ContentCoverImageInput,
+  ContentCoverRepository,
+  ContentCoverWriteOutcome,
+} from "../../../ports/repository.ts";
 import type { SqliteConnection } from "../database.ts";
 import { notFound } from "./rows.ts";
 
@@ -52,6 +58,24 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
     return (version.get(contentId, ownerUserId) as { v: number }).v;
   }
 
+  const state = db.prepare(
+    `SELECT content.cover_url AS coverUrl, content.cover_image_version AS version, cover.sha256 AS sha256
+     FROM content LEFT JOIN content_cover_image AS cover ON cover.content_id = content.id AND cover.user_id = content.user_id
+     WHERE content.id = ? AND content.user_id = ? AND content.trashed_at IS NULL`,
+  );
+
+  function writeIf(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number, expected: ContentCoverExpectation): ContentCoverWriteOutcome {
+    const current = state.get(contentId, ownerUserId) as { coverUrl: string | null; version: number | null; sha256: string | null } | undefined;
+    if (current === undefined) {
+      return { outcome: "gone" };
+    }
+    const urlHolds = expected.coverUrl === undefined || current.coverUrl === expected.coverUrl;
+    if (urlHolds && (current.version ?? undefined) === expected.version) {
+      return { outcome: "written", version: write(ownerUserId, contentId, image, now) };
+    }
+    return current.sha256 === image.sha256 && current.version !== null ? { outcome: "unchanged", version: current.version } : { outcome: "superseded" };
+  }
+
   function writeIfAbsent(ownerUserId: string, contentId: string, image: ContentCoverImageInput, now: number): boolean {
     if (writable.get(contentId, ownerUserId) === undefined) {
       throw notFound("content", contentId);
@@ -80,6 +104,9 @@ export function sqliteContentCoverRepository(db: SqliteConnection): ContentCover
     },
     putIfAbsent(ownerUserId, contentId, image, now) {
       return db.transaction(() => writeIfAbsent(ownerUserId, contentId, image, now))();
+    },
+    putIf(ownerUserId, contentId, image, now, expected) {
+      return db.transaction(() => writeIf(ownerUserId, contentId, image, now, expected))();
     },
   };
 }
