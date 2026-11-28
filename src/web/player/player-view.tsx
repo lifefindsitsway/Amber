@@ -34,7 +34,8 @@ export type ActivePlayer = "iframe" | "local" | "none";
  * carry them, so while subtitles are wanted there it says where they can be seen.
  * `localSources`, `localSourceId` and `onSelectLocalSource` are the cached qualities of the
  * file `localSrc` plays; the page gives them only while a video cache plays, and they never
- * reach an audio-only file.
+ * reach an audio-only file. `ratioScope` lets the `<video>` player remember the aspect ratio
+ * of each file it plays.
  */
 export function PlayerView(props: {
   source: PlayerSource;
@@ -56,6 +57,7 @@ export function PlayerView(props: {
   onSelectLocalSource?: ((assetId: string) => void) | undefined;
   /** Features drawn on and added to the `<video>` player; the platform iframes take none. */
   extensions?: PlayerExtensions | undefined;
+  ratioScope?: { userId: string; contentId: string } | undefined;
 }) {
   const { t } = useTranslation();
   const [failed, setFailed] = useState(false);
@@ -82,6 +84,7 @@ export function PlayerView(props: {
         subtitles={props.subtitles}
         activeSourceId={props.localSourceId}
         extensions={props.extensions}
+        ratioScope={props.ratioScope}
         {...(props.localAudioOnly === true || props.localSources === undefined
           ? {}
           : { sources: props.localSources, onSelectSource: props.onSelectLocalSource })}

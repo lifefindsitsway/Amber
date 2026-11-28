@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PLAYER_CONTROLS_IDLE_MS, PLAYER_SEEK_TOLERANCE_MS, PLAYER_SKIP_SECONDS, PLAYER_VOLUME_STEP } from "../../../src/shared/defaults.ts";
+import { PLAYER_CONTROLS_IDLE_MS, PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO, PLAYER_SEEK_TOLERANCE_MS, PLAYER_SKIP_SECONDS, PLAYER_VOLUME_STEP } from "../../../src/shared/defaults.ts";
 import type { AdvanceResult } from "../../../src/web/player/list-loop.ts";
 import { LocalPlayer } from "../../../src/web/player/local-player.tsx";
 import { PlayerController, PlayerControllerProvider } from "../../../src/web/player/player-controller.tsx";
@@ -883,5 +883,230 @@ describe("LocalPlayer remembered position", () => {
     act(() => controller.restart());
     expect(video.currentTime).toBe(0);
     expect(play).toHaveBeenCalledOnce();
+  });
+});
+
+describe("LocalPlayer frame height", () => {
+  const SCOPE = { userId: "u1", contentId: "c1" };
+  const layout = { width: 640, viewport: 800 };
+  const observers: Array<() => void> = [];
+
+  beforeEach(() => {
+    layout.width = 640;
+    layout.viewport = 800;
+    observers.length = 0;
+    // jsdom lays nothing out: the player reports the layout's width and the column its visible height.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.dataset["testid"] === "player-local" ? layout.width : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.dataset["testid"] === "column" ? layout.viewport : 0;
+    });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly callback: () => void;
+        constructor(callback: () => void) {
+          this.callback = callback;
+        }
+        observe(): void {
+          observers.push(this.callback);
+        }
+        disconnect(): void {
+          const index = observers.indexOf(this.callback);
+          if (index >= 0) observers.splice(index, 1);
+        }
+      },
+    );
+  });
+
+  /** Resizes the window: the player's width and the column's visible height change and the observers fire. */
+  function resize(next: { width?: number; viewport?: number }): void {
+    if (next.width !== undefined) layout.width = next.width;
+    if (next.viewport !== undefined) layout.viewport = next.viewport;
+    act(() => {
+      for (const callback of [...observers]) callback();
+    });
+  }
+
+  function inColumn(props: Parameters<typeof LocalPlayer>[0]) {
+    const controller = new PlayerController();
+    const result = render(
+      <div style={{ overflowY: "auto" }} data-testid="column">
+        <PlayerControllerProvider controller={controller}>
+          <LocalPlayer {...props} />
+        </PlayerControllerProvider>
+      </div>,
+    );
+    const root = screen.getByTestId("player-local");
+    return { ...result, root, video: () => root.querySelector("video") as HTMLVideoElement };
+  }
+
+  function metadata(video: HTMLVideoElement, width: number, height: number): void {
+    Object.defineProperty(video, "videoWidth", { configurable: true, value: width });
+    Object.defineProperty(video, "videoHeight", { configurable: true, value: height });
+    fireEvent.loadedMetadata(video);
+  }
+
+  function heightOf(root: HTMLElement): number {
+    return Number.parseFloat(root.style.height);
+  }
+
+  it("keeps 16:9 for a landscape video", () => {
+    const { root, video } = inColumn({ src: "/wide.mp4" });
+    expect(heightOf(root)).toBeCloseTo(360);
+    metadata(video(), 1920, 1080);
+    expect(heightOf(root)).toBeCloseTo(360);
+    expect(root.className).toContain("aspect-video");
+  });
+
+  it("grows a portrait video up to its share of the column's visible height and follows the column as it resizes", () => {
+    const { root, video } = inColumn({ src: "/tall.mp4" });
+    metadata(video(), 1080, 1920);
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 800);
+    resize({ viewport: 1000 });
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 1000);
+    // A very short column: never below the 16:9 height.
+    resize({ viewport: 200 });
+    expect(heightOf(root)).toBeCloseTo(360);
+    // A narrower player in a tall column: the whole picture where it fits under the cap.
+    resize({ width: 200, viewport: 2000 });
+    expect(heightOf(root)).toBeCloseTo(Math.min((200 * 1920) / 1080, PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 2000));
+  });
+
+  it("shows a square video whole when it fits under the cap", () => {
+    const { root, video } = inColumn({ src: "/square.mp4" });
+    layout.viewport = 2000;
+    metadata(video(), 1000, 1000);
+    resize({});
+    expect(heightOf(root)).toBeCloseTo(640);
+  });
+
+  it("follows a window resize without a ResizeObserver", () => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal("ResizeObserver", undefined);
+    const { root, video } = inColumn({ src: "/tall.mp4" });
+    metadata(video(), 1080, 1920);
+    layout.viewport = 1000;
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 1000);
+  });
+
+  it("lays out a file opened again with its remembered ratio before its first frame", () => {
+    const first = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+    metadata(first.video(), 1080, 1920);
+    first.unmount();
+    const again = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+    expect(heightOf(again.root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 800);
+    // Opened again, it starts at its height: nothing eases in.
+    expect(again.root.className).not.toContain("transition-[height]");
+  });
+
+  it("does not use a ratio remembered for another file, Content or user", () => {
+    const first = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+    metadata(first.video(), 1080, 1920);
+    first.unmount();
+    for (const props of [
+      { activeSourceId: "a2", ratioScope: SCOPE },
+      { activeSourceId: "a1", ratioScope: { ...SCOPE, contentId: "c2" } },
+      { activeSourceId: "a1", ratioScope: { ...SCOPE, userId: "u2" } },
+    ]) {
+      const other = inColumn({ src: "/tall.mp4", ...props });
+      expect(heightOf(other.root)).toBeCloseTo(360);
+      other.unmount();
+    }
+  });
+
+  it("ignores a remembered value outside [0.25, 16/9] or not finite", () => {
+    for (const ratio of [0.1, 3, "0.5", null]) {
+      localStorage.setItem("amber.player.ratios", JSON.stringify([{ ...SCOPE, assetId: "a1", ratio }]));
+      const view = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+      expect(heightOf(view.root)).toBeCloseTo(360);
+      view.unmount();
+    }
+  });
+
+  it("plays on with nothing remembered when storage throws", () => {
+    // Only the ratio memory fails; the player's other settings read as usual.
+    const getItem = Storage.prototype.getItem;
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      if (key === "amber.player.ratios") throw new Error("denied");
+      return getItem.call(this, key);
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === "amber.player.ratios") throw new Error("denied");
+      setItem.call(this, key, value);
+    });
+    const { root, video } = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+    expect(heightOf(root)).toBeCloseTo(360);
+    metadata(video(), 1080, 1920);
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 800);
+  });
+
+  it("keeps the frame while a quality switch loads the next file, then takes that file's own ratio", () => {
+    layout.viewport = 2000;
+    function Switch() {
+      const [active, setActive] = useState("hd");
+      return (
+        <LocalPlayer
+          src={`/${active}.mp4`}
+          sources={[
+            { assetId: "hd", label: "1080P" },
+            { assetId: "sd", label: "720P" },
+          ]}
+          activeSourceId={active}
+          onSelectSource={setActive}
+          ratioScope={SCOPE}
+        />
+      );
+    }
+    render(
+      <div style={{ overflowY: "auto" }} data-testid="column">
+        <PlayerControllerProvider controller={new PlayerController()}>
+          <Switch />
+        </PlayerControllerProvider>
+      </div>,
+    );
+    const root = screen.getByTestId("player-local");
+    metadata(root.querySelector("video") as HTMLVideoElement, 1080, 1920);
+    const tall = heightOf(root);
+    fireEvent.click(within(root).getByTestId("quality-item-sd"));
+    expect(heightOf(root)).toBeCloseTo(tall);
+    metadata(root.querySelector("video") as HTMLVideoElement, 720, 720);
+    expect(heightOf(root)).toBeCloseTo(640);
+  });
+
+  it("eases to a newly known ratio, with no motion when reduced motion is asked for", () => {
+    vi.useFakeTimers();
+    const { root, video } = inColumn({ src: "/tall.mp4" });
+    expect(root.className).not.toContain("transition-[height]");
+    metadata(video(), 1080, 1920);
+    expect(root.className).toContain("transition-[height]");
+    expect(root.className).toContain("duration-150");
+    expect(root.className).toContain("motion-reduce:transition-none");
+    act(() => vi.advanceTimersByTime(150));
+    // Done easing: a resize afterwards follows the window at once.
+    expect(root.className).not.toContain("transition-[height]");
+  });
+
+  it("keeps the plain frame for an audio-only file and in fullscreen, and keeps the picture cover", () => {
+    localStorage.setItem("amber.player.ratios", JSON.stringify([{ ...SCOPE, assetId: "a1", ratio: 0.5625 }]));
+    const audio = inColumn({ src: "/a.mp3", audioOnly: true, activeSourceId: "a1", ratioScope: SCOPE });
+    expect(audio.root.style.height).toBe("");
+    expect(within(audio.root).queryByTestId("player-picture-cover")).toBeNull();
+    audio.unmount();
+
+    const { request } = fakeFullscreen();
+    const { root } = inColumn({ src: "/tall.mp4", activeSourceId: "a1", ratioScope: SCOPE });
+    expect(within(root).getByTestId("player-picture-cover")).toBeTruthy();
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 800);
+    fireEvent.click(screen.getByTestId("player-fullscreen"));
+    expect(request).toHaveBeenCalledOnce();
+    expect(root.style.height).toBe("");
+    fireEvent.keyDown(root, { key: "Escape" });
+    expect(heightOf(root)).toBeCloseTo(PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO * 800);
   });
 });

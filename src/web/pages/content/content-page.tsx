@@ -1102,6 +1102,10 @@ function MiddleColumn(props: {
   const { t } = useTranslation();
   const { content, highlightThreshold } = useContentPage();
   const { playback } = props;
+  const queryClient = useQueryClient();
+  // The signed-in user, read once like the remembered position: the player's aspect ratios are kept per user.
+  const [userId] = useState(() => queryClient.getQueryData<AuthMeDto>(queryKeys.me)?.userId);
+  const ratioScope = useMemo(() => (userId === undefined ? undefined : { userId, contentId: content.id }), [userId, content.id]);
   const source = useMemo(() => playerSourceOf(content), [content]);
   const local = usePlaybackMedia(content, playback.cacheAssetId);
   // The quality menu applies only to a video cache (never to an original file), and the
@@ -1142,6 +1146,7 @@ function MiddleColumn(props: {
             loopCollection={playback.loopCollection}
             subtitles={props.subtitles}
             extensions={extensions}
+            ratioScope={ratioScope}
             renderBelow={(active) =>
               // The local player draws chapters into its seek bar; only the highlight band stays below it.
               active === "local" ? (

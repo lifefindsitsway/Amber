@@ -10,6 +10,7 @@ import { CAPABILITIES } from "./capabilities.ts";
 import { ClockInput } from "./clock-input.tsx";
 import type { AdvanceResult, LoopCollectionChoice } from "./list-loop.ts";
 import { PlaybackRateMenu, PlayerSettingsMenu, QualityMenu, type QualitySource } from "./player-menus.tsx";
+import { LANDSCAPE_RATIO, MIN_REMEMBERED_RATIO, readPlayerRatio, rememberPlayerRatio, usePlayerFrameHeight, type PlayerRatioScope } from "./player-ratio.ts";
 import { usePlayerController, usePlayerTime } from "./player-controller.tsx";
 import type { PlayerExtensionContext, PlayerExtensions } from "./player-extensions.ts";
 import { usePlayerSettings } from "./player-settings.ts";
@@ -21,6 +22,17 @@ import { useVolumeSetting, VolumeControl } from "./volume-control.tsx";
 
 /** Space between the subtitle editor panel and the picture's edge or the control bar. */
 const PANEL_GAP_PX = 8;
+/** How long the frame eases to the height of a newly known aspect ratio; matches the `duration-150` class. */
+const FRAME_TRANSITION_MS = 150;
+
+/** The memory slot of one video file, or none while the page gives no user and Content or the file has no asset id. */
+function ratioScopeOf(scope: { userId: string; contentId: string } | undefined, assetId: string | undefined): PlayerRatioScope | undefined {
+  return scope === undefined || assetId === undefined ? undefined : { ...scope, assetId };
+}
+
+function scopeKey(scope: PlayerRatioScope | undefined): string {
+  return scope === undefined ? "" : JSON.stringify([scope.userId, scope.contentId, scope.assetId]);
+}
 
 /**
  * The playback state carried from one source file to the next. `toId` is the source whose
@@ -74,6 +86,13 @@ function focusVisible(element: Element): boolean {
  * the position (clamped to the new length) and whether it was playing; meanwhile nothing
  * autoplays and an end does not step the list loop; a file that fails to load goes back to
  * the previous one with a notice. Speed, volume, subtitles and fullscreen carry over.
+ *
+ * A landscape video sits in a 16:9 frame. A portrait or square one gets a taller frame, capped
+ * at a share of the scrolling column's visible height so what lies below stays within reach.
+ * With `ratioScope` (the user and the Content) the aspect ratio of each file is remembered, so
+ * opening it again lays out the frame before its first picture; a different file (another
+ * quality, a replaced cache) never takes a remembered ratio that is not its own. While a quality
+ * switch loads the next file, the frame keeps its height instead of dropping back to 16:9.
  */
 export function LocalPlayer(props: {
   src: string;
@@ -87,6 +106,7 @@ export function LocalPlayer(props: {
   activeSourceId?: string | undefined;
   onSelectSource?: ((assetId: string) => void) | undefined;
   extensions?: PlayerExtensions | undefined;
+  ratioScope?: { userId: string; contentId: string } | undefined;
 }) {
   const { t } = useTranslation();
   const controller = usePlayerController();
@@ -127,6 +147,23 @@ export function LocalPlayer(props: {
       setSwap({ ...swap, toId: props.activeSourceId });
       setSwitchedTo(props.activeSourceId);
     }
+  }
+  const ratioScope = ratioScopeOf(props.ratioScope, props.activeSourceId);
+  const [ratio, setRatio] = useState(() => (ratioScope === undefined ? undefined : readPlayerRatio(ratioScope)));
+  const [ratioKey, setRatioKey] = useState(() => scopeKey(ratioScope));
+  const [frameEasing, setFrameEasing] = useState(false);
+  const changeRatio = (next: number | undefined): void => {
+    if (next === ratio) return;
+    setRatio(next);
+    setFrameEasing(true);
+  };
+  if (scopeKey(ratioScope) !== ratioKey) {
+    setRatioKey(scopeKey(ratioScope));
+    // Another file of the same Content (a quality switch, a replaced cache) keeps the frame
+    // until its own metadata says otherwise; it never borrows the ratio remembered for a different file.
+    const remembered = ratioScope === undefined ? undefined : readPlayerRatio(ratioScope);
+    const switching = ratioKey !== "" && ratioScope !== undefined;
+    changeRatio(remembered ?? (switching ? ratio : undefined));
   }
   const [controlsFocused, setControlsFocused] = useState(false);
   const subtitles = props.subtitles;
@@ -206,6 +243,22 @@ export function LocalPlayer(props: {
   }, [root]);
 
   useEffect(() => () => clearTimeout(idleTimer.current), []);
+
+  useEffect(() => {
+    if (!frameEasing) return undefined;
+    const timer = setTimeout(() => setFrameEasing(false), FRAME_TRANSITION_MS);
+    return () => clearTimeout(timer);
+  }, [frameEasing, ratio]);
+
+  const onMetadataRatio = (element: HTMLVideoElement): void => {
+    const { videoWidth, videoHeight } = element;
+    if (!(videoWidth > 0 && videoHeight > 0)) return;
+    const measured = videoWidth / videoHeight;
+    changeRatio(measured);
+    // Landscape needs no memory: it is the frame every file starts with. A strip narrower than
+    // the floor is remembered at the floor, where the column's height already caps the frame.
+    if (ratioScope !== undefined && measured < LANDSCAPE_RATIO) rememberPlayerRatio(ratioScope, Math.max(MIN_REMEMBERED_RATIO, measured));
+  };
 
   useEffect(() => {
     if (!subtitleEditing) setSubtitlePreview(false);
@@ -381,6 +434,8 @@ export function LocalPlayer(props: {
   const sources = audioOnly || props.sources === undefined || props.sources.length === 0 ? undefined : props.sources;
   const autoplay = (settings.autoplay || props.autoplay === true) && swap === undefined && (switchedTo === undefined || switchedTo !== props.activeSourceId);
   const progress = durationMs === undefined ? 0 : Math.min(100, Math.max(0, (position / durationMs) * 100));
+  // Fullscreen fills the screen and an audio-only file shows a placeholder: both keep the plain frame.
+  const frameHeight = usePlayerFrameHeight(root, ratio, !audioOnly && !fullscreen);
   const extensionContext: PlayerExtensionContext = {
     video: videoElement,
     picture,
@@ -400,7 +455,8 @@ export function LocalPlayer(props: {
       onPointerMove={wake}
       onPointerEnter={wake}
       onPointerLeave={sleep}
-      className={`@container relative aspect-video w-full overflow-hidden bg-black outline-none focus-visible:ring-2 focus-visible:ring-accent ${fullscreen ? "" : "rounded-md"} ${!shown && fullscreen ? "cursor-none" : ""}`}
+      className={`@container relative aspect-video w-full overflow-hidden bg-black outline-none focus-visible:ring-2 focus-visible:ring-accent ${fullscreen ? "" : "rounded-md"} ${!shown && fullscreen ? "cursor-none" : ""} ${frameEasing ? "transition-[height] duration-150 ease-out motion-reduce:transition-none" : ""}`}
+      style={frameHeight === undefined ? undefined : { height: frameHeight }}
       data-testid="player-local"
       data-controls={shown ? "shown" : "hidden"}
     >
@@ -426,6 +482,7 @@ export function LocalPlayer(props: {
         onSeeked={(event) => controller.reportTime(Math.round(event.currentTarget.currentTime * 1000))}
         onLoadedMetadata={(event) => {
           onDuration(event.currentTarget.duration);
+          onMetadataRatio(event.currentTarget);
           restoreSwap(event.currentTarget);
         }}
         onError={failSwap}

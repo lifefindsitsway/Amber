@@ -289,6 +289,10 @@ export const COVER_BACKFILL_INTERVAL_MS = 1000;
 export const COVER_BACKFILL_MAX_ITEMS = 5000;
 /** How often the storage settings poll a running cover backfill job. */
 export const COVER_BACKFILL_POLL_MS = 1000;
+/** Upper bound of a portrait or square video's player height, as a share of the visible height of the middle column. */
+export const PLAYER_PORTRAIT_MAX_VIEWPORT_RATIO = 0.6;
+/** Video aspect ratios the local player remembers. */
+export const PLAYER_RATIO_MEMORY_MAX = 100;
 /** How often the desktop shell reads the Windows system proxy. */
 export const SYSTEM_PROXY_POLL_MS = 2000;
 /** Longest system proxy message line the sidecar reads from stdin. */
